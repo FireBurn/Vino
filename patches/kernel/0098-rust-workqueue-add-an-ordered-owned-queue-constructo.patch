@@ -1,0 +1,41 @@
+From 42d4519dbfe10bd53c54576a6ee0a251dbd3ca9c Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Mon, 27 Jul 2026 21:07:55 +0100
+Subject: [PATCH 098/113] rust: workqueue: add an ordered owned queue
+ constructor
+
+Provide a safe owned wrapper for alloc_ordered_workqueue(). The C interface is a variadic macro, so construct the same WQ_UNBOUND, __WQ_ORDERED and max_active combination inside the workqueue abstraction instead of making drivers use internal flags.
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/kernel/workqueue.rs | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/rust/kernel/workqueue.rs b/rust/kernel/workqueue.rs
+index 8e8c0fddfca7..26bf3fa7c90f 100644
+--- a/rust/kernel/workqueue.rs
++++ b/rust/kernel/workqueue.rs
+@@ -307,6 +307,21 @@ pub fn new(name: &CStr, flags: QueueFlags, max_active: i32) -> Result<Self> {
+         let ptr = unsafe { bindings::alloc_workqueue(name.as_char_ptr(), flags.0, max_active) };
+         Ok(Self(NonNull::new(ptr).ok_or(ENOMEM)?))
+     }
++
++    /// Allocates a new ordered workqueue named `name`.
++    ///
++    /// At most one work item executes at a time, and items are processed in queue order. The
++    /// caller-provided flags are combined with the flags required by the C
++    /// `alloc_ordered_workqueue()` interface.
++    pub fn new_ordered(name: &CStr, flags: QueueFlags) -> Result<Self> {
++        let flags = flags.0 | bindings::wq_flags_WQ_UNBOUND | bindings::wq_flags___WQ_ORDERED;
++
++        // SAFETY: `name` is a valid NUL-terminated C string for the duration of the call. These
++        // flags and `max_active` match `alloc_ordered_workqueue()`, whose variadic macro cannot be
++        // called directly through bindgen.
++        let ptr = unsafe { bindings::alloc_workqueue(name.as_char_ptr(), flags, 1) };
++        Ok(Self(NonNull::new(ptr).ok_or(ENOMEM)?))
++    }
+ }
+ 
+ impl Deref for OwnedQueue {

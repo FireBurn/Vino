@@ -1,0 +1,50 @@
+From 6a008c0a3fac0c19d05044bd85b0ba91948f13d2 Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Mon, 27 Jul 2026 22:52:46 +0100
+Subject: [PATCH 106/113] rust: sysfs: add a safe device-link helper
+
+Wrap sysfs_create_link() with live device references. The sysfs core retains the references needed while creating the link and removes it automatically with the owner.
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/kernel/sysfs.rs | 18 +++++++++++++++++-
+ 1 file changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/rust/kernel/sysfs.rs b/rust/kernel/sysfs.rs
+index 160b1334a6fc..89ce8d464c0a 100644
+--- a/rust/kernel/sysfs.rs
++++ b/rust/kernel/sysfs.rs
+@@ -16,7 +16,7 @@
+ //! [`include/linux/device.h`](srctree/include/linux/device.h)
+ 
+ use crate::{
+-    bindings,
++    bindings, device,
+     error::{from_err_ptr, to_result},
+     page::PAGE_SIZE,
+     prelude::*,
+@@ -118,6 +118,22 @@ fn store(&self, name: &CStr, buf: &[u8]) -> Result {
+     }
+ }
+ 
++/// Create a symlink named `name` in `owner`'s sysfs directory pointing to `target`.
++///
++/// The link is removed automatically when `owner` is unregistered. The sysfs core synchronizes
++/// target removal with link creation.
++pub fn create_link(owner: &device::Device, target: &device::Device, name: &CStr) -> Result {
++    // SAFETY: Both device references are live, and sysfs takes the references it needs while
++    // creating the link.
++    to_result(unsafe {
++        bindings::sysfs_create_link(
++            &raw mut (*owner.as_raw()).kobj,
++            &raw mut (*target.as_raw()).kobj,
++            name.as_char_ptr(),
++        )
++    })
++}
++
+ /// A registered sysfs attribute group hosted on a `root_device_register()` device.
+ ///
+ /// Dropping it removes the files, reclaims the driver data, and unregisters the root device.

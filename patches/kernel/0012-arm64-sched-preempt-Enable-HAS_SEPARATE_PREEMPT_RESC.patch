@@ -1,0 +1,29 @@
+From c146994a1be8134a1e3e6c5bd12d68c5ecdd3dd4 Mon Sep 17 00:00:00 2001
+From: Boqun Feng <boqun@kernel.org>
+Date: Tue, 26 May 2026 08:21:47 -0700
+Subject: [PATCH 012/113] arm64: sched/preempt: Enable
+ HAS_SEPARATE_PREEMPT_RESCHED_BITS
+
+ARM64 already uses 64bit preempt count and the need reschedule bit is
+maintained in a separate 32bit than the preempt count. Therefore preempt
+count has enough bits to represent 16 level of NMI nesting, hence enable
+it for ARM64. This saves a per-CPU variable and additional instructions
+in the NMI path.
+
+Signed-off-by: Boqun Feng <boqun@kernel.org>
+---
+ arch/arm64/Kconfig | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/arch/arm64/Kconfig b/arch/arm64/Kconfig
+index b3afe0688919..349c3533cd1e 100644
+--- a/arch/arm64/Kconfig
++++ b/arch/arm64/Kconfig
+@@ -247,6 +247,7 @@ config ARM64
+ 	select PCI_SYSCALL if PCI
+ 	select POWER_RESET
+ 	select POWER_SUPPLY
++	select HAS_SEPARATE_PREEMPT_RESCHED_BITS
+ 	select SPARSE_IRQ
+ 	select SWIOTLB
+ 	select SYSCTL_EXCEPTION_TRACE

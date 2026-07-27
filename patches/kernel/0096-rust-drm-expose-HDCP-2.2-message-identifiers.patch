@@ -1,0 +1,101 @@
+From 17f25cf735e523f7f531e90204bcb3e15c0d9334 Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Mon, 27 Jul 2026 18:33:00 +0100
+Subject: [PATCH 096/113] rust: drm: expose HDCP 2.2 message identifiers
+
+Add a DRM display module with typed identifiers for the standard HDCP 2.2 protocol messages. Transport drivers can use the canonical drm_hdcp.h values without reaching into generated bindings.
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/kernel/drm/display.rs      |  5 +++
+ rust/kernel/drm/display/hdcp.rs | 54 +++++++++++++++++++++++++++++++++
+ rust/kernel/drm/mod.rs          |  1 +
+ 3 files changed, 60 insertions(+)
+ create mode 100644 rust/kernel/drm/display.rs
+ create mode 100644 rust/kernel/drm/display/hdcp.rs
+
+diff --git a/rust/kernel/drm/display.rs b/rust/kernel/drm/display.rs
+new file mode 100644
+index 000000000000..007ed284c551
+--- /dev/null
++++ b/rust/kernel/drm/display.rs
+@@ -0,0 +1,5 @@
++// SPDX-License-Identifier: GPL-2.0 OR MIT
++
++//! DRM display-helper abstractions.
++
++pub mod hdcp;
+diff --git a/rust/kernel/drm/display/hdcp.rs b/rust/kernel/drm/display/hdcp.rs
+new file mode 100644
+index 000000000000..6eba44f5f14e
+--- /dev/null
++++ b/rust/kernel/drm/display/hdcp.rs
+@@ -0,0 +1,54 @@
++// SPDX-License-Identifier: GPL-2.0 OR MIT
++
++//! High-bandwidth Digital Content Protection definitions.
++//!
++//! C header: [`include/drm/display/drm_hdcp.h`](srctree/include/drm/display/drm_hdcp.h)
++
++use crate::bindings;
++
++/// An HDCP 2.2 protocol message identifier.
++#[derive(Copy, Clone, Debug, Eq, PartialEq)]
++pub struct MessageId(u8);
++
++impl MessageId {
++    /// No message.
++    pub const NULL: Self = Self(bindings::HDCP_2_2_NULL_MSG as u8);
++    /// Authentication and Key Exchange initialization.
++    pub const AKE_INIT: Self = Self(bindings::HDCP_2_2_AKE_INIT as u8);
++    /// Receiver certificate.
++    pub const AKE_SEND_CERT: Self = Self(bindings::HDCP_2_2_AKE_SEND_CERT as u8);
++    /// Encrypted master key for a receiver without stored pairing information.
++    pub const AKE_NO_STORED_KM: Self = Self(bindings::HDCP_2_2_AKE_NO_STORED_KM as u8);
++    /// Encrypted master key and pairing nonce for a paired receiver.
++    pub const AKE_STORED_KM: Self = Self(bindings::HDCP_2_2_AKE_STORED_KM as u8);
++    /// Receiver's H-prime authentication value.
++    pub const AKE_SEND_H_PRIME: Self = Self(bindings::HDCP_2_2_AKE_SEND_HPRIME as u8);
++    /// Receiver pairing information.
++    pub const AKE_SEND_PAIRING_INFO: Self = Self(bindings::HDCP_2_2_AKE_SEND_PAIRING_INFO as u8);
++    /// Locality-check initialization.
++    pub const LC_INIT: Self = Self(bindings::HDCP_2_2_LC_INIT as u8);
++    /// Receiver's L-prime locality-check value.
++    pub const LC_SEND_L_PRIME: Self = Self(bindings::HDCP_2_2_LC_SEND_LPRIME as u8);
++    /// Session-key exchange.
++    pub const SKE_SEND_EKS: Self = Self(bindings::HDCP_2_2_SKE_SEND_EKS as u8);
++    /// Repeater receiver-ID list.
++    pub const REPEATERAUTH_SEND_RECEIVERID_LIST: Self =
++        Self(bindings::HDCP_2_2_REP_SEND_RECVID_LIST as u8);
++    /// Repeater receiver-ID-list acknowledgement.
++    pub const REPEATERAUTH_SEND_ACK: Self = Self(bindings::HDCP_2_2_REP_SEND_ACK as u8);
++    /// Repeater stream-management request.
++    pub const REPEATERAUTH_STREAM_MANAGE: Self = Self(bindings::HDCP_2_2_REP_STREAM_MANAGE as u8);
++    /// Repeater stream-ready response.
++    pub const REPEATERAUTH_STREAM_READY: Self = Self(bindings::HDCP_2_2_REP_STREAM_READY as u8);
++
++    /// Return the wire value.
++    pub const fn as_u8(self) -> u8 {
++        self.0
++    }
++}
++
++impl From<MessageId> for u8 {
++    fn from(value: MessageId) -> Self {
++        value.as_u8()
++    }
++}
+diff --git a/rust/kernel/drm/mod.rs b/rust/kernel/drm/mod.rs
+index a17c73c4afb1..d151242fafe3 100644
+--- a/rust/kernel/drm/mod.rs
++++ b/rust/kernel/drm/mod.rs
+@@ -3,6 +3,7 @@
+ //! DRM subsystem abstractions.
+ 
+ pub mod device;
++pub mod display;
+ pub mod driver;
+ pub mod event;
+ pub mod file;

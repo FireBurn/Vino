@@ -1,0 +1,26 @@
+# The chimera rig that drives a DL3 dock directly from userspace, and its
+# supporting crates -- the basis of revdi's DLM-replacement binary.
+#
+# Two things here are deliberately NOT workspace members:
+#
+#   module/   built by Kbuild against a kernel tree, not by cargo.
+#   library/  librevdi is a shipped .so with its own SONAME versioning (1.15.0),
+#             its own LGPL licence, and its own [profile.release] (opt-level="z",
+#             lto, strip, panic="abort"). Cargo ignores a non-root package's
+#             profile, so folding it in here would silently discard all of that
+#             and change the .so we ship. Its Makefile also expects its output in
+#             library/target, which a shared workspace target dir would move.
+[workspace]
+resolver = "2"
+members = [
+    "chimera",
+    "kernel-shim",
+    "vino-driver",
+    "vino-hdcp",
+]
+exclude = ["library"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+license = "GPL-2.0-or-later"

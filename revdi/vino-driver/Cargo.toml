@@ -1,0 +1,17 @@
+[package]
+name = "vino-driver"
+version = "0.0.1"
+edition = "2021"
+license = "GPL-2.0-or-later"
+description = "DisplayLink DL3 userspace USB transport"
+
+# rusb (safe bindings over the libusb-1.0 C library) so these tools drive the
+# dock through the *same libusb DLM uses* — run with cwd /opt/displaylink or
+# LD_LIBRARY_PATH=/opt/displaylink to load DLM's bundled libusb-1.0.so.0.3.0.
+[dependencies]
+rusb = "0.9.4"
+libc = "0.2"
+
+[[bin]]
+name = "vino-sniff"
+path = "src/bin/sniff.rs"

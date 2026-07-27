@@ -1,0 +1,26 @@
+From 43a1d5c7d22cd7efac7e6ecc693d0013d6e4dfb9 Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Mon, 27 Jul 2026 21:18:39 +0100
+Subject: [PATCH 099/113] rust: error: expose EPROTO
+
+Add the named protocol-error constant so Rust protocol drivers can return the same specific errno as their C counterparts without constructing it from a raw integer.
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/kernel/error.rs | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/rust/kernel/error.rs b/rust/kernel/error.rs
+index a56ba6309594..9492471c2677 100644
+--- a/rust/kernel/error.rs
++++ b/rust/kernel/error.rs
+@@ -64,6 +64,7 @@ macro_rules! declare_err {
+     declare_err!(EPIPE, "Broken pipe.");
+     declare_err!(EDOM, "Math argument out of domain of func.");
+     declare_err!(ERANGE, "Math result not representable.");
++    declare_err!(EPROTO, "Protocol error.");
+     declare_err!(EOVERFLOW, "Value too large for defined data type.");
+     declare_err!(EMSGSIZE, "Message too long.");
+     declare_err!(ETIMEDOUT, "Connection timed out.");

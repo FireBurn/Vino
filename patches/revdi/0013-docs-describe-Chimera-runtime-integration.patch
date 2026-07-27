@@ -1,0 +1,65 @@
+From 93b04bdb0a513fd6776892be5a4451b53c7df4e8 Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Mon, 27 Jul 2026 23:22:27 +0100
+Subject: [PATCH 13/13] docs: describe Chimera runtime integration
+
+Document the implemented DPMS, hardware cursor, and DDC/CI paths while keeping live-dock validation and recovery work clearly separated from offline build and protocol coverage.
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ README.md         |  8 ++++----
+ chimera/README.md | 13 ++++++++++---
+ 2 files changed, 14 insertions(+), 7 deletions(-)
+
+diff --git a/README.md b/README.md
+index df86466..03d0d40 100644
+--- a/README.md
++++ b/README.md
+@@ -148,10 +148,10 @@ and clean teardown on dock unplug. See `docs/` for the design notes and the
+ kernel-tree patch set.
+ 
+ **Chimera:** the production service connects Revdi frames to the Vino control,
+-mode, codec, and USB paths. Its optimized build and offline tests pass. The
+-cleanup revision has not been exercised against hardware, so live parity,
+-replug, cursor, DDC/CI, and recovery behavior still require the hardware test
+-matrix described in the companion Vino repository.
++mode, codec, USB, DPMS, cursor, DDC/CI, dynamic-topology, and session-recovery
++paths. Its optimized build and offline tests pass. The cleanup revision has not
++been exercised against hardware, so live parity remains a validation claim
++until the hardware test matrix in the companion Vino repository is complete.
+ 
+ ## License
+ 
+diff --git a/chimera/README.md b/chimera/README.md
+index 5e825b5..b426e17 100644
+--- a/chimera/README.md
++++ b/chimera/README.md
+@@ -32,7 +32,11 @@ The daemon:
+ 5. applies the compositor-selected captured mode profile;
+ 6. sends the video-arm prefix and training carrier; and
+ 7. encodes coherent Revdi updates with Vino's kernel codec and submits them to the matching USB
+-   endpoint.
++   endpoint;
++8. forwards DPMS and hardware-cursor state; and
++9. completes Revdi DDC/CI writes and reads through Vino's encrypted monitor-control tunnel;
++10. debounces monitor removal and recreates Revdi outputs after reattachment; and
++11. rebuilds the owned dock session after transport failure.
+ 
+ No module loading, kernel installation, service management, or reboot is performed by Chimera.
+ 
+@@ -47,8 +51,11 @@ cargo test -p vino-chimera --all-features
+ ```
+ 
+ The oracle checks byte-exact control sealing, message builders, codec records, mode profiles, video
+-arm construction, Revdi pixel conversion, and strip-grid padding. Hardware-dependent operations
+-are deliberately excluded from the automated suite.
++arm construction, DDC/CI reply bounds, Revdi pixel conversion, cursor repacking, and strip-grid
++padding. Hardware-dependent operations are deliberately excluded from the automated suite.
++
++The DPMS, cursor, DDC/CI, topology, and session-recovery paths are implemented, but the cleanup
++revision has not been run against a live dock. They remain part of the hardware validation matrix.
+ 
+ ## Source synchronization
+ 

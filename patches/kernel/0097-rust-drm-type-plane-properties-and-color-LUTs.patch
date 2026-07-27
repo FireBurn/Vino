@@ -1,0 +1,201 @@
+From 80ad7d325c1140b3016db17aad2b8b00494a5d7e Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Mon, 27 Jul 2026 18:33:13 +0100
+Subject: [PATCH 097/113] rust: drm: type plane properties and color LUTs
+
+Represent plane rotation, reflection, and pixel-blend properties with Rust types, and expose CRTC gamma entries through a read-only ColorLut view. This keeps KMS drivers on the safe DRM interface instead of generated constants and structures.
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/kernel/drm/kms/crtc.rs  | 34 ++++++++++++---
+ rust/kernel/drm/kms/plane.rs | 82 ++++++++++++++++++++++++++++++++----
+ 2 files changed, 101 insertions(+), 15 deletions(-)
+
+diff --git a/rust/kernel/drm/kms/crtc.rs b/rust/kernel/drm/kms/crtc.rs
+index 782d74c53624..d37780bfcc74 100644
+--- a/rust/kernel/drm/kms/crtc.rs
++++ b/rust/kernel/drm/kms/crtc.rs
+@@ -26,6 +26,27 @@
+ };
+ use macros::vtable;
+ 
++/// One entry in a DRM gamma or degamma lookup table.
++#[repr(transparent)]
++pub struct ColorLut(bindings::drm_color_lut);
++
++impl ColorLut {
++    /// Red channel value.
++    pub fn red(&self) -> u16 {
++        self.0.red
++    }
++
++    /// Green channel value.
++    pub fn green(&self) -> u16 {
++        self.0.green
++    }
++
++    /// Blue channel value.
++    pub fn blue(&self) -> u16 {
++        self.0.blue
++    }
++}
++
+ /// The main trait for implementing the [`struct drm_crtc`] API for [`Crtc`].
+ ///
+ /// Any KMS driver should have at least one implementation of this type, which allows them to create
+@@ -752,12 +773,11 @@ fn mode(&self) -> &DisplayMode {
+         unsafe { DisplayMode::as_ref(core::ptr::addr_of!((*self.as_raw()).mode)) }
+     }
+ 
+-    /// Returns the CRTC's gamma LUT for this state as an array of [`drm_color_lut`] entries, or
++    /// Returns the CRTC's gamma LUT for this state as an array of [`ColorLut`] entries, or
+     /// [`None`] if no gamma LUT is programmed. Requires gamma to have been enabled on the CRTC
+     /// (see [`UnregisteredCrtc::enable_gamma`]).
+     ///
+-    /// [`drm_color_lut`]: bindings::drm_color_lut
+-    fn gamma_lut(&self) -> Option<&[bindings::drm_color_lut]> {
++    fn gamma_lut(&self) -> Option<&[ColorLut]> {
+         // SAFETY: `as_raw()` is a valid `drm_crtc_state`.
+         let blob = unsafe { (*self.as_raw()).gamma_lut };
+         if blob.is_null() {
+@@ -765,13 +785,13 @@ fn gamma_lut(&self) -> Option<&[bindings::drm_color_lut]> {
+         }
+         // SAFETY: a non-null gamma_lut blob is valid for the state's lifetime.
+         let (data, length) = unsafe { ((*blob).data, (*blob).length) };
+-        let n = length / core::mem::size_of::<bindings::drm_color_lut>();
++        let n = length / core::mem::size_of::<ColorLut>();
+         if data.is_null() || n == 0 {
+             return None;
+         }
+-        // SAFETY: the blob's `data` holds `n` contiguous `drm_color_lut` entries (the blob length
+-        // is a multiple of the entry size), valid for the state's lifetime.
+-        Some(unsafe { core::slice::from_raw_parts(data.cast::<bindings::drm_color_lut>(), n) })
++        // SAFETY: `ColorLut` is transparent over `drm_color_lut`; the blob holds `n` contiguous
++        // entries valid for the state's lifetime.
++        Some(unsafe { core::slice::from_raw_parts(data.cast::<ColorLut>(), n) })
+     }
+ }
+ impl<T: AsRawCrtcState> RawCrtcState for T {}
+diff --git a/rust/kernel/drm/kms/plane.rs b/rust/kernel/drm/kms/plane.rs
+index d0dc8414b753..47a2ab34891f 100644
+--- a/rust/kernel/drm/kms/plane.rs
++++ b/rust/kernel/drm/kms/plane.rs
+@@ -25,6 +25,72 @@
+     ptr::{null, null_mut, NonNull},
+ };
+ 
++/// Plane rotation and reflection properties.
++#[derive(Copy, Clone, Debug, PartialEq, Eq)]
++pub struct Rotation(u32);
++
++impl Rotation {
++    /// No rotation.
++    pub const ROTATE_0: Self = Self(bindings::DRM_MODE_ROTATE_0);
++    /// Rotate clockwise by 90 degrees.
++    pub const ROTATE_90: Self = Self(bindings::DRM_MODE_ROTATE_90);
++    /// Rotate clockwise by 180 degrees.
++    pub const ROTATE_180: Self = Self(bindings::DRM_MODE_ROTATE_180);
++    /// Rotate clockwise by 270 degrees.
++    pub const ROTATE_270: Self = Self(bindings::DRM_MODE_ROTATE_270);
++    /// Reflect across the X axis after rotation.
++    pub const REFLECT_X: Self = Self(bindings::DRM_MODE_REFLECT_X);
++    /// Reflect across the Y axis after rotation.
++    pub const REFLECT_Y: Self = Self(bindings::DRM_MODE_REFLECT_Y);
++
++    /// Return whether every bit in `other` is set.
++    pub const fn contains(self, other: Self) -> bool {
++        self.0 & other.0 == other.0
++    }
++
++    /// Return the selected rotation without reflection bits.
++    pub const fn angle(self) -> Self {
++        Self(self.0 & bindings::DRM_MODE_ROTATE_MASK)
++    }
++
++    fn bits(self) -> u32 {
++        self.0
++    }
++}
++
++impl BitOr for Rotation {
++    type Output = Self;
++
++    fn bitor(self, rhs: Self) -> Self::Output {
++        Self(self.0 | rhs.0)
++    }
++}
++
++/// Supported plane pixel-blend modes.
++#[derive(Copy, Clone, Debug, PartialEq, Eq)]
++pub struct BlendModes(u32);
++
++impl BlendModes {
++    /// Source pixels are premultiplied by alpha.
++    pub const PREMULTIPLIED: Self = Self(1 << bindings::DRM_MODE_BLEND_PREMULTI);
++    /// Source pixels provide straight alpha coverage.
++    pub const COVERAGE: Self = Self(1 << bindings::DRM_MODE_BLEND_COVERAGE);
++    /// Ignore per-pixel alpha.
++    pub const PIXEL_NONE: Self = Self(1 << bindings::DRM_MODE_BLEND_PIXEL_NONE);
++
++    fn bits(self) -> u32 {
++        self.0
++    }
++}
++
++impl BitOr for BlendModes {
++    type Output = Self;
++
++    fn bitor(self, rhs: Self) -> Self::Output {
++        Self(self.0 | rhs.0)
++    }
++}
++
+ /// The main trait for implementing the [`struct drm_plane`] API for [`Plane`].
+ ///
+ /// Any KMS driver should have at least one implementation of this type, which allows them to create
+@@ -360,15 +426,15 @@ pub fn new<'a>(
+     /// is registered.
+     pub fn create_rotation_property(
+         &self,
+-        default_rotation: u32,
+-        supported_rotations: u32,
++        default_rotation: Rotation,
++        supported_rotations: Rotation,
+     ) -> Result {
+         // SAFETY: `as_raw()` is a valid, not-yet-registered plane.
+         to_result(unsafe {
+             bindings::drm_plane_create_rotation_property(
+                 self.as_raw(),
+-                default_rotation,
+-                supported_rotations,
++                default_rotation.bits(),
++                supported_rotations.bits(),
+             )
+         })
+     }
+@@ -403,10 +469,10 @@ pub fn enable_fb_damage_clips(&self) {
+     ///
+     /// Call this during [`KmsDriver::create_objects`](crate::drm::kms::KmsDriver::create_objects),
+     /// before the device is registered.
+-    pub fn create_blend_mode_property(&self, supported_modes: u32) -> Result {
++    pub fn create_blend_mode_property(&self, supported_modes: BlendModes) -> Result {
+         // SAFETY: `as_raw()` is a valid, not-yet-registered plane.
+         to_result(unsafe {
+-            bindings::drm_plane_create_blend_mode_property(self.as_raw(), supported_modes)
++            bindings::drm_plane_create_blend_mode_property(self.as_raw(), supported_modes.bits())
+         })
+     }
+ }
+@@ -752,8 +818,8 @@ fn hotspot_y(&self) -> i32 {
+     /// The plane's rotation/reflection (`DRM_MODE_ROTATE_*` | `DRM_MODE_REFLECT_*` bitmask), for a
+     /// plane with a rotation property (see
+     /// [`UnregisteredPlane::create_rotation_property`]). Defaults to `DRM_MODE_ROTATE_0`.
+-    fn rotation(&self) -> u32 {
+-        self.as_raw().rotation
++    fn rotation(&self) -> Rotation {
++        Rotation(self.as_raw().rotation)
+     }
+ 
+     /// Return the current [`OpaqueCrtc`] assigned to this plane, if there is one.

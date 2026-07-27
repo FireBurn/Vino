@@ -1,0 +1,35 @@
+# The kernel and Revdi directories are independent working repositories.
+# Reproducible source changes are carried by patches/ and the pinned revisions
+# documented in README.md.
+/kernel/
+
+# Temporary worktrees created by the validation scripts.
+/.worktrees/
+/.patch-export.*
+
+# Kernel module build artifacts
+*.ko
+*.o
+*.mod
+*.mod.c
+*.mod.o
+*.cmd
+.*.cmd
+*.symvers
+Module.symvers
+modules.order
+.tmp_versions/
+*.order
+
+# Rust / library build artifacts
+target/
+*.so
+*.so.*
+*.rlib
+*.rmeta
+
+# Editor / OS noise
+*.swp
+*~
+.DS_Store
+~        

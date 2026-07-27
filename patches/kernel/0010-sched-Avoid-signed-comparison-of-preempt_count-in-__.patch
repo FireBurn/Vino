@@ -1,0 +1,33 @@
+From d984e7c2101ee4f829a8e60ccd15555ff5243ead Mon Sep 17 00:00:00 2001
+From: Boqun Feng <boqun@kernel.org>
+Date: Tue, 26 May 2026 08:21:45 -0700
+Subject: [PATCH 010/113] sched: Avoid signed comparison of preempt_count() in
+ __cant_migrate()
+
+Currently preempt_count() is always a non-negative int on all archs
+(PREEMPT_NEED_RESCHED archs will mask out the MSB when return
+preempt_count()), hence the checking in __cant_migrate() is in fact just
+checking whether preempt_count() is 0 or not. In a future change, we are
+going to use all the 32 bits of preempt_count(), which would make
+negative int values possible from preempt_count(). Therefore convert the
+"> 0" comparison into a zero checking to prepare for the future change.
+No functional changes are intended.
+
+Signed-off-by: Boqun Feng <boqun@kernel.org>
+---
+ kernel/sched/core.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/kernel/sched/core.c b/kernel/sched/core.c
+index aa116daf21bd..9b3f1764fa9e 100644
+--- a/kernel/sched/core.c
++++ b/kernel/sched/core.c
+@@ -9241,7 +9241,7 @@ void __cant_migrate(const char *file, int line)
+ 	if (!IS_ENABLED(CONFIG_PREEMPT_COUNT))
+ 		return;
+ 
+-	if (preempt_count() > 0)
++	if (preempt_count())
+ 		return;
+ 
+ 	if (time_before(jiffies, prev_jiffy + HZ) && prev_jiffy)

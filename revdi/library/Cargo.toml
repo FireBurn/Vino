@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+[package]
+name = "revdi"
+version = "1.15.0"
+edition = "2021"
+rust-version = "1.77"
+license = "LGPL-2.1-or-later"
+description = "ABI-compatible Rust reimplementation of DisplayLink's libevdi"
+repository = "https://github.com/FireBurn/revdi"
+publish = false
+
+# Produce libevdi.so (matching the C library's SONAME), so DisplayLinkManager
+# loads it unchanged.
+[lib]
+name = "evdi"
+crate-type = ["cdylib", "rlib"]
+
+# The bulk of the .so is statically-linked Rust `std` (fmt/panic/fs), not our
+# code — inherent to a std cdylib. `strip` drops the symbol table for free;
+# `opt-level = "z"` favours size. Getting materially smaller would require
+# `#![no_std]` + linking libc directly, not worth it for a once-loaded library.
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"

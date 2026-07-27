@@ -1,0 +1,329 @@
+From 97616b6d08fe3eef2165ecdc23cb6a03912dc0cc Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Mon, 27 Jul 2026 22:51:28 +0100
+Subject: [PATCH 093/113] rust: usb: manage I/O windows in the driver adapter
+
+USB transfers are only permitted between probe or resume and the matching suspend, reset, or disconnect callback. IoWindow represented that interval, but each driver had to construct it unsafely and remember every lifecycle transition.
+
+Have the USB adapter own the window and pass a reference-counted handle to probe. Add a quiesce callback so drivers can stop producers before the adapter closes and drains the window. Reopen it before resume callbacks and close it again if resume fails.
+
+Convert Vino and the USB sample. Vino no longer constructs, closes, or reopens its I/O capability itself.
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/kernel/usb.rs              | 133 ++++++++++++++++++++------------
+ samples/rust/rust_driver_usb.rs |   6 +-
+ 2 files changed, 87 insertions(+), 52 deletions(-)
+
+diff --git a/rust/kernel/usb.rs b/rust/kernel/usb.rs
+index d24abcefa93a..5d7f6e130c43 100644
+--- a/rust/kernel/usb.rs
++++ b/rust/kernel/usb.rs
+@@ -39,14 +39,29 @@
+ /// An adapter for the registration of USB drivers.
+ pub struct Adapter<T: Driver>(T);
+ 
++#[pin_data]
++#[doc(hidden)]
++pub struct BoundData<'bound, T: Driver> {
++    #[pin]
++    driver_data: T::Data<'bound>,
++    io: Arc<IoWindow>,
++}
++
++impl<'bound, T: Driver> BoundData<'bound, T> {
++    fn driver_data<'a>(self: Pin<&'a Self>) -> Pin<&'a T::Data<'bound>> {
++        // SAFETY: `driver_data` is structurally pinned with `Self`.
++        unsafe { self.map_unchecked(|this| &this.driver_data) }
++    }
++}
++
+ // SAFETY:
+ // - `bindings::usb_driver` is a C type declared as `repr(C)`.
+-// - `T::Data` is the type of the driver's device private data.
++// - `BoundData<T>` is the type of the driver's device private data.
+ // - `struct usb_driver` embeds a `struct device_driver`.
+ // - `DEVICE_DRIVER_OFFSET` is the correct byte offset to the embedded `struct device_driver`.
+ unsafe impl<T: Driver> driver::DriverLayout for Adapter<T> {
+     type DriverType = bindings::usb_driver;
+-    type DriverData<'bound> = T::Data<'bound>;
++    type DriverData<'bound> = BoundData<'bound, T>;
+     const DEVICE_DRIVER_OFFSET: usize = core::mem::offset_of!(Self::DriverType, driver);
+ }
+ 
+@@ -100,7 +115,12 @@ extern "C" fn probe_callback(
+             let id = unsafe { &*id.cast::<DeviceId>() };
+ 
+             let info = T::ID_TABLE.info(id.index());
+-            let data = T::probe(intf, id, info);
++            let interface: ARef<Interface> = intf.into();
++            let io = Arc::pin_init(IoWindow::new(interface), GFP_KERNEL)?;
++            let data = try_pin_init!(BoundData::<T> {
++                driver_data <- T::probe(intf, id, info, io.clone()),
++                io,
++            });
+ 
+             let dev: &device::Device<device::CoreInternal<'_>> = intf.as_ref();
+             dev.set_drvdata(data)?;
+@@ -126,11 +146,13 @@ extern "C" fn disconnect_callback(intf: *mut bindings::usb_interface) {
+         //
+         // SAFETY: `disconnect_callback` is only ever called after a successful call to
+         // `probe_callback`, hence it's guaranteed that `Device::set_drvdata()` has been called
+-        // and stored a `Pin<KBox<T::Data<'_>>>`.
+-        let data = unsafe { dev.drvdata_obtain::<T::Data<'_>>() };
++        // and stored a `Pin<KBox<BoundData<'_, T>>>`.
++        let data = unsafe { dev.drvdata_obtain::<BoundData<'_, T>>() };
+ 
+         if let Some(data) = data {
+-            T::disconnect(intf, data.as_ref());
++            T::quiesce(intf, data.as_ref().driver_data());
++            data.io.close();
++            T::disconnect(intf, data.as_ref().driver_data());
+ 
+             // Dropped only after `T::disconnect()` has returned, so a driver can rely on its
+             // owned resources still being alive for the whole of its disconnect handling.
+@@ -150,6 +172,7 @@ fn pm_dispatch(
+             &'bound Interface<device::Core<'a>>,
+             Pin<&'b T::Data<'bound>>,
+         ) -> Result,
++        resume: bool,
+     ) -> kernel::ffi::c_int {
+         // SAFETY: The USB core only ever calls these with a valid `struct usb_interface`.
+         //
+@@ -160,10 +183,23 @@ fn pm_dispatch(
+ 
+         // SAFETY: These callbacks only ever run between a successful `probe_callback()` and
+         // `disconnect_callback()`, so the driver data is present.
+-        let data = unsafe { dev.drvdata_borrow::<T::Data<'_>>() };
++        let data = unsafe { dev.drvdata_borrow::<BoundData<'_, T>>() };
+ 
+         from_result(|| {
+-            f(intf, data)?;
++            if resume {
++                data.io.reopen();
++            }
++
++            if let Err(e) = f(intf, data.driver_data()) {
++                if resume {
++                    data.io.close();
++                }
++                return Err(e);
++            }
++
++            if !resume {
++                data.io.close();
++            }
+             Ok(0)
+         })
+     }
+@@ -172,23 +208,23 @@ extern "C" fn suspend_callback(
+         intf: *mut bindings::usb_interface,
+         _message: bindings::pm_message_t,
+     ) -> kernel::ffi::c_int {
+-        Self::pm_dispatch(intf, T::suspend)
++        Self::pm_dispatch(intf, T::suspend, false)
+     }
+ 
+     extern "C" fn resume_callback(intf: *mut bindings::usb_interface) -> kernel::ffi::c_int {
+-        Self::pm_dispatch(intf, T::resume)
++        Self::pm_dispatch(intf, T::resume, true)
+     }
+ 
+     extern "C" fn reset_resume_callback(intf: *mut bindings::usb_interface) -> kernel::ffi::c_int {
+-        Self::pm_dispatch(intf, T::reset_resume)
++        Self::pm_dispatch(intf, T::reset_resume, true)
+     }
+ 
+     extern "C" fn pre_reset_callback(intf: *mut bindings::usb_interface) -> kernel::ffi::c_int {
+-        Self::pm_dispatch(intf, T::pre_reset)
++        Self::pm_dispatch(intf, T::pre_reset, false)
+     }
+ 
+     extern "C" fn post_reset_callback(intf: *mut bindings::usb_interface) -> kernel::ffi::c_int {
+-        Self::pm_dispatch(intf, T::post_reset)
++        Self::pm_dispatch(intf, T::post_reset, true)
+     }
+ }
+ 
+@@ -346,7 +382,7 @@ macro_rules! usb_device_table {
+ /// # Examples
+ ///
+ ///```
+-/// # use kernel::{bindings, device::Core, usb};
++/// # use kernel::{bindings, device::Core, sync::Arc, usb};
+ /// use kernel::prelude::*;
+ ///
+ /// struct MyDriver;
+@@ -370,6 +406,7 @@ macro_rules! usb_device_table {
+ ///         _interface: &'bound usb::Interface<Core<'_>>,
+ ///         _id: &usb::DeviceId,
+ ///         _info: &'bound Self::IdInfo,
++///         _io: Arc<usb::IoWindow>,
+ ///     ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound {
+ ///         Err(ENODEV)
+ ///     }
+@@ -399,11 +436,23 @@ fn probe<'bound>(
+         interface: &'bound Interface<device::Core<'_>>,
+         id: &DeviceId,
+         id_info: &'bound Self::IdInfo,
++        io: Arc<IoWindow>,
+     ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound;
+ 
++    /// Quiesces a USB driver before disconnect.
++    ///
++    /// The implementation must stop work which could start new transfers. Once this returns, the
++    /// adapter closes the interface's [`IoWindow`].
++    fn quiesce<'bound>(
++        _interface: &'bound Interface<device::Core<'_>>,
++        _data: Pin<&Self::Data<'bound>>,
++    ) {
++    }
++
+     /// USB driver disconnect.
+     ///
+-    /// Called when the USB interface is about to be unbound from this driver.
++    /// Called after the interface's [`IoWindow`] has been closed and all I/O has completed. The
++    /// bound data is dropped after this returns.
+     fn disconnect<'bound>(
+         interface: &'bound Interface<device::Core<'_>>,
+         data: Pin<&Self::Data<'bound>>,
+@@ -411,9 +460,9 @@ fn disconnect<'bound>(
+ 
+     /// The interface is being suspended.
+     ///
+-    /// I/O is no longer permitted once this returns: the driver must stop every transfer it has
+-    /// outstanding before returning, typically by closing its [`IoWindow`]. Returning an error
+-    /// aborts the suspend.
++    /// The implementation must stop work which could start new transfers. If it returns success,
++    /// the adapter closes the interface's [`IoWindow`] before returning to the USB core. Returning
++    /// an error aborts the suspend and leaves the window open.
+     fn suspend<'bound>(
+         _interface: &'bound Interface<device::Core<'_>>,
+         _data: Pin<&Self::Data<'bound>>,
+@@ -421,7 +470,7 @@ fn suspend<'bound>(
+         Ok(())
+     }
+ 
+-    /// The interface has been resumed and I/O is permitted again.
++    /// The interface has been resumed. The adapter reopens its [`IoWindow`] before this is called.
+     fn resume<'bound>(
+         _interface: &'bound Interface<device::Core<'_>>,
+         _data: Pin<&Self::Data<'bound>>,
+@@ -442,7 +491,8 @@ fn reset_resume<'bound>(
+ 
+     /// The device is about to be reset.
+     ///
+-    /// As for [`suspend`](Driver::suspend), the driver must stop all I/O before returning.
++    /// As for [`suspend`](Driver::suspend), the driver must stop work which could start new
++    /// transfers. The adapter closes the [`IoWindow`] after a successful return.
+     fn pre_reset<'bound>(
+         _interface: &'bound Interface<device::Core<'_>>,
+         _data: Pin<&Self::Data<'bound>>,
+@@ -450,7 +500,7 @@ fn pre_reset<'bound>(
+         Ok(())
+     }
+ 
+-    /// The device has been reset and I/O is permitted again.
++    /// The device has been reset. The adapter reopens its [`IoWindow`] before this is called.
+     fn post_reset<'bound>(
+         _interface: &'bound Interface<device::Core<'_>>,
+         _data: Pin<&Self::Data<'bound>>,
+@@ -661,15 +711,15 @@ fn timeout_millis(timeout: Delta) -> Result<kernel::ffi::c_int> {
+ /// and must be closed again before `disconnect()`, `suspend()` or `pre_reset()` returns. This type
+ /// represents exactly that narrower state.
+ ///
+-/// A driver stores one `IoWindow` in its bound data and takes an [`Io`] token from it around every
+-/// transfer. [`close`] shuts the window and blocks until every outstanding token has been dropped
+-/// and every queue URB registered against it has been killed, so once `close()` returns the driver
+-/// is guaranteed to have no I/O in flight.
++/// The USB adapter owns one `IoWindow` for every successfully bound interface and passes a
++/// reference-counted handle to [`Driver::probe`]. Drivers take an [`Io`] token from it around every
++/// transfer. The adapter revokes the window and blocks until every outstanding token has been
++/// dropped and every queue URB registered against it has been killed before suspend, reset or
++/// disconnect completes.
+ ///
+ /// Because [`Io`] borrows the window, and the transfer methods and queues live on [`Io`], a
+ /// transfer cannot outlive the window that permitted it.
+ ///
+-/// [`close`]: IoWindow::close
+ #[pin_data]
+ pub struct IoWindow {
+     /// The interface I/O is permitted on. Holding a reference keeps the `struct usb_interface`
+@@ -706,23 +756,8 @@ struct UrbRegistration {
+ unsafe impl Send for UrbRegistration {}
+ 
+ impl IoWindow {
+-    /// Creates an open I/O window for `interface`.
+-    ///
+-    /// # Safety
+-    ///
+-    /// This is the one place a driver promises, by hand, that USB I/O is permitted -- replacing an
+-    /// unsafe assertion at every individual transfer. The caller must:
+-    ///
+-    /// - call this only from a context where I/O on `interface` is permitted and the interface is
+-    ///   bound to the calling driver: a successful [`Driver::probe`];
+-    /// - call [`close`](Self::close) before [`Driver::disconnect`], [`Driver::suspend`] or
+-    ///   [`Driver::pre_reset`] returns, and [`reopen`](Self::reopen) from [`Driver::resume`],
+-    ///   [`Driver::reset_resume`] or [`Driver::post_reset`].
+-    ///
+-    /// Once those hold, everything reachable from this window is safe: [`enter`](Self::enter)
+-    /// refuses to hand out new tokens after `close()`, and `close()` waits for the outstanding
+-    /// ones, so no transfer can be in flight outside the permitted window.
+-    pub unsafe fn new(interface: ARef<Interface>) -> impl PinInit<Self> {
++    /// Creates the open I/O window owned by the USB adapter.
++    fn new(interface: ARef<Interface>) -> impl PinInit<Self> {
+         pin_init!(Self {
+             interface,
+             state <- new_mutex!(IoState {
+@@ -760,10 +795,8 @@ pub fn interface(&self) -> &Interface {
+     /// this window is killed, which releases anything blocked waiting on one, and the call then
+     /// blocks until the last outstanding token has been dropped.
+     ///
+-    /// This must be called from the driver's [`Driver::disconnect`], [`Driver::suspend`] or
+-    /// [`Driver::pre_reset`] callback before it returns. It is idempotent. It sleeps, so it must
+-    /// be called from process context.
+-    pub fn close(&self) {
++    /// This is idempotent and sleeps, so the adapter only calls it from process context.
++    fn close(&self) {
+         let mut state = self.state.lock();
+         state.open = false;
+ 
+@@ -785,10 +818,8 @@ pub fn close(&self) {
+ 
+     /// Reopens a window that was closed by a suspend or pre-reset.
+     ///
+-    /// Only valid from [`Driver::resume`], [`Driver::reset_resume`] or [`Driver::post_reset`],
+-    /// where the USB core has just re-permitted I/O. Reopening after [`Driver::disconnect`] is a
+-    /// bug; the bound data (and with it this window) is dropped there instead.
+-    pub fn reopen(&self) {
++    /// The adapter only calls this after the USB core has re-permitted I/O.
++    fn reopen(&self) {
+         self.state.lock().open = true;
+     }
+ 
+diff --git a/samples/rust/rust_driver_usb.rs b/samples/rust/rust_driver_usb.rs
+index 02bd5085f9bc..0f5fb8392149 100644
+--- a/samples/rust/rust_driver_usb.rs
++++ b/samples/rust/rust_driver_usb.rs
+@@ -9,7 +9,10 @@
+         Core, //
+     },
+     prelude::*,
+-    sync::aref::ARef,
++    sync::{
++        aref::ARef,
++        Arc, //
++    },
+     usb, //
+ };
+ 
+@@ -33,6 +36,7 @@ fn probe<'bound>(
+         intf: &'bound usb::Interface<Core<'_>>,
+         _id: &usb::DeviceId,
+         _info: &'bound Self::IdInfo,
++        _io: Arc<usb::IoWindow>,
+     ) -> impl PinInit<Self, Error> + 'bound {
+         let dev: &device::Device<Core<'_>> = intf.as_ref();
+         dev_info!(dev, "Rust USB driver sample probed\n");

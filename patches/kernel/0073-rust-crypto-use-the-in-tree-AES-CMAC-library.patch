@@ -1,0 +1,212 @@
+From 5a0214939c3b4b2b7c726912e7d88b71b8154d5e Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Thu, 18 Jun 2026 14:58:44 +0100
+Subject: [PATCH 073/113] rust: crypto: use the in-tree AES-CMAC library
+
+Address the v1 RFC review (Eric Biggers):
+
+ - Drop the bare single-block ECB helper (`aes128_encrypt_block`), which
+   re-expanded the AES key on every block and exposed bare ECB instead of a
+   mode of operation. `Aes128::new()` now prepares the key schedule once (via
+   `aes_prepareenckey()`) and `encrypt_block()` reuses it, so a keystream loop
+   (e.g. AES-CTR, which `lib/crypto` does not yet provide) no longer re-expands
+   the key per block. This stays a low-level building block for the modes the
+   library is missing.
+
+ - Add `crypto::aes_cmac()` over the in-tree AES-CMAC library
+   (<crypto/aes-cbc-macs.h>) instead of building CMAC out of bare AES, so the
+   one mode of operation vino needs that the library already ships comes from
+   the library.
+
+(cherry picked from commit 040e4585cdd8bad9ff0d75bc3ded7bc1e3336756)
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/bindings/bindings_helper.h |  1 +
+ rust/helpers/crypto.c           | 40 ++++++++++------
+ rust/kernel/crypto.rs           | 82 ++++++++++++++++++++++++---------
+ 3 files changed, 87 insertions(+), 36 deletions(-)
+
+diff --git a/rust/bindings/bindings_helper.h b/rust/bindings/bindings_helper.h
+index 20d28e402681..7fd9fa97affc 100644
+--- a/rust/bindings/bindings_helper.h
++++ b/rust/bindings/bindings_helper.h
+@@ -28,6 +28,7 @@
+  */
+ #include <linux/hrtimer_types.h>
+ 
++#include <crypto/aes.h>
+ #include <crypto/sha2.h>
+ 
+ #include <linux/acpi.h>
+diff --git a/rust/helpers/crypto.c b/rust/helpers/crypto.c
+index dc9614f6fc8e..a18780231ce0 100644
+--- a/rust/helpers/crypto.c
++++ b/rust/helpers/crypto.c
+@@ -1,25 +1,37 @@
+ // SPDX-License-Identifier: GPL-2.0
+ 
+ #include <crypto/aes.h>
++#include <crypto/aes-cbc-macs.h>
+ #include <linux/string.h>
+ 
+ /*
+- * AES-128 single-block ECB encryption: out = AES(key, in).
+- *
+- * A helper because aes_encrypt() takes a transparent union (aes_encrypt_arg)
+- * that bindgen cannot express. SHA-256 and HMAC-SHA256 are plain extern
++ * aes_encrypt() takes a transparent union (aes_encrypt_arg) that bindgen cannot
++ * express, so the single-block encrypt step is wrapped here. The key schedule
++ * is prepared once (aes_prepareenckey() is a plain extern bound directly) and
++ * the resulting struct aes_enckey is reused across blocks by the caller, so the
++ * key is not re-expanded per block. SHA-256 and HMAC-SHA256 are plain extern
+  * functions and are bound directly.
+  */
+-__rust_helper int
+-rust_helper_aes128_encrypt_block(const u8 *key, const u8 *in, u8 *out)
++__rust_helper void
++rust_helper_aes_enckey_encrypt_block(const struct aes_enckey *key, u8 *out,
++				     const u8 *in)
+ {
+-	struct aes_enckey enckey;
+-	int ret;
++	aes_encrypt(key, out, in);
++}
++
++/*
++ * AES-CMAC one-shot over the in-tree library (crypto/aes-cbc-macs.h): prepares
++ * the 128-bit key, MACs @data and writes the 16-byte tag to @out. A helper
++ * because both aes_cmac_preparekey()'s struct and the aes_cmac() one-shot are
++ * not expressible from Rust directly. The key length is fixed at 128 bits, so
++ * aes_cmac_preparekey() cannot fail; the prepared key is wiped before return.
++ */
++__rust_helper void
++rust_helper_aes_cmac(const u8 *key, const u8 *data, size_t data_len, u8 *out)
++{
++	struct aes_cmac_key cmac_key;
+ 
+-	ret = aes_prepareenckey(&enckey, key, AES_KEYSIZE_128);
+-	if (ret)
+-		return ret;
+-	aes_encrypt(&enckey, out, in);
+-	memzero_explicit(&enckey, sizeof(enckey));
+-	return 0;
++	aes_cmac_preparekey(&cmac_key, key, AES_KEYSIZE_128);
++	aes_cmac(&cmac_key, data, data_len, out);
++	memzero_explicit(&cmac_key, sizeof(cmac_key));
+ }
+diff --git a/rust/kernel/crypto.rs b/rust/kernel/crypto.rs
+index c8f2cb994cfd..5f7c301b2bb8 100644
+--- a/rust/kernel/crypto.rs
++++ b/rust/kernel/crypto.rs
+@@ -2,11 +2,15 @@
+ 
+ //! Safe wrappers over the kernel's synchronous library crypto.
+ //!
+-//! Exposes the one-shot `lib/crypto` primitives — AES-128 single-block ECB,
+-//! SHA-256 and HMAC-SHA256 — for use from Rust. They run synchronously in the
+-//! calling context with no allocation; the hashes are infallible.
++//! Exposes the one-shot `lib/crypto` primitives — AES-128 (an [`Aes128`] key
++//! prepared once for single-block encryption, the building block for modes the
++//! library does not yet provide such as AES-CTR), the in-tree AES-CMAC
++//! ([`aes_cmac`]), SHA-256 and HMAC-SHA256 — for use from Rust. They run
++//! synchronously in the calling context with no allocation; the hashes and the
++//! MAC are infallible.
+ //!
+ //! C headers: [`include/crypto/aes.h`](srctree/include/crypto/aes.h),
++//! [`include/crypto/aes-cbc-macs.h`](srctree/include/crypto/aes-cbc-macs.h),
+ //! [`include/crypto/sha2.h`](srctree/include/crypto/sha2.h).
+ 
+ use crate::{bindings, error::to_result, prelude::*};
+@@ -42,36 +46,70 @@
+     out
+ }
+ 
+-/// An AES-128 key usable for single-block ECB encryption.
++/// Returns `AES-CMAC-128(key, data)` (RFC 4493), computed by the in-tree
++/// AES-CMAC library ([`include/crypto/aes-cbc-macs.h`]). The 128-bit key is
++/// prepared and wiped internally; the call is infallible.
++///
++/// [`include/crypto/aes-cbc-macs.h`]: srctree/include/crypto/aes-cbc-macs.h
++pub fn aes_cmac(key: &[u8; AES128_BLOCK_SIZE], data: &[u8]) -> [u8; AES128_BLOCK_SIZE] {
++    let mut out = [0u8; AES128_BLOCK_SIZE];
++    // SAFETY: `key` is a valid 16-byte key, `data` is valid for `data.len()`
++    // reads, and `out` is a valid `AES128_BLOCK_SIZE`-byte output buffer, as the
++    // helper requires.
++    unsafe { bindings::aes_cmac(key.as_ptr(), data.as_ptr(), data.len(), out.as_mut_ptr()) };
++    out
++}
++
++/// An AES-128 key, expanded once for single-block encryption.
++///
++/// The key schedule is computed in [`Aes128::new`] and reused across every
++/// [`encrypt_block`](Aes128::encrypt_block) call, so encrypting a stream of
++/// blocks (e.g. an AES-CTR keystream) does not re-expand the key per block. This
++/// is a low-level building block: prefer a full mode of operation where the
++/// library provides one (see [`aes_cmac`]); the bare block cipher is here only
++/// for modes `lib/crypto` does not yet expose, such as AES-CTR.
+ ///
+ /// # Examples
+ ///
+ /// ```
+ /// use kernel::crypto::Aes128;
+-/// let cipher = Aes128::new([0u8; 16]);
+-/// let _ct = cipher.encrypt_block(&[0u8; 16])?;
++/// let cipher = Aes128::new(&[0u8; 16])?;
++/// let _ct = cipher.encrypt_block(&[0u8; 16]);
+ /// # Ok::<(), Error>(())
+ /// ```
+-pub struct Aes128([u8; AES128_BLOCK_SIZE]);
++pub struct Aes128(bindings::aes_enckey);
+ 
+ impl Aes128 {
+-    /// Creates an AES-128 key from 16 raw key bytes.
+-    pub fn new(key: [u8; AES128_BLOCK_SIZE]) -> Self {
+-        Self(key)
++    /// Expands an AES-128 key from 16 raw key bytes.
++    pub fn new(key: &[u8; AES128_BLOCK_SIZE]) -> Result<Self> {
++        // SAFETY: `aes_enckey` is a plain-old-data key schedule (integer arrays
++        // in a union of integer arrays); an all-zero bit pattern is a valid,
++        // inert initial value, fully overwritten by `aes_prepareenckey()` below.
++        let mut enckey: bindings::aes_enckey = unsafe { core::mem::zeroed() };
++        // SAFETY: `enckey` is a valid, owned `aes_enckey`; `key` is a valid
++        // 16-byte buffer; `AES128_BLOCK_SIZE` (16) is a supported key length.
++        let ret =
++            unsafe { bindings::aes_prepareenckey(&mut enckey, key.as_ptr(), AES128_BLOCK_SIZE) };
++        to_result(ret)?;
++        Ok(Self(enckey))
+     }
+ 
+-    /// Encrypts one 16-byte block: returns `AES-128-ECB(key, block)`.
+-    pub fn encrypt_block(
+-        &self,
+-        block: &[u8; AES128_BLOCK_SIZE],
+-    ) -> Result<[u8; AES128_BLOCK_SIZE]> {
++    /// Encrypts one 16-byte block with the prepared key: returns
++    /// `AES-128-ECB(key, block)`.
++    pub fn encrypt_block(&self, block: &[u8; AES128_BLOCK_SIZE]) -> [u8; AES128_BLOCK_SIZE] {
+         let mut out = [0u8; AES128_BLOCK_SIZE];
+-        // SAFETY: `self.0`, `block` and `out` are all valid 16-byte buffers, as
+-        // the helper requires.
+-        let ret = unsafe {
+-            bindings::aes128_encrypt_block(self.0.as_ptr(), block.as_ptr(), out.as_mut_ptr())
+-        };
+-        to_result(ret)?;
+-        Ok(out)
++        // SAFETY: `self.0` is a prepared encryption key; `block` and `out` are
++        // valid 16-byte buffers, as the helper requires.
++        unsafe { bindings::aes_enckey_encrypt_block(&self.0, out.as_mut_ptr(), block.as_ptr()) };
++        out
++    }
++}
++
++impl Drop for Aes128 {
++    fn drop(&mut self) {
++        // SAFETY: `self.0` is a valid, owned `aes_enckey`; overwriting it with
++        // an all-zero `aes_enckey` clears the expanded key schedule.
++        // `write_volatile` keeps the store from being optimised away.
++        unsafe { core::ptr::write_volatile(&mut self.0, core::mem::zeroed()) };
+     }
+ }

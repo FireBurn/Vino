@@ -1,0 +1,25 @@
+# Kernel module build artifacts
+*.ko
+*.o
+*.mod
+*.mod.c
+*.mod.o
+*.cmd
+.*.cmd
+*.symvers
+Module.symvers
+modules.order
+.tmp_versions/
+*.order
+
+# Rust / library build artifacts
+target/
+*.so
+*.so.*
+*.rlib
+*.rmeta
+
+# Editor / OS noise
+*.swp
+*~
+.DS_Store

@@ -1,0 +1,148 @@
+From cf81efd8ed6bfc285726c37f96dd4fbedb783e8d Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Wed, 22 Jul 2026 21:52:22 +0100
+Subject: [PATCH 084/113] rust: add xxhash and random abstractions
+
+Two small bindings for kernel facilities that Rust drivers currently reach
+by declaring the C symbol themselves or calling into `bindings` directly.
+
+`xxhash::xxh64()` wraps `lib/xxhash.c`'s 64-bit hash. Chaining calls by
+passing the previous result as the next seed lets a caller fingerprint
+scattered regions -- the rows of an image tile -- without first copying
+them into one contiguous buffer.
+
+`random::fill_bytes()` wraps `get_random_bytes()`, the CSPRNG source for
+keys and nonces. There was no safe way to obtain random bytes at all, so
+callers used `bindings::get_random_bytes()` in an unsafe block.
+
+Both consumers are in the vino DisplayLink driver: xxhash fingerprints each
+64x16 strip to find frame damage, and random generates the HDCP session
+nonces and keys.
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/bindings/bindings_helper.h |  1 +
+ rust/kernel/lib.rs              |  2 ++
+ rust/kernel/random.rs           | 34 ++++++++++++++++++++++++++++++
+ rust/kernel/xxhash.rs           | 37 +++++++++++++++++++++++++++++++++
+ 4 files changed, 74 insertions(+)
+ create mode 100644 rust/kernel/random.rs
+ create mode 100644 rust/kernel/xxhash.rs
+
+diff --git a/rust/bindings/bindings_helper.h b/rust/bindings/bindings_helper.h
+index 79bef3b4f2db..eb53767c90a8 100644
+--- a/rust/bindings/bindings_helper.h
++++ b/rust/bindings/bindings_helper.h
+@@ -114,6 +114,7 @@
+ #include <linux/wait.h>
+ #include <linux/workqueue.h>
+ #include <linux/xarray.h>
++#include <linux/xxhash.h>
+ #include <trace/events/rust_sample.h>
+ 
+ /*
+diff --git a/rust/kernel/lib.rs b/rust/kernel/lib.rs
+index e249a8e7f23e..488e265788b0 100644
+--- a/rust/kernel/lib.rs
++++ b/rust/kernel/lib.rs
+@@ -117,6 +117,7 @@
+ pub mod ptr;
+ #[cfg(CONFIG_RUST_PWM_ABSTRACTIONS)]
+ pub mod pwm;
++pub mod random;
+ pub mod rbtree;
+ pub mod regulator;
+ pub mod revocable;
+@@ -142,6 +143,7 @@
+ pub mod usb;
+ pub mod workqueue;
+ pub mod xarray;
++pub mod xxhash;
+ 
+ #[doc(hidden)]
+ pub use bindings;
+diff --git a/rust/kernel/random.rs b/rust/kernel/random.rs
+new file mode 100644
+index 000000000000..5f2288969dbf
+--- /dev/null
++++ b/rust/kernel/random.rs
+@@ -0,0 +1,34 @@
++// SPDX-License-Identifier: GPL-2.0
++
++//! Random number generation.
++//!
++//! C header: [`include/linux/random.h`](srctree/include/linux/random.h)
++
++use crate::bindings;
++
++/// Fills `buf` with cryptographically secure random bytes from the kernel's CSPRNG.
++///
++/// This is the in-kernel equivalent of reading from `/dev/urandom`, and is suitable for generating
++/// keys, nonces and other secrets. It never blocks: once the CSPRNG has been seeded during boot it
++/// stays seeded, and callers running that early should use
++/// [`wait_for_random_bytes()`] instead of assuming otherwise.
++///
++/// [`wait_for_random_bytes()`]: srctree/include/linux/random.h
++///
++/// # Examples
++///
++/// ```
++/// use kernel::random;
++///
++/// let mut key = [0u8; 16];
++/// random::fill_bytes(&mut key);
++///
++/// // A zero-length request is valid and does nothing.
++/// random::fill_bytes(&mut []);
++/// ```
++#[inline]
++pub fn fill_bytes(buf: &mut [u8]) {
++    // SAFETY: `buf` is a valid slice, so its pointer is valid for writes of `buf.len()` bytes, and
++    // `get_random_bytes()` writes exactly that many.
++    unsafe { bindings::get_random_bytes(buf.as_mut_ptr().cast(), buf.len()) };
++}
+diff --git a/rust/kernel/xxhash.rs b/rust/kernel/xxhash.rs
+new file mode 100644
+index 000000000000..4da04a6520fd
+--- /dev/null
++++ b/rust/kernel/xxhash.rs
+@@ -0,0 +1,37 @@
++// SPDX-License-Identifier: GPL-2.0
++
++//! xxHash, a fast non-cryptographic hash function.
++//!
++//! C header: [`include/linux/xxhash.h`](srctree/include/linux/xxhash.h)
++
++use crate::bindings;
++
++/// Returns the 64-bit xxHash of `data`, starting from `seed`.
++///
++/// This is a non-cryptographic hash: use it for change detection, bucketing and similar, never for
++/// anything security-relevant.
++///
++/// Chaining calls by passing the previous result as the next `seed` hashes a sequence of buffers,
++/// which lets a caller fingerprint scattered regions -- the rows of an image tile, say -- without
++/// first copying them into one contiguous buffer.
++///
++/// # Examples
++///
++/// ```
++/// use kernel::xxhash::xxh64;
++///
++/// // The same input and seed always produce the same hash.
++/// assert_eq!(xxh64(b"hello", 0), xxh64(b"hello", 0));
++///
++/// // Different seeds produce different hashes.
++/// assert_ne!(xxh64(b"hello", 0), xxh64(b"hello", 1));
++///
++/// // Hashing the empty slice is well-defined.
++/// let _ = xxh64(&[], 0);
++/// ```
++#[inline]
++pub fn xxh64(data: &[u8], seed: u64) -> u64 {
++    // SAFETY: `data` is a valid slice, so its pointer is valid for reads of `data.len()` bytes,
++    // and `xxh64()` only reads from it for the duration of the call.
++    unsafe { bindings::xxh64(data.as_ptr().cast(), data.len(), seed) }
++}

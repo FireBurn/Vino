@@ -1,0 +1,32 @@
+From 1dde984a641c79c8db01328060f39da50d176ee6 Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Wed, 22 Jul 2026 19:40:54 +0100
+Subject: [PATCH 077/113] rust: drm: kms: mark the mode-object macro sketch as
+ non-test
+
+The impl_from_opaque_mode_obj! documentation is deliberately schematic: it contains an ellipsis placeholder and refers to the private macro without importing its surrounding types.
+
+The kernel KUnit doctest extractor cannot execute compile-fail tests. It treats the custom test builder succeeding as the snippet unexpectedly compiling, so CONFIG_RUST_KERNEL_DOCTESTS currently fails while processing this example.
+
+Mark the sketch ignored, matching its illustrative purpose and allowing the real kernel doctests to be generated.
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/kernel/drm/kms.rs | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/rust/kernel/drm/kms.rs b/rust/kernel/drm/kms.rs
+index c89e3cd5bda1..c10b2488af9b 100644
+--- a/rust/kernel/drm/kms.rs
++++ b/rust/kernel/drm/kms.rs
+@@ -77,7 +77,7 @@ unsafe fn setup_kms(_drm: &Device<Self::Driver>) -> Result<ModeConfigInfo> {
+ /// generate said functions for any kind of type which the original mode object driver trait can be
+ /// derived from. All conversions check the mode object's vtable. For example:
+ ///
+-/// ```compile_fail
++/// ```ignore
+ /// impl<'a, T: DriverConnectorState> ConnectorState<T> {
+ ///     impl_from_opaque_mode_obj! {
+ ///         // | An optional lifetime and param-variables to declare for each function

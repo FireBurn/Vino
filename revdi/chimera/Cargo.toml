@@ -1,0 +1,61 @@
+[package]
+name = "vino-chimera"
+version = "0.0.1"
+edition = "2021"
+license = "GPL-2.0-or-later"
+description = "Chimera rig: compiles the LITERAL in-kernel vino cp.rs/proto.rs/ake.rs/hdcp.rs in userspace to drive a DL3 dock from userspace -- proving the control-plane encryption + AKE + post-msg0 path offline against DLM captures, and cold-starting a real dock over libusb. The basis of revdi's DLM-replacement binary."
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# The ONLY crypto deps: AES block cipher, SHA-256, HMAC-SHA256, and raw RSA
+# modexp (for hdcp.rs's OAEP km-wrap). AES-CTR and AES-CMAC ("Dl3Cmac") are
+# built on the AES primitive inside the kernel-prelude shim, so the kernel
+# cp.rs AES-CTR/CMAC math runs verbatim with no extra third-party MAC crate.
+aes = "0.8"
+cipher = "0.4"
+sha2 = "0.10"
+hmac = "0.12"
+num-bigint = "0.4"
+getrandom = "0.2"
+# A crate literally named `kernel` so `ake.rs`'s nested `id` submodule's bare
+# `use kernel::bindings;` resolves via the extern prelude, exactly like the
+# real kernel crate does there (see `kernel-shim`'s own doc comment).
+kernel = { package = "kernel-shim", path = "../kernel-shim" }
+
+[features]
+# `live` pulls in the USB transport (rusb via vino-driver) for the hardware
+# coldstart binary. Off by default so the offline proof builds with zero USB deps.
+live = ["dep:vino-driver"]
+# `revdi` uses this project's owned Rust client API to open a virtual display, hand it the dock's
+# EDID, and grab compositor-rendered frames.
+revdi = ["dep:evdi"]
+
+[dependencies.vino-driver]
+path = "../vino-driver"
+optional = true
+
+[dependencies.evdi]
+package = "revdi"
+path = "../library"
+optional = true
+
+[[bin]]
+name = "chimera-prove"
+path = "src/bin/prove.rs"
+
+# The cold-boot path: does its own AKE from scratch over libusb, no DLM, no
+# handoff. This is what grows into the DLM-replacement binary. (The two
+# handoff-based binaries -- takeover and live-video, which both needed an
+# already-engaged DLM session -- were deliberately left out of this project;
+# they live on in the dl-scripts RE tree.)
+[[bin]]
+name = "chimera-coldstart"
+path = "src/bin/coldstart.rs"
+required-features = ["live"]
+
+[[bin]]
+name = "chimera"
+path = "src/bin/daemon.rs"
+required-features = ["live", "revdi"]

@@ -1,0 +1,1010 @@
+From df5257e2f78a25ac0eebc689df733199adef6d94 Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Mon, 27 Jul 2026 22:29:33 +0100
+Subject: [PATCH 04/13] revdi: expose an owned Rust client API
+
+Keep the C ABI for DisplayLinkManager compatibility while giving Rust clients a safe owner for device handles, event callbacks, registered scanout storage, damage, and teardown. Switch Chimera to that API, unregister buffers before replacing their storage, and honor immediately-ready update requests.
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ Cargo.lock           |   6 +-
+ Makefile             |   1 +
+ chimera/Cargo.toml   |  15 +-
+ chimera/build.rs     |  17 --
+ chimera/src/revdi.rs | 380 ++++----------------------------------
+ library/Cargo.toml   |   2 +-
+ library/src/ffi.rs   |   9 +
+ library/src/lib.rs   |   1 +
+ library/src/safe.rs  | 425 +++++++++++++++++++++++++++++++++++++++++++
+ 9 files changed, 485 insertions(+), 371 deletions(-)
+ delete mode 100644 chimera/build.rs
+ create mode 100644 library/src/safe.rs
+
+diff --git a/Cargo.lock b/Cargo.lock
+index cb216bd..63639bd 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -356,6 +356,10 @@ dependencies = [
+  "getrandom",
+ ]
+ 
++[[package]]
++name = "revdi"
++version = "1.15.0"
++
+ [[package]]
+ name = "rsa"
+ version = "0.9.10"
+@@ -517,8 +521,8 @@ dependencies = [
+  "getrandom",
+  "hmac",
+  "kernel-shim",
+- "libc",
+  "num-bigint",
++ "revdi",
+  "sha2",
+  "vino-driver",
+ ]
+diff --git a/Makefile b/Makefile
+index b93d32d..95fcb18 100644
+--- a/Makefile
++++ b/Makefile
+@@ -34,6 +34,7 @@ chimera:
+ # kernel control-plane code and asserts byte-exact equivalence. No hardware.
+ test:
+ 	$(CARGO) test --workspace
++	$(CARGO) test --manifest-path library/Cargo.toml
+ 
+ # Refresh the vendored kernel sources (module/*.rs, chimera/vino/*.rs) from a
+ # kernel tree. `check-sync` reports drift without writing anything.
+diff --git a/chimera/Cargo.toml b/chimera/Cargo.toml
+index 505fece..c9a0f9f 100644
+--- a/chimera/Cargo.toml
++++ b/chimera/Cargo.toml
+@@ -28,19 +28,17 @@ kernel = { package = "kernel-shim", path = "../kernel-shim" }
+ # `live` pulls in the USB transport (rusb via vino-driver) for the hardware
+ # coldstart binary. Off by default so the offline proof builds with zero USB deps.
+ live = ["dep:vino-driver"]
+-# `revdi` links `libevdi` (this project's own evdi_lib.h C ABI, see build.rs) so a live binary can
+-# open a revdi virtual display, hand it the dock's real fetched EDID, and grab real
+-# compositor-rendered frames -- the pixel source the DLM-replacement binary will paint from.
+-# Needs the library built first (`make -C ../library`); off by default so the rest of chimera
+-# builds without it.
+-revdi = ["dep:libc"]
++# `revdi` uses this project's owned Rust client API to open a virtual display, hand it the dock's
++# EDID, and grab compositor-rendered frames.
++revdi = ["dep:evdi"]
+ 
+ [dependencies.vino-driver]
+ path = "../vino-driver"
+ optional = true
+ 
+-[dependencies.libc]
+-version = "0.2"
++[dependencies.evdi]
++package = "revdi"
++path = "../library"
+ optional = true
+ 
+ [[bin]]
+@@ -56,4 +54,3 @@ path = "src/bin/prove.rs"
+ name = "chimera-coldstart"
+ path = "src/bin/coldstart.rs"
+ required-features = ["live"]
+-
+diff --git a/chimera/build.rs b/chimera/build.rs
+deleted file mode 100644
+index 88017ae..0000000
+--- a/chimera/build.rs
++++ /dev/null
+@@ -1,17 +0,0 @@
+-//! Only does anything for the `revdi` feature: points the linker at `library/target/{release,debug}`
+-//! so `#[link(name = "evdi")]` in `src/revdi.rs` resolves without a system-wide `libevdi` install.
+-fn main() {
+-    if std::env::var("CARGO_FEATURE_REVDI").is_err() {
+-        return;
+-    }
+-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR unset");
+-    let base = std::path::Path::new(&manifest_dir).join("../library/target");
+-    for profile in ["release", "debug"] {
+-        let dir = base.join(profile);
+-        if dir.join("libevdi.so").exists() {
+-            println!("cargo:rustc-link-search=native={}", dir.display());
+-        }
+-    }
+-    println!("cargo:rustc-link-lib=dylib=evdi");
+-    println!("cargo:rerun-if-changed=build.rs");
+-}
+diff --git a/chimera/src/revdi.rs b/chimera/src/revdi.rs
+index 2a1932c..856efa8 100644
+--- a/chimera/src/revdi.rs
++++ b/chimera/src/revdi.rs
+@@ -1,359 +1,53 @@
+-//! Minimal FFI bindings to `libevdi` (revdi's `evdi_lib.h` C ABI, feature-gated as `revdi` so the
+-//! rest of chimera builds without it).
+-//!
+-//! Why this exists: the `/goal` for this session is to prove EDID-fetch + real video content end
+-//! to end WITHOUT touching `vino.ko` — a live-kernel driver that has already crashed a desktop
+-//! session once (`project_ep08_scanout_crash_incident_20260716`). `revdi` is a separate, already-
+-//! stable kernel module (a from-scratch evdi replacement) that gives a compositor a real virtual
+-//! display to render into. The idea: fetch the dock's REAL EDID over the taken-over live CP
+-//! session (`crate::edid_fetch`), hand it to a `revdi` virtual card so a real compositor picks a
+-//! real mode and renders real content into it, grab that content back out via `evdi_grab_pixels`,
+-//! encode it with the literal kernel colour codec (`kvino::colour_frame_ep08`, already proven byte
+-//! -exact against DLM), and send it to the SAME real dock. Every piece except `vino.ko` itself is
+-//! exercised this way.
+-//!
+-//! Written directly from `revdi/library/evdi_lib.h` + `revdi/library/src/lib.rs`'s ioctl
+-//! semantics. **NOT YET RUN** against a live revdi module / real compositor — this crate has no
+-//! way to load kernel modules itself (that stays the user's call, same as `vino.ko`), so the
+-//! runtime path here is unverified until exercised on real hardware.
+-
+-#![allow(non_camel_case_types)]
+-
+-use std::ffi::{c_int, c_uint, c_void};
+-use std::time::{Duration, Instant};
+-
+-#[repr(C)]
+-struct EvdiDeviceContext {
+-    _opaque: [u8; 0],
+-}
+-type EvdiHandle = *mut EvdiDeviceContext;
+-
+-/// `enum evdi_device_status`: AVAILABLE=0, UNRECOGNIZED=1, NOT_PRESENT=2.
+-const EVDI_STATUS_AVAILABLE: c_int = 0;
+-
+-#[repr(C)]
+-#[derive(Clone, Copy, Debug, Default)]
+-struct EvdiRect {
+-    x1: c_int,
+-    y1: c_int,
+-    x2: c_int,
+-    y2: c_int,
+-}
+-
+-/// `struct evdi_mode` (evdi_lib.h): the mode a compositor negotiated for this virtual output.
+-#[repr(C)]
+-#[derive(Clone, Copy, Debug, Default)]
+-pub struct EvdiMode {
+-    pub width: c_int,
+-    pub height: c_int,
+-    pub refresh_rate: c_int,
+-    pub bits_per_pixel: c_int,
+-    pub pixel_format: c_uint,
+-}
+-
+-#[repr(C)]
+-struct EvdiBuffer {
+-    id: c_int,
+-    buffer: *mut c_void,
+-    width: c_int,
+-    height: c_int,
+-    stride: c_int,
+-    rects: *mut EvdiRect,
+-    rect_count: c_int,
+-}
+-
+-/// Matches `struct evdi_event_context`'s layout: every handler slot is exactly one function-
+-/// pointer wide regardless of its (correct or placeholder) parameter list, so only
+-/// `mode_changed_handler`/`update_ready_handler` — the two this module actually populates and
+-/// the C side actually calls — need their real C signature; the rest stay `None` (null) and are
+-/// never invoked, so their placeholder parameter types cannot cause a real ABI mismatch.
+-#[repr(C)]
+-struct EvdiEventContext {
+-    dpms_handler: Option<extern "C" fn(c_int, *mut c_void)>,
+-    mode_changed_handler: Option<extern "C" fn(EvdiMode, *mut c_void)>,
+-    update_ready_handler: Option<extern "C" fn(c_int, *mut c_void)>,
+-    crtc_state_handler: Option<extern "C" fn(c_int, *mut c_void)>,
+-    cursor_set_handler: Option<extern "C" fn(*const c_void, *mut c_void)>,
+-    cursor_move_handler: Option<extern "C" fn(*const c_void, *mut c_void)>,
+-    ddcci_data_handler: Option<extern "C" fn(*const c_void, *mut c_void)>,
+-    user_data: *mut c_void,
+-}
++// SPDX-License-Identifier: GPL-2.0-or-later
+ 
+-#[link(name = "evdi")]
+-extern "C" {
+-    fn evdi_check_device(device: c_int) -> c_int;
+-    fn evdi_open(device: c_int) -> EvdiHandle;
+-    fn evdi_add_device() -> c_int;
+-    fn evdi_close(handle: EvdiHandle);
+-    fn evdi_connect2(
+-        handle: EvdiHandle,
+-        edid: *const u8,
+-        edid_length: c_uint,
+-        pixel_area_limit: u32,
+-        pixel_per_second_limit: u32,
+-    );
+-    fn evdi_disconnect(handle: EvdiHandle);
+-    fn evdi_register_buffer(handle: EvdiHandle, buffer: EvdiBuffer);
+-    fn evdi_request_update(handle: EvdiHandle, buffer_id: c_int) -> bool;
+-    fn evdi_grab_pixels(handle: EvdiHandle, rects: *mut EvdiRect, num_rects: *mut c_int);
+-    fn evdi_handle_events(handle: EvdiHandle, evtctx: *mut EvdiEventContext);
+-    fn evdi_get_event_ready(handle: EvdiHandle) -> c_int;
+-}
+-
+-fn wait_readable(fd: c_int, timeout: Duration) -> bool {
+-    if fd < 0 {
+-        return false;
+-    }
+-    let mut pfd = libc::pollfd {
+-        fd,
+-        events: libc::POLLIN,
+-        revents: 0,
+-    };
+-    let ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+-    // SAFETY: `pfd` is a single, valid, stack-local pollfd; `poll` writes only `revents`.
+-    let r = unsafe { libc::poll(&mut pfd, 1, ms) };
+-    r > 0 && (pfd.revents & libc::POLLIN) != 0
+-}
+-
+-#[derive(Default)]
+-struct EventState {
+-    mode: std::sync::Mutex<Option<EvdiMode>>,
+-    ready_buffer: std::sync::Mutex<Option<c_int>>,
+-}
+-
+-extern "C" fn on_mode_changed(mode: EvdiMode, user_data: *mut c_void) {
+-    // SAFETY: `user_data` is always `&EventState` owned by the live `RevdiCard`, set right
+-    // before every `evdi_handle_events` call that can reach this callback.
+-    let state = unsafe { &*(user_data as *const EventState) };
+-    *state.mode.lock().unwrap() = Some(mode);
+-}
+-extern "C" fn on_update_ready(buffer_id: c_int, user_data: *mut c_void) {
+-    // SAFETY: see `on_mode_changed`.
+-    let state = unsafe { &*(user_data as *const EventState) };
+-    *state.ready_buffer.lock().unwrap() = Some(buffer_id);
+-}
+-
+-const BUF_ID: c_int = 1;
+-
+-/// A virtual display created via `revdi`'s `libevdi`. Open, [`connect`](Self::connect) it with a
+-/// real fetched EDID, [`wait_for_mode`](Self::wait_for_mode) for a compositor to attach, then
+-/// [`grab_frame`](Self::grab_frame) in a loop.
+-pub struct RevdiCard {
+-    handle: EvdiHandle,
+-    state: Box<EventState>,
+-    buf: Vec<u8>,
+-    width: usize,
+-    height: usize,
+-    stride: usize,
+-}
+-
+-impl RevdiCard {
+-    /// Find an `AVAILABLE` `/dev/dri/cardN` evdi device (adding one via `evdi_add_device` if none
+-    /// is free) and open it.
+-    pub fn open() -> Result<Self, String> {
+-        const MAX_INDEX: c_int = 64;
+-        let find_available = || {
+-            (0..MAX_INDEX).find(|&i| {
+-                // SAFETY: FFI call with a plain integer argument, no pointers involved.
+-                (unsafe { evdi_check_device(i) }) == EVDI_STATUS_AVAILABLE
+-            })
+-        };
+-        let mut idx = find_available();
+-        if idx.is_none() {
+-            // `evdi_add_device()`'s return value is a byte count from the underlying sysfs
+-            // write (always 1 on success), NOT the new card's device index — rescan instead of
+-            // trusting it. See memory `project_chimera_revdi_live_video_20260717` for how this
+-            // was found (a real `RevdiCard::open` bug, not a `revdi` bug).
+-            // SAFETY: no arguments.
+-            if unsafe { evdi_add_device() } < 0 {
+-                return Err("evdi_add_device: sysfs add failed".into());
+-            }
+-            idx = find_available();
+-        }
+-        let idx = idx.ok_or("no AVAILABLE evdi device even after evdi_add_device")?;
+-        // SAFETY: `idx` is a device index just proven AVAILABLE (or freshly added).
+-        let handle = unsafe { evdi_open(idx) };
+-        if handle.is_null() {
+-            return Err(format!("evdi_open({idx}) returned a null handle"));
+-        }
+-        Ok(Self {
+-            handle,
+-            state: Box::default(),
+-            buf: Vec::new(),
+-            width: 0,
+-            height: 0,
+-            stride: 0,
+-        })
+-    }
+-
+-    /// Connect the virtual display with the dock's real EDID, so a compositor sees the actual
+-    /// monitor and picks a real mode instead of a generic fallback.
+-    pub fn connect(&self, edid: &[u8]) {
+-        // A generous limit (4K@60): this only bounds what modes the kernel side advertises, not
+-        // what we'll actually encode (the WHT codec's own 64x16 alignment requirement gates that
+-        // downstream in `colour_frame_ep08`).
+-        const LIMIT_PX: u32 = 3840 * 2160;
+-        // SAFETY: `edid` is a valid slice for `edid.len()` bytes; `handle` is open.
+-        unsafe {
+-            evdi_connect2(
+-                self.handle,
+-                edid.as_ptr(),
+-                edid.len() as c_uint,
+-                LIMIT_PX,
+-                LIMIT_PX * 60,
+-            );
+-        }
+-    }
+-
+-    /// Pump one round of `revdi` events. Re-registers the pixel buffer whenever the negotiated
+-    /// mode changes (i.e. the first time a compositor attaches, and on any later mode switch).
+-    /// Returns whether a (new) mode is now known.
+-    fn poll_events(&mut self, timeout: Duration) -> bool {
+-        // SAFETY: `handle` is open.
+-        let fd = unsafe { evdi_get_event_ready(self.handle) };
+-        if !wait_readable(fd, timeout) {
+-            return self.width > 0;
+-        }
+-        let mut ctx = EvdiEventContext {
+-            dpms_handler: None,
+-            mode_changed_handler: Some(on_mode_changed),
+-            update_ready_handler: Some(on_update_ready),
+-            crtc_state_handler: None,
+-            cursor_set_handler: None,
+-            cursor_move_handler: None,
+-            ddcci_data_handler: None,
+-            user_data: (&*self.state as *const EventState) as *mut c_void,
+-        };
+-        // SAFETY: `ctx` is a valid, fully-initialised `EvdiEventContext` on the stack for the
+-        // duration of this call; the handlers it points at are the module-level `extern "C" fn`s
+-        // above, valid for the program's lifetime.
+-        unsafe { evdi_handle_events(self.handle, &mut ctx) };
+-        let mode = *self.state.mode.lock().unwrap();
+-        if let Some(m) = mode {
+-            let (w, h) = (m.width.max(0) as usize, m.height.max(0) as usize);
+-            if w > 0 && h > 0 && (w != self.width || h != self.height) {
+-                self.register_buffer(w, h);
+-            }
+-        }
+-        self.width > 0
+-    }
++//! Revdi framebuffer source for the Chimera daemon.
++//!
++//! Handle ownership and the C ABI boundary live in `librevdi`'s safe Rust client. Chimera only
++//! deals in borrowed coherent frames.
+ 
+-    fn register_buffer(&mut self, w: usize, h: usize) {
+-        self.width = w;
+-        self.height = h;
+-        self.stride = w * 4; // XRGB8888, unpadded — matches evdi's own default expectation.
+-        self.buf = vec![0u8; self.stride * h];
+-        let buffer = EvdiBuffer {
+-            id: BUF_ID,
+-            buffer: self.buf.as_mut_ptr() as *mut c_void,
+-            width: w as c_int,
+-            height: h as c_int,
+-            stride: self.stride as c_int,
+-            rects: std::ptr::null_mut(),
+-            rect_count: 0,
+-        };
+-        // SAFETY: `buffer.buffer` points into `self.buf`, which outlives every `evdi_grab_pixels`
+-        // call made against this registration (it is replaced, not freed, by a later
+-        // `register_buffer` call, and `evdi_unregister_buffer` is not needed for a single-buffer
+-        // card whose lifetime matches `self`).
+-        unsafe { evdi_register_buffer(self.handle, buffer) };
+-    }
++pub use evdi::safe::{DamageRect, Device as RevdiCard, Error, Frame, Mode};
+ 
+-    /// Block (up to `timeout`) for a compositor to attach and negotiate a mode.
+-    pub fn wait_for_mode(&mut self, timeout: Duration) -> bool {
+-        let deadline = Instant::now() + timeout;
+-        while Instant::now() < deadline {
+-            if self.poll_events(Duration::from_millis(200)) {
+-                return true;
+-            }
+-        }
+-        false
+-    }
+-
+-    /// Request an update, wait (up to `timeout`) for the compositor to render one, grab it, and
+-    /// return `(xrgb8888 bytes, width, height, stride)`. `None` on timeout or before a mode is
+-    /// known.
+-    pub fn grab_frame(&mut self, timeout: Duration) -> Option<(&[u8], usize, usize, usize)> {
+-        if self.width == 0 {
+-            return None;
+-        }
+-        // SAFETY: `handle` is open and a buffer with id `BUF_ID` is registered.
+-        unsafe {
+-            evdi_request_update(self.handle, BUF_ID);
+-        }
+-        let deadline = Instant::now() + timeout;
+-        while Instant::now() < deadline {
+-            self.poll_events(deadline.saturating_duration_since(Instant::now()));
+-            let ready = self.state.ready_buffer.lock().unwrap().take();
+-            if ready == Some(BUF_ID) {
+-                let mut rects = [EvdiRect::default(); 16];
+-                let mut n: c_int = rects.len() as c_int;
+-                // SAFETY: `rects` has `n` valid slots; `handle` has buffer `BUF_ID` registered.
+-                unsafe { evdi_grab_pixels(self.handle, rects.as_mut_ptr(), &mut n) };
+-                return Some((&self.buf, self.width, self.height, self.stride));
+-            }
+-        }
+-        None
+-    }
++/// Connect a Revdi output using the dock sink's EDID.
++pub fn connect_monitor(card: &mut RevdiCard, edid: &[u8]) -> Result<(), Error> {
++    const MAX_PIXEL_AREA: u32 = 3840 * 2160;
++    card.connect(edid, MAX_PIXEL_AREA, MAX_PIXEL_AREA * 60)
+ }
+ 
+-impl Drop for RevdiCard {
+-    fn drop(&mut self) {
+-        // SAFETY: `handle` is a live handle owned solely by this `RevdiCard`.
+-        unsafe {
+-            evdi_disconnect(self.handle);
+-            evdi_close(self.handle);
++/// Convert a coherent XRGB8888 framebuffer to the packed RGB raster used by Vino's codec.
++pub fn to_rgb888(frame: &Frame<'_>) -> Vec<u8> {
++    let mut out = vec![0u8; frame.width * frame.height * 3];
++    for y in 0..frame.height {
++        for x in 0..frame.width {
++            let source = y * frame.stride + x * 4;
++            let target = (y * frame.width + x) * 3;
++            let Some(pixel) = frame.pixels.get(source..source + 4) else {
++                continue;
++            };
++            let pixel = u32::from_le_bytes(pixel.try_into().unwrap());
++            out[target] = ((pixel >> 16) & 0xff) as u8;
++            out[target + 1] = ((pixel >> 8) & 0xff) as u8;
++            out[target + 2] = (pixel & 0xff) as u8;
+         }
+     }
++    out
+ }
+ 
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+ 
+-    /// Real hardware smoke test: open a fresh revdi card, connect it with a REAL captured EDID
+-    /// (this exact dock's downstream MSI monitor, `captures/archive-pre-3426/
+-    /// vino-matched-session-20260604-083018/edid-card2-DVI-I-1.bin`), and wait a short while for
+-    /// a compositor to hotplug + negotiate a mode. Needs `revdi.ko` loaded
+-    /// (`sudo modprobe evdi`) — `#[ignore]`d so the offline test suite stays hardware-free; run
+-    /// explicitly with `cargo test -p vino-chimera --features revdi -- --ignored revdi_smoke`.
+     #[test]
+-    #[ignore = "needs revdi.ko loaded on real hardware"]
+-    fn revdi_smoke_open_connect_wait_mode() {
+-        let edid = std::fs::read(concat!(
+-            env!("CARGO_MANIFEST_DIR"),
+-            "/../../captures/archive-pre-3426/vino-matched-session-20260604-083018/edid-card2-DVI-I-1.bin",
+-        ))
+-        .expect("real EDID fixture");
+-        let mut card = RevdiCard::open().expect("evdi_open (is revdi.ko loaded?)");
+-        card.connect(&edid);
+-        let got_mode = card.wait_for_mode(Duration::from_secs(15));
+-        println!(
+-            "mode negotiated: {got_mode} (width={} height={})",
+-            card.width, card.height
+-        );
+-    }
+-}
+-
+-/// Convert a raw `XRGB8888` framebuffer (as delivered by [`RevdiCard::grab_frame`]) into the
+-/// packed 8-bit `R,G,B` raster [`crate::kvino::colour_frame_ep08`] expects. Byte extraction
+-/// mirrors the in-kernel scanout path's own XRGB8888 read
+-/// (`drm/drivers/gpu/drm/vino/drm_sink.rs::encode_and_send_wht`) so both consumers of the same
+-/// pixel format agree on channel order.
+-pub fn to_rgb888(buf: &[u8], width: usize, height: usize, stride: usize) -> Vec<u8> {
+-    let mut out = vec![0u8; width * height * 3];
+-    for y in 0..height {
+-        for x in 0..width {
+-            let o = y * stride + x * 4;
+-            if o + 4 > buf.len() {
+-                continue;
+-            }
+-            let px = u32::from_le_bytes([buf[o], buf[o + 1], buf[o + 2], buf[o + 3]]);
+-            let i = (y * width + x) * 3;
+-            out[i] = ((px >> 16) & 0xff) as u8;
+-            out[i + 1] = ((px >> 8) & 0xff) as u8;
+-            out[i + 2] = (px & 0xff) as u8;
+-        }
++    fn converts_xrgb8888_with_stride() {
++        let pixels = [
++            0x33, 0x22, 0x11, 0xff, 0x66, 0x55, 0x44, 0xff, 0xaa, 0xaa, 0xaa, 0xaa,
++        ];
++        let frame = Frame {
++            pixels: &pixels,
++            width: 2,
++            height: 1,
++            stride: 12,
++            damage: Vec::new(),
++        };
++        assert_eq!(to_rgb888(&frame), [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+     }
+-    out
+ }
+diff --git a/library/Cargo.toml b/library/Cargo.toml
+index 2251f4e..dcb823e 100644
+--- a/library/Cargo.toml
++++ b/library/Cargo.toml
+@@ -13,7 +13,7 @@ publish = false
+ # loads it unchanged.
+ [lib]
+ name = "evdi"
+-crate-type = ["cdylib"]
++crate-type = ["cdylib", "rlib"]
+ 
+ # The bulk of the .so is statically-linked Rust `std` (fmt/panic/fs), not our
+ # code — inherent to a std cdylib. `strip` drops the symbol table for free;
+diff --git a/library/src/ffi.rs b/library/src/ffi.rs
+index 882147b..6129b84 100644
+--- a/library/src/ffi.rs
++++ b/library/src/ffi.rs
+@@ -15,6 +15,7 @@ extern "C" {
+     pub fn open(path: *const c_char, flags: c_int) -> c_int;
+     pub fn close(fd: c_int) -> c_int;
+     pub fn read(fd: c_int, buf: *mut c_void, count: usize) -> isize;
++    pub fn poll(fds: *mut PollFd, nfds: usize, timeout: c_int) -> c_int;
+     /// `ioctl(2)` — the request carries a single pointer argument for every
+     /// call site here, so the fixed 3-argument form matches the C ABI.
+     pub fn ioctl(fd: c_int, request: c_ulong, arg: *mut c_void) -> c_int;
+@@ -31,6 +32,7 @@ extern "C" {
+ }
+ 
+ pub const O_RDWR: c_int = 0o2;
++pub const POLLIN: i16 = 0x0001;
+ pub const PROT_READ: c_int = 0x1;
+ pub const MAP_SHARED: c_int = 0x1;
+ pub const MAP_FAILED: *mut c_void = usize::MAX as *mut c_void;
+@@ -39,6 +41,13 @@ pub const EINTR: c_int = 4;
+ pub const EAGAIN: c_int = 11;
+ pub const EACCES: c_int = 13;
+ 
++#[repr(C)]
++pub struct PollFd {
++    pub fd: c_int,
++    pub events: i16,
++    pub revents: i16,
++}
++
+ /// Current thread's `errno`.
+ pub fn errno() -> c_int {
+     // SAFETY: `__errno_location` always returns a valid pointer to this
+diff --git a/library/src/lib.rs b/library/src/lib.rs
+index be70aee..d9a0518 100644
+--- a/library/src/lib.rs
++++ b/library/src/lib.rs
+@@ -15,6 +15,7 @@
+ #![allow(non_camel_case_types)]
+ 
+ mod ffi;
++pub mod safe;
+ mod uapi;
+ 
+ use core::ffi::{c_char, c_int, c_uint, c_void};
+diff --git a/library/src/safe.rs b/library/src/safe.rs
+new file mode 100644
+index 0000000..ba9ac97
+--- /dev/null
++++ b/library/src/safe.rs
+@@ -0,0 +1,425 @@
++// SPDX-License-Identifier: LGPL-2.1-or-later
++// Copyright (c) 2026 revdi contributors
++
++//! Owned Rust interface to Revdi.
++//!
++//! The C ABI remains available for DisplayLinkManager compatibility. Rust clients should use this
++//! module so device handles, callback storage, registered framebuffer memory, and teardown stay
++//! tied to one lifetime.
++
++use super::{
++    evdi_add_device, evdi_buffer, evdi_check_device, evdi_close, evdi_connect2,
++    evdi_device_context, evdi_device_status, evdi_disconnect, evdi_event_context,
++    evdi_get_event_ready, evdi_grab_pixels, evdi_handle_events, evdi_mode, evdi_open, evdi_rect,
++    evdi_register_buffer, evdi_request_update, evdi_unregister_buffer,
++};
++use crate::ffi;
++use core::ffi::{c_int, c_void};
++use core::ptr::NonNull;
++use std::sync::Mutex;
++use std::time::{Duration, Instant};
++
++const BUFFER_ID: c_int = 1;
++const MAX_DEVICE_INDEX: c_int = 64;
++const MAX_DAMAGE_RECTS: usize = 16;
++
++/// Errors produced before a Revdi device can be used.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum Error {
++    AddDevice,
++    NoAvailableDevice,
++    OpenDevice(c_int),
++    InvalidEdidLength,
++}
++
++impl core::fmt::Display for Error {
++    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
++        match self {
++            Self::AddDevice => write!(f, "failed to add a Revdi device"),
++            Self::NoAvailableDevice => write!(f, "no available Revdi device"),
++            Self::OpenDevice(index) => write!(f, "failed to open Revdi device {index}"),
++            Self::InvalidEdidLength => write!(f, "EDID is too large for the Revdi ABI"),
++        }
++    }
++}
++
++impl std::error::Error for Error {}
++
++/// A compositor-selected scanout mode.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub struct Mode {
++    pub width: usize,
++    pub height: usize,
++    pub refresh_hz: u32,
++    pub bits_per_pixel: u32,
++    pub pixel_format: u32,
++}
++
++impl Mode {
++    fn from_abi(mode: evdi_mode) -> Option<Self> {
++        Some(Self {
++            width: usize::try_from(mode.width).ok().filter(|&v| v != 0)?,
++            height: usize::try_from(mode.height).ok().filter(|&v| v != 0)?,
++            refresh_hz: u32::try_from(mode.refresh_rate).ok()?,
++            bits_per_pixel: u32::try_from(mode.bits_per_pixel).ok()?,
++            pixel_format: mode.pixel_format,
++        })
++    }
++}
++
++/// One damaged rectangle, using exclusive right and bottom coordinates.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub struct DamageRect {
++    pub x1: i32,
++    pub y1: i32,
++    pub x2: i32,
++    pub y2: i32,
++}
++
++/// A coherent XRGB8888 framebuffer snapshot borrowed from a [`Device`].
++pub struct Frame<'a> {
++    pub pixels: &'a [u8],
++    pub width: usize,
++    pub height: usize,
++    pub stride: usize,
++    pub damage: Vec<DamageRect>,
++}
++
++#[derive(Default)]
++struct EventState {
++    mode: Mutex<Option<evdi_mode>>,
++    ready_buffer: Mutex<Option<c_int>>,
++}
++
++extern "C" fn mode_changed(mode: evdi_mode, user_data: *mut c_void) {
++    // SAFETY: `Device::event_context` supplies its boxed `EventState`, and
++    // `evdi_handle_events` invokes callbacks synchronously before that borrow ends.
++    let state = unsafe { &*(user_data.cast::<EventState>()) };
++    *state.mode.lock().unwrap_or_else(|e| e.into_inner()) = Some(mode);
++}
++
++extern "C" fn update_ready(buffer_id: c_int, user_data: *mut c_void) {
++    // SAFETY: see `mode_changed`.
++    let state = unsafe { &*(user_data.cast::<EventState>()) };
++    *state.ready_buffer.lock().unwrap_or_else(|e| e.into_inner()) = Some(buffer_id);
++}
++
++struct RegisteredBuffer {
++    pixels: Vec<u8>,
++    width: usize,
++    height: usize,
++    stride: usize,
++}
++
++/// An exclusively owned Revdi device and its registered scanout storage.
++pub struct Device {
++    handle: NonNull<evdi_device_context>,
++    state: Box<EventState>,
++    buffer: Option<RegisteredBuffer>,
++    mode: Option<Mode>,
++}
++
++impl Device {
++    /// Open an available Revdi card, creating one through sysfs if necessary.
++    pub fn open() -> Result<Self, Error> {
++        let find_available = || {
++            (0..MAX_DEVICE_INDEX)
++                .find(|&index| evdi_check_device(index) == evdi_device_status::AVAILABLE)
++        };
++        let mut index = find_available();
++        if index.is_none() {
++            if evdi_add_device() < 0 {
++                return Err(Error::AddDevice);
++            }
++            index = find_available();
++        }
++        let index = index.ok_or(Error::NoAvailableDevice)?;
++        let handle = NonNull::new(evdi_open(index)).ok_or(Error::OpenDevice(index))?;
++        Ok(Self {
++            handle,
++            state: Box::default(),
++            buffer: None,
++            mode: None,
++        })
++    }
++
++    /// Advertise a connected monitor using its EDID and explicit scanout limits.
++    pub fn connect(
++        &mut self,
++        edid: &[u8],
++        pixel_area_limit: u32,
++        pixel_per_second_limit: u32,
++    ) -> Result<(), Error> {
++        let edid_len = u32::try_from(edid.len()).map_err(|_| Error::InvalidEdidLength)?;
++        // SAFETY: the owned handle is live and `edid` remains valid for the synchronous ioctl.
++        unsafe {
++            evdi_connect2(
++                self.handle.as_ptr(),
++                edid.as_ptr(),
++                edid_len,
++                pixel_area_limit,
++                pixel_per_second_limit,
++            );
++        }
++        Ok(())
++    }
++
++    /// The last mode selected by the compositor.
++    pub fn mode(&self) -> Option<Mode> {
++        self.mode
++    }
++
++    /// Wait for a compositor to select a usable mode.
++    pub fn wait_for_mode(&mut self, timeout: Duration) -> Option<Mode> {
++        let deadline = Instant::now() + timeout;
++        loop {
++            if let Some(mode) = self.mode {
++                return Some(mode);
++            }
++            let remaining = deadline.saturating_duration_since(Instant::now());
++            if remaining.is_zero() {
++                return None;
++            }
++            self.poll_events(remaining.min(Duration::from_millis(200)));
++        }
++    }
++
++    /// Request and return the next compositor update.
++    ///
++    /// The returned frame borrows the registered framebuffer, preventing a mode change or
++    /// re-registration until the caller has finished reading it.
++    pub fn next_frame(&mut self, timeout: Duration) -> Option<Frame<'_>> {
++        self.poll_events(Duration::ZERO);
++        self.buffer.as_ref()?;
++        self.state
++            .ready_buffer
++            .lock()
++            .unwrap_or_else(|e| e.into_inner())
++            .take();
++        // SAFETY: `BUFFER_ID` names `buffer`, whose allocation remains stable until this method
++        // returns its borrow.
++        let immediately_ready = unsafe { evdi_request_update(self.handle.as_ptr(), BUFFER_ID) };
++        if !immediately_ready {
++            let deadline = Instant::now() + timeout;
++            loop {
++                let remaining = deadline.saturating_duration_since(Instant::now());
++                if remaining.is_zero() {
++                    return None;
++                }
++                self.poll_events(remaining);
++                if self
++                    .state
++                    .ready_buffer
++                    .lock()
++                    .unwrap_or_else(|e| e.into_inner())
++                    .take()
++                    == Some(BUFFER_ID)
++                {
++                    break;
++                }
++            }
++        }
++        self.grab_frame()
++    }
++
++    fn grab_frame(&mut self) -> Option<Frame<'_>> {
++        let mut rects = [evdi_rect {
++            x1: 0,
++            y1: 0,
++            x2: 0,
++            y2: 0,
++        }; MAX_DAMAGE_RECTS];
++        let mut count = rects.len() as c_int;
++        // SAFETY: `rects` has `count` slots, and `BUFFER_ID` is registered while `buffer` is Some.
++        unsafe {
++            evdi_grab_pixels(self.handle.as_ptr(), rects.as_mut_ptr(), &mut count);
++        }
++        let count = usize::try_from(count)
++            .ok()
++            .map(|count| count.min(rects.len()))
++            .unwrap_or(0);
++        let damage = rects[..count]
++            .iter()
++            .map(|r| DamageRect {
++                x1: r.x1,
++                y1: r.y1,
++                x2: r.x2,
++                y2: r.y2,
++            })
++            .collect();
++        let buffer = self.buffer.as_ref()?;
++        Some(Frame {
++            pixels: &buffer.pixels,
++            width: buffer.width,
++            height: buffer.height,
++            stride: buffer.stride,
++            damage,
++        })
++    }
++
++    fn poll_events(&mut self, timeout: Duration) {
++        // SAFETY: the owned handle remains live.
++        let fd = unsafe { evdi_get_event_ready(self.handle.as_ptr()) };
++        if !wait_readable(fd, timeout) {
++            return;
++        }
++        let mut context = self.event_context();
++        // SAFETY: `context` and its boxed callback state remain valid for this synchronous call.
++        unsafe {
++            evdi_handle_events(self.handle.as_ptr(), &mut context);
++        }
++        let selected = self
++            .state
++            .mode
++            .lock()
++            .unwrap_or_else(|e| e.into_inner())
++            .take()
++            .and_then(Mode::from_abi);
++        if let Some(mode) = selected {
++            if self.mode != Some(mode) {
++                self.register_mode(mode);
++            }
++        }
++    }
++
++    fn event_context(&self) -> evdi_event_context {
++        evdi_event_context {
++            dpms_handler: None,
++            mode_changed_handler: Some(mode_changed),
++            update_ready_handler: Some(update_ready),
++            crtc_state_handler: None,
++            cursor_set_handler: None,
++            cursor_move_handler: None,
++            ddcci_data_handler: None,
++            user_data: (&*self.state as *const EventState).cast_mut().cast(),
++        }
++    }
++
++    fn register_mode(&mut self, mode: Mode) {
++        self.unregister_buffer();
++        self.mode = None;
++        let Some(stride) = mode.width.checked_mul(4) else {
++            return;
++        };
++        let Some(length) = stride.checked_mul(mode.height) else {
++            return;
++        };
++        let buffer = RegisteredBuffer {
++            pixels: vec![0; length],
++            width: mode.width,
++            height: mode.height,
++            stride,
++        };
++        let Some(width) = c_int::try_from(mode.width).ok() else {
++            return;
++        };
++        let Some(height) = c_int::try_from(mode.height).ok() else {
++            return;
++        };
++        let Some(stride) = c_int::try_from(stride).ok() else {
++            return;
++        };
++        self.buffer = Some(buffer);
++        let buffer = self.buffer.as_mut().unwrap();
++        let abi_buffer = evdi_buffer {
++            id: BUFFER_ID,
++            buffer: buffer.pixels.as_mut_ptr().cast(),
++            width,
++            height,
++            stride,
++            rects: core::ptr::null_mut(),
++            rect_count: 0,
++        };
++        // SAFETY: the vector allocation is stored in `self.buffer` before it can be observed by
++        // event processing and is unregistered before it is ever replaced or dropped.
++        unsafe {
++            evdi_register_buffer(self.handle.as_ptr(), abi_buffer);
++        }
++        self.mode = Some(mode);
++    }
++
++    fn unregister_buffer(&mut self) {
++        if self.buffer.is_some() {
++            // SAFETY: `BUFFER_ID` is registered exactly while `self.buffer` is Some.
++            unsafe {
++                evdi_unregister_buffer(self.handle.as_ptr(), BUFFER_ID);
++            }
++            self.buffer = None;
++        }
++    }
++}
++
++impl Drop for Device {
++    fn drop(&mut self) {
++        self.unregister_buffer();
++        // SAFETY: this object owns the live handle and drops it exactly once.
++        unsafe {
++            evdi_disconnect(self.handle.as_ptr());
++            evdi_close(self.handle.as_ptr());
++        }
++    }
++}
++
++fn wait_readable(fd: c_int, timeout: Duration) -> bool {
++    if fd < 0 {
++        return false;
++    }
++    let mut poll_fd = ffi::PollFd {
++        fd,
++        events: ffi::POLLIN,
++        revents: 0,
++    };
++    let timeout_ms = timeout.as_millis().min(c_int::MAX as u128) as c_int;
++    // SAFETY: `poll_fd` is one initialized entry and remains live for the call.
++    let ready = unsafe { ffi::poll(&mut poll_fd, 1, timeout_ms) };
++    ready > 0 && poll_fd.revents & ffi::POLLIN != 0
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn rejects_invalid_modes() {
++        assert_eq!(
++            Mode::from_abi(evdi_mode {
++                width: 0,
++                height: 1080,
++                refresh_rate: 60,
++                bits_per_pixel: 32,
++                pixel_format: 0,
++            }),
++            None
++        );
++        assert_eq!(
++            Mode::from_abi(evdi_mode {
++                width: 1920,
++                height: -1,
++                refresh_rate: 60,
++                bits_per_pixel: 32,
++                pixel_format: 0,
++            }),
++            None
++        );
++    }
++
++    #[test]
++    fn converts_valid_mode() {
++        assert_eq!(
++            Mode::from_abi(evdi_mode {
++                width: 1920,
++                height: 1080,
++                refresh_rate: 60,
++                bits_per_pixel: 32,
++                pixel_format: 0x34325258,
++            }),
++            Some(Mode {
++                width: 1920,
++                height: 1080,
++                refresh_hz: 60,
++                bits_per_pixel: 32,
++                pixel_format: 0x34325258,
++            })
++        );
++    }
++}

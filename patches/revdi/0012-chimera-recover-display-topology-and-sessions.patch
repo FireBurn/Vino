@@ -1,0 +1,357 @@
+From ee9aece2e382c033aba00d5d8edbb0b763074ef5 Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Mon, 27 Jul 2026 23:29:46 +0100
+Subject: [PATCH 12/13] chimera: recover display topology and sessions
+
+Probe both downstream heads with the shared Vino decoder, debounce removal, recreate Revdi outputs after reattachment, and rebuild all owned state after a transport failure. Match the kernel control cadence, use the cursor-image wire identifier, and move disabled cursors off-screen.
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ chimera/src/daemon.rs  | 190 ++++++++++++++++++++++++++++++-----------
+ chimera/src/kvino.rs   |  27 ++++++
+ chimera/src/session.rs |  24 +++++-
+ 3 files changed, 187 insertions(+), 54 deletions(-)
+
+diff --git a/chimera/src/daemon.rs b/chimera/src/daemon.rs
+index c72172a..86ccc94 100644
+--- a/chimera/src/daemon.rs
++++ b/chimera/src/daemon.rs
+@@ -6,57 +6,51 @@ use crate::revdi::{self, Cursor, DeviceEvent, Mode, RevdiCard};
+ use crate::session::ControlSession;
+ use std::time::{Duration, Instant};
+ 
+-const MODE_WAIT: Duration = Duration::from_secs(30);
++const HEADS: usize = 2;
+ const FRAME_WAIT: Duration = Duration::from_millis(8);
+-const HEARTBEAT_PERIOD: Duration = Duration::from_millis(16);
++const KEEPALIVE_PERIOD: Duration = Duration::from_millis(13);
++const HEARTBEAT_PERIOD: Duration = Duration::from_secs(3);
++const PRESENCE_PERIOD: Duration = Duration::from_secs(1);
++const PRESENCE_GRACE: Duration = Duration::from_secs(10);
++const PRESENCE_SILENT_LIMIT: u8 = 3;
++const RESTART_DELAY: Duration = Duration::from_secs(1);
+ 
+ struct Output {
+     head: u8,
+     card: RevdiCard,
+-    mode: Mode,
++    mode: Option<Mode>,
+     active: bool,
+     cursor_hotspot: (i32, i32),
++    presence_debounce: u8,
++    silent_probes: u8,
++    presence_grace_until: Instant,
+ }
+ 
+-/// Engage the dock, expose every connected sink through Revdi, and forward compositor frames.
++/// Run the service, rebuilding the complete owned session after a transport failure.
+ pub fn run() -> Result<(), String> {
+-    let mut session = ControlSession::engage()?;
+-    let mut outputs = Vec::new();
+-    for head in 0..2u8 {
+-        let edid = match session.fetch_edid(head) {
+-            Ok(edid) => edid,
+-            Err(error) => {
+-                eprintln!("head {head}: {error}");
+-                continue;
+-            }
+-        };
+-        let mut card =
+-            RevdiCard::open().map_err(|e| format!("head {head}: open Revdi output: {e}"))?;
+-        revdi::connect_monitor(&mut card, &edid)
+-            .map_err(|e| format!("head {head}: connect Revdi output: {e}"))?;
+-        let mode = card
+-            .wait_for_mode(MODE_WAIT)
+-            .ok_or_else(|| format!("head {head}: compositor did not select a mode"))?;
+-        session.activate_mode(head, mode.width, mode.height, mode.refresh_hz)?;
+-        println!(
+-            "head {head}: active at {}x{}@{}",
+-            mode.width, mode.height, mode.refresh_hz
+-        );
+-        outputs.push(Output {
+-            head,
+-            card,
+-            mode,
+-            active: true,
+-            cursor_hotspot: (0, 0),
+-        });
++    loop {
++        if let Err(error) = run_session() {
++            eprintln!("chimera: session stopped: {error}; retrying");
++            std::thread::sleep(RESTART_DELAY);
++        }
+     }
+-    if outputs.is_empty() {
+-        return Err("no connected Vino display head produced a usable EDID".into());
++}
++
++/// Engage the dock, expose connected sinks through Revdi, and forward compositor frames.
++fn run_session() -> Result<(), String> {
++    let mut session = ControlSession::engage()?;
++    let mut outputs: [Option<Output>; HEADS] = core::array::from_fn(|_| None);
++    for head in 0..HEADS {
++        if session.probe_head_present(head as u8)? == Some(true) {
++            connect_output(&mut session, &mut outputs[head], head as u8);
++        }
+     }
+ 
+-    let mut last_heartbeat = Instant::now();
++    let mut next_keepalive = Instant::now() + KEEPALIVE_PERIOD;
++    let mut next_heartbeat = Instant::now() + HEARTBEAT_PERIOD;
++    let mut next_presence = Instant::now() + PRESENCE_PERIOD;
+     loop {
+-        for output in &mut outputs {
++        for output in outputs.iter_mut().flatten() {
+             for event in output.card.events(Duration::ZERO) {
+                 handle_event(&mut session, output, event)?;
+             }
+@@ -71,19 +65,105 @@ pub fn run() -> Result<(), String> {
+             let rgb = revdi::to_rgb888(&frame);
+             drop(frame);
+ 
+-            let mode = output.card.mode().unwrap_or(output.mode);
+-            if mode != output.mode {
++            let Some(mode) = output.card.mode() else {
++                continue;
++            };
++            if Some(mode) != output.mode {
+                 session.activate_mode(output.head, mode.width, mode.height, mode.refresh_hz)?;
+-                output.mode = mode;
++                output.mode = Some(mode);
+             }
+             let (padded, padded_width, padded_height) = pad_rgb(&rgb, width, height);
+             session.present_rgb(output.head, padded_width, padded_height, &padded)?;
+         }
+-        if last_heartbeat.elapsed() >= HEARTBEAT_PERIOD {
++        if Instant::now() >= next_presence {
++            refresh_topology(&mut session, &mut outputs)?;
++            next_presence = Instant::now() + PRESENCE_PERIOD;
++        }
++        if Instant::now() >= next_keepalive {
++            session.keepalive_poll()?;
++            next_keepalive = Instant::now() + KEEPALIVE_PERIOD;
++        }
++        if Instant::now() >= next_heartbeat {
+             session.heartbeat()?;
+-            last_heartbeat = Instant::now();
++            next_heartbeat = Instant::now() + HEARTBEAT_PERIOD;
++        }
++        if !outputs.iter().flatten().any(|output| output.active) {
++            std::thread::sleep(FRAME_WAIT);
++        }
++    }
++}
++
++fn connect_output(session: &mut ControlSession, slot: &mut Option<Output>, head: u8) {
++    let result = (|| -> Result<Output, String> {
++        let edid = session
++            .fetch_edid(head)
++            .map_err(|error| format!("fetch EDID: {error}"))?;
++        let mut card = RevdiCard::open().map_err(|error| format!("open Revdi output: {error}"))?;
++        revdi::connect_monitor(&mut card, &edid)
++            .map_err(|error| format!("connect Revdi output: {error}"))?;
++        Ok(Output {
++            head,
++            card,
++            mode: None,
++            active: false,
++            cursor_hotspot: (0, 0),
++            presence_debounce: 0,
++            silent_probes: 0,
++            presence_grace_until: Instant::now() + PRESENCE_GRACE,
++        })
++    })();
++    match result {
++        Ok(output) => {
++            println!("head {head}: monitor connected; waiting for a compositor mode");
++            *slot = Some(output);
++        }
++        Err(error) => eprintln!("head {head}: {error}"),
++    }
++}
++
++fn refresh_topology(
++    session: &mut ControlSession,
++    outputs: &mut [Option<Output>; HEADS],
++) -> Result<(), String> {
++    for (head, slot) in outputs.iter_mut().enumerate() {
++        // A deliberate DPMS-off closes the downstream stream and can look like removal.
++        if slot
++            .as_ref()
++            .is_some_and(|output| output.mode.is_some() && !output.active)
++        {
++            continue;
++        }
++        let present = session.probe_head_present(head as u8)?;
++        let Some(output) = slot.as_mut() else {
++            if present == Some(true) {
++                connect_output(session, slot, head as u8);
++            }
++            continue;
++        };
++        let present = match present {
++            Some(present) => {
++                output.silent_probes = 0;
++                present
++            }
++            None => {
++                output.silent_probes = output.silent_probes.saturating_add(1);
++                if output.silent_probes < PRESENCE_SILENT_LIMIT {
++                    continue;
++                }
++                false
++            }
++        };
++        if present || Instant::now() < output.presence_grace_until {
++            output.presence_debounce = 0;
++            continue;
++        }
++        output.presence_debounce = output.presence_debounce.saturating_add(1);
++        if output.presence_debounce >= 2 {
++            println!("head {head}: monitor disconnected");
++            *slot = None;
+         }
+     }
++    Ok(())
+ }
+ 
+ fn handle_event(
+@@ -92,24 +172,28 @@ fn handle_event(
+     event: DeviceEvent,
+ ) -> Result<(), String> {
+     match event {
+-        DeviceEvent::Mode(mode) if mode != output.mode => {
++        DeviceEvent::Mode(mode) if Some(mode) != output.mode => {
+             session.activate_mode(output.head, mode.width, mode.height, mode.refresh_hz)?;
+-            output.mode = mode;
++            println!(
++                "head {}: active at {}x{}@{}",
++                output.head, mode.width, mode.height, mode.refresh_hz
++            );
++            output.mode = Some(mode);
+             output.active = true;
+         }
+         DeviceEvent::Mode(_) | DeviceEvent::CrtcState(_) => {}
+         DeviceEvent::Dpms(0) if !output.active => {
+-            session.activate_mode(
+-                output.head,
+-                output.mode.width,
+-                output.mode.height,
+-                output.mode.refresh_hz,
+-            )?;
+-            output.active = true;
++            if let Some(mode) = output.mode {
++                session.activate_mode(output.head, mode.width, mode.height, mode.refresh_hz)?;
++                output.active = true;
++            }
+         }
+         DeviceEvent::Dpms(0) => {}
+         DeviceEvent::Dpms(_) if output.active => {
+-            session.deactivate_mode(output.head, output.mode.width, output.mode.height)?;
++            let mode = output
++                .mode
++                .ok_or_else(|| format!("head {} has no active mode", output.head))?;
++            session.deactivate_mode(output.head, mode.width, mode.height)?;
+             output.active = false;
+         }
+         DeviceEvent::Dpms(_) => {}
+@@ -118,6 +202,8 @@ fn handle_event(
+             if cursor.enabled {
+                 let bgra = cursor_bgra(&cursor)?;
+                 session.set_cursor(output.head, cursor.width, cursor.height, &bgra)?;
++            } else {
++                session.move_cursor(output.head, i32::from(u16::MAX), i32::from(u16::MAX))?;
+             }
+         }
+         DeviceEvent::CursorMove(position) if output.active => {
+diff --git a/chimera/src/kvino.rs b/chimera/src/kvino.rs
+index 75c3638..630eab1 100644
+--- a/chimera/src/kvino.rs
++++ b/chimera/src/kvino.rs
+@@ -210,6 +210,15 @@ pub fn edid_poll_ready(ks: &[u8; 16], out_riv: &[u8; 8], wire: &[u8]) -> Option<
+     cp::edid_poll_ready(ks, out_riv, wire)
+ }
+ 
++/// `cp::probe_reply_status` — decode the handler and status of a presence probe.
++pub fn probe_reply_status(
++    ks: &[u8; 16],
++    out_riv: &[u8; 8],
++    wire: &[u8],
++) -> Option<(u16, u32, bool)> {
++    cp::probe_reply_status(ks, out_riv, wire)
++}
++
+ /// `cp::cursor_create` inner plaintext.
+ pub fn cursor_create(counter: u16, head: u8, w: u16, h: u16) -> Result<Vec<u8>> {
+     Ok(cp::cursor_create(counter, head, w, h)?.into_vec())
+@@ -615,4 +624,22 @@ mod production_builders {
+         malformed[8..10].copy_from_slice(&0x45u16.to_le_bytes());
+         assert!(parse_ddc_reply(&key, &riv, &malformed).is_err());
+     }
++
++    #[test]
++    fn display_capability_reply_reports_presence() {
++        let key = [0x5a; 16];
++        let riv = [0x33; 8];
++        let mut inner = [0; 32];
++        inner[0..2].copy_from_slice(&0x78u16.to_le_bytes());
++        inner[2..4].copy_from_slice(&0x20u16.to_le_bytes());
++        inner[22..26].copy_from_slice(&0x1234u32.to_le_bytes());
++        inner[26] = 0x80;
++        let mut frame = seal_interactive(&key, &riv, 0x78, 11, &inner).unwrap();
++        frame[8..10].copy_from_slice(&0x45u16.to_le_bytes());
++
++        assert_eq!(
++            probe_reply_status(&key, &riv, &frame),
++            Some((0x78, 0x1234, true))
++        );
++    }
+ }
+diff --git a/chimera/src/session.rs b/chimera/src/session.rs
+index ef72711..4d36b81 100644
+--- a/chimera/src/session.rs
++++ b/chimera/src/session.rs
+@@ -76,11 +76,31 @@ impl ControlSession {
+         )
+     }
+ 
++    /// Probe whether one downstream head currently routes to a display-capability handler.
++    pub fn probe_head_present(&mut self, head: u8) -> Result<Option<bool>, String> {
++        let message = kvino::get_edid_req_sub(self.inner_counter, 0x20, head)
++            .map_err(build_error("monitor presence probe"))?;
++        let Some(reply) = self.send_control(0x15, &message)? else {
++            return Ok(None);
++        };
++        let Some((id, _, _)) =
++            kvino::probe_reply_status(&self.keys.control_key, &self.keys.control_nonce, &reply)
++        else {
++            return Ok(None);
++        };
++        Ok(Some(matches!(id, 0x44 | 0x78 | 0x194)))
++    }
++
+     /// Send the steady-state heartbeat and reap its paired reply.
+     pub fn heartbeat(&mut self) -> Result<(), String> {
+         let message =
+             kvino::heartbeat(self.inner_counter).map_err(|e| format!("build heartbeat: {e}"))?;
+-        self.send_control(0x14, &message).map(|_| ())
++        self.send_control(0x16, &message).map(|_| ())
++    }
++
++    /// Send the high-cadence device-status poll that keeps the control session live.
++    pub fn keepalive_poll(&mut self) -> Result<(), String> {
++        self.poll_status()
+     }
+ 
+     /// Borrow the transport for video submission.
+@@ -205,7 +225,7 @@ impl ControlSession {
+         self.send_control(0x1b, &create)?;
+         let image = kvino::cursor_image(self.inner_counter, head, width, height, bgra)
+             .map_err(build_error("cursor image"))?;
+-        self.send_control(0x401c, &image).map(|_| ())
++        self.send_control(0x1c, &image).map(|_| ())
+     }
+ 
+     /// Move a previously uploaded cursor.

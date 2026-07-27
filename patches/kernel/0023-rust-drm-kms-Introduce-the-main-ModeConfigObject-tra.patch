@@ -1,0 +1,203 @@
+From 9b93a6581b7489733b06115f63003bfc9a4a4622 Mon Sep 17 00:00:00 2001
+From: Lyude Paul <lyude@redhat.com>
+Date: Thu, 16 May 2024 15:34:48 -0400
+Subject: [PATCH 023/113] rust: drm/kms: Introduce the main ModeConfigObject
+ traits
+
+The KMS API has a very consistent idea of a "mode config object", which
+includes any object with a drm_mode_object struct embedded in it. These
+objects have their own object IDs which DRM exposes to userspace, and we
+introduce the ModeConfigObject trait to represent any object matching these
+characteristics.
+
+One slightly less consistent trait of these objects however: some mode
+objects have a reference count, while others don't. Since rust requires
+that we are able to define the lifetime of an object up-front, we introduce
+two other super-traits of ModeConfigObject for this:
+
+* StaticModeObject - this trait represents any mode object which does not
+  have a reference count of its own. Such objects can be considered to
+  share the lifetime of their parent KMS device
+* RcModeObject - this trait represents any mode object which does have its
+  own reference count. Objects implementing this trait get a free blanket
+  implementation of AlwaysRefCounted, and as such can be used with the ARef
+  container without us having to implement AlwaysRefCounted for each
+  individual mode object.
+
+This will be able to handle most lifetimes we'll need with one exception:
+it's entirely possible a driver may want to hold a "owned" reference to a
+static mode object. We allow for this by introducing the KmsRef container,
+which grabs an owned refcount to the parent KMS device of a
+StaticModeObject and holds a pointer to said object - essentially allowing
+it to act identically to an owned refcount by preventing the device's
+lifetime from ending until the KmsRef is dropped. I choose not to use
+AlwaysRefCounted for this as holding a refcount to the device has its own
+set of implications since if you forget to drop the KmsRef the device will
+never be destroyed.
+
+Signed-off-by: Lyude Paul <lyude@redhat.com>
+
+---
+
+V3:
+* Document why modesetting objects require Send + Sync
+* Make `ModeObject` an unsafe trait
+  I was prompted to make this change in response to one of Daniel's
+  comments, as it occurred to me that we need something that ensures that
+  implementers are only returning valid `drm_mode_object` pointers so we
+  have something to put down for the various related safety comments in
+  RcModeObject.
+  Also, update the safety comments there.
+
+(cherry picked from commit f5a36c0e022f72c19ab24ec18bb3c8d47d4c2432)
+---
+ rust/kernel/drm/kms.rs | 128 ++++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 126 insertions(+), 2 deletions(-)
+
+diff --git a/rust/kernel/drm/kms.rs b/rust/kernel/drm/kms.rs
+index 6a215ff4a1b5..005bbbab9fc4 100644
+--- a/rust/kernel/drm/kms.rs
++++ b/rust/kernel/drm/kms.rs
+@@ -4,12 +4,13 @@
+ 
+ use crate::{
+     device,
+-    drm::{device::Device, driver::Driver},
++    drm::{device::Device, driver::Driver, private::Sealed},
+     error::to_result,
+     prelude::*,
++    types::*,
+ };
+ use bindings;
+-use core::{marker::PhantomData, ops::Deref};
++use core::{marker::PhantomData, ops::Deref, ptr::NonNull};
+ 
+ /// The C vtable for a [`Device`].
+ ///
+@@ -183,3 +184,126 @@ pub struct ModeConfigInfo {
+     /// An optional default fourcc format code to be preferred for clients.
+     pub preferred_fourcc: Option<u32>,
+ }
++
++/// A modesetting object in DRM.
++///
++/// This is any type of object where the underlying C object contains a [`struct drm_mode_object`].
++/// This type requires [`Send`] + [`Sync`] as all modesetting objects in DRM are able to be sent
++/// between threads.
++///
++/// This type is only implemented by the DRM crate itself.
++///
++/// # Safety
++///
++/// [`raw_mode_obj()`] must always return a valid pointer to an initialized
++/// [`struct drm_mode_object`].
++///
++/// [`struct drm_mode_object`]: srctree/include/drm/drm_mode_object.h
++/// [`raw_mode_obj()`]: ModeObject::raw_mode_obj()
++pub unsafe trait ModeObject: Sealed + Send + Sync {
++    /// The parent driver for this [`ModeObject`].
++    type Driver: KmsDriver;
++
++    /// Return the [`Device`] for this [`ModeObject`].
++    fn drm_dev(&self) -> &Device<Self::Driver>;
++
++    /// Return a pointer to the [`struct drm_mode_object`] for this [`ModeObject`].
++    ///
++    /// [`struct drm_mode_object`]: (srctree/include/drm/drm_mode_object.h)
++    fn raw_mode_obj(&self) -> *mut bindings::drm_mode_object;
++}
++
++/// A trait for modesetting objects which don't come with their own reference-counting.
++///
++/// Some [`ModeObject`] types in DRM do not have a reference count. These types are considered
++/// "static" and share the lifetime of their parent [`Device`]. To retrieve an owned reference to
++/// such types, see [`KmsRef`].
++///
++/// # Safety
++///
++/// This trait must only be implemented for modesetting objects which do not have a refcount within
++/// their [`struct drm_mode_object`], otherwise [`KmsRef`] can't guarantee the object will stay
++/// alive.
++///
++/// [`struct drm_mode_object`]: (srctree/include/drm/drm_mode_object.h)
++pub unsafe trait StaticModeObject: ModeObject {}
++
++/// An owned reference to a [`StaticModeObject`].
++///
++/// Note that since [`StaticModeObject`] types share the lifetime of their parent [`Device`], the
++/// parent [`Device`] will stay alive as long as this type exists. Thus, users should be aware that
++/// storing a [`KmsRef`] within a [`ModeObject`] is a circular reference.
++///
++/// # Invariants
++///
++/// `self.0` points to a valid instance of `T` throughout the lifetime of this type.
++pub struct KmsRef<T: StaticModeObject>(NonNull<T>);
++
++// SAFETY: Owned references to DRM device are thread-safe.
++unsafe impl<T: StaticModeObject> Send for KmsRef<T> {}
++// SAFETY: Owned references to DRM device are thread-safe.
++unsafe impl<T: StaticModeObject> Sync for KmsRef<T> {}
++
++impl<T: StaticModeObject> From<&T> for KmsRef<T> {
++    fn from(value: &T) -> Self {
++        // INVARIANT: Because the lifetime of the StaticModeObject is the same as the lifetime of
++        // its parent device, we can ensure that `value` remains alive by incrementing the device's
++        // reference count. The device will only disappear once we drop this reference in `Drop`.
++        value.drm_dev().inc_ref();
++
++        Self(value.into())
++    }
++}
++
++impl<T: StaticModeObject> Drop for KmsRef<T> {
++    fn drop(&mut self) {
++        // SAFETY: We're reclaiming the reference we leaked in From<&T>
++        drop(unsafe { ARef::from_raw(self.drm_dev().into()) })
++    }
++}
++
++impl<T: StaticModeObject> Deref for KmsRef<T> {
++    type Target = T;
++
++    fn deref(&self) -> &Self::Target {
++        // SAFETY: We're guaranteed object will point to a valid object as long as we hold dev
++        unsafe { self.0.as_ref() }
++    }
++}
++
++impl<T: StaticModeObject> Clone for KmsRef<T> {
++    fn clone(&self) -> Self {
++        // INVARIANT: Because the lifetime of the StaticModeObject is the same as the lifetime of
++        // its parent device, we can ensure that `value` remains alive by incrementing the device's
++        // reference count. The device will only disappear once we drop this reference in `Drop`.
++        self.drm_dev().inc_ref();
++
++        Self(self.0)
++    }
++}
++
++#[expect(unused)]
++macro_rules! impl_aref_for_mode_object {
++    (impl $( < $( $param:ident: $bound:ident ),+ > )? for $type:ty) => {
++        // SAFETY: drm_mode_object_get()/put() ensure the type is ref-counted according to the
++        // safety contract
++        unsafe impl $( < $( $param: $bound ),+ > )? kernel::types::AlwaysRefCounted for $type {
++            #[inline]
++            fn inc_ref(&self) {
++                // SAFETY: We're guaranteed by the safety contract of `ModeObject` that
++                // `raw_mode_obj()` always returns a pointer to an initialized `drm_mode_object`.
++                unsafe { kernel::bindings::drm_mode_object_get(self.raw_mode_obj()) }
++            }
++
++            #[inline]
++            unsafe fn dec_ref(obj: core::ptr::NonNull<Self>) {
++                // SAFETY: We're guaranteed by the safety contract of `ModeObject` that
++                // `raw_mode_obj()` always returns a pointer to an initialized `drm_mode_object`.
++                unsafe { kernel::bindings::drm_mode_object_put(obj.as_ref().raw_mode_obj()) }
++            }
++        }
++    };
++}
++
++#[expect(unused)]
++pub(super) use impl_aref_for_mode_object;

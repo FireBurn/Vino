@@ -1,0 +1,143 @@
+From 0601ec574a3be69df38a588549bb2d691460c450 Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Thu, 2 Jul 2026 13:23:01 +0100
+Subject: [PATCH 064/113] rust: drm: add CRTC gamma LUT and plane rotation
+ property bindings
+
+Two more mode-object properties a real driver reaches for, and the last
+the DisplayLink vino driver needs to match its pre-safe-KMS feature set:
+
+  - CRTC gamma: UnregisteredCrtc::enable_gamma()
+    (drm_crtc_enable_color_mgmt, creating a GAMMA_LUT property) and
+    RawCrtcState::gamma_lut() to read the set ramp back as a
+    &[drm_color_lut].
+
+  - Plane rotation: UnregisteredPlane::create_rotation_property()
+    (drm_plane_create_rotation_property) and RawPlaneState::rotation() /
+    crtc_x()/crtc_y()/hotspot_x()/hotspot_y() to read the plane's
+    placement and orientation.
+
+drm_plane_create_rotation_property lives in <drm/drm_blend.h>, so add
+that to bindings_helper.h.
+
+(cherry picked from commit 33c714e0189123ecb80dbba20311e3a025a2be99)
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/bindings/bindings_helper.h |  1 +
+ rust/kernel/drm/kms/crtc.rs     | 33 +++++++++++++++++++++++++++++++++
+ rust/kernel/drm/kms/plane.rs    | 29 +++++++++++++++++++++++++++++
+ 3 files changed, 63 insertions(+)
+
+diff --git a/rust/bindings/bindings_helper.h b/rust/bindings/bindings_helper.h
+index 621f76332a99..28be05b46fdc 100644
+--- a/rust/bindings/bindings_helper.h
++++ b/rust/bindings/bindings_helper.h
+@@ -33,6 +33,7 @@
+ #include <drm/display/drm_hdcp.h>
+ #include <drm/drm_atomic.h>
+ #include <drm/drm_atomic_helper.h>
++#include <drm/drm_blend.h>
+ #include <drm/clients/drm_client_setup.h>
+ #include <drm/drm_connector.h>
+ #include <drm/drm_crtc.h>
+diff --git a/rust/kernel/drm/kms/crtc.rs b/rust/kernel/drm/kms/crtc.rs
+index 0f75cc4e1ff6..f5f0a7994824 100644
+--- a/rust/kernel/drm/kms/crtc.rs
++++ b/rust/kernel/drm/kms/crtc.rs
+@@ -357,6 +357,17 @@ pub fn new<'a, PrimaryData, CursorData>(
+         // SAFETY: We just allocated the crtc above, so this pointer must be valid
+         Ok(unsafe { &*this })
+     }
++
++    /// Enable colour management on this CRTC, creating a `GAMMA_LUT` property of `gamma_size`
++    /// entries that userspace can program (no degamma LUT, no CTM). The set LUT is then readable
++    /// from the CRTC state via [`RawCrtcState::gamma_lut`].
++    ///
++    /// Call this during [`KmsDriver::probe`](crate::drm::kms::KmsDriver::probe), before the device
++    /// is registered.
++    pub fn enable_gamma(&self, gamma_size: u32) {
++        // SAFETY: `as_raw()` is a valid, not-yet-registered CRTC.
++        unsafe { bindings::drm_crtc_enable_color_mgmt(self.as_raw(), 0, false, gamma_size) };
++    }
+ }
+ 
+ // SAFETY: We inherit all relevant invariants of `Crtc`
+@@ -686,6 +697,28 @@ fn mode(&self) -> &DisplayMode {
+         // atomic-state API serializes access while the mode can be changed.
+         unsafe { DisplayMode::as_ref(core::ptr::addr_of!((*self.as_raw()).mode)) }
+     }
++
++    /// Returns the CRTC's gamma LUT for this state as an array of [`drm_color_lut`] entries, or
++    /// [`None`] if no gamma LUT is programmed. Requires gamma to have been enabled on the CRTC
++    /// (see [`UnregisteredCrtc::enable_gamma`]).
++    ///
++    /// [`drm_color_lut`]: bindings::drm_color_lut
++    fn gamma_lut(&self) -> Option<&[bindings::drm_color_lut]> {
++        // SAFETY: `as_raw()` is a valid `drm_crtc_state`.
++        let blob = unsafe { (*self.as_raw()).gamma_lut };
++        if blob.is_null() {
++            return None;
++        }
++        // SAFETY: a non-null gamma_lut blob is valid for the state's lifetime.
++        let (data, length) = unsafe { ((*blob).data, (*blob).length) };
++        let n = length / core::mem::size_of::<bindings::drm_color_lut>();
++        if data.is_null() || n == 0 {
++            return None;
++        }
++        // SAFETY: the blob's `data` holds `n` contiguous `drm_color_lut` entries (the blob length
++        // is a multiple of the entry size), valid for the state's lifetime.
++        Some(unsafe { core::slice::from_raw_parts(data.cast::<bindings::drm_color_lut>(), n) })
++    }
+ }
+ impl<T: AsRawCrtcState> RawCrtcState for T {}
+ 
+diff --git a/rust/kernel/drm/kms/plane.rs b/rust/kernel/drm/kms/plane.rs
+index 6b8e2ee4d737..6b28a5d42216 100644
+--- a/rust/kernel/drm/kms/plane.rs
++++ b/rust/kernel/drm/kms/plane.rs
+@@ -350,6 +350,28 @@ pub fn new<'a>(
+         // SAFETY: We just allocated the plane above, so this pointer must be valid
+         Ok(unsafe { &*this })
+     }
++
++    /// Attach a rotation property to this plane, advertising `supported_rotations` (a bitmask of
++    /// `DRM_MODE_ROTATE_*` | `DRM_MODE_REFLECT_*`) with initial value `default_rotation`. The
++    /// selected value is then readable from the plane state via
++    /// [`RawPlaneState::rotation`](crate::drm::kms::plane::RawPlaneState::rotation).
++    ///
++    /// Call this during [`KmsDriver::probe`](crate::drm::kms::KmsDriver::probe), before the device
++    /// is registered.
++    pub fn create_rotation_property(
++        &self,
++        default_rotation: u32,
++        supported_rotations: u32,
++    ) -> Result {
++        // SAFETY: `as_raw()` is a valid, not-yet-registered plane.
++        to_result(unsafe {
++            bindings::drm_plane_create_rotation_property(
++                self.as_raw(),
++                default_rotation,
++                supported_rotations,
++            )
++        })
++    }
+ }
+ 
+ /// A trait implemented by any type that acts as a [`struct drm_plane`] interface.
+@@ -627,6 +649,13 @@ fn crtc_h(&self) -> u32 {
+         self.as_raw().crtc_h
+     }
+ 
++    /// The plane's rotation/reflection (`DRM_MODE_ROTATE_*` | `DRM_MODE_REFLECT_*` bitmask), for a
++    /// plane with a rotation property (see
++    /// [`UnregisteredPlane::create_rotation_property`]). Defaults to `DRM_MODE_ROTATE_0`.
++    fn rotation(&self) -> u32 {
++        self.as_raw().rotation
++    }
++
+     /// Return the current [`OpaqueCrtc`] assigned to this plane, if there is one.
+     ///
+     /// The returned CRTC reference cannot outlive the plane-state borrow:

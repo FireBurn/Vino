@@ -1,0 +1,1157 @@
+From 375ed13ae71b0f445c672376da9d4dbf57f2193d Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Wed, 22 Jul 2026 20:56:52 +0100
+Subject: [PATCH 078/113] rust: usb: add typed endpoints and a revocable I/O
+ window
+
+A driver-`Bound` USB interface is not on its own proof that a transfer may
+be issued: the USB core forbids I/O outside the window that opens after a
+successful probe/resume/reset-resume and must close again before
+disconnect, suspend or pre_reset returns. The previous transfer stack
+enabled every operation on `Interface<Bound>` and offered an unsafe
+`as_bound()` so a driver could assert that property by hand at each call
+site, which is the layering Oliver Neukum and Danilo Krummrich objected to
+in the v2 review.
+
+Replace it with two abstractions:
+
+`IoWindow` represents the narrower I/O-permitted state. A driver opens one
+during probe and closes it in disconnect; `close()` refuses new tokens,
+cancels the URBs of any queue registered against it, and blocks until every
+outstanding token is dropped, so no transfer can be in flight outside the
+window. The single documented `unsafe fn new()` obligation replaces an
+unsafe assertion at every transfer. Transfers live on the `Io` token rather
+than on the interface, so they cannot be reached without it.
+
+`Endpoint<K>` is looked up in the interface's active alternate setting and
+checked against the descriptor, so a bulk OUT method cannot be pointed at
+an interrupt IN endpoint. `set_alternate_setting()` takes the interface
+number from the bound interface itself, so a driver can no longer retarget
+a sibling interface of a composite device.
+
+Several defects found in the same review are fixed on the way: queues
+reject zero depth instead of dividing by zero, construction can no longer
+leak the device reference or an URB when a later allocation fails, a failed
+URB re-submission is tracked rather than leaving a later wait blocked on a
+completion that can never fire, and a non-zero sub-millisecond timeout is
+rounded up to 1 ms instead of truncating to the helpers' "wait forever".
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/helpers/usb.c |   35 ++
+ rust/kernel/usb.rs | 1037 +++++++++++++++++++++++++++++++++++++++++++-
+ 2 files changed, 1071 insertions(+), 1 deletion(-)
+
+diff --git a/rust/helpers/usb.c b/rust/helpers/usb.c
+index eff1cf7be3c2..1501f5438e43 100644
+--- a/rust/helpers/usb.c
++++ b/rust/helpers/usb.c
+@@ -1,5 +1,6 @@
+ // SPDX-License-Identifier: GPL-2.0
+ 
++#include <linux/completion.h>
+ #include <linux/usb.h>
+ 
+ __rust_helper struct usb_device *
+@@ -7,3 +8,37 @@ rust_helper_interface_to_usbdev(struct usb_interface *intf)
+ {
+ 	return interface_to_usbdev(intf);
+ }
++
++__rust_helper void
++rust_helper_usb_fill_bulk_urb(struct urb *urb, struct usb_device *dev,
++			      unsigned int pipe, void *transfer_buffer,
++			      int buffer_length, usb_complete_t complete_fn,
++			      void *context)
++{
++	usb_fill_bulk_urb(urb, dev, pipe, transfer_buffer, buffer_length,
++			  complete_fn, context);
++}
++
++__rust_helper void
++rust_helper_reinit_completion(struct completion *x)
++{
++	reinit_completion(x);
++}
++
++__rust_helper unsigned int
++rust_helper_usb_sndbulkpipe(struct usb_device *dev, unsigned int endpoint)
++{
++	return usb_sndbulkpipe(dev, endpoint);
++}
++
++__rust_helper unsigned int
++rust_helper_usb_rcvbulkpipe(struct usb_device *dev, unsigned int endpoint)
++{
++	return usb_rcvbulkpipe(dev, endpoint);
++}
++
++__rust_helper unsigned int
++rust_helper_usb_rcvintpipe(struct usb_device *dev, unsigned int endpoint)
++{
++	return usb_rcvintpipe(dev, endpoint);
++}
+diff --git a/rust/kernel/usb.rs b/rust/kernel/usb.rs
+index 7aff0c82d0af..bf23f5c980fb 100644
+--- a/rust/kernel/usb.rs
++++ b/rust/kernel/usb.rs
+@@ -6,6 +6,7 @@
+ //! C header: [`include/linux/usb.h`](srctree/include/linux/usb.h)
+ 
+ use crate::{
++    alloc::Flags,
+     bindings,
+     device,
+     device_id::{
+@@ -18,7 +19,11 @@
+         to_result, //
+     },
+     prelude::*,
+-    sync::aref::AlwaysRefCounted,
++    sync::{
++        aref::{ARef, AlwaysRefCounted},
++        new_condvar, new_mutex, Arc, CondVar, Mutex,
++    },
++    time::Delta,
+     types::Opaque,
+     ThisModule, //
+ };
+@@ -356,6 +361,1036 @@ impl<Ctx: device::DeviceContext> Interface<Ctx> {
+     fn as_raw(&self) -> *mut bindings::usb_interface {
+         self.0.get()
+     }
++
++    /// Returns this interface's `bInterfaceNumber`, or `None` if it currently has no active
++    /// alternate setting.
++    pub fn number(&self) -> Option<u8> {
++        // SAFETY: `self.as_raw()` is a valid `struct usb_interface` by the type invariant.
++        let alt = unsafe { (*self.as_raw()).cur_altsetting };
++        if alt.is_null() {
++            return None;
++        }
++        // SAFETY: `alt` is a valid `struct usb_host_interface` (checked non-null above).
++        Some(unsafe { (*alt).desc.bInterfaceNumber })
++    }
++
++    /// Asks the driver core to unbind whatever driver is currently bound to this interface.
++    ///
++    /// This is the narrow, reviewed replacement for handing out a raw `struct device` pointer: it
++    /// performs exactly one operation (`device_release_driver()`) on this interface's own device,
++    /// and cannot be used to reach the device-wide state of a composite peer.
++    ///
++    /// It is intended for a driver-provided "release my devices" control (e.g. a sysfs attribute),
++    /// and must not be called from the driver's own `probe()` or `disconnect()` callback: the
++    /// driver core already holds the device lock across those.
++    pub fn release_driver(&self) {
++        // SAFETY: `self.as_raw()` is a valid `struct usb_interface` by the type invariant, so the
++        // address of its embedded `dev` is a valid `struct device`. `device_release_driver()`
++        // takes the device lock itself and tolerates a device with no driver bound.
++        unsafe { bindings::device_release_driver(&raw mut (*self.as_raw()).dev) };
++    }
++}
++
++/// The transfer type and direction of a USB endpoint, used to tag an [`Endpoint`] so that a
++/// transfer method cannot be pointed at an endpoint of the wrong kind.
++///
++/// This trait is sealed: the set of endpoint kinds is fixed by this module and matches the USB
++/// endpoint types the abstraction supports.
++pub trait EndpointKind: private::Sealed {
++    /// The `bmAttributes` transfer type (`USB_ENDPOINT_XFER_*`) an endpoint must have.
++    const XFER_TYPE: u8;
++
++    /// Whether the endpoint must be an IN (device-to-host) endpoint.
++    const DIR_IN: bool;
++}
++
++mod private {
++    /// Seals [`EndpointKind`](super::EndpointKind) against external implementations.
++    pub trait Sealed {}
++}
++
++/// Marker for a bulk IN (device-to-host) endpoint.
++pub enum BulkIn {}
++/// Marker for a bulk OUT (host-to-device) endpoint.
++pub enum BulkOut {}
++/// Marker for an interrupt IN (device-to-host) endpoint.
++pub enum InterruptIn {}
++
++impl private::Sealed for BulkIn {}
++impl private::Sealed for BulkOut {}
++impl private::Sealed for InterruptIn {}
++
++impl EndpointKind for BulkIn {
++    const XFER_TYPE: u8 = bindings::USB_ENDPOINT_XFER_BULK as u8;
++    const DIR_IN: bool = true;
++}
++
++impl EndpointKind for BulkOut {
++    const XFER_TYPE: u8 = bindings::USB_ENDPOINT_XFER_BULK as u8;
++    const DIR_IN: bool = false;
++}
++
++impl EndpointKind for InterruptIn {
++    const XFER_TYPE: u8 = bindings::USB_ENDPOINT_XFER_INT as u8;
++    const DIR_IN: bool = true;
++}
++
++/// An endpoint of a USB interface, looked up in the interface's active alternate setting and
++/// checked to have the transfer type and direction named by `K`.
++///
++/// Because an [`Endpoint`] can only be produced by [`Interface::endpoint`], which validates it
++/// against the descriptor, a `&Endpoint<BulkOut>` is proof that the address really names a bulk
++/// OUT endpoint of that interface. Transfer methods take the correspondingly-typed endpoint, so
++/// the direction/type confusion possible with a bare `u8` address cannot occur.
++///
++/// # Invariants
++///
++/// `addr` is the `bEndpointAddress` of an endpoint that was present in the interface's active
++/// alternate setting, and whose direction and transfer type match `K`.
++pub struct Endpoint<K: EndpointKind> {
++    addr: u8,
++    max_packet: u16,
++    _kind: PhantomData<K>,
++}
++
++impl<K: EndpointKind> Endpoint<K> {
++    /// The endpoint's `bEndpointAddress`, including the direction bit.
++    pub fn address(&self) -> u8 {
++        self.addr
++    }
++
++    /// The endpoint's `wMaxPacketSize`.
++    pub fn max_packet_size(&self) -> u16 {
++        self.max_packet
++    }
++}
++
++impl<K: EndpointKind> Clone for Endpoint<K> {
++    fn clone(&self) -> Self {
++        *self
++    }
++}
++
++impl<K: EndpointKind> Copy for Endpoint<K> {}
++
++impl<Ctx: device::DeviceContext> Interface<Ctx> {
++    /// Looks `addr` up in this interface's active alternate setting and returns it as a typed
++    /// [`Endpoint`], provided its direction and transfer type match `K`.
++    ///
++    /// Returns [`ENODEV`] if the interface has no active alternate setting, [`ENOENT`] if no
++    /// endpoint with that address is present, and [`EINVAL`] if the endpoint exists but is of the
++    /// wrong direction or transfer type.
++    pub fn endpoint<K: EndpointKind>(&self, addr: u8) -> Result<Endpoint<K>> {
++        // SAFETY: `self.as_raw()` is a valid `struct usb_interface` by the type invariant.
++        let alt = unsafe { (*self.as_raw()).cur_altsetting };
++        if alt.is_null() {
++            return Err(ENODEV);
++        }
++
++        // SAFETY: `alt` is a valid `struct usb_host_interface` (checked non-null above); its
++        // `endpoint` array holds `bNumEndpoints` entries.
++        let (eps, n) = unsafe { ((*alt).endpoint, (*alt).desc.bNumEndpoints as usize) };
++        if eps.is_null() {
++            return Err(ENODEV);
++        }
++
++        for i in 0..n {
++            // SAFETY: `i < n == bNumEndpoints`, so `eps.add(i)` is within the endpoint array and
++            // points at a valid `struct usb_host_endpoint`.
++            let desc = unsafe { &(*eps.add(i)).desc };
++            if desc.bEndpointAddress != addr {
++                continue;
++            }
++
++            let is_in = desc.bEndpointAddress & (bindings::USB_DIR_IN as u8) != 0;
++            let xfer = desc.bmAttributes & (bindings::USB_ENDPOINT_XFERTYPE_MASK as u8);
++            if is_in != K::DIR_IN || xfer != K::XFER_TYPE {
++                return Err(EINVAL);
++            }
++
++            return Ok(Endpoint {
++                addr,
++                max_packet: u16::from_le(desc.wMaxPacketSize),
++                _kind: PhantomData,
++            });
++        }
++
++        Err(ENOENT)
++    }
++}
++
++/// Converts a [`Delta`] into the whole-millisecond timeout the synchronous USB message helpers
++/// expect.
++///
++/// Those helpers treat `0` as "wait forever", so a caller who asks for a short-but-non-zero
++/// timeout must not have it silently truncated into an unbounded wait: any non-zero `timeout`
++/// below a millisecond is rounded *up* to 1 ms. Only an explicitly zero [`Delta`] means "wait
++/// indefinitely".
++fn timeout_millis(timeout: Delta) -> Result<kernel::ffi::c_int> {
++    let ms = timeout.as_millis();
++    if ms == 0 && !timeout.is_zero() {
++        return Ok(1);
++    }
++    Ok(ms.try_into()?)
++}
++
++/// A revocable window during which USB I/O is permitted on an interface.
++///
++/// A driver-`Bound` interface is *not* on its own proof that a transfer may be issued: the USB
++/// core forbids I/O outside the window that opens after a successful `probe()`/resume/reset-resume
++/// and must be closed again before `disconnect()`, `suspend()` or `pre_reset()` returns. This type
++/// represents exactly that narrower state.
++///
++/// A driver stores one `IoWindow` in its bound data and takes an [`Io`] token from it around every
++/// transfer. [`close`] shuts the window and blocks until every outstanding token has been dropped
++/// and every queue URB registered against it has been killed, so once `close()` returns the driver
++/// is guaranteed to have no I/O in flight.
++///
++/// Because [`Io`] borrows the window, and the transfer methods and queues live on [`Io`], a
++/// transfer cannot outlive the window that permitted it.
++///
++/// [`close`]: IoWindow::close
++#[pin_data]
++pub struct IoWindow {
++    /// The interface I/O is permitted on. Holding a reference keeps the `struct usb_interface`
++    /// allocated; that it is still *bound* is what the open/closed state tracks.
++    interface: ARef<Interface>,
++    #[pin]
++    state: Mutex<IoState>,
++    #[pin]
++    idle: CondVar,
++}
++
++/// The mutable half of an [`IoWindow`].
++struct IoState {
++    /// Whether new [`Io`] tokens may still be handed out.
++    open: bool,
++    /// How many [`Io`] tokens are currently alive.
++    active: usize,
++    /// URBs belonging to queues opened against this window, so [`IoWindow::close`] can cancel
++    /// them even though the queues themselves are owned by the driver.
++    urbs: KVec<UrbRegistration>,
++    /// Source of the per-queue tokens used to deregister a queue's URBs on drop.
++    next_token: u64,
++}
++
++/// One queue-owned URB registered with an [`IoWindow`], tagged with its queue's token.
++struct UrbRegistration {
++    token: u64,
++    urb: NonNull<bindings::urb>,
++}
++
++// SAFETY: The registered URBs are owned by queues which are themselves `Send`; the registration
++// only records their addresses so the window can cancel them, and every access is under the
++// window's mutex.
++unsafe impl Send for UrbRegistration {}
++
++impl IoWindow {
++    /// Creates an open I/O window for `interface`.
++    ///
++    /// # Safety
++    ///
++    /// This is the one place a driver promises, by hand, that USB I/O is permitted -- replacing an
++    /// unsafe assertion at every individual transfer. The caller must:
++    ///
++    /// - call this only from a context where I/O on `interface` is permitted and the interface is
++    ///   bound to the calling driver: a successful `probe()`, `resume()`, `reset_resume()` or
++    ///   `post_reset()`;
++    /// - call [`close`](Self::close) before the matching `disconnect()`, `suspend()` or
++    ///   `pre_reset()` callback returns.
++    ///
++    /// Once those hold, everything reachable from this window is safe: [`enter`](Self::enter)
++    /// refuses to hand out new tokens after `close()`, and `close()` waits for the outstanding
++    /// ones, so no transfer can be in flight outside the permitted window.
++    pub unsafe fn new(interface: ARef<Interface>) -> impl PinInit<Self> {
++        pin_init!(Self {
++            interface,
++            state <- new_mutex!(IoState {
++                open: true,
++                active: 0,
++                urbs: KVec::new(),
++                next_token: 0,
++            }),
++            idle <- new_condvar!(),
++        })
++    }
++
++    /// Takes an [`Io`] token, proving that I/O is permitted for as long as the token is held.
++    ///
++    /// Returns [`ENODEV`] once the window has been closed.
++    pub fn enter(&self) -> Result<Io<'_>> {
++        let mut state = self.state.lock();
++        if !state.open {
++            return Err(ENODEV);
++        }
++        state.active += 1;
++        drop(state);
++
++        Ok(Io { window: self })
++    }
++
++    /// The interface this window permits I/O on.
++    pub fn interface(&self) -> &Interface {
++        &self.interface
++    }
++
++    /// Closes the window and waits until no I/O is in flight.
++    ///
++    /// New [`Io`] tokens are refused immediately. Every URB belonging to a queue opened against
++    /// this window is killed, which releases anything blocked waiting on one, and the call then
++    /// blocks until the last outstanding token has been dropped.
++    ///
++    /// This must be called from the driver's `disconnect()`, `suspend()` or `pre_reset()` callback
++    /// before it returns. It is idempotent. It sleeps, so it must be called from process context.
++    pub fn close(&self) {
++        let mut state = self.state.lock();
++        state.open = false;
++
++        // Cancel the queues' URBs so anything blocked in `recv()`/`flush()` is released. This
++        // happens under the mutex, which is sleepable, and `usb_kill_urb()` waits for the
++        // completion callback -- which takes no lock -- so it cannot deadlock against a queue
++        // being dropped concurrently (that path merely waits for the mutex).
++        for reg in state.urbs.iter() {
++            // SAFETY: `reg.urb` is a valid URB owned by a live queue: a queue deregisters its
++            // URBs before freeing them (see `QueueRegistration::drop`), and holds the same mutex
++            // to do so, so the URB cannot have been freed while this loop holds the lock.
++            unsafe { bindings::usb_kill_urb(reg.urb.as_ptr()) };
++        }
++
++        while state.active != 0 {
++            self.idle.wait(&mut state);
++        }
++    }
++
++    /// Reopens a window that was closed by a suspend or pre-reset.
++    ///
++    /// Only valid from `resume()`, `reset_resume()` or `post_reset()`, where the USB core has just
++    /// re-permitted I/O. Reopening after `disconnect()` is a bug; the bound data (and with it this
++    /// window) is dropped there instead.
++    pub fn reopen(&self) {
++        self.state.lock().open = true;
++    }
++
++    /// Registers `urb` as belonging to the queue identified by `token`, so [`close`] can cancel
++    /// it.
++    ///
++    /// [`close`]: IoWindow::close
++    fn register_urb(&self, token: u64, urb: NonNull<bindings::urb>) -> Result {
++        let mut state = self.state.lock();
++        Ok(state.urbs.push(UrbRegistration { token, urb }, GFP_KERNEL)?)
++    }
++
++    /// Allocates a fresh queue token.
++    fn new_token(&self) -> u64 {
++        let mut state = self.state.lock();
++        let token = state.next_token;
++        state.next_token += 1;
++        token
++    }
++
++    /// Drops every URB registration made under `token`.
++    fn deregister(&self, token: u64) {
++        self.state.lock().urbs.retain(|reg| reg.token != token);
++    }
++}
++
++/// Proof that USB I/O is currently permitted on an interface, and the handle through which every
++/// transfer is issued.
++///
++/// Obtained from [`IoWindow::enter`] and released when dropped; [`IoWindow::close`] blocks until
++/// every outstanding token is gone. Because the token borrows both the window and the interface,
++/// no transfer can outlive either.
++pub struct Io<'a> {
++    window: &'a IoWindow,
++}
++
++impl Drop for Io<'_> {
++    fn drop(&mut self) {
++        let mut state = self.window.state.lock();
++        state.active -= 1;
++        if state.active == 0 {
++            self.window.idle.notify_all();
++        }
++    }
++}
++
++impl<'a> Io<'a> {
++    /// The interface this token permits I/O on.
++    pub fn interface(&self) -> &Interface {
++        self.window.interface()
++    }
++
++    /// The `struct usb_device` that interface belongs to.
++    fn device(&self) -> *mut bindings::usb_device {
++        // SAFETY: the window holds a reference to a valid `struct usb_interface`, and
++        // `interface_to_usbdev()` returns its valid `struct usb_device`.
++        unsafe { bindings::interface_to_usbdev(self.window.interface.as_raw()) }
++    }
++
++    /// Clears a halt/stall on `endpoint`, resetting both the device-side stall and the host-side
++    /// data toggle. Sleeps.
++    pub fn clear_halt<K: EndpointKind>(&self, endpoint: &Endpoint<K>) -> Result {
++        let dev = self.device();
++        let addr = endpoint.address().into();
++
++        // The pipe direction must match the endpoint, or `usb_clear_halt()` clears the wrong
++        // toggle; `K` already tells us which it is.
++        let pipe = if K::DIR_IN {
++            // SAFETY: `dev` is a valid `struct usb_device`.
++            unsafe { bindings::usb_rcvbulkpipe(dev, addr) }
++        } else {
++            // SAFETY: `dev` is a valid `struct usb_device`.
++            unsafe { bindings::usb_sndbulkpipe(dev, addr) }
++        };
++
++        // SAFETY: `dev` is valid; `usb_clear_halt()` only issues a control request and updates
++        // host-side endpoint state.
++        to_result(unsafe { bindings::usb_clear_halt(dev, pipe as kernel::ffi::c_int) })
++    }
++
++    /// Issues a synchronous bulk OUT transfer of `data`, returning the number of bytes
++    /// transferred.
++    ///
++    /// `data` is copied into a kmalloc'd bounce buffer internally, so it need not be DMA-capable.
++    /// `gfp` selects that buffer's allocation flags: pass `GFP_KERNEL` normally, or `GFP_NOIO` on
++    /// a reset/resume or error-handling path. Sleeps.
++    pub fn bulk_send(
++        &self,
++        endpoint: &Endpoint<BulkOut>,
++        data: &[u8],
++        timeout: Delta,
++        gfp: Flags,
++    ) -> Result<usize> {
++        let mut actual: kernel::ffi::c_int = 0;
++        let millis = timeout_millis(timeout)?;
++
++        // `usb_bulk_msg()` DMAs straight from the buffer, and `data` may live on the stack or in
++        // `.rodata`, so bounce it through a kmalloc'd allocation.
++        let mut buf = KVec::with_capacity(data.len(), gfp)?;
++        buf.extend_from_slice(data, gfp)?;
++        let len = buf.len().try_into()?;
++
++        let dev = self.device();
++        // SAFETY: `dev` is a valid `struct usb_device`.
++        let pipe = unsafe { bindings::usb_sndbulkpipe(dev, endpoint.address().into()) };
++
++        // SAFETY: `dev` is valid; `buf` is a kmalloc'd buffer valid for reads of `len` bytes for
++        // the duration of the call; `actual` is a valid out-pointer.
++        to_result(unsafe {
++            bindings::usb_bulk_msg(
++                dev,
++                pipe,
++                buf.as_mut_ptr().cast::<kernel::ffi::c_void>(),
++                len,
++                &mut actual,
++                millis,
++            )
++        })?;
++
++        Ok(actual as usize)
++    }
++
++    /// Issues a synchronous bulk IN transfer into `data`, returning the number of bytes received.
++    ///
++    /// The data is received into a kmalloc'd bounce buffer and copied out, so `data` need not be
++    /// DMA-capable. Sleeps.
++    pub fn bulk_recv(
++        &self,
++        endpoint: &Endpoint<BulkIn>,
++        data: &mut [u8],
++        timeout: Delta,
++        gfp: Flags,
++    ) -> Result<usize> {
++        let mut actual: kernel::ffi::c_int = 0;
++        let millis = timeout_millis(timeout)?;
++
++        let mut buf = KVec::from_elem(0u8, data.len(), gfp)?;
++        let len = buf.len().try_into()?;
++
++        let dev = self.device();
++        // SAFETY: `dev` is a valid `struct usb_device`.
++        let pipe = unsafe { bindings::usb_rcvbulkpipe(dev, endpoint.address().into()) };
++
++        // SAFETY: `dev` is valid; `buf` is a kmalloc'd buffer valid for writes of `len` bytes for
++        // the duration of the call; `actual` is a valid out-pointer.
++        to_result(unsafe {
++            bindings::usb_bulk_msg(
++                dev,
++                pipe,
++                buf.as_mut_ptr().cast::<kernel::ffi::c_void>(),
++                len,
++                &mut actual,
++                millis,
++            )
++        })?;
++
++        // `usb_bulk_msg()` never reports more than the requested length.
++        let n = (actual as usize).min(data.len());
++        data[..n].copy_from_slice(&buf[..n]);
++        Ok(n)
++    }
++
++    /// Issues a synchronous interrupt IN transfer into `data`, returning the number of bytes
++    /// received.
++    ///
++    /// As for [`bulk_recv`](Self::bulk_recv), the transfer is bounced through a kmalloc'd buffer.
++    /// Sleeps.
++    pub fn interrupt_recv(
++        &self,
++        endpoint: &Endpoint<InterruptIn>,
++        data: &mut [u8],
++        timeout: Delta,
++        gfp: Flags,
++    ) -> Result<usize> {
++        let mut actual: kernel::ffi::c_int = 0;
++        let millis = timeout_millis(timeout)?;
++
++        let mut buf = KVec::from_elem(0u8, data.len(), gfp)?;
++        let len = buf.len().try_into()?;
++
++        let dev = self.device();
++        // SAFETY: `dev` is a valid `struct usb_device`.
++        let pipe = unsafe { bindings::usb_rcvintpipe(dev, endpoint.address().into()) };
++
++        // SAFETY: `dev` is valid; `buf` is a kmalloc'd buffer valid for writes of `len` bytes for
++        // the duration of the call; `actual` is a valid out-pointer.
++        to_result(unsafe {
++            bindings::usb_interrupt_msg(
++                dev,
++                pipe,
++                buf.as_mut_ptr().cast::<kernel::ffi::c_void>(),
++                len,
++                &mut actual,
++                millis,
++            )
++        })?;
++
++        let n = (actual as usize).min(data.len());
++        data[..n].copy_from_slice(&buf[..n]);
++        Ok(n)
++    }
++
++    /// Issues a synchronous control OUT transfer on the default control endpoint.
++    ///
++    /// `request`, `request_type`, `value` and `index` are the `bRequest`, `bmRequestType`,
++    /// `wValue` and `wIndex` setup fields. The buffer is copied internally, so `data` need not be
++    /// DMA-capable. Sleeps.
++    pub fn control_send(
++        &self,
++        request: u8,
++        request_type: u8,
++        value: u16,
++        index: u16,
++        data: &[u8],
++        timeout: Delta,
++        gfp: Flags,
++    ) -> Result {
++        let millis = timeout_millis(timeout)?;
++        let len = data.len().try_into()?;
++
++        // SAFETY: `self.device()` is valid; `data` is valid for reads of `len` bytes and
++        // `usb_control_msg_send()` copies out of it before returning.
++        to_result(unsafe {
++            bindings::usb_control_msg_send(
++                self.device(),
++                0,
++                request,
++                request_type,
++                value,
++                index,
++                data.as_ptr().cast::<kernel::ffi::c_void>(),
++                len,
++                millis,
++                gfp.as_raw(),
++            )
++        })
++    }
++
++    /// Issues a synchronous control IN transfer on the default control endpoint, filling `data`
++    /// with exactly `data.len()` bytes.
++    ///
++    /// The transfer fails if the device returns fewer bytes than requested. Sleeps.
++    pub fn control_recv(
++        &self,
++        request: u8,
++        request_type: u8,
++        value: u16,
++        index: u16,
++        data: &mut [u8],
++        timeout: Delta,
++        gfp: Flags,
++    ) -> Result {
++        let millis = timeout_millis(timeout)?;
++        let len = data.len().try_into()?;
++
++        // SAFETY: `self.device()` is valid; `data` is valid for writes of `len` bytes and
++        // `usb_control_msg_recv()` copies into it before returning.
++        to_result(unsafe {
++            bindings::usb_control_msg_recv(
++                self.device(),
++                0,
++                request,
++                request_type,
++                value,
++                index,
++                data.as_mut_ptr().cast::<kernel::ffi::c_void>(),
++                len,
++                millis,
++                gfp.as_raw(),
++            )
++        })
++    }
++
++    /// Selects alternate setting `alternate` of *this* interface (`SET_INTERFACE`).
++    ///
++    /// Unlike a device-wide `set_interface()`, this can only ever retarget the interface the
++    /// driver is bound to: the interface number comes from the bound interface itself, not from
++    /// the caller, so a driver cannot disturb a sibling interface of a composite device. Sleeps.
++    pub fn set_alternate_setting(&self, alternate: u8) -> Result {
++        let number = self.window.interface.number().ok_or(ENODEV)?;
++
++        // SAFETY: `self.device()` is a valid `struct usb_device`, and `number` is the number of
++        // one of its interfaces -- the one this driver is bound to.
++        to_result(unsafe {
++            bindings::usb_set_interface(self.device(), number.into(), alternate.into())
++        })
++    }
++
++    /// The `struct usb_device` a queue opened from this token will transfer on, as a checked
++    /// non-null pointer.
++    fn device_nonnull(&self) -> Result<NonNull<bindings::usb_device>> {
++        NonNull::new(self.device()).ok_or(ENODEV)
++    }
++}
++
++/// The window registration and USB-device reference shared by both queue types.
++///
++/// Owning this as a separate field means a queue under construction already has a working `Drop`
++/// before any per-slot allocation is attempted, so a mid-construction failure cannot leak the
++/// device reference or leave URBs registered with the window.
++///
++/// The window is held by [`Arc`] rather than borrowed because a queue normally lives in the
++/// driver's device data, which has no lifetime to borrow from. That does not weaken the guarantee
++/// that matters: every queue operation still requires an [`Io`] token, which [`IoWindow::close`]
++/// stops issuing, and `close()` cancels the queue's URBs through its registration.
++struct QueueRegistration {
++    window: Arc<IoWindow>,
++    token: u64,
++    dev: NonNull<bindings::usb_device>,
++}
++
++impl QueueRegistration {
++    fn new(window: &Arc<IoWindow>, dev: NonNull<bindings::usb_device>) -> Result<Self> {
++        // SAFETY: `dev` is a valid `struct usb_device`; take a reference so it outlives the queue
++        // (released in `Drop`).
++        unsafe { bindings::usb_get_dev(dev.as_ptr()) };
++
++        Ok(Self {
++            token: window.new_token(),
++            window: window.clone(),
++            dev,
++        })
++    }
++
++    fn register(&self, urb: NonNull<bindings::urb>) -> Result {
++        self.window.register_urb(self.token, urb)
++    }
++
++    /// Checks that `io` was taken from the same window this queue was opened against, so a queue
++    /// cannot be driven using a token that proves nothing about *its* device's I/O state.
++    fn check(&self, io: &Io<'_>) -> Result {
++        if !core::ptr::eq(&*self.window, io.window) {
++            return Err(EINVAL);
++        }
++        Ok(())
++    }
++}
++
++impl Drop for QueueRegistration {
++    fn drop(&mut self) {
++        // Drop the window's records of this queue's URBs before the queue frees them, so a
++        // concurrent `IoWindow::close()` can never see a freed URB.
++        self.window.deregister(self.token);
++
++        // SAFETY: balances the `usb_get_dev()` taken in `new()`.
++        unsafe { bindings::usb_put_dev(self.dev.as_ptr()) };
++    }
++}
++
++/// One slot of a queue: a URB, its DMA buffer, and the completion its callback signals.
++///
++/// The buffer and completion outlive the URB's submission; all three are released together, and
++/// only after the URB has been killed.
++struct UrbSlot {
++    urb: NonNull<bindings::urb>,
++    buf: KVec<u8>,
++    done: KBox<Opaque<bindings::completion>>,
++    /// Whether the URB is currently submitted. Tracked so a failed (re-)submission is not
++    /// mistaken for an outstanding transfer, which would leave a later wait blocked forever on a
++    /// completion that can no longer fire.
++    posted: bool,
++}
++
++impl UrbSlot {
++    /// Allocates and fills one slot's URB for `pipe`.
++    ///
++    /// `fill_buffer` selects whether the URB is pointed at the slot's buffer now (IN queues, whose
++    /// URBs are submitted as-is) or left null-buffered to be filled per transfer (OUT queues).
++    fn new(
++        dev: NonNull<bindings::usb_device>,
++        pipe: u32,
++        buf_len: usize,
++        fill_buffer: bool,
++    ) -> Result<Self> {
++        // Convert the length before allocating the URB, so a failure here cannot leak one.
++        let len: kernel::ffi::c_int = buf_len.try_into()?;
++
++        let mut buf = KVec::from_elem(0u8, buf_len, GFP_KERNEL)?;
++
++        // Heap-allocated so its address stays stable for as long as the URB refers to it through
++        // `context`.
++        let done: KBox<Opaque<bindings::completion>> = KBox::new(Opaque::uninit(), GFP_KERNEL)?;
++        // SAFETY: `done.get()` points at valid, uninitialized storage for a `struct completion`.
++        unsafe { bindings::init_completion(done.get()) };
++
++        // SAFETY: standard URB allocation; returns NULL on OOM.
++        let urb = unsafe { bindings::usb_alloc_urb(0, bindings::GFP_KERNEL) };
++        let urb = NonNull::new(urb).ok_or(ENOMEM)?;
++
++        let (ptr, filled_len) = if fill_buffer {
++            (buf.as_mut_ptr().cast(), len)
++        } else {
++            (core::ptr::null_mut(), 0)
++        };
++
++        // SAFETY: `urb` is a freshly-allocated URB; `dev`, and the buffer and completion owned by
++        // the returned slot, all outlive it (the slot's `Drop` kills the URB first).
++        unsafe {
++            bindings::usb_fill_bulk_urb(
++                urb.as_ptr(),
++                dev.as_ptr(),
++                pipe,
++                ptr,
++                filled_len,
++                Some(urb_signal_complete),
++                done.get().cast(),
++            );
++        }
++
++        Ok(Self {
++            urb,
++            buf,
++            done,
++            posted: false,
++        })
++    }
++
++    /// Waits up to `timeout` for this slot's transfer to complete.
++    ///
++    /// Returns `Ok(false)` if the wait timed out with the URB still outstanding.
++    fn wait(&self, timeout: Delta) -> Result<bool> {
++        // SAFETY: `__msecs_to_jiffies()` is a pure conversion.
++        let jiffies = unsafe {
++            bindings::__msecs_to_jiffies(timeout.as_millis().try_into().unwrap_or(u32::MAX))
++        };
++
++        // SAFETY: `self.done` is a valid, initialized completion.
++        let remaining = unsafe { bindings::wait_for_completion_timeout(self.done.get(), jiffies) };
++        Ok(remaining != 0)
++    }
++
++    /// Re-arms the completion and submits the URB, recording whether it is now outstanding.
++    fn submit(&mut self) -> Result {
++        // SAFETY: the URB is not outstanding right now, so nothing races the reset.
++        unsafe { bindings::reinit_completion(self.done.get()) };
++
++        // SAFETY: `self.urb` is valid and not currently submitted; submitting hands the buffer to
++        // the controller until completion.
++        let rc = unsafe { bindings::usb_submit_urb(self.urb.as_ptr(), bindings::GFP_KERNEL) };
++        self.posted = rc == 0;
++        to_result(rc)
++    }
++}
++
++impl Drop for UrbSlot {
++    fn drop(&mut self) {
++        // Cancel before freeing: `usb_kill_urb()` waits for any in-flight completion callback, so
++        // afterwards nothing the controller could touch is released. The buffer and completion
++        // are dropped as fields, after this body.
++        // SAFETY: `self.urb` is a valid URB allocated by `usb_alloc_urb()`.
++        unsafe { bindings::usb_kill_urb(self.urb.as_ptr()) };
++        // SAFETY: `self.urb` is valid and now cancelled.
++        unsafe { bindings::usb_free_urb(self.urb.as_ptr()) };
++    }
++}
++
++/// A persistently-queued asynchronous bulk IN reader. See [`Io::bulk_in_queue`].
++///
++/// [`recv`](Self::recv) waits for the next queued transfer, copies its data out and immediately
++/// re-submits its URB, so the endpoint stays posted.
++pub struct BulkInQueue {
++    inner: QueueRegistration,
++    slots: KVec<UrbSlot>,
++    cursor: usize,
++}
++
++// SAFETY: The queue exclusively owns its device reference, URBs, buffers and completions. None is
++// tied to the creating thread, every operation that mutates it takes `&mut self`, and `Drop` kills
++// each URB before releasing the resources it refers to.
++unsafe impl Send for BulkInQueue {}
++
++impl BulkInQueue {
++    /// Opens a persistently-queued asynchronous bulk IN reader on `endpoint`.
++    ///
++    /// Allocates `depth` URBs, each with its own `buf_len`-byte DMA buffer, and submits them all
++    /// up front, so the controller keeps `depth` IN transfers posted to the device continuously.
++    /// This differs from [`Io::bulk_recv`], which posts a single URB only for the duration of the
++    /// call and so leaves the endpoint un-posted in between -- a window in which a device that
++    /// pushes a large reply while the host is blocked on an OUT can deadlock the bus.
++    ///
++    /// `io` must have been taken from `window`; it proves I/O is permitted right now. The queue's
++    /// URBs are registered with `window`, so [`IoWindow::close`] cancels them.
++    ///
++    /// Sleeps; must be called from process context.
++    pub fn new(
++        window: &Arc<IoWindow>,
++        io: &Io<'_>,
++        endpoint: &Endpoint<BulkIn>,
++        depth: usize,
++        buf_len: usize,
++    ) -> Result<Self> {
++        // A zero-depth queue has no slots, but `recv()` indexes slot zero and takes the cursor
++        // modulo the slot count; reject it rather than divide by zero later.
++        if depth == 0 || buf_len == 0 {
++            return Err(EINVAL);
++        }
++        if !core::ptr::eq(&**window, io.window) {
++            return Err(EINVAL);
++        }
++
++        let dev = io.device_nonnull()?;
++        // SAFETY: `dev` is a valid `struct usb_device`.
++        let pipe = unsafe { bindings::usb_rcvbulkpipe(dev.as_ptr(), endpoint.address().into()) };
++
++        // Build the queue -- which owns the device reference and whose `Drop` releases everything
++        // allocated so far -- before any fallible per-slot work, so no early return can leak.
++        let mut queue = Self {
++            inner: QueueRegistration::new(window, dev)?,
++            slots: KVec::with_capacity(depth, GFP_KERNEL)?,
++            cursor: 0,
++        };
++
++        for _ in 0..depth {
++            let slot = UrbSlot::new(dev, pipe, buf_len, /* fill_buffer: */ true)?;
++            queue.inner.register(slot.urb)?;
++            queue.slots.push(slot, GFP_KERNEL)?;
++        }
++
++        // Post every URB. On failure the queue's `Drop` kills and frees the rest.
++        for slot in queue.slots.iter_mut() {
++            slot.submit()?;
++        }
++
++        Ok(queue)
++    }
++
++    /// Waits up to `timeout` for the next queued IN transfer and copies up to `out.len()` bytes of
++    /// it into `out`.
++    ///
++    /// Returns `Ok(Some(n))` when a transfer completed -- its URB is re-submitted before
++    /// returning, so the endpoint stays posted -- `Ok(None)` on timeout with the URB still
++    /// outstanding, or `Err` if the transfer or the re-submission failed.
++    ///
++    /// `io` must come from the same [`IoWindow`] this queue was opened against; it proves I/O is
++    /// still permitted. Sleeps.
++    pub fn recv(&mut self, io: &Io<'_>, out: &mut [u8], timeout: Delta) -> Result<Option<usize>> {
++        self.inner.check(io)?;
++
++        let i = self.cursor;
++
++        // A previous re-submission may have failed, leaving this slot un-posted. Waiting on it
++        // would block on a completion that can never fire, so re-post it first.
++        if !self.slots[i].posted {
++            self.slots[i].submit()?;
++        }
++
++        if !self.slots[i].wait(timeout)? {
++            // Still outstanding; leave it posted so a later call keeps waiting on the same slot.
++            return Ok(None);
++        }
++
++        let slot = &self.slots[i];
++        let urb = slot.urb.as_ptr();
++        // SAFETY: the completion fired, so the controller is done with this URB; its result fields
++        // and buffer are race-free until it is re-submitted below.
++        let (status, len) = unsafe { ((*urb).status, (*urb).actual_length as usize) };
++        let n = len.min(out.len());
++        out[..n].copy_from_slice(&slot.buf[..n]);
++
++        self.cursor = (i + 1) % self.slots.len();
++
++        // Keep the endpoint posted, then report the completed transfer's status.
++        let resubmit = self.slots[i].submit();
++        if status != 0 {
++            return Err(Error::from_errno(status));
++        }
++        resubmit?;
++
++        Ok(Some(n))
++    }
++}
++
++/// An asynchronous, pipelined bulk OUT writer. See [`Io::bulk_out_queue`].
++///
++/// [`send`](Self::send) round-robins over the slots, waiting only for the transfer that previously
++/// used the slot it is about to reuse, so up to `depth - 1` transfers stay in flight while the
++/// next is prepared. [`flush`](Self::flush) drains them all.
++pub struct BulkOutQueue {
++    inner: QueueRegistration,
++    slots: KVec<UrbSlot>,
++    cursor: usize,
++}
++
++// SAFETY: As for `BulkInQueue`, the queue exclusively owns everything it refers to and cancels
++// every URB before releasing it.
++unsafe impl Send for BulkOutQueue {}
++
++impl BulkOutQueue {
++    /// Opens an asynchronous, pipelined bulk OUT writer on `endpoint`.
++    ///
++    /// Pre-allocates `depth` URBs with `buf_len`-byte DMA buffers but submits none up front: an
++    /// OUT URB carries caller data, so it is filled and submitted per [`send`](Self::send). This
++    /// lets up to `depth` transfers be in flight at once, instead of [`Io::bulk_send`]'s
++    /// block-per-transfer round trip.
++    ///
++    /// `io` must have been taken from `window`. Sleeps; must be called from process context.
++    pub fn new(
++        window: &Arc<IoWindow>,
++        io: &Io<'_>,
++        endpoint: &Endpoint<BulkOut>,
++        depth: usize,
++        buf_len: usize,
++    ) -> Result<Self> {
++        if depth == 0 || buf_len == 0 {
++            return Err(EINVAL);
++        }
++        if !core::ptr::eq(&**window, io.window) {
++            return Err(EINVAL);
++        }
++
++        let dev = io.device_nonnull()?;
++        // SAFETY: `dev` is a valid `struct usb_device`.
++        let pipe = unsafe { bindings::usb_sndbulkpipe(dev.as_ptr(), endpoint.address().into()) };
++
++        let mut queue = Self {
++            inner: QueueRegistration::new(window, dev)?,
++            slots: KVec::with_capacity(depth, GFP_KERNEL)?,
++            cursor: 0,
++        };
++
++        for _ in 0..depth {
++            let slot = UrbSlot::new(dev, pipe, buf_len, /* fill_buffer: */ false)?;
++            queue.inner.register(slot.urb)?;
++            queue.slots.push(slot, GFP_KERNEL)?;
++        }
++
++        Ok(queue)
++    }
++
++    /// Reaps slot `i` if it has an outstanding transfer, returning that transfer's status.
++    ///
++    /// `Ok(false)` means nothing was outstanding.
++    fn reap(&mut self, i: usize, timeout: Delta) -> Result<bool> {
++        if !self.slots[i].posted {
++            return Ok(false);
++        }
++
++        if !self.slots[i].wait(timeout)? {
++            // Leave it posted so a later call keeps waiting on it.
++            return Err(ETIMEDOUT);
++        }
++        self.slots[i].posted = false;
++
++        // SAFETY: the completion fired, so the controller is done with this URB.
++        let status = unsafe { (*self.slots[i].urb.as_ptr()).status };
++        if status != 0 {
++            return Err(Error::from_errno(status));
++        }
++
++        Ok(true)
++    }
++
++    /// Submits `data` as a bulk OUT transfer without waiting for it to complete.
++    ///
++    /// If the slot about to be reused still has a transfer outstanding, this blocks up to
++    /// `timeout` reaping it and surfaces its error. `data` must be no longer than the queue's
++    /// `buf_len`, else [`EMSGSIZE`].
++    ///
++    /// `io` must come from the same [`IoWindow`] this queue was opened against. Sleeps.
++    pub fn send(&mut self, io: &Io<'_>, data: &[u8], timeout: Delta) -> Result {
++        self.inner.check(io)?;
++
++        let i = self.cursor;
++        if data.len() > self.slots[i].buf.len() {
++            return Err(EMSGSIZE);
++        }
++
++        // Free the slot if its previous transfer is still outstanding.
++        self.reap(i, timeout)?;
++
++        let len = data.len().try_into()?;
++        self.slots[i].buf[..data.len()].copy_from_slice(data);
++
++        let buf_ptr = self.slots[i].buf.as_mut_ptr();
++        let urb = self.slots[i].urb.as_ptr();
++        // SAFETY: `urb` is valid and not currently submitted; `buf_ptr` is a DMA-capable buffer
++        // owned by the slot, valid for `len` bytes for the transfer's duration.
++        unsafe {
++            (*urb).transfer_buffer = buf_ptr.cast();
++            (*urb).transfer_buffer_length = len;
++        }
++
++        self.slots[i].submit()?;
++        self.cursor = (i + 1) % self.slots.len();
++
++        Ok(())
++    }
++
++    /// Waits up to `timeout` for every outstanding transfer to complete, returning the first error
++    /// encountered. Every slot is reaped regardless.
++    ///
++    /// `io` must come from the same [`IoWindow`] this queue was opened against. Sleeps.
++    pub fn flush(&mut self, io: &Io<'_>, timeout: Delta) -> Result {
++        self.inner.check(io)?;
++
++        let mut first_err = Ok(());
++        for i in 0..self.slots.len() {
++            if let Err(e) = self.reap(i, timeout) {
++                if first_err.is_ok() {
++                    first_err = Err(e);
++                }
++            }
++        }
++        first_err
++    }
++}
++
++/// URB completion callback (interrupt context).
++///
++/// Does nothing but signal the per-URB completion whose address was stored in `urb->context`; all
++/// data handling and re-submission happen in process context, so no IRQ-context locking is needed.
++/// Shared by both queue directions since it only fires the completion.
++///
++/// # Safety
++///
++/// `urb` must be a valid URB whose `context` points at a live `struct completion`, which
++/// [`UrbSlot::new`] guarantees by construction.
++unsafe extern "C" fn urb_signal_complete(urb: *mut bindings::urb) {
++    // SAFETY: by construction `context` points at a live, initialized completion that outlives the
++    // URB.
++    let done = unsafe { (*urb).context } as *mut bindings::completion;
++    // SAFETY: `done` is a valid completion; `complete()` is safe from interrupt context.
++    unsafe { bindings::complete(done) };
+ }
+ 
+ // SAFETY: `usb::Interface` is a transparent wrapper of `struct usb_interface`.

@@ -1,0 +1,10 @@
+[package]
+name = "kernel-shim"
+version = "0.0.1"
+edition = "2021"
+license = "GPL-2.0-or-later"
+description = "A crate literally named 'kernel', so `use kernel::bindings;` inside nested modules of the literal in-kernel vino sources (e.g. ake.rs's `id` submodule) resolves via the extern prelude exactly as it does in the real kernel Rust environment (where `kernel` is the real kernel crate) -- Rust `use` path resolution does not see through parent-module glob imports into nested submodules, only the extern prelude is visible everywhere."
+
+[lib]
+name = "kernel"
+path = "src/lib.rs"

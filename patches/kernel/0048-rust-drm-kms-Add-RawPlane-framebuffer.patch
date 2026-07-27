@@ -1,0 +1,62 @@
+From 0ddedb7cf557a7c9a8b5cd6c9379f058431802ee Mon Sep 17 00:00:00 2001
+From: Lyude Paul <lyude@redhat.com>
+Date: Thu, 23 May 2024 17:01:41 -0400
+Subject: [PATCH 048/113] rust: drm/kms: Add RawPlane::framebuffer()
+
+Returns the Framebuffer currently assigned in an atomic plane state.
+
+Signed-off-by: Lyude Paul <lyude@redhat.com>
+(cherry picked from commit 437520a60dac76dc904fd90adf0b47081ad97daa)
+---
+ rust/kernel/drm/kms/framebuffer.rs |  1 -
+ rust/kernel/drm/kms/plane.rs       | 18 +++++++++++++++++-
+ 2 files changed, 17 insertions(+), 2 deletions(-)
+
+diff --git a/rust/kernel/drm/kms/framebuffer.rs b/rust/kernel/drm/kms/framebuffer.rs
+index 582a21734fb9..54d0391388a9 100644
+--- a/rust/kernel/drm/kms/framebuffer.rs
++++ b/rust/kernel/drm/kms/framebuffer.rs
+@@ -63,7 +63,6 @@ impl<T: KmsDriver> Framebuffer<T> {
+     /// The caller guarantews that `ptr` points to a initialized `struct drm_framebuffer` for at
+     /// least the entire lifetime of `'a`.
+     #[inline]
+-    #[allow(dead_code)]
+     pub(super) unsafe fn from_raw<'a>(ptr: *const bindings::drm_framebuffer) -> &'a Self {
+         // SAFETY: Our data layout is identical to drm_framebuffer
+         unsafe { &*ptr.cast() }
+diff --git a/rust/kernel/drm/kms/plane.rs b/rust/kernel/drm/kms/plane.rs
+index 91be1a87a924..2791d341f1ac 100644
+--- a/rust/kernel/drm/kms/plane.rs
++++ b/rust/kernel/drm/kms/plane.rs
+@@ -5,7 +5,7 @@
+ //! C header: [`include/drm/drm_plane.h`](srctree/include/drm/drm_plane.h)
+ 
+ use super::{
+-    atomic::*, crtc::*, KmsDriver, ModeObject, ModeObjectVtable, StaticModeObject,
++    atomic::*, crtc::*, framebuffer::*, KmsDriver, ModeObject, ModeObjectVtable, StaticModeObject,
+     UnregisteredKmsDevice, Sealed
+ };
+ use crate::{
+@@ -631,6 +631,22 @@ fn atomic_helper_check<S, D>(
+             )
+         })
+     }
++
++    /// Return the framebuffer currently set for this plane state
++    #[inline]
++    fn framebuffer<D>(&self) -> Option<&Framebuffer<D>>
++    where
++        Self::Plane: ModeObject<Driver = D>,
++        D: KmsDriver,
++    {
++        // SAFETY: The layout of Framebuffer<T> is identical to `fb`
++        unsafe {
++            self.as_raw()
++                .fb
++                .as_ref()
++                .map(|fb| Framebuffer::from_raw(fb))
++        }
++    }
+ }
+ impl<T: AsRawPlaneState + ?Sized> RawPlaneState for T {}
+ 

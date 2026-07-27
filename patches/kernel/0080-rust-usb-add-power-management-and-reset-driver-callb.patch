@@ -1,0 +1,203 @@
+From 18a02b3c0bf755d4b505c25a095d42ecf26d252c Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Wed, 22 Jul 2026 21:52:01 +0100
+Subject: [PATCH 080/113] rust: usb: add power-management and reset driver
+ callbacks
+
+`IoWindow` asks a driver to close its I/O window before suspend or
+pre_reset returns, but `Driver` only exposed probe and disconnect, so no
+driver could honour that half of the contract: the window stayed open
+across a system suspend or a USB port reset, and a deferred worker could
+issue a transfer into a window the USB core had already closed.
+
+Add the missing `suspend`, `resume`, `reset_resume`, `pre_reset` and
+`post_reset` callbacks, each defaulting to a no-op so existing drivers are
+unaffected, and wire them into the adapter's vtable. `reset_resume`
+defaults to `resume`, matching what most USB drivers do.
+
+The shared dispatch takes an explicitly higher-ranked `fn` pointer: the
+interface and the driver data share the `'bound` lifetime, and an
+`impl FnOnce` bound loses that relationship.
+
+`IoWindow`'s documentation now names the exact callbacks that must close
+and reopen it, so its safety requirement is one a driver can actually meet.
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/kernel/usb.rs | 126 +++++++++++++++++++++++++++++++++++++++++----
+ 1 file changed, 117 insertions(+), 9 deletions(-)
+
+diff --git a/rust/kernel/usb.rs b/rust/kernel/usb.rs
+index bf23f5c980fb..966898c38f9a 100644
+--- a/rust/kernel/usb.rs
++++ b/rust/kernel/usb.rs
+@@ -63,6 +63,11 @@ unsafe fn register(
+             (*udrv.get()).name = name.as_char_ptr();
+             (*udrv.get()).probe = Some(Self::probe_callback);
+             (*udrv.get()).disconnect = Some(Self::disconnect_callback);
++            (*udrv.get()).suspend = Some(Self::suspend_callback);
++            (*udrv.get()).resume = Some(Self::resume_callback);
++            (*udrv.get()).reset_resume = Some(Self::reset_resume_callback);
++            (*udrv.get()).pre_reset = Some(Self::pre_reset_callback);
++            (*udrv.get()).post_reset = Some(Self::post_reset_callback);
+             (*udrv.get()).id_table = T::ID_TABLE.as_ptr();
+         }
+ 
+@@ -119,6 +124,59 @@ extern "C" fn disconnect_callback(intf: *mut bindings::usb_interface) {
+ 
+         T::disconnect(intf, data);
+     }
++
++    /// Recovers the typed interface and driver data shared by every power-management and reset
++    /// callback, then dispatches to `f`.
++    ///
++    /// `f` is spelled as an explicitly higher-ranked `fn` pointer because the interface and the
++    /// driver data share the `'bound` lifetime; an `impl FnOnce` bound loses that relationship and
++    /// the trait methods no longer satisfy it.
++    fn pm_dispatch(
++        intf: *mut bindings::usb_interface,
++        f: for<'bound, 'a, 'b> fn(
++            &'bound Interface<device::Core<'a>>,
++            Pin<&'b T::Data<'bound>>,
++        ) -> Result,
++    ) -> kernel::ffi::c_int {
++        // SAFETY: The USB core only ever calls these with a valid `struct usb_interface`.
++        //
++        // INVARIANT: `intf` is valid for the duration of the callback.
++        let intf = unsafe { &*intf.cast::<Interface<device::CoreInternal<'_>>>() };
++
++        let dev: &device::Device<device::CoreInternal<'_>> = intf.as_ref();
++
++        // SAFETY: These callbacks only ever run between a successful `probe_callback()` and
++        // `disconnect_callback()`, so the driver data is present.
++        let data = unsafe { dev.drvdata_borrow::<T::Data<'_>>() };
++
++        from_result(|| {
++            f(intf, data)?;
++            Ok(0)
++        })
++    }
++
++    extern "C" fn suspend_callback(
++        intf: *mut bindings::usb_interface,
++        _message: bindings::pm_message_t,
++    ) -> kernel::ffi::c_int {
++        Self::pm_dispatch(intf, T::suspend)
++    }
++
++    extern "C" fn resume_callback(intf: *mut bindings::usb_interface) -> kernel::ffi::c_int {
++        Self::pm_dispatch(intf, T::resume)
++    }
++
++    extern "C" fn reset_resume_callback(intf: *mut bindings::usb_interface) -> kernel::ffi::c_int {
++        Self::pm_dispatch(intf, T::reset_resume)
++    }
++
++    extern "C" fn pre_reset_callback(intf: *mut bindings::usb_interface) -> kernel::ffi::c_int {
++        Self::pm_dispatch(intf, T::pre_reset)
++    }
++
++    extern "C" fn post_reset_callback(intf: *mut bindings::usb_interface) -> kernel::ffi::c_int {
++        Self::pm_dispatch(intf, T::post_reset)
++    }
+ }
+ 
+ /// Abstraction for the USB device ID structure, i.e. [`struct usb_device_id`].
+@@ -337,6 +395,55 @@ fn disconnect<'bound>(
+         interface: &'bound Interface<device::Core<'_>>,
+         data: Pin<&Self::Data<'bound>>,
+     );
++
++    /// The interface is being suspended.
++    ///
++    /// I/O is no longer permitted once this returns: the driver must stop every transfer it has
++    /// outstanding before returning, typically by closing its [`IoWindow`]. Returning an error
++    /// aborts the suspend.
++    fn suspend<'bound>(
++        _interface: &'bound Interface<device::Core<'_>>,
++        _data: Pin<&Self::Data<'bound>>,
++    ) -> Result {
++        Ok(())
++    }
++
++    /// The interface has been resumed and I/O is permitted again.
++    fn resume<'bound>(
++        _interface: &'bound Interface<device::Core<'_>>,
++        _data: Pin<&Self::Data<'bound>>,
++    ) -> Result {
++        Ok(())
++    }
++
++    /// The interface has been resumed after its device was reset while suspended.
++    ///
++    /// I/O is permitted again, but the device has lost the state configured before the suspend.
++    /// Defaults to [`resume`](Driver::resume).
++    fn reset_resume<'bound>(
++        interface: &'bound Interface<device::Core<'_>>,
++        data: Pin<&Self::Data<'bound>>,
++    ) -> Result {
++        Self::resume(interface, data)
++    }
++
++    /// The device is about to be reset.
++    ///
++    /// As for [`suspend`](Driver::suspend), the driver must stop all I/O before returning.
++    fn pre_reset<'bound>(
++        _interface: &'bound Interface<device::Core<'_>>,
++        _data: Pin<&Self::Data<'bound>>,
++    ) -> Result {
++        Ok(())
++    }
++
++    /// The device has been reset and I/O is permitted again.
++    fn post_reset<'bound>(
++        _interface: &'bound Interface<device::Core<'_>>,
++        _data: Pin<&Self::Data<'bound>>,
++    ) -> Result {
++        Ok(())
++    }
+ }
+ 
+ /// A USB interface.
+@@ -594,10 +701,10 @@ impl IoWindow {
+     /// unsafe assertion at every individual transfer. The caller must:
+     ///
+     /// - call this only from a context where I/O on `interface` is permitted and the interface is
+-    ///   bound to the calling driver: a successful `probe()`, `resume()`, `reset_resume()` or
+-    ///   `post_reset()`;
+-    /// - call [`close`](Self::close) before the matching `disconnect()`, `suspend()` or
+-    ///   `pre_reset()` callback returns.
++    ///   bound to the calling driver: a successful [`Driver::probe`];
++    /// - call [`close`](Self::close) before [`Driver::disconnect`], [`Driver::suspend`] or
++    ///   [`Driver::pre_reset`] returns, and [`reopen`](Self::reopen) from [`Driver::resume`],
++    ///   [`Driver::reset_resume`] or [`Driver::post_reset`].
+     ///
+     /// Once those hold, everything reachable from this window is safe: [`enter`](Self::enter)
+     /// refuses to hand out new tokens after `close()`, and `close()` waits for the outstanding
+@@ -640,8 +747,9 @@ pub fn interface(&self) -> &Interface {
+     /// this window is killed, which releases anything blocked waiting on one, and the call then
+     /// blocks until the last outstanding token has been dropped.
+     ///
+-    /// This must be called from the driver's `disconnect()`, `suspend()` or `pre_reset()` callback
+-    /// before it returns. It is idempotent. It sleeps, so it must be called from process context.
++    /// This must be called from the driver's [`Driver::disconnect`], [`Driver::suspend`] or
++    /// [`Driver::pre_reset`] callback before it returns. It is idempotent. It sleeps, so it must
++    /// be called from process context.
+     pub fn close(&self) {
+         let mut state = self.state.lock();
+         state.open = false;
+@@ -664,9 +772,9 @@ pub fn close(&self) {
+ 
+     /// Reopens a window that was closed by a suspend or pre-reset.
+     ///
+-    /// Only valid from `resume()`, `reset_resume()` or `post_reset()`, where the USB core has just
+-    /// re-permitted I/O. Reopening after `disconnect()` is a bug; the bound data (and with it this
+-    /// window) is dropped there instead.
++    /// Only valid from [`Driver::resume`], [`Driver::reset_resume`] or [`Driver::post_reset`],
++    /// where the USB core has just re-permitted I/O. Reopening after [`Driver::disconnect`] is a
++    /// bug; the bound data (and with it this window) is dropped there instead.
+     pub fn reopen(&self) {
+         self.state.lock().open = true;
+     }

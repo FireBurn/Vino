@@ -1,0 +1,38 @@
+From 78a2741f9eb75bc0e3e9e4c8ff697471eb37639f Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Wed, 1 Jul 2026 22:40:56 +0100
+Subject: [PATCH 063/113] rust: drm: expose <drm/display/drm_hdcp.h> HDCP 2.2
+ message definitions
+
+Add <drm/display/drm_hdcp.h> to the bindings so Rust DRM drivers can use
+the canonical HDCP 2.2 message IDs (HDCP_2_2_AKE_INIT ..
+HDCP_2_2_REP_STREAM_READY), length constants and hdcp2_* message structs
+instead of redefining them. The header only pulls in <linux/types.h>, so
+it adds no new heavy dependencies.
+
+The Vino DisplayLink DL3 driver uses these for its HDCP 2.2 AKE/LC/SKE
+handshake (carried over a vendor USB transport rather than the DP/HDMI
+HDCP transport, so only the message definitions are reused, not the
+drm_hdcp_helper state machine).
+
+(cherry picked from commit 9a4f666b34f1c2bb2ac92deb0865f1aaa485c650)
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/bindings/bindings_helper.h | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/rust/bindings/bindings_helper.h b/rust/bindings/bindings_helper.h
+index bbd7a5a1372d..621f76332a99 100644
+--- a/rust/bindings/bindings_helper.h
++++ b/rust/bindings/bindings_helper.h
+@@ -30,6 +30,7 @@
+ 
+ #include <linux/acpi.h>
+ #include <linux/gpu_buddy.h>
++#include <drm/display/drm_hdcp.h>
+ #include <drm/drm_atomic.h>
+ #include <drm/drm_atomic_helper.h>
+ #include <drm/clients/drm_client_setup.h>
