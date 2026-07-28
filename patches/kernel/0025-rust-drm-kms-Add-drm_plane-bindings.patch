@@ -1,7 +1,7 @@
-From f958a024aadac7e88a6352b83d6489275ad4d139 Mon Sep 17 00:00:00 2001
+From e4658f2488e9fa8ce419e50cf0b5228067ddbba1 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Fri, 17 May 2024 16:43:41 -0400
-Subject: [PATCH 025/113] rust: drm/kms: Add drm_plane bindings
+Subject: [PATCH 025/106] rust: drm/kms: Add drm_plane bindings
 
 The next step is adding a set of basic bindings to create a plane, which
 has to happen before we can create a CRTC (since we need to be able to at

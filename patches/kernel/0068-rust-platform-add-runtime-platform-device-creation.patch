@@ -1,41 +1,41 @@
-From e0878e40ce840ce56733c0c9c074bf184d0ce5de Mon Sep 17 00:00:00 2001
+From d703c44d818caf11da4e4efe16ba08badee0cf8d Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 06:19:08 +0100
-Subject: [PATCH 068/113] rust: platform: add runtime platform device creation
+Subject: [PATCH 068/106] rust: platform: add runtime platform device creation
 
-The platform abstraction can register a driver (platform::Driver) but not create
-a device for it to bind to. Virtual drivers that spawn their own devices -- for
-instance DisplayLink's evdi, which creates one platform device per virtual
-display card from a sysfs attribute or at module load -- need the provider side.
+Add the provider side of the Rust platform abstraction for virtual
+drivers that create devices at runtime.
 
-Add platform::RegisteredDevice, a thin owner around
-platform_device_register_full() whose Drop calls platform_device_unregister()
-(which unbinds any bound driver first), plus DEVID_AUTO/DEVID_NONE constants and
-a name/id/parent/dma_mask constructor. The non-generic methods are #[inline] so
-out-of-tree modules can use them without an exported symbol.
-
-(cherry picked from commit 6f24d6c3d3abccdb00101f09ccbf753e0e8a4977)
+RegisteredDevice owns a platform_device_register_full() result and
+unregisters it on drop. Its constructor accepts the name, ID, parent,
+and DMA mask, and exposes the DEVID_AUTO and DEVID_NONE constants.
 
 Assisted-by: Claude:claude-opus-5-0
 Assisted-by: Codex:gpt-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- rust/kernel/platform.rs | 77 +++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 77 insertions(+)
+ rust/kernel/platform.rs | 86 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 86 insertions(+)
 
 diff --git a/rust/kernel/platform.rs b/rust/kernel/platform.rs
-index 9b362e0495d3..4c2ded2e264f 100644
+index 9b362e0495d3..4a818fc3f18f 100644
 --- a/rust/kernel/platform.rs
 +++ b/rust/kernel/platform.rs
-@@ -571,3 +571,80 @@ unsafe impl Sync for Device {}
+@@ -571,3 +571,89 @@ unsafe impl Sync for Device {}
  // SAFETY: Same as `Device<Normal>` -- the underlying `struct platform_device` is the same;
  // `Bound` is a zero-sized type-state marker that does not affect thread safety.
  unsafe impl Sync for Device<device::Bound> {}
 +
-+/// Auto-assign a platform device instance id (`PLATFORM_DEVID_AUTO`).
-+pub const DEVID_AUTO: i32 = bindings::PLATFORM_DEVID_AUTO;
-+/// Create a platform device with no instance id (`PLATFORM_DEVID_NONE`).
-+pub const DEVID_NONE: i32 = bindings::PLATFORM_DEVID_NONE;
++/// The instance identifier of a runtime-created platform device.
++#[derive(Copy, Clone)]
++pub enum DeviceId {
++    /// Auto-assign a unique instance identifier (`PLATFORM_DEVID_AUTO`).
++    Auto,
++    /// Create an unnumbered device (`PLATFORM_DEVID_NONE`).
++    None,
++    /// Use the given non-negative instance identifier.
++    Fixed(u32),
++}
 +
 +/// An owned platform device created and registered at runtime.
 +///
@@ -61,22 +61,25 @@ index 9b362e0495d3..4c2ded2e264f 100644
 +    /// Create and register a new platform device.
 +    ///
 +    /// `name` is the platform device name, which the platform bus also uses to match a [`Driver`].
-+    /// `id` is the instance id: [`DEVID_AUTO`] to auto-assign a unique one, [`DEVID_NONE`] for an
-+    /// unnumbered device, or a fixed non-negative value. If `parent` is given, the new device is
-+    /// created as its child. `dma_mask` requests a coherent DMA mask of that many bits (pass `0`
-+    /// to leave the platform default).
++    /// If `parent` is given, the new device is created as its child. `dma_mask` is the DMA mask to
++    /// assign to the device; `None` leaves the platform default.
 +    #[inline]
 +    pub fn new(
 +        name: &CStr,
-+        id: i32,
++        id: DeviceId,
 +        parent: Option<&device::Device>,
-+        dma_mask: u64,
++        dma_mask: Option<u64>,
 +    ) -> Result<Self> {
++        let id = match id {
++            DeviceId::Auto => bindings::PLATFORM_DEVID_AUTO,
++            DeviceId::None => bindings::PLATFORM_DEVID_NONE,
++            DeviceId::Fixed(id) => i32::try_from(id).map_err(|_| EINVAL)?,
++        };
 +        let info = bindings::platform_device_info {
 +            parent: parent.map_or(core::ptr::null_mut(), |p| p.as_raw()),
 +            name: name.as_char_ptr(),
 +            id,
-+            dma_mask,
++            dma_mask: dma_mask.unwrap_or(0),
 +            ..Default::default()
 +        };
 +

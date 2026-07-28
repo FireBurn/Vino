@@ -1,0 +1,3426 @@
+From 9f6655f38c7e1addd8114ae7b14cb835a709bb28 Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Tue, 28 Jul 2026 21:21:15 +0100
+Subject: [PATCH 105/106] drm/vino: add the Dell D6000 USB display driver
+
+Add the USB-facing Vino driver for the Dell D6000 DisplayLink
+function. Connect the encrypted control protocol, KMS engine, and
+video transport. One bound-device object owns the DRM registration,
+session, revocable I/O capability, workqueues, and endpoint state.
+
+Discover typed endpoints and queue authentication on a private
+workqueue. Suspend, reset, disconnect, and recovery quiesce producers
+before revoking USB I/O, drain submitted work, unplug DRM, and release
+the session in dependency order.
+
+Retry transient session-establishment failures and defer a head-local
+discovery timeout to bounded runtime re-engagement. Keep routine
+protocol and scanout tracing behind the load-time debug parameter,
+and make the KUnit suite explicitly opt-in.
+
+Limit the match table to the validated 17e9:6006 profile; other
+DisplayLink products require separate hardware profiles and validation.
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ drivers/gpu/drm/Kconfig       |    1 +
+ drivers/gpu/drm/Makefile      |    1 +
+ drivers/gpu/drm/vino/Kconfig  |   36 +
+ drivers/gpu/drm/vino/Makefile |    2 +
+ drivers/gpu/drm/vino/vino.rs  | 3309 +++++++++++++++++++++++++++++++++
+ 5 files changed, 3349 insertions(+)
+ create mode 100644 drivers/gpu/drm/vino/Kconfig
+ create mode 100644 drivers/gpu/drm/vino/Makefile
+ create mode 100644 drivers/gpu/drm/vino/vino.rs
+
+diff --git a/drivers/gpu/drm/Kconfig b/drivers/gpu/drm/Kconfig
+index 3f2a70833c59..15d4188602f0 100644
+--- a/drivers/gpu/drm/Kconfig
++++ b/drivers/gpu/drm/Kconfig
+@@ -308,6 +308,7 @@ source "drivers/gpu/drm/ast/Kconfig"
+ source "drivers/gpu/drm/atmel-hlcdc/Kconfig"
+ source "drivers/gpu/drm/bridge/Kconfig"
+ source "drivers/gpu/drm/evdi/Kconfig"
++source "drivers/gpu/drm/vino/Kconfig"
+ source "drivers/gpu/drm/etnaviv/Kconfig"
+ source "drivers/gpu/drm/exynos/Kconfig"
+ source "drivers/gpu/drm/fsl-dcu/Kconfig"
+diff --git a/drivers/gpu/drm/Makefile b/drivers/gpu/drm/Makefile
+index 0912776bc544..7278bd387c5c 100644
+--- a/drivers/gpu/drm/Makefile
++++ b/drivers/gpu/drm/Makefile
+@@ -186,6 +186,7 @@ obj-$(CONFIG_DRM_VMWGFX)+= vmwgfx/
+ obj-$(CONFIG_DRM_VGEM)	+= vgem/
+ obj-$(CONFIG_DRM_VKMS)	+= vkms/
+ obj-$(CONFIG_DRM_EVDI)	+= evdi/
++obj-$(CONFIG_DRM_VINO)	+= vino/
+ obj-$(CONFIG_DRM_NOUVEAU) +=nouveau/
+ # nova-drm is built from drivers/gpu/Makefile together with nova-core.
+ obj-$(CONFIG_DRM_EXYNOS) +=exynos/
+diff --git a/drivers/gpu/drm/vino/Kconfig b/drivers/gpu/drm/vino/Kconfig
+new file mode 100644
+index 000000000000..f98507122fb3
+--- /dev/null
++++ b/drivers/gpu/drm/vino/Kconfig
+@@ -0,0 +1,36 @@
++# SPDX-License-Identifier: GPL-2.0
++config DRM_VINO
++	tristate "DisplayLink DL3 (Vino) open driver"
++	depends on USB
++	depends on DRM
++	depends on RUST
++	# RUST_DRM_GEM_SHMEM_HELPER depends on MMU; inherit that dependency here so the
++	# select below cannot generate an unmet-direct-dependency warning on nommu.
++	depends on MMU
++	select DRM_KMS_HELPER
++	select RUST_DRM_GEM_SHMEM_HELPER
++	select CRYPTO_RSA
++	select RUST_CRYPTO_AKCIPHER
++	select RUST_CRYPTO_LIB_AES
++	select RUST_CRYPTO_LIB_SHA256
++	help
++	  Open in-kernel Rust driver for the Dell Universal Dock D6000
++	  (USB ID 17e9:6006).
++
++	  It binds the dock over USB, runs the HDCP 2.2 control plane, mode-set
++	  and the Vino codec, and registers a DRM/KMS sink that scans out to the
++	  dock's video endpoints.
++
++	  To compile this as a module, choose M here: the module is called vino.
++
++	  If unsure, say N.
++
++config DRM_VINO_KUNIT_TEST
++	bool "KUnit tests for the Vino driver"
++	depends on DRM_VINO && KUNIT
++	help
++	  Build Vino's protocol, crypto and codec unit tests into the driver.
++	  The tests run when the driver is loaded, so this option is intended
++	  for driver development and test kernels rather than normal use.
++
++	  If in doubt, say N.
+diff --git a/drivers/gpu/drm/vino/Makefile b/drivers/gpu/drm/vino/Makefile
+new file mode 100644
+index 000000000000..6e39668040f3
+--- /dev/null
++++ b/drivers/gpu/drm/vino/Makefile
+@@ -0,0 +1,2 @@
++# SPDX-License-Identifier: GPL-2.0
++obj-$(CONFIG_DRM_VINO) += vino.o
+diff --git a/drivers/gpu/drm/vino/vino.rs b/drivers/gpu/drm/vino/vino.rs
+new file mode 100644
+index 000000000000..9d78899e733f
+--- /dev/null
++++ b/drivers/gpu/drm/vino/vino.rs
+@@ -0,0 +1,3309 @@
++// SPDX-License-Identifier: GPL-2.0
++// SPDX-FileCopyrightText: Copyright (C) 2026 Mike Lothian
++
++//! DRM/KMS driver for DisplayLink DL3 docks.
++//!
++//! Vino drives the Dell Universal Dock D6000 using a clean-room implementation of its USB control,
++//! HDCP authentication and compressed video protocols. Each device owns its control session and
++//! exposes two atomic KMS pipelines backed by shmem GEM objects.
++
++use kernel::{
++    alloc::flags::GFP_KERNEL,
++    alloc::Flags,
++    device::{self, Core},
++    drm,
++    drm::display::hdcp as drm_hdcp,
++    error::code::{EBUSY, EINVAL, ENODEV, EPROTO, ETIMEDOUT},
++    prelude::*,
++    sync::{aref::ARef, new_mutex, Arc, Mutex},
++    time::{
++        delay::{fsleep, udelay},
++        Delta, Instant, Monotonic,
++    },
++    usb,
++    workqueue::{impl_has_work, new_work, Work, WorkItem},
++};
++
++/// Whether the load-time `debug` parameter requested verbose protocol and scanout diagnostics.
++fn debug_enabled() -> bool {
++    *crate::module_parameters::debug.value() != 0
++}
++
++/// Emit a driver diagnostic only when the load-time `debug` parameter is nonzero.
++macro_rules! vino_debug {
++    ($($arg:tt)*) => {
++        if crate::debug_enabled() {
++            kernel::pr_info!($($arg)*);
++        }
++    };
++}
++
++/// Device-prefixed counterpart to [`vino_debug`].
++macro_rules! vino_dev_debug {
++    ($dev:expr, $($arg:tt)*) => {
++        if crate::debug_enabled() {
++            kernel::dev_info!($dev, $($arg)*);
++        }
++    };
++}
++
++/// DisplayLink vendor id.
++const VID_DISPLAYLINK: u16 = 0x17e9;
++/// Dell Universal Dock D6000 (DL3 family) product id.
++const PID_D6000: u16 = 0x6006;
++
++/// Control and per-head bulk endpoints.
++const EP_CTRL_OUT: u8 = 0x02;
++pub(crate) const EP_CTRL_IN: u8 = 0x84;
++/// The dock's endpoints, resolved once against interface 0's descriptor and validated for
++/// direction and transfer type by [`usb::Interface::endpoint`].
++///
++/// Resolving up front means the rest of the driver names an endpoint by what it *is* rather than
++/// by a bare address, so a bulk-OUT transfer cannot be aimed at the interrupt-IN status endpoint.
++/// The whole set is [`Copy`] (each entry is an address plus a max-packet size), so it can be
++/// carried by value in a [`UsbLink`] rather than borrowed.
++#[derive(Clone, Copy)]
++pub(crate) struct Endpoints {
++    /// EP02: host->dock control-plane bulk writes.
++    pub(crate) ctrl_out: usb::Endpoint<usb::BulkOut>,
++    /// EP84: dock->host control-plane bulk replies.
++    pub(crate) ctrl_in: usb::Endpoint<usb::BulkIn>,
++    /// Per-head video bulk-OUT endpoints ([`drm_sink::VIDEO_EPS`]).
++    pub(crate) video: [usb::Endpoint<usb::BulkOut>; drm_sink::HEADS],
++}
++
++impl Endpoints {
++    /// Resolves every endpoint the driver uses against `intf`'s active alternate setting.
++    ///
++    /// The control endpoints and the video endpoints are required; the interrupt status endpoint
++    /// is optional because only the bring-up probe reads it.
++    pub(crate) fn resolve<Ctx: device::DeviceContext>(intf: &usb::Interface<Ctx>) -> Result<Self> {
++        let mut video = [intf.endpoint::<usb::BulkOut>(drm_sink::VIDEO_EPS[0])?; drm_sink::HEADS];
++        for (slot, addr) in video.iter_mut().zip(drm_sink::VIDEO_EPS).skip(1) {
++            *slot = intf.endpoint::<usb::BulkOut>(addr)?;
++        }
++
++        Ok(Self {
++            ctrl_out: intf.endpoint::<usb::BulkOut>(EP_CTRL_OUT)?,
++            ctrl_in: intf.endpoint::<usb::BulkIn>(EP_CTRL_IN)?,
++            video,
++        })
++    }
++}
++
++/// A live USB transfer handle: an [`usb::Io`] token proving I/O is currently permitted, plus the
++/// resolved [`Endpoints`].
++///
++/// Obtaining one requires the device's [`usb::IoWindow`] to still be open, so a transfer cannot be
++/// issued after `disconnect()` has closed it. Carrying the endpoints in the handle also keeps raw
++/// endpoint addresses out of transfer call sites.
++pub(crate) struct UsbLink<'a> {
++    window: &'a Arc<usb::IoWindow>,
++    io: usb::Io<'a>,
++    eps: Endpoints,
++}
++
++impl<'a> UsbLink<'a> {
++    /// Opens a link on `window`, failing with `ENODEV` once the window has been closed.
++    pub(crate) fn open(window: &'a Arc<usb::IoWindow>, eps: Endpoints) -> Result<Self> {
++        Ok(Self {
++            io: window.enter()?,
++            window,
++            eps,
++        })
++    }
++
++    /// Opens the persistent EP84 control-plane reader.
++    pub(crate) fn ctrl_in_queue(&self, depth: usize, buf_len: usize) -> Result<usb::BulkInQueue> {
++        usb::BulkInQueue::new(self.window, &self.io, &self.eps.ctrl_in, depth, buf_len)
++    }
++
++    /// Opens the pipelined EP02 control-plane writer.
++    pub(crate) fn ctrl_out_queue(&self, depth: usize, buf_len: usize) -> Result<usb::BulkOutQueue> {
++        usb::BulkOutQueue::new(self.window, &self.io, &self.eps.ctrl_out, depth, buf_len)
++    }
++
++    /// Opens the pipelined video writer for `head`.
++    pub(crate) fn video_queue(
++        &self,
++        head: usize,
++        depth: usize,
++        buf_len: usize,
++    ) -> Result<usb::BulkOutQueue> {
++        let ep = self.eps.video.get(head).ok_or(EINVAL)?;
++        usb::BulkOutQueue::new(self.window, &self.io, ep, depth, buf_len)
++    }
++
++    /// The underlying I/O token, for the paths that open a persistent queue.
++    pub(crate) fn io(&self) -> &usb::Io<'a> {
++        &self.io
++    }
++
++    /// Writes a control-plane message to EP02.
++    pub(crate) fn ctrl_send(&self, data: &[u8], timeout: Delta, gfp: Flags) -> Result<usize> {
++        self.io.bulk_send(&self.eps.ctrl_out, data, timeout, gfp)
++    }
++
++    /// Reads a control-plane reply from EP84.
++    pub(crate) fn ctrl_recv(&self, data: &mut [u8], timeout: Delta, gfp: Flags) -> Result<usize> {
++        self.io.bulk_recv(&self.eps.ctrl_in, data, timeout, gfp)
++    }
++
++    /// Clears a stall on `head`'s video endpoint.
++    pub(crate) fn clear_video_halt(&self, head: usize) -> Result {
++        self.io.clear_halt(self.eps.video.get(head).ok_or(EINVAL)?)
++    }
++
++    /// Issues a control OUT transfer on EP0.
++    pub(crate) fn control_send(
++        &self,
++        request: u8,
++        request_type: u8,
++        value: u16,
++        index: u16,
++        data: &[u8],
++        timeout: Delta,
++        gfp: Flags,
++    ) -> Result {
++        self.io
++            .control_send(request, request_type, value, index, data, timeout, gfp)
++    }
++
++    /// Issues a control IN transfer on EP0.
++    pub(crate) fn control_recv(
++        &self,
++        request: u8,
++        request_type: u8,
++        value: u16,
++        index: u16,
++        data: &mut [u8],
++        timeout: Delta,
++        gfp: Flags,
++    ) -> Result {
++        self.io
++            .control_recv(request, request_type, value, index, data, timeout, gfp)
++    }
++
++    /// Selects an alternate setting on the driver's own interface.
++    pub(crate) fn set_alternate_setting(&self, alternate: u8) -> Result {
++        self.io.set_alternate_setting(alternate)
++    }
++}
++/// EP84 (dock-to-host) transfer size.
++///
++/// Replies larger than one transfer are delivered as consecutive fragments.
++const EP84_BUF: usize = 4096;
++/// Depth of the persistent EP84 IN reader.
++///
++/// The dock processes one reply at a time, but additional queue slots prevent gaps while a
++/// completed slot is reaped and reposted.
++const EP84_QUEUE_DEPTH: usize = 4;
++
++/// USB transfer timeout used during session setup.
++fn timeout() -> Delta {
++    Delta::from_millis(1000)
++}
++
++/// Short timeout for draining a per-message control reply after a runtime `send_cp`.
++///
++/// EP84 remains in lockstep with EP02, but not every message elicits a reply. A NAK or timeout
++/// therefore means that there is nothing to drain and must not stall scanout or keepalive work.
++pub(crate) fn cp_reply_timeout() -> Delta {
++    Delta::from_millis(8)
++}
++
++/// Time allowed for the downstream receiver to calculate H' during repeater authentication.
++///
++/// The dock acknowledges `AKE_No_Stored_km` before that calculation is complete, so an
++/// acknowledgment cannot be used as the readiness signal.
++const HDCP_HPRIME_WAIT_US: i64 = 165_000;
++
++/// Wait until `anchor` is at least `target_us` old.
++fn hold_until(anchor: Instant<Monotonic>, target_us: i64) {
++    const SPIN_MARGIN_US: i64 = 400;
++    let now = anchor.elapsed().as_micros_ceil();
++    if now >= target_us {
++        return;
++    }
++    if target_us - now > SPIN_MARGIN_US {
++        fsleep(Delta::from_micros(target_us - now - SPIN_MARGIN_US));
++    }
++    let now = anchor.elapsed().as_micros_ceil();
++    if now < target_us {
++        udelay(Delta::from_micros(target_us - now));
++    }
++}
++
++mod ake;
++mod cp;
++mod crypto;
++mod hdcp;
++mod proto;
++mod rng;
++mod video;
++mod video_arm;
++
++/// The state a completed HDCP 2.2 AKE leaves for control-plane setup.
++struct Session {
++    ks: kernel::crypto::Secret<{ drm_hdcp::ENCRYPTED_SESSION_KEY_LEN }>,
++    riv: [u8; drm_hdcp::RIV_LEN],
++    /// Next inner sequence counter after the AKE messages sent by [`run_ake`].
++    next_ctr: u16,
++    /// Receiver key retained for each downstream repeater authentication.
++    rsa: kernel::crypto::akcipher::RsaPublicKey,
++    rxid_list: KVec<u8>,
++}
++
++/// Tally of one [`drain_ep84`](VinoDriver::drain_ep84) sweep.
++///
++/// An acknowledgment is counted only after its inner header decrypts successfully. A tagged
++/// frame which does not decrypt is counted separately as a rejection.
++#[derive(Default, Clone, Copy)]
++struct Ep84Drain {
++    reads: usize,
++    acks: usize,
++    rejects: usize,
++    /// Sticky EDID-readiness result across combined sweeps.
++    edid_ready: bool,
++    /// Inner counter echoed by a per-head display-capability reply.
++    display_cap_ctr: Option<u16>,
++    /// Fresh per-head `rrx` used by downstream repeater authentication.
++    perhead_rrx: Option<[u8; drm_hdcp::RRX_LEN]>,
++}
++
++impl Ep84Drain {
++    /// Fold another sweep's counts into this running total.
++    fn add(&mut self, o: Ep84Drain) {
++        self.reads += o.reads;
++        self.acks += o.acks;
++        self.rejects += o.rejects;
++        self.edid_ready |= o.edid_ready;
++        self.display_cap_ctr = self.display_cap_ctr.or(o.display_cap_ctr);
++        self.perhead_rrx = self.perhead_rrx.or(o.perhead_rrx);
++    }
++}
++
++mod drm_sink;
++
++/// The USB driver itself. Stateless: everything per-binding lives in [`VinoBoundData`].
++struct VinoDriver;
++
++/// Per-bound-interface driver state.
++///
++/// Carries the DRM [`Registration`](drm::Registration), whose lifetime is tied to this bound
++/// device, so unbinding unregisters the card through the accepted registration teardown rather
++/// than a driver-local force-unplug.
++struct VinoBoundData {
++    _intf: ARef<usb::Interface>,
++    /// The registered DRM card, dropped on unbind.
++    ///
++    /// `None` only on idle non-control interfaces. On the control interface it owns the DRM
++    /// registration and provides `disconnect()` access to the device state.
++    registration: Option<drm::Registration<'static, drm_sink::VinoDrmDriver>>,
++    /// Owned handle to the deferred bring-up work (control interface only). `disconnect()` takes
++    /// the option under the mutex before synchronously cancelling the work and unplugging DRM.
++    /// The mutex itself is heap-pinned because kernel locks must not move after initialization.
++    bringup: Pin<KBox<Mutex<Option<Arc<BringUp>>>>>,
++}
++
++/// Deferred bring-up work item.
++///
++/// The device's dedicated session queue keeps blocking authentication and steady-state control I/O
++/// out of the USB probe path and the shared system workqueues.
++#[pin_data]
++struct BringUp {
++    ddev: ARef<drm_sink::VinoDrmDevice>,
++    #[pin]
++    work: Work<BringUp>,
++}
++
++impl_has_work! {
++    impl HasWork<Self> for BringUp { self.work }
++}
++
++impl BringUp {
++    fn new(ddev: ARef<drm_sink::VinoDrmDevice>) -> Result<Arc<Self>> {
++        Arc::pin_init(
++            pin_init!(BringUp {
++                ddev,
++                work <- new_work!("vino::bring_up"),
++            }),
++            GFP_KERNEL,
++        )
++    }
++}
++
++impl WorkItem for BringUp {
++    type Pointer = Arc<BringUp>;
++
++    fn run(this: Arc<BringUp>) {
++        let data: &drm_sink::VinoDrmData = &this.ddev;
++        let Ok(link) = UsbLink::open(&data.io, data.eps) else {
++            return;
++        };
++        let dev = &link;
++        let cdev: &device::Device = dev.io().interface().as_ref();
++        let ddev = &this.ddev;
++        // Establish the transport, authenticate the link and configure the encrypted control
++        // session before publishing the connectors. A transient failure must not leave an
++        // otherwise bound device inert until it is physically replugged.
++        const SESSION_ATTEMPTS: usize = 3;
++        let mut established = false;
++        for attempt in 1..=SESSION_ATTEMPTS {
++            if data.is_shutting_down() {
++                return;
++            }
++            let result = (|| -> Result {
++                VinoDriver::bring_up(dev)?;
++                vino_dev_debug!(cdev, "vino: plaintext session initialized\n");
++                let mut session = VinoDriver::run_ake(dev)?;
++                vino_dev_debug!(cdev, "vino: HDCP AKE + LC + SKE complete\n");
++
++                let mut edid_out: Option<KVec<u8>> = None;
++                let mut edid_heads: [Option<KVec<u8>>; VinoDriver::CP_SETUP_HEADS] =
++                    core::array::from_fn(|_| None);
++                let mut video_keys = core::array::from_fn(|_| kernel::crypto::Secret::zeroed());
++                let mut heads_present = [false; VinoDriver::CP_SETUP_HEADS];
++                let mut discovery_deferred = [false; VinoDriver::CP_SETUP_HEADS];
++                let (n, wseq_end, ctr_end) = VinoDriver::send_cp_setup(
++                    dev,
++                    &mut session,
++                    &mut edid_out,
++                    &mut edid_heads,
++                    &mut video_keys,
++                    &mut heads_present,
++                    &mut discovery_deferred,
++                )?;
++                vino_dev_debug!(
++                    cdev,
++                    "vino: encrypted control setup complete ({n} messages)\n"
++                );
++
++                // `send_cp_setup` only returns after an authenticated reply proves that the dock
++                // engaged the session. Publish it before connector state so runtime recovery can
++                // immediately finish any per-head discovery transaction that was deferred.
++                let drm_dev: &drm_sink::VinoDrmDevice = ddev;
++                let data: &drm_sink::VinoDrmData = drm_dev;
++                data.set_cp_engaged(true);
++                data.publish_session(dev, &session.ks, &session.riv, wseq_end, ctr_end);
++                data.set_video_keys(video_keys);
++
++                // Cache complete per-head discovery results before emitting the single initial
++                // hotplug event. A timed-out head remains absent and the keepalive's existing
++                // bounded re-engagement path retries it without discarding the live session.
++                for (head, slot) in edid_heads.into_iter().enumerate() {
++                    if discovery_deferred[head] {
++                        continue;
++                    }
++                    if let Some(blob) = slot {
++                        let n = blob.len();
++                        data.set_edid(head, blob);
++                        vino_dev_debug!(cdev, "vino: cached head {head} EDID ({n} bytes)\n");
++                    }
++                    if head == 0 || heads_present[head] {
++                        data.set_connected(head);
++                        dev_info!(cdev, "vino: head {head} monitor connected\n");
++                    }
++                }
++                Ok(())
++            })();
++
++            match result {
++                Ok(()) => {
++                    established = true;
++                    break;
++                }
++                Err(e) if attempt < SESSION_ATTEMPTS => {
++                    dev_warn!(
++                        cdev,
++                        "vino: control-session attempt {attempt}/{SESSION_ATTEMPTS} failed \
++                         ({e:?}); retrying\n"
++                    );
++                    fsleep(Delta::from_millis(250 * attempt as i64));
++                }
++                Err(e) => dev_err!(
++                    cdev,
++                    "vino: control session failed after {SESSION_ATTEMPTS} attempts ({e:?})\n"
++                ),
++            }
++        }
++        if !established {
++            return;
++        }
++        {
++            let drm_dev: &drm_sink::VinoDrmDevice = ddev;
++            // Give the downstream link its bounded training interval before userspace can submit a
++            // mode set. Status queries keep the control dialogue active during the interval.
++            if data.cp_engaged() {
++                let data: &drm_sink::VinoDrmData = drm_dev;
++                let start = Instant::<Monotonic>::now();
++                let window = Delta::from_millis(1300);
++                let mut polls = 0u32;
++                while Instant::<Monotonic>::now() - start < window && !data.is_shutting_down() {
++                    let _ = data.send_cp(dev, 0x14, 0, |ctr| cp::device_query_req(ctr, 0x000c));
++                    polls += 1;
++                    fsleep(Delta::from_millis(15));
++                }
++                vino_dev_debug!(cdev, "vino: link ready after {polls} status polls\n");
++            }
++            drm_dev.hotplug_event();
++            dev_info!(cdev, "vino: encrypted control session ready\n");
++
++            // The dock requires a continuous control dialogue for the lifetime of the session.
++            let data: &drm_sink::VinoDrmData = drm_dev;
++            vino_dev_debug!(cdev, "vino: starting control keepalive\n");
++            let mut sent = 0u32;
++            // Heartbeats have an independent fixed cadence alongside the status queries.
++            const HEARTBEAT_PERIOD: Delta = Delta::from_secs(3);
++            let mut next_heartbeat = Instant::<Monotonic>::now() + HEARTBEAT_PERIOD;
++            // Probe downstream presence slowly and debounce transitions.
++            const PRESENCE_PERIOD: Delta = Delta::from_millis(1000);
++            let mut next_presence = Instant::<Monotonic>::now() + PRESENCE_PERIOD;
++            let mut head_known = [false; VinoDriver::CP_SETUP_HEADS];
++            let mut head_debounce = [0u8; VinoDriver::CP_SETUP_HEADS];
++            /// Consecutive silent probes required before treating a head as disconnected.
++            const PRESENCE_SILENT_LIMIT: u8 = 3;
++            /// How often to retry the sink re-engage on a head believed to have no monitor.
++            ///
++            /// A recovered sink may not emit a uniquely identifiable event, so absent heads are
++            /// retried at a bounded cadence.
++            const REENGAGE_RETRY: Delta = Delta::from_millis(4000);
++            let mut next_reengage = [Instant::<Monotonic>::now(); VinoDriver::CP_SETUP_HEADS];
++            /// Settling period after re-engagement during which a negative probe is ignored.
++            const PRESENCE_GRACE: Delta = Delta::from_millis(10_000);
++            let mut presence_grace = [Instant::<Monotonic>::now(); VinoDriver::CP_SETUP_HEADS];
++            let mut head_silent = [0u8; VinoDriver::CP_SETUP_HEADS];
++            for h in 0..VinoDriver::CP_SETUP_HEADS {
++                head_known[h] = data.head_present(h);
++            }
++            while !data.is_shutting_down() {
++                // Mode-set markers and video activation form one exclusive transaction.
++                if data.cp_timeline_exclusive() {
++                    fsleep(Delta::from_millis(1));
++                    continue;
++                }
++                if data
++                    .send_cp(dev, 0x14, 0, |ctr| cp::device_query_req(ctr, 0x000c))
++                    .is_ok()
++                {
++                    sent += 1;
++                }
++                // Compare through the signed `Delta` returned by subtracting
++                // two instants.
++                let now = Instant::<Monotonic>::now();
++                if (now - next_heartbeat).as_millis() >= 0 {
++                    let _ = data.send_cp(dev, 0x16, 0, cp::heartbeat);
++                    // Advance from the previous deadline so a slow send does not cause drift.
++                    next_heartbeat = next_heartbeat + HEARTBEAT_PERIOD;
++                    if (now - next_heartbeat).as_millis() > 0 {
++                        next_heartbeat = now + HEARTBEAT_PERIOD; // fell far behind; resynchronise
++                    }
++                }
++                // Consume asynchronous pushes instead of leaving them for the next paired read.
++                const MAX_UNPAIRED_DRAIN: usize = 4;
++                data.drain_cp_pushes(dev, MAX_UNPAIRED_DRAIN);
++                // Keep trying to bring an absent head's sink back. See `REENGAGE_RETRY`.
++                {
++                    let now_r = Instant::<Monotonic>::now();
++                    for h in 0..VinoDriver::CP_SETUP_HEADS {
++                        if head_known[h] || (now_r - next_reengage[h]).as_millis() < 0 {
++                            continue;
++                        }
++                        next_reengage[h] = Instant::<Monotonic>::now() + REENGAGE_RETRY;
++                        vino_dev_debug!(
++                            cdev,
++                            "vino: head {h} absent -- retrying the sink re-engage\n"
++                        );
++                        // A valid EDID proves presence even while the generic status reply still
++                        // reflects an unengaged EDID handler.
++                        match data.reengage_head(dev, h as u8) {
++                            Ok(true) => {
++                                data.set_connected(h);
++                                head_known[h] = true;
++                                head_debounce[h] = 0;
++                                head_silent[h] = 0;
++                                presence_grace[h] = Instant::<Monotonic>::now() + PRESENCE_GRACE;
++                                dev_info!(
++                                    cdev,
++                                    "vino: head {h} monitor connected after sink re-engagement\n"
++                                );
++                                drm_dev.hotplug_event();
++                            }
++                            Ok(false) => {}
++                            Err(e) => {
++                                vino_dev_debug!(
++                                    cdev,
++                                    "vino: head {h} sink re-engagement failed ({e:?})\n"
++                                )
++                            }
++                        }
++                        head_silent[h] = 0;
++                        next_presence = Instant::<Monotonic>::now();
++                    }
++                }
++                // A topology push brings both presence probing and absent-head recovery forward.
++                if data.take_downstream_event() {
++                    next_presence = Instant::<Monotonic>::now();
++                    // Use one bounded recovery path for both periodic and event-driven retries.
++                    for h in 0..VinoDriver::CP_SETUP_HEADS {
++                        if !head_known[h] {
++                            next_reengage[h] = Instant::<Monotonic>::now();
++                        }
++                    }
++                }
++                let now_p = Instant::<Monotonic>::now();
++                if (now_p - next_presence).as_millis() >= 0 {
++                    next_presence = now_p + PRESENCE_PERIOD;
++                    for h in 0..VinoDriver::CP_SETUP_HEADS {
++                        let present = match data.probe_head_present(dev, h as u8) {
++                            Some(p) => {
++                                head_silent[h] = 0;
++                                p
++                            }
++                            None => {
++                                // A head vino blanked is silent because vino asked it to be. Only
++                                // the dock's own silence is evidence of an unplug.
++                                if data.is_self_blanked(h) {
++                                    continue;
++                                }
++                                head_silent[h] = head_silent[h].saturating_add(1);
++                                if head_silent[h] < PRESENCE_SILENT_LIMIT {
++                                    continue; // one dropped reply proves nothing
++                                }
++                                if head_known[h] {
++                                    dev_info!(
++                                        cdev,
++                                        "vino: head {h} presence probe silent for {} cycles -- \
++                                         treating as REMOVED\n",
++                                        head_silent[h]
++                                    );
++                                }
++                                false
++                            }
++                        };
++                        if present == head_known[h] {
++                            head_debounce[h] = 0;
++                            continue;
++                        }
++                        // Inside the settling window after a recovery, a negative answer is not
++                        // evidence -- see `PRESENCE_GRACE`.
++                        if !present
++                            && (Instant::<Monotonic>::now() - presence_grace[h]).as_millis() < 0
++                        {
++                            head_debounce[h] = 0;
++                            continue;
++                        }
++                        // Require two consecutive contrary reads before acting.
++                        head_debounce[h] = head_debounce[h].saturating_add(1);
++                        if head_debounce[h] < 2 {
++                            continue;
++                        }
++                        head_debounce[h] = 0;
++                        if present {
++                            // Re-engage the downstream sink before accepting another mode set.
++                            match data.reengage_head(dev, h as u8) {
++                                Ok(true) => {}
++                                Ok(false) => {
++                                    next_reengage[h] = Instant::<Monotonic>::now() + REENGAGE_RETRY;
++                                    continue;
++                                }
++                                Err(e) => {
++                                    vino_dev_debug!(
++                                        cdev,
++                                        "vino: head {h} sink re-engagement failed ({e:?})\n"
++                                    );
++                                    next_reengage[h] = Instant::<Monotonic>::now() + REENGAGE_RETRY;
++                                    continue;
++                                }
++                            }
++                            data.set_connected(h);
++                            head_known[h] = true;
++                            next_reengage[h] = Instant::<Monotonic>::now() + REENGAGE_RETRY;
++                            presence_grace[h] = Instant::<Monotonic>::now() + PRESENCE_GRACE;
++                            dev_info!(cdev, "vino: head {h} monitor connected\n");
++                            // Same downstream readiness wait as a fresh bring-up before notifying
++                            // userspace, so KWin's mode-set lands on a settled downstream link.
++                            let rs = Instant::<Monotonic>::now();
++                            while (Instant::<Monotonic>::now() - rs).as_millis() < 1300
++                                && !data.is_shutting_down()
++                            {
++                                let _ = data
++                                    .send_cp(dev, 0x14, 0, |ctr| cp::device_query_req(ctr, 0x000c));
++                                fsleep(Delta::from_millis(15));
++                            }
++                        } else {
++                            head_known[h] = false;
++                            next_reengage[h] = Instant::<Monotonic>::now() + REENGAGE_RETRY;
++                            data.set_disconnected(h);
++                            dev_info!(cdev, "vino: head {h} monitor disconnected\n");
++                        }
++                        drm_dev.hotplug_event();
++                        // Re-baseline the heartbeat/presence deadlines skipped during the wait.
++                        next_presence = Instant::<Monotonic>::now() + PRESENCE_PERIOD;
++                    }
++                }
++                fsleep(Delta::from_millis(13));
++            }
++            vino_dev_debug!(cdev, "vino: CP keepalive finished ({sent} polls)\n");
++        }
++    }
++}
++
++impl VinoDriver {
++    /// Initialize the plaintext control transport.
++    fn bring_up(dev: &UsbLink<'_>) -> Result {
++        // Control-request preamble: dock identity, interface selection, then the
++        // vendor-OUT 0x24 / vendor-IN 0x22 pair that starts the HDCP path.
++        const VENDOR_OUT: u8 = 0x40; // host->dev, vendor, device
++        const VENDOR_IN_IFACE: u8 = 0xc1; // device-to-host, vendor, interface recipient
++
++        // Individual vendor requests may stall. Only bulk initialization and
++        // its acknowledgment are required.
++        let mut dock_id = [0u8; 16];
++        match dev.control_recv(
++            0xfe,
++            VENDOR_IN_IFACE,
++            0,
++            1,
++            &mut dock_id,
++            timeout(),
++            GFP_KERNEL,
++        ) {
++            Ok(()) => vino_debug!("vino: device identity = {dock_id:02x?}\n"),
++            Err(e) => vino_debug!("vino: device identity unavailable ({e:?})\n"),
++        }
++        // A composite driver may only change its own interface.
++        match dev.set_alternate_setting(0) {
++            Ok(()) => {}
++            Err(e) => vino_debug!("vino: alternate setting unchanged ({e:?})\n"),
++        }
++        match dev.control_send(0x24, VENDOR_OUT, 3, 0, &[], timeout(), GFP_KERNEL) {
++            Ok(()) => {}
++            Err(e) => vino_debug!("vino: vendor preamble request stalled ({e:?})\n"),
++        }
++        // Request interface 0 state using the vendor interface recipient.
++        let mut state = [0u8; 28];
++        match dev.control_recv(
++            0x22,
++            VENDOR_IN_IFACE,
++            1,
++            0,
++            &mut state,
++            timeout(),
++            GFP_KERNEL,
++        ) {
++            Ok(()) => vino_debug!("vino: interface state = {state:02x?}\n"),
++            Err(e) => vino_debug!("vino: interface state unavailable ({e:?})\n"),
++        }
++
++        // The dock requires this exact plaintext initialization order. It acknowledges the
++        // sequence only after `init_4` and the following probe. The interleaved descriptor reads
++        // are best-effort because a short reply still completes the required control transfer.
++        const STD_IN: u8 = 0x80; // dev->host, standard, device
++        let mut desc = KVec::from_elem(0u8, 618, GFP_KERNEL)?;
++        let _ = dev.control_recv(
++            0x06,
++            STD_IN,
++            0x0200,
++            0,
++            &mut desc[..40],
++            timeout(),
++            GFP_KERNEL,
++        ); // CONFIG, 40
++        let _ = dev.control_recv(0x06, STD_IN, 0x0200, 0, &mut desc, timeout(), GFP_KERNEL);
++
++        // Report EP02's maximum packet size because exact-multiple messages require an explicit
++        // terminating short packet.
++        {
++            let total = ((desc[2] as usize) | ((desc[3] as usize) << 8)).min(desc.len());
++            let mut i = 0usize;
++            while i + 2 <= total {
++                let blen = desc[i] as usize;
++                if blen == 0 {
++                    break;
++                }
++                if desc[i + 1] == 0x05 && i + 7 <= total && desc[i + 2] == EP_CTRL_OUT {
++                    let wmax = (desc[i + 4] as u16) | ((desc[i + 5] as u16) << 8);
++                    vino_debug!("vino: EP02 max packet size {wmax}\n");
++                }
++                i += blen;
++            }
++        }
++
++        let send_required = |label: &str, msg: &[u8]| -> Result {
++            match dev.ctrl_send(msg, timeout(), GFP_KERNEL) {
++                Ok(_) => Ok(vino_debug!("vino: sent {label} ({} bytes)\n", msg.len())),
++                Err(e) => {
++                    pr_err!("vino: {label} failed ({e:?})\n");
++                    Err(e)
++                }
++            }
++        };
++        send_required("init_0", &proto::init_0()?)?;
++        send_required("init_25", &proto::init_25()?)?;
++        // Two required string reads between `init_25` and `init_4`.
++        let _ = dev.control_recv(
++            0x06,
++            STD_IN,
++            0x0300,
++            0x0000,
++            &mut desc[..255],
++            timeout(),
++            GFP_KERNEL,
++        ); // STRING #0
++        let _ = dev.control_recv(
++            0x06,
++            STD_IN,
++            0x0303,
++            0x0409,
++            &mut desc[..255],
++            timeout(),
++            GFP_KERNEL,
++        ); // STRING #3 en-US
++        send_required("init_4+probe", &proto::init_4_probe()?)?;
++
++        // Read the single ACK that follows init_4+probe.
++        let mut ack = KVec::from_elem(0u8, 1024, GFP_KERNEL)?;
++        match dev.ctrl_recv(&mut ack, timeout(), GFP_KERNEL) {
++            Ok(n) => vino_debug!(
++                "vino: session-init ACK = {n} bytes: {:02x?}\n",
++                &ack[..n.min(40)]
++            ),
++            Err(e) => {
++                pr_err!("vino: session acknowledgment failed ({e:?})\n");
++                return Err(e);
++            }
++        }
++
++        Ok(())
++    }
++
++    /// Number of display heads the post-msg0 CP setup burst re-states the AKE for. Tied to the
++    /// single head-count knob `drm_sink::HEADS` so bumping the head count is a one-line change
++    /// (was a duplicated literal `2` that had to be kept in sync by hand).
++    const CP_SETUP_HEADS: usize = drm_sink::HEADS;
++
++    /// Reads the next HDCP response (type=4 sub=0x25, sec 5.2) from EP `0x84`,
++    /// skipping any non-HDCP frames (e.g. plain ACKs) in between, and returns the
++    /// parsed `(msg_id, payload)`. Bounded retry so a chatty dock can't wedge us.
++    fn recv_hdcp(dev: &UsbLink<'_>) -> Result<(u8, KVec<u8>)> {
++        const SUB_HDCP_RESP: u16 = 0x25;
++        // The dock interleaves capability blocks up to ~5.8 KiB into the AKE reply
++        // stream; size the buffer like the rest of the EP84 reads ([`EP84_BUF`]) so a
++        // large frame is read whole rather than truncated/`-EOVERFLOW`'d.
++        let mut buf = KVec::from_elem(0u8, EP84_BUF, GFP_KERNEL)?;
++        for _ in 0..24 {
++            // The dock interleaves status and capability pushes with the HDCP replies.
++            let n = dev.ctrl_recv(&mut buf, timeout(), GFP_KERNEL)?;
++            if n < 16 {
++                continue;
++            }
++            // Include interleaved capability and status frames in dynamic-debug output.
++            {
++                let wsub = u16::from_le_bytes([buf[8], buf[9]]);
++                let iid = if n >= 18 {
++                    u16::from_le_bytes([buf[16], buf[17]])
++                } else {
++                    0
++                };
++                let isub = if n >= 20 {
++                    u16::from_le_bytes([buf[18], buf[19]])
++                } else {
++                    0
++                };
++                vino_debug!(
++                    "vino: AKE-EP84 {n}B wsub={wsub:#x} inner_id={iid:#x} inner_sub={isub:#x}\n"
++                );
++            }
++            if u16::from_le_bytes([buf[8], buf[9]]) != SUB_HDCP_RESP {
++                continue; // non-HDCP frame -- skip
++            }
++            if let Some((id, payload)) = ake::parse_in(&buf[16..n]) {
++                // Inner msg_id 0 is a status/ACK frame (the dock emits one as a
++                // sub=0x25 frame after each OUT message, e.g. the `14 00 76 00...`
++                // frame after AKE_Init) -- skip it and keep reading for the real
++                // HDCP response, mirroring the oracle's recv_hdcp_msg.
++                if id == 0 {
++                    continue;
++                }
++                let mut pl = KVec::with_capacity(payload.len(), GFP_KERNEL)?;
++                pl.extend_from_slice(payload, GFP_KERNEL)?;
++                return Ok((id, pl));
++            }
++        }
++        Err(EINVAL)
++    }
++
++    /// Drain one repeater-authentication acknowledgment before the next request.
++    ///
++    /// The dock enforces request/reply lockstep during this phase. The drain is bounded and
++    /// best-effort so an idle dock cannot stall teardown.
++    fn pace_cap_ack(dev: &UsbLink<'_>, want_ctr: u16, saw_cap_complete: &mut bool) {
++        // EP84 frames here can carry an interleaved capability block up to ~5.8 KiB;
++        // size to [`EP84_BUF`] so a large frame isn't truncated mid-pacing.
++        let Ok(mut buf) = KVec::from_elem(0u8, EP84_BUF, GFP_KERNEL) else {
++            return;
++        };
++        for _ in 0..8 {
++            match dev.ctrl_recv(&mut buf, Delta::from_millis(30), GFP_KERNEL) {
++                Ok(len) if len >= 22 => {
++                    let wsub = u16::from_le_bytes([buf[8], buf[9]]);
++                    let iid = u16::from_le_bytes([buf[16], buf[17]]);
++                    let isub = u16::from_le_bytes([buf[18], buf[19]]);
++                    let ictr = u16::from_le_bytes([buf[20], buf[21]]);
++                    if iid == 0x0b && isub == 0x84 {
++                        *saw_cap_complete = true;
++                    }
++                    // The per-frame cap-ack: wsub=0x25, inner id=0x14 sub=0x10 ctr=want.
++                    // An interleaved cap push (sub=0x84) or earlier ack -- keep reading.
++                    if wsub == 0x25 && iid == 0x14 && ictr == want_ctr {
++                        return;
++                    }
++                }
++                // A short frame (header-only ack/keepalive): not our cap-ack, but the
++                // dock is still talking -- keep pacing rather than bailing out.
++                Ok(_) => continue,
++                // Nothing queued within the short window -- the dock is idle, don't block.
++                Err(_) => return,
++            }
++        }
++    }
++
++    /// Drain the terminal capability burst before arming the encrypted control plane.
++    ///
++    /// The terminal markers are capability-complete (`id=0x0b sub=0x84`) and
++    /// `RepeaterAuth_Stream_Ready`. If the latter is absent, a bounded quiet interval after the
++    /// capability marker is accepted for firmware compatibility.
++    fn wait_cap_complete(dev: &UsbLink<'_>, kd: &[u8; 32], mut saw_0b: bool) {
++        let Ok(mut buf) = KVec::from_elem(0u8, EP84_BUF, GFP_KERNEL) else {
++            return;
++        };
++        // M' verification is diagnostic until every vendor stream-management field is decoded.
++        let sha_kd = crypto::sha256(kd);
++        let mut saw_ready = false;
++        let mut quiet = 0usize;
++        const QUIET_GAP: usize = 3; // ~3 consecutive empty short reads => dock done pushing
++        const MAX_ROUNDS: usize = 48;
++        for _ in 0..MAX_ROUNDS {
++            match dev.ctrl_recv(&mut buf, Delta::from_millis(5), GFP_KERNEL) {
++                Ok(len) if len >= 20 => {
++                    quiet = 0;
++                    let iid = u16::from_le_bytes([buf[16], buf[17]]);
++                    let isub = u16::from_le_bytes([buf[18], buf[19]]);
++                    let mid = if len >= 26 { buf[25] } else { 0 }; // HDCP msg_id (body[9])
++                    if isub == 0x84 && iid == 0x0b {
++                        saw_0b = true;
++                    }
++                    if mid == ake::id::REPEATERAUTH_STREAM_READY && len >= 58 {
++                        saw_ready = true;
++                        let mprime = &buf[26..58];
++                        vino_debug!("vino: AKE: Stream_Ready (0x11) M'={mprime:02x?}\n");
++                        // The content-stream-management input contains two
++                        // seven-byte stream entries and a three-byte sequence.
++                        let m_data: [u8; 17] = [
++                            0, 0, 0, 0x04, 0, 0, 0, // stream 0: StreamID_Type[0]
++                            0, 0, 0, 0x05, 0, 0, 0, // stream 1: StreamID_Type[1]
++                            0, 0, 0, // seq_num_M = 0 (first Stream_Manage, big-endian)
++                        ];
++                        let m = crypto::hmac_sha256(&sha_kd, &m_data);
++                        let eq = if &m[..] == mprime { "==" } else { "!=" };
++                        vino_debug!("vino: AKE:   M {} M' (CSM stream-entry layout)\n", eq);
++                    } else if mid == ake::id::RECEIVER_AUTH_STATUS && len >= 27 {
++                        vino_debug!("vino: AKE: RECEIVER_AUTH_STATUS=0x{:02x}\n", buf[26]);
++                    }
++                    // Both terminal markers complete the burst; do not add a quiet delay here.
++                    if saw_0b && saw_ready {
++                        vino_debug!("vino: repeater authentication complete\n");
++                        return;
++                    }
++                }
++                // Empty/short read = a quiet window. Fallback when Stream_Ready (0x11) never
++                // arrives:
++                // once id=0x0b has arrived AND the dock has been quiet for QUIET_GAP rounds, the
++                // terminal burst is drained -- arm now.
++                _ => {
++                    if saw_0b {
++                        quiet += 1;
++                        if quiet >= QUIET_GAP {
++                            vino_debug!("vino: repeater reply drained (ready={saw_ready})\n");
++                            return;
++                        }
++                    }
++                }
++            }
++        }
++        vino_debug!("vino: repeater drain ended (complete={saw_0b}, ready={saw_ready})\n");
++    }
++
++    /// Run HDCP 2.2 AKE, locality check, session-key exchange and repeater authentication.
++    ///
++    /// `H'`, `L'` and `V'` are verified locally. Outbound messages use `type=4 sub=0x04` and the
++    /// inner sequence is:
++    ///
++    /// * ctr=1 session-init ACK (id=0x14/0x76), ctr=2 AKE_Init, ctr=3 AKE_Transmitter_Info
++    /// * ctr=4 AKE_No_Stored_km, ctr=5 LC_Init, ctr=6 SKE_Send_Eks
++    /// * ctr=7 RepeaterAuth_Send_Ack, ctr=8 RepeaterAuth_Stream_Manage  (then msg0 at ctr=9)
++    fn run_ake(dev: &UsbLink<'_>) -> Result<Session> {
++        use ake::id;
++
++        let mut saw_cap_complete = false;
++
++        // A warm rebind can leave replies from the previous session queued on EP84.
++        let flush_probe = Delta::from_millis(3);
++        if let Ok(mut flush) = KVec::from_elem(0u8, EP84_BUF, GFP_KERNEL) {
++            let mut flushed = 0usize;
++            for _ in 0..32 {
++                match dev.ctrl_recv(&mut flush, flush_probe, GFP_KERNEL) {
++                    Ok(n) if n > 0 => flushed += 1,
++                    _ => break,
++                }
++            }
++            if flushed > 0 {
++                vino_debug!("vino: flushed {flushed} stale EP84 frame(s) before AKE\n");
++            }
++        }
++
++        // The setup phase continues this counter through `Session::next_ctr`.
++        let mut hseq: u32 = 1;
++
++        // (1) session-init ACK (ctr=1, id=0x14/0x76).
++        dev.ctrl_send(&ake::session_init_ack(hseq, 0)?, timeout(), GFP_KERNEL)?;
++        // The dock requires the counter-1 echo to be drained before AKE_Init.
++        Self::pace_cap_ack(dev, hseq as u16, &mut saw_cap_complete);
++        hseq += 1;
++
++        // (2) AKE_Init -- use a fresh rtx and the transmitter capability profile.
++        let mut rtx = [0u8; drm_hdcp::RTX_LEN];
++        rng::fill(&mut rtx);
++        dev.ctrl_send(
++            &ake::ake_init(hseq, 0, &rtx, &[0; 3])?,
++            timeout(),
++            GFP_KERNEL,
++        )?;
++        hseq += 1;
++
++        // (2) AKE_Send_Cert: payload = REPEATER(1) || cert_rx(522). Extract the
++        // RSA-1024 public key (modulus[5..133], exponent[133..136]).
++        let (cid, cert_msg) = Self::recv_hdcp(dev)?;
++        const CERT_KEY_END: usize = 5 + drm_hdcp::RSA_MODULUS_LEN + drm_hdcp::RSA_EXPONENT_LEN;
++        if cid != id::AKE_SEND_CERT || cert_msg.len() < 1 + CERT_KEY_END {
++            pr_err!(
++                "vino: AKE: bad AKE_Send_Cert (id={cid:#x}, {} B)\n",
++                cert_msg.len()
++            );
++            return Err(EINVAL);
++        }
++        let repeater = cert_msg[0] != 0;
++        let cert = &cert_msg[1..];
++        let mut modulus = [0u8; drm_hdcp::RSA_MODULUS_LEN];
++        modulus.copy_from_slice(&cert[5..5 + drm_hdcp::RSA_MODULUS_LEN]);
++        let mut exponent = [0u8; drm_hdcp::RSA_EXPONENT_LEN];
++        exponent.copy_from_slice(&cert[5 + drm_hdcp::RSA_MODULUS_LEN..CERT_KEY_END]);
++
++        // (3) AKE_Transmitter_Info (ctr=3), then read AKE_Receiver_Info (RxCaps unused).
++        dev.ctrl_send(&ake::ake_transmitter_info(hseq, 0)?, timeout(), GFP_KERNEL)?;
++        hseq += 1;
++        let _ = Self::recv_hdcp(dev)?;
++
++        // (5) AKE_No_Stored_km -- fresh km, RSA-OAEP-SHA256 to Ekpub(km).
++        let mut km = kernel::crypto::Secret::<{ drm_hdcp::ENCRYPTED_SESSION_KEY_LEN }>::zeroed();
++        rng::fill(&mut km[..]);
++        let mut rsa = kernel::crypto::akcipher::RsaPublicKey::new(&modulus, &exponent, GFP_KERNEL)?;
++        let ekpub = hdcp::oaep_encrypt_km(&mut rsa, &km)?;
++        // (4) AKE_No_Stored_km (ctr=4). The dock authenticates its downstream link before it
++        // answers, so the following receive naturally covers that interval.
++        dev.ctrl_send(
++            &ake::ake_no_stored_km(hseq, 0, &ekpub)?,
++            timeout(),
++            GFP_KERNEL,
++        )?;
++        hseq += 1;
++
++        // (6) AKE_Send_Rrx.
++        let (rid, rrx_pl) = Self::recv_hdcp(dev)?;
++        if rid != id::AKE_SEND_RRX || rrx_pl.len() < drm_hdcp::RRX_LEN {
++            pr_err!("vino: AKE: bad AKE_Send_Rrx (id={rid:#x})\n");
++            return Err(EINVAL);
++        }
++        let mut rrx = [0u8; drm_hdcp::RRX_LEN];
++        rrx.copy_from_slice(&rrx_pl[..drm_hdcp::RRX_LEN]);
++
++        // (7)/(8) AKE_Send_H_prime -- verify H' = HMAC(kd, rtx^REPEATER).
++        let (hid, hp) = Self::recv_hdcp(dev)?;
++        if hid != id::AKE_SEND_H_PRIME || hp.len() < drm_hdcp::H_PRIME_LEN {
++            pr_err!("vino: AKE: bad H' (id={hid:#x})\n");
++            return Err(EINVAL);
++        }
++        let kd = hdcp::derive_kd(&km, &rtx, &rrx)?;
++        if hdcp::compute_h(&kd, &rtx, repeater)[..] != hp[..drm_hdcp::H_PRIME_LEN] {
++            pr_err!("vino: AKE: H' mismatch -- authentication failed\n");
++            return Err(EINVAL);
++        }
++        vino_debug!("vino: AKE: H' verified\n");
++
++        // (9) AKE_Send_Pairing_Info (Ekh_km) -- read and discard (no-stored path).
++        let _ = Self::recv_hdcp(dev)?;
++
++        // (10) Locality Check -- LC_Init(rn) then verify L'.
++        let mut rn = [0u8; drm_hdcp::RN_LEN];
++        rng::fill(&mut rn);
++        // (5) LC_Init (ctr=5).
++        dev.ctrl_send(&ake::lc_init(hseq, 0, &rn)?, timeout(), GFP_KERNEL)?;
++        hseq += 1;
++        let (lid, lp) = Self::recv_hdcp(dev)?;
++        if lid != id::LC_SEND_L_PRIME || lp.len() < drm_hdcp::L_PRIME_LEN {
++            pr_err!("vino: AKE: bad L' (id={lid:#x})\n");
++            return Err(EINVAL);
++        }
++        if hdcp::compute_l(&kd, &rrx, &rn)[..] != lp[..drm_hdcp::L_PRIME_LEN] {
++            pr_err!("vino: AKE: L' mismatch -- locality check failed\n");
++            return Err(EINVAL);
++        }
++        vino_debug!("vino: AKE: L' verified\n");
++
++        // (11) Session Key Exchange -- send Edkey(ske_ks) and the fresh RIV. The wrapped value is
++        // the raw SKE key; both peers apply the control-plane whitening constant afterwards.
++        let mut ske_ks =
++            kernel::crypto::Secret::<{ drm_hdcp::ENCRYPTED_SESSION_KEY_LEN }>::zeroed();
++        let mut riv = [0u8; drm_hdcp::RIV_LEN];
++        rng::fill(&mut ske_ks[..]);
++        rng::fill(&mut riv);
++        let edkey = hdcp::compute_eks(&km, &rtx, &rrx, &rn, &ske_ks)?;
++        let ks = cp::cp_session_key(&ske_ks);
++        // SKE carries the full RIV. Control AES-CTR toggles byte 7 bit 2;
++        // Dl3Cmac separately transforms byte 0 bit 7.
++        let riv_ske = riv; // deliver the full random RIV before the control transform
++        riv[7] ^= 0x04; // OUT CP AES-CTR nonce = delivered ^0x04@byte7 (byte0 UNCHANGED)
++                        // (6) SKE_Send_Eks (ctr=6).
++        dev.ctrl_send(
++            &ake::ske_send_eks(hseq, 0, &edkey, &riv_ske)?,
++            timeout(),
++            GFP_KERNEL,
++        )?;
++        hseq += 1;
++        // (12) RepeaterAuth -- verify V' over the ReceiverID_List, ACK, then SM2.
++        // Retained (empty on the non-repeater path) so `send_cp_setup`'s per-head restatement can
++        // recompute a fresh per-head `V = HMAC(kd_h, rxid_list)` over the same list the dock sent.
++        let mut rxid_list: KVec<u8> = KVec::new();
++        if repeater {
++            let (vid, list) = Self::recv_hdcp(dev)?;
++            if vid != id::REPEATERAUTH_SEND_RECEIVERID_LIST || list.len() < 16 {
++                pr_err!("vino: AKE: bad ReceiverID_List (id={vid:#x})\n");
++                return Err(EINVAL);
++            }
++            let split = list.len() - 16;
++            // V' is the first 128 bits; RepeaterAuth_Send_Ack carries the second 128 bits.
++            let v_full = hdcp::compute_v_full(&kd, &list[..split]);
++            let mut v_ack = [0u8; 16];
++            v_ack.copy_from_slice(&v_full[16..]);
++            if v_full[..16] != list[split..] {
++                pr_err!("vino: AKE: V' mismatch -- repeater verification failed\n");
++                return Err(EINVAL);
++            }
++            vino_debug!("vino: AKE: V' verified\n");
++            rxid_list.extend_from_slice(&list[..split], GFP_KERNEL)?;
++            // (7) RepeaterAuth_Send_Ack (ctr=7).
++            dev.ctrl_send(
++                &ake::repeater_auth_send_ack(hseq, 0, &v_ack)?,
++                timeout(),
++                GFP_KERNEL,
++            )?;
++            // Preserve repeater-authentication request/reply lockstep.
++            Self::pace_cap_ack(dev, hseq as u16, &mut saw_cap_complete);
++            hseq += 1;
++            // (8) RepeaterAuth_Stream_Manage (ctr=8).
++            dev.ctrl_send(
++                &ake::repeater_auth_stream_manage(hseq, 0)?,
++                timeout(),
++                GFP_KERNEL,
++            )?;
++            Self::pace_cap_ack(dev, hseq as u16, &mut saw_cap_complete);
++            hseq += 1;
++            // Drain capability-complete and Stream_Ready before arming the control plane.
++            Self::wait_cap_complete(dev, &kd, saw_cap_complete);
++        }
++
++        // `hseq` points past the last capability/AKE frame; `send_cp_setup` continues the inner
++        // counter from here for msg0.
++        Ok(Session {
++            ks,
++            riv,
++            next_ctr: hseq as u16,
++            rsa,
++            rxid_list,
++        })
++    }
++
++    /// Submit one encrypted control-plane frame without changing protocol counters on failure.
++    fn submit_cp_frame(
++        dev: &UsbLink<'_>,
++        out_q: &mut Option<usb::BulkOutQueue>,
++        frame: &[u8],
++    ) -> Result {
++        match out_q {
++            Some(queue) => queue.send(dev.io(), frame, timeout()),
++            None => dev.ctrl_send(frame, timeout(), GFP_KERNEL).map(|_| ()),
++        }
++    }
++
++    /// Configure the encrypted control plane after SKE.
++    ///
++    /// The sequence contains the plaintext arm marker, the first encrypted message, initialization,
++    /// per-head authentication and stream finalization. The returned counters continue the live
++    /// session, and `video_keys` receives the key and nonce established for each head.
++    fn send_cp_setup(
++        dev: &UsbLink<'_>,
++        session: &mut Session,
++        // Scratch slot filled by reply drains and moved into the selected head's EDID cache.
++        edid_out: &mut Option<KVec<u8>>,
++        edid_heads: &mut [Option<KVec<u8>>; Self::CP_SETUP_HEADS],
++        video_keys: &mut [kernel::crypto::Secret<32>; Self::CP_SETUP_HEADS],
++        heads_present: &mut [bool; Self::CP_SETUP_HEADS],
++        discovery_deferred: &mut [bool; Self::CP_SETUP_HEADS],
++    ) -> Result<(usize, u32, u16)> {
++        // 16 KiB so the dock's ~5787 B capability block is read whole (see [`EP84_BUF`]).
++        let mut resp = KVec::from_elem(0u8, EP84_BUF, GFP_KERNEL)?;
++        let mut drained = 0usize;
++        let mut acks = 0usize;
++        let mut rejects = 0usize;
++        let mut sent = 0usize;
++        // Match each display-capability response to the stream-open counter of its head.
++        let mut stream_open_ctr: [Option<u16>; Self::CP_SETUP_HEADS] = [None; Self::CP_SETUP_HEADS];
++
++        // Plaintext `type=2 sub=0x24`+`0x45` stream-open arm marker -- the mandatory gate
++        // before the first encrypted frame.
++        const STREAM_OPEN: [u8; 64] = [
++            0x00, 0x00, 0x1c, 0x00, 0x02, 0x00, 0x00, 0x00, // pad, size, type
++            0x24, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // wsub=0x24, aux=0, seq=0
++            0x04, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, // payload
++            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // padding
++            0x00, 0x00, 0x1c, 0x00, 0x02, 0x00, 0x00, 0x00, // pad, size, type
++            0x45, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // wsub=0x45, aux=0, seq=0
++            0x05, 0x00, 0x0e, 0x00, 0x00, 0x00, 0x00, 0x00, // payload
++            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // padding
++        ];
++
++        // Post the persistent EP84 reader before arming so asynchronous replies cannot fill the
++        // dock's IN FIFO while the host submits control traffic.
++        let mut ep84_q = match dev.ctrl_in_queue(EP84_QUEUE_DEPTH, EP84_BUF) {
++            Ok(q) => {
++                vino_debug!("vino: EP84 async IN queue opened (depth={EP84_QUEUE_DEPTH})\n");
++                Some(q)
++            }
++            Err(e) => {
++                vino_debug!("vino: EP84 queue unavailable ({e:?}); using synchronous reads\n");
++                None
++            }
++        };
++
++        let mut out_q = match dev.ctrl_out_queue(4, 1024) {
++            Ok(q) => {
++                vino_debug!("vino: EP02 async OUT queue opened (depth=4)\n");
++                Some(q)
++            }
++            Err(e) => {
++                vino_debug!("vino: EP02 async OUT queue open failed ({e:?})\n");
++                None
++            }
++        };
++
++        // Submit and flush the arm before sealing the first encrypted message.
++        let arm_res = match out_q.as_mut() {
++            Some(q) => q
++                .send(dev.io(), &STREAM_OPEN, timeout())
++                .and_then(|()| q.flush(dev.io(), timeout())),
++            None => dev
++                .ctrl_send(&STREAM_OPEN, timeout(), GFP_KERNEL)
++                .map(|_| ()),
++        };
++        arm_res?;
++        // The first live message continues the AKE inner counter and starts the encrypted wire
++        // block counter at zero. Every following message advances both counters from its true size.
++        let mut cp_ctr: u16 = session.next_ctr;
++        let mut wseq: u32 = 0;
++
++        // Msg0 contains an ordinary inner header followed by a fresh ten-byte token.
++        let mut content = [0u8; 32];
++        content[0..2].copy_from_slice(&0x0014u16.to_le_bytes()); // id=0x14
++        content[4..6].copy_from_slice(&cp_ctr.to_le_bytes()); // inner counter (sub=0x00, pad=0)
++        rng::fill(&mut content[22..32]);
++        let body_len = content.len() + 16; // AES-CTR ciphertext + 16-byte Dl3Cmac
++        let size = ((16 + body_len) - 4) as u16;
++        let aux = cp::aux_for_id(0x14, body_len);
++        let mut hdr = [0u8; 16];
++        hdr[2..4].copy_from_slice(&size.to_le_bytes());
++        hdr[4..8].copy_from_slice(&4u32.to_le_bytes()); // type=4
++        hdr[8..10].copy_from_slice(&0x24u16.to_le_bytes()); // sub=0x24 (interactive CP)
++        hdr[10..12].copy_from_slice(&aux.to_le_bytes());
++        // Running AES-CTR block index, initially zero.
++        hdr[12..16].copy_from_slice(&wseq.to_le_bytes());
++        let frame = cp::seal_livemac(&session.ks, &session.riv, &hdr, &content)?;
++
++        match out_q.as_mut() {
++            Some(q) => {
++                q.send(dev.io(), &frame, timeout())?;
++                q.flush(dev.io(), timeout())?;
++                for _ in 0..8 {
++                    let d = Self::drain_ep84(
++                        dev,
++                        ep84_q.as_mut(),
++                        &mut resp,
++                        session,
++                        edid_out,
++                        Delta::from_millis(10),
++                    );
++                    drained += d.reads;
++                    acks += d.acks;
++                    rejects += d.rejects;
++                }
++            }
++            None => {
++                // A NAK transfers no bytes, so cancel and retry are safe.
++                // Between attempts drain EP84 so the dock can push/drain its IN queue. Bounded.
++                const TRIES: usize = 40;
++                let mut last_err = ETIMEDOUT;
++                let mut accepted = false;
++                for _ in 0..TRIES {
++                    match dev.ctrl_send(&frame, Delta::from_millis(5), GFP_KERNEL) {
++                        Ok(_) => {
++                            accepted = true;
++                            break;
++                        }
++                        // OUT NAK'd (nothing transferred) -- let the dock push on EP84, then retry.
++                        Err(e) => {
++                            last_err = e;
++                            let d = Self::drain_ep84(
++                                dev,
++                                ep84_q.as_mut(),
++                                &mut resp,
++                                session,
++                                edid_out,
++                                Delta::from_millis(10),
++                            );
++                            drained += d.reads;
++                            acks += d.acks;
++                            rejects += d.rejects;
++                        }
++                    }
++                }
++                if !accepted {
++                    return Err(last_err);
++                }
++            }
++        }
++        sent += 1;
++        cp_ctr += 1; // past msg0
++        wseq += 2; // msg0 content is 32 B = 2 AES blocks
++
++        // Four initialization records follow msg0 and continue the same inner and block counters.
++        for (id, sub, fixed_prefix) in [
++            (0x0014u16, 0x0030u16, &[][..]),
++            (0x0015, 0x000b, &[0x01][..]),
++            (0x0016, 0x002a, &[0x00, 0x01][..]),
++            (0x0016, 0x002a, &[0x01, 0x01][..]),
++        ] {
++            let mut c = [0u8; 32];
++            c[0..2].copy_from_slice(&id.to_le_bytes());
++            c[2..4].copy_from_slice(&sub.to_le_bytes());
++            c[4..6].copy_from_slice(&cp_ctr.to_le_bytes());
++            rng::fill(&mut c[22..32]);
++            c[22..22 + fixed_prefix.len()].copy_from_slice(fixed_prefix);
++            let frame = cp::seal_interactive(&session.ks, &session.riv, id, wseq, &c)?;
++            Self::submit_cp_frame(dev, &mut out_q, &frame)?;
++            sent += 1;
++            let d = Self::drain_ep84(
++                dev,
++                ep84_q.as_mut(),
++                &mut resp,
++                session,
++                edid_out,
++                Delta::from_millis(10),
++            );
++            drained += d.reads;
++            acks += d.acks;
++            rejects += d.rejects;
++            cp_ctr += 1;
++            wseq += 2; // each burst message is 32 B = 2 AES blocks
++        }
++
++        // Drain pending replies before starting the per-head authentication blocks. Each block
++        // mirrors the HDCP AKE layout and ends by opening that head's stream.
++        {
++            let d = Self::drain_ep84(
++                dev,
++                ep84_q.as_mut(),
++                &mut resp,
++                session,
++                edid_out,
++                Delta::from_millis(10),
++            );
++            drained += d.reads;
++            acks += d.acks;
++            rejects += d.rejects;
++            if let Some(c) = d.display_cap_ctr {
++                for h in 0..Self::CP_SETUP_HEADS {
++                    if stream_open_ctr[h] == Some(c) {
++                        heads_present[h] = true;
++                    }
++                }
++            }
++        }
++        for head in 0..Self::CP_SETUP_HEADS {
++            // Derive an independent HDCP 2.2 authentication chain for this downstream head.
++            let mut rtx_h = [0u8; drm_hdcp::RTX_LEN];
++            rng::fill(&mut rtx_h);
++            let mut km_h =
++                kernel::crypto::Secret::<{ drm_hdcp::ENCRYPTED_SESSION_KEY_LEN }>::zeroed();
++            rng::fill(&mut km_h[..]);
++            let mut rn_h = [0u8; drm_hdcp::RN_LEN];
++            rng::fill(&mut rn_h);
++            let mut ske_ks_h =
++                kernel::crypto::Secret::<{ drm_hdcp::ENCRYPTED_SESSION_KEY_LEN }>::zeroed();
++            rng::fill(&mut ske_ks_h[..]);
++            let mut riv_h = [0u8; drm_hdcp::RIV_LEN];
++            rng::fill(&mut riv_h);
++            let ekpub_h = hdcp::oaep_encrypt_km(&mut session.rsa, &km_h)?;
++            let mut edkey_h = None;
++            let mut v_h = None;
++            let mut fresh_rrx: Option<[u8; drm_hdcp::RRX_LEN]> = None;
++            let mut rrx_applied = false;
++            // SKE_Send_Eks establishes this head's video key. Store the whitened key and the video
++            // nonce derived from the delivered RIV for the scanout arm burst.
++            // Layout: key(16) || nonce(8) || pad(8).
++            video_keys[head] = kernel::crypto::Secret::zeroed();
++            // The dock applies the control-plane whitening constant to each per-head SKE key.
++            let video_key = cp::cp_session_key(&ske_ks_h);
++            video_keys[head][..16].copy_from_slice(&video_key[..]);
++            let vnonce = cp::video_content_nonce(&riv_h, head as u8);
++            video_keys[head][16..24].copy_from_slice(&vnonce);
++            for (i, (id, sub, content_len)) in cp::CP_SETUP_PER_HEAD.iter().copied().enumerate() {
++                // The per-head `rrx` arrives with the response to AKE_No_Stored_km. It is mandatory
++                // for deriving this head's kd, Edkey and V before the consuming messages.
++                if i >= 3 && !rrx_applied {
++                    let Some(rrx_h) = fresh_rrx else {
++                        pr_err!("vino: per-head[{head}] missing AKE_Send_Rrx\n");
++                        return Err(EPROTO);
++                    };
++                    let kd_h = hdcp::derive_kd(&km_h, &rtx_h, &rrx_h)?;
++                    edkey_h = Some(hdcp::compute_eks(&km_h, &rtx_h, &rrx_h, &rn_h, &ske_ks_h)?);
++                    let vf = hdcp::compute_v_full(&kd_h, &session.rxid_list);
++                    let mut v = [0u8; 16];
++                    v.copy_from_slice(&vf[16..]);
++                    v_h = Some(v);
++                    rrx_applied = true;
++                }
++                // id=0x26 (Stream_Manage restatement) is fully decoded -- deterministic content,
++                // not the generic path below. See `cp::stream_manage_restatement`'s doc comment.
++                if id == 0x0026 {
++                    let content = cp::stream_manage_restatement(cp_ctr, head as u8)?;
++                    let frame =
++                        cp::seal_interactive(&session.ks, &session.riv, id, wseq, &content)?;
++                    Self::submit_cp_frame(dev, &mut out_q, &frame)?;
++                    sent += 1;
++                    let d = Self::drain_ep84(
++                        dev,
++                        ep84_q.as_mut(),
++                        &mut resp,
++                        session,
++                        edid_out,
++                        Delta::from_millis(10),
++                    );
++                    drained += d.reads;
++                    acks += d.acks;
++                    rejects += d.rejects;
++                    fresh_rrx = fresh_rrx.or(d.perhead_rrx);
++                    cp_ctr += 1;
++                    wseq += ((content_len + 15) / 16) as u32;
++                    continue;
++                }
++                let mut c = KVec::from_elem(0u8, content_len, GFP_KERNEL)?;
++                // Shared header (id / sub=0x10 / inner counter), identical to the plaintext AKE
++                // body layout (`ake::body`). The buffer is already zeroed by `from_elem`.
++                c[0..2].copy_from_slice(&id.to_le_bytes());
++                c[2..4].copy_from_slice(&sub.to_le_bytes());
++                c[4..6].copy_from_slice(&cp_ctr.to_le_bytes());
++                // Per-head AKE messages carry the head marker at offset 23, HDCP message id at
++                // offset 27 and the standard HDCP payload at offset 28.
++                match i {
++                    // AKE restatements: head marker @23, HDCP msg-id tag @27, HDCP field @28..
++                    0 | 1 | 2 | 3 | 4 | 5 => {
++                        c[23] = head as u8 + 1;
++                        c[27] = match i {
++                            0 => 0x02, // AKE_Init (rtx)
++                            1 => 0x13, // AKE_Transmitter_Info
++                            2 => 0x04, // AKE_No_Stored_km (Ekpub)
++                            3 => 0x09, // LC_Init (rn)
++                            4 => 0x0b, // SKE_Send_Eks (edkey+riv)
++                            _ => 0x0f, // 5: RepeaterAuth_Send_Ack (V)
++                        };
++                        match i {
++                            0 => {
++                                // AKE_Init carries Rtx and a fresh proprietary suffix.
++                                c[28..36].copy_from_slice(&rtx_h);
++                                rng::fill(&mut c[36..48]);
++                            }
++                            1 => {
++                                c[28..33].copy_from_slice(&[0x00, 0x06, 0x02, 0x00, 0x02]);
++                                rng::fill(&mut c[33..48]);
++                            }
++                            2 => {
++                                c[28..156].copy_from_slice(&ekpub_h);
++                                rng::fill(&mut c[156..160]);
++                            }
++                            3 => {
++                                c[28..36].copy_from_slice(&rn_h); // LC_Init: rn
++                                rng::fill(&mut c[36..48]);
++                            }
++                            4 => {
++                                let Some(ed) = edkey_h.as_ref() else {
++                                    return Err(EPROTO);
++                                };
++                                c[28..44].copy_from_slice(ed);
++                                c[44..52].copy_from_slice(&riv_h);
++                                rng::fill(&mut c[52..64]);
++                            }
++                            _ => {
++                                let Some(v) = v_h else {
++                                    return Err(EPROTO);
++                                };
++                                c[28..44].copy_from_slice(&v); // RepeaterAuth_Send_Ack: V
++                                rng::fill(&mut c[44..48]);
++                            }
++                        }
++                    }
++                    // Stream-open control: header + zero[8..22] + 10 host-random bytes[22..32];
++                    // no head marker, no tag (confirmed genuinely fully random across both heads).
++                    // Record this head's request counter. The display-capability
++                    // reply echoes it only when this head has a monitor.
++                    7 => {
++                        if head < stream_open_ctr.len() {
++                            stream_open_ctr[head] = Some(cp_ctr);
++                        }
++                        rng::fill(&mut c[22..]);
++                    }
++                    // strm2: head index @22, then the fixed `06 [head*4] 04` triple @24..27, then
++                    // a fresh 5-byte host-random tail.
++                    8 => {
++                        c[22] = head as u8;
++                        c[24] = 0x06;
++                        c[25] = (head as u8) * 4;
++                        c[26] = 0x04;
++                        rng::fill(&mut c[27..]);
++                    }
++                    _ => {}
++                }
++                let send_at = Instant::<Monotonic>::now();
++                let frame = cp::seal_interactive(&session.ks, &session.riv, id, wseq, &c)?;
++                Self::submit_cp_frame(dev, &mut out_q, &frame)?;
++                sent += 1;
++                let d = Self::drain_ep84(
++                    dev,
++                    ep84_q.as_mut(),
++                    &mut resp,
++                    session,
++                    edid_out,
++                    Delta::from_millis(10),
++                );
++                drained += d.reads;
++                acks += d.acks;
++                rejects += d.rejects;
++                fresh_rrx = fresh_rrx.or(d.perhead_rrx);
++                // AKE_No_Stored_km starts the receiver's H' calculation. LC_Init must not be sent
++                // until its minimum processing interval has elapsed.
++                if i == 2 {
++                    hold_until(send_at, HDCP_HPRIME_WAIT_US);
++                    // Drain the certificate, fresh RRX and H' response after the hold.
++                    let dh = Self::drain_ep84(
++                        dev,
++                        ep84_q.as_mut(),
++                        &mut resp,
++                        session,
++                        edid_out,
++                        Delta::from_millis(10),
++                    );
++                    drained += dh.reads;
++                    acks += dh.acks;
++                    rejects += dh.rejects;
++                    fresh_rrx = fresh_rrx.or(dh.perhead_rrx);
++                }
++                // Attribute a display-capability reply by its echoed stream-open counter.
++                if let Some(c) = d.display_cap_ctr {
++                    for h in 0..Self::CP_SETUP_HEADS {
++                        if stream_open_ctr[h] == Some(c) {
++                            heads_present[h] = true;
++                        }
++                    }
++                }
++                cp_ctr += 1;
++                wseq += ((content_len + 15) / 16) as u32;
++            }
++            // Collect replies before moving to the next head without adding another phase delay.
++            {
++                let d = Self::drain_ep84(
++                    dev,
++                    ep84_q.as_mut(),
++                    &mut resp,
++                    session,
++                    edid_out,
++                    Delta::from_millis(10),
++                );
++                drained += d.reads;
++                acks += d.acks;
++                rejects += d.rejects;
++                if let Some(c) = d.display_cap_ctr {
++                    for h in 0..Self::CP_SETUP_HEADS {
++                        if stream_open_ctr[h] == Some(c) {
++                            heads_present[h] = true;
++                        }
++                    }
++                }
++            }
++        }
++
++        // Finalize both streams before entering the steady-state heartbeat.
++        for (id, sub, off22) in cp::CP_SETUP_FINALIZE {
++            // Offset 22 selects the head or step; sub 0x4c also carries 1 at offset 23.
++            let mut c = [0u8; 32];
++            c[0..2].copy_from_slice(&id.to_le_bytes());
++            c[2..4].copy_from_slice(&sub.to_le_bytes());
++            c[4..6].copy_from_slice(&cp_ctr.to_le_bytes());
++            c[22] = off22;
++            if sub == 0x004c {
++                c[23] = 0x01;
++                rng::fill(&mut c[24..]);
++            } else {
++                rng::fill(&mut c[23..]);
++            }
++            let frame = cp::seal_interactive(&session.ks, &session.riv, id, wseq, &c)?;
++            Self::submit_cp_frame(dev, &mut out_q, &frame)?;
++            sent += 1;
++            let d = Self::drain_ep84(
++                dev,
++                ep84_q.as_mut(),
++                &mut resp,
++                session,
++                edid_out,
++                Delta::from_millis(10),
++            );
++            drained += d.reads;
++            acks += d.acks;
++            rejects += d.rejects;
++            cp_ctr += 1;
++            wseq += 2; // 32 B content = 2 AES blocks
++        }
++        if let Some(queue) = out_q.as_mut() {
++            queue.flush(dev.io(), timeout())?;
++        }
++
++        // Commit the control setup after msg0.
++        dev.control_send(
++            0x24,
++            0x40, /* VENDOR_OUT */
++            0,
++            0,
++            &[],
++            timeout(),
++            GFP_KERNEL,
++        )?;
++        // Refresh the interface state after the render/commit request.
++        let mut state2 = [0u8; 28];
++        dev.control_recv(0x22, 0xc1, 1, 0, &mut state2, timeout(), GFP_KERNEL)?;
++
++        // Read the dock's reply: a VERIFIED `wsub=0x45` ack means the cipher engaged on our frame.
++        let ls = Self::lockstep_reply(dev, ep84_q.as_mut(), &mut resp, session, 0x08, edid_out);
++        drained += ls.reads;
++        acks += ls.acks;
++        rejects += ls.rejects;
++
++        const MAX_ROUNDS: usize = 16;
++        for _ in 0..MAX_ROUNDS {
++            let d = Self::drain_ep84(
++                dev,
++                ep84_q.as_mut(),
++                &mut resp,
++                session,
++                edid_out,
++                Delta::from_millis(10),
++            );
++            drained += d.reads;
++            acks += d.acks;
++            rejects += d.rejects;
++            if d.reads == 0 {
++                break;
++            }
++        }
++
++        if acks == 0 {
++            pr_err!(
++                "vino: encrypted session not acknowledged (reads={drained}, rejects={rejects})\n"
++            );
++            return Err(EPROTO);
++        }
++
++        // Complete downstream discovery on the authenticated counter stream.
++        {
++            // Open discovery with a heartbeat and the one-shot device-capability query.
++            let hb = cp::heartbeat(cp_ctr)?;
++            let e = Self::send_live_cp(
++                dev,
++                session,
++                ep84_q.as_mut(),
++                &mut resp,
++                edid_out,
++                0x16,
++                wseq,
++                &hb,
++            )?;
++            drained += e.reads;
++            acks += e.acks;
++            rejects += e.rejects;
++            wseq = wseq.wrapping_add(((hb.len() + 15) / 16) as u32);
++            cp_ctr += 1;
++
++            let devq = cp::device_query_req(cp_ctr, 0x0000)?;
++            let e = Self::send_live_cp(
++                dev,
++                session,
++                ep84_q.as_mut(),
++                &mut resp,
++                edid_out,
++                0x14,
++                wseq,
++                &devq,
++            )?;
++            drained += e.reads;
++            acks += e.acks;
++            rejects += e.rejects;
++            wseq = wseq.wrapping_add(((devq.len() + 15) / 16) as u32);
++            cp_ctr += 1;
++
++            // EDID discovery is a probe/kick/fetch sequence followed by two engage messages. A
++            // cold receiver then needs bounded status polling until the readiness bit is set.
++            const EDID_STEP_DELAY: Delta = Delta::from_millis(100);
++            const EDID_EARLY_ROUNDS: usize = 1;
++            // Bound both the poll count and wall-clock duration.
++            const EDID_POLL_ITERS: usize = 250;
++            const EDID_POLL_DELAY: Delta = Delta::from_millis(20);
++            const EDID_POLL_PROBE_EVERY: usize = 8;
++            // Offset 22 selects the downstream head. Skip an additional head when its earlier
++            // display-capability transaction reported no monitor.
++            for head in 0..Self::CP_SETUP_HEADS {
++                if head != 0 && !heads_present[head] {
++                    continue;
++                }
++                let hu8 = head as u8;
++                *edid_out = None;
++                let mut edid_ready = false;
++                let mut transport_error = None;
++                'discovery: {
++                    macro_rules! edid_send {
++                        ($ep:expr, $body:expr, $tag:expr) => {{
++                            match Self::send_live_cp(
++                                dev,
++                                session,
++                                ep84_q.as_mut(),
++                                &mut resp,
++                                edid_out,
++                                $ep,
++                                wseq,
++                                &$body,
++                            ) {
++                                Ok(e) => {
++                                    drained += e.reads;
++                                    acks += e.acks;
++                                    rejects += e.rejects;
++                                    wseq = wseq.wrapping_add((($body.len() + 15) / 16) as u32);
++                                    cp_ctr += 1;
++                                    edid_ready |= e.edid_ready;
++                                    vino_debug!("vino: live head {} {} sent\n", head, $tag);
++                                }
++                                Err(e) => {
++                                    transport_error = Some(e);
++                                    break 'discovery;
++                                }
++                            }
++                        }};
++                    }
++                    'early: for cycle in 0..EDID_EARLY_ROUNDS {
++                        if edid_out.is_some() {
++                            break;
++                        }
++                        vino_debug!("vino: live get-EDID head {head} early round {cycle}\n");
++                        for _ in 0..2 {
++                            let probe = cp::get_edid_req_sub(cp_ctr, 0x20, hu8)?;
++                            edid_send!(0x15, probe, "get-EDID probe (id=0x15 sub=0x20)");
++                            fsleep(EDID_STEP_DELAY);
++                        }
++                        // Start or continue the selected head's downstream DDC read.
++                        let kick = cp::edid_readiness_kick(cp_ctr, hu8)?;
++                        edid_send!(0x16, kick, "get-EDID kick (id=0x16 sub=0x4b)");
++                        fsleep(EDID_STEP_DELAY);
++                        let req = cp::get_edid_req(cp_ctr, hu8)?;
++                        edid_send!(0x15, req, "get-EDID fetch (id=0x15 sub=0x21)");
++                        if edid_out.is_some() {
++                            break 'early;
++                        }
++                        fsleep(EDID_STEP_DELAY);
++                        // EDID arrives asynchronously after the fetch acknowledgment.
++                        let reply_wait = Instant::<Monotonic>::now();
++                        while Instant::<Monotonic>::now() - reply_wait < Delta::from_secs(2) {
++                            let d = Self::drain_ep84(
++                                dev,
++                                ep84_q.as_mut(),
++                                &mut resp,
++                                session,
++                                edid_out,
++                                Delta::from_millis(20),
++                            );
++                            drained += d.reads;
++                            acks += d.acks;
++                            rejects += d.rejects;
++                            edid_ready |= d.edid_ready;
++                            if edid_out.is_some() {
++                                break 'early;
++                            }
++                        }
++                    }
++                    // Engage is required twice even if the EDID push arrived early.
++                    for _ in 0..2 {
++                        let engage = cp::edid_engage_req(cp_ctr, hu8)?;
++                        edid_send!(0x16, engage, "get-EDID engage (id=0x16 sub=0x0023)");
++                        fsleep(EDID_STEP_DELAY);
++                    }
++                    if edid_out.is_none() {
++                        // Bound wall-clock time independently of the iteration
++                        // count because each failed send has its own USB timeout.
++                        const EDID_POLL_MAX: Delta = Delta::from_secs(6);
++                        let poll_start = Instant::<Monotonic>::now();
++                        'poll: for i in 0..EDID_POLL_ITERS {
++                            if edid_out.is_some() || edid_ready {
++                                break 'poll;
++                            }
++                            if Instant::<Monotonic>::now() - poll_start > EDID_POLL_MAX {
++                                vino_debug!(
++                                "vino: get-EDID head {head} readiness poll hit wall-clock cap\n"
++                            );
++                                break 'poll;
++                            }
++                            let status = cp::device_query_req(cp_ctr, 0x000c)?;
++                            edid_send!(0x14, status, "device-status poll (id=0x14 sub=0x000c)");
++                            if i % EDID_POLL_PROBE_EVERY == EDID_POLL_PROBE_EVERY - 1 {
++                                let probe = cp::get_edid_req_sub(cp_ctr, 0x20, hu8)?;
++                                edid_send!(
++                                    0x15,
++                                    probe,
++                                    "get-EDID readiness probe (id=0x15 sub=0x20)"
++                                );
++                            }
++                            if edid_out.is_some() || edid_ready {
++                                break 'poll;
++                            }
++                            fsleep(EDID_POLL_DELAY);
++                        }
++                        vino_debug!(
++                        "vino: get-EDID head {head} readiness poll finished (ready={edid_ready})\n"
++                    );
++                        // The asynchronous `id=0x194` EDID can follow the fetch
++                        // acknowledgment by several messages.
++                        for _ in 0..24 {
++                            if edid_out.is_some() {
++                                break;
++                            }
++                            let req = cp::get_edid_req(cp_ctr, hu8)?;
++                            edid_send!(0x15, req, "get-EDID retry (id=0x15 sub=0x21)");
++                            let d = Self::drain_ep84(
++                                dev,
++                                ep84_q.as_mut(),
++                                &mut resp,
++                                session,
++                                edid_out,
++                                Delta::from_millis(10),
++                            );
++                            drained += d.reads;
++                            acks += d.acks;
++                            rejects += d.rejects;
++                            fsleep(EDID_POLL_DELAY);
++                        }
++                    }
++                    // Complete this head with its post-EDID capability query.
++                    let query = cp::post_edid_query(cp_ctr, hu8)?;
++                    edid_send!(0x15, query, "post-EDID capability query (id=0x15 sub=0x53)");
++                    // `edid_send!` folds the drain's readiness bit into `edid_ready`. This is the
++                    // last statement of the per-head iteration and the next head re-derives it, so
++                    // that update is deliberately not read again here.
++                    let _ = edid_ready;
++                }
++
++                discovery_deferred[head] = transport_error.is_some();
++                if let Some(e) = transport_error {
++                    // The encrypted session is already authenticated. Keep it running and recover
++                    // this head independently after a head-local discovery timeout.
++                    *edid_out = None;
++                    pr_warn!(
++                        "vino: head {head} discovery timed out ({e:?}); deferring to runtime \
++                         recovery\n"
++                    );
++                }
++                edid_heads[head] = edid_out.take();
++                vino_debug!(
++                    "vino: head {head} EDID fetch {}\n",
++                    if edid_heads[head].is_some() {
++                        "succeeded"
++                    } else {
++                        "returned no EDID"
++                    }
++                );
++            }
++
++            // KMS is the sole owner of mode selection; setup only discovers connector state.
++        }
++
++        if rejects > 0 {
++            pr_warn!("vino: dock returned {rejects} undecryptable control frame(s)\n");
++        }
++        vino_debug!("vino: control setup tx={sent} rx={drained} ack={acks} reject={rejects}\n");
++        // Hand the caller the running counters: the next free AES-CTR block (`wseq`) and inner
++        // message counter (`cp_ctr`), so runtime KMS sends (mode-set/cursor) continue the sequence.
++        Ok((sent, wseq, cp_ctr))
++    }
++
++    /// Seal and send one live interactive control message.
++    ///
++    /// EP84 is drained between bounded NAK retries and once after a successful submission. The
++    /// returned tally distinguishes verified acknowledgments from rejected ciphertext.
++    fn send_live_cp(
++        dev: &UsbLink<'_>,
++        session: &Session,
++        mut q: Option<&mut usb::BulkInQueue>,
++        resp: &mut [u8],
++        edid_out: &mut Option<KVec<u8>>,
++        id: u16,
++        wire_seq: u32,
++        content: &[u8],
++    ) -> Result<Ep84Drain> {
++        let frame = cp::seal_interactive(&session.ks, &session.riv, id, wire_seq, content)?;
++
++        // Single-packet OUT: a NAK transfers nothing, so cancel+retry is safe. Between attempts
++        // drain EP84 so the dock can push/drain its IN queue (matches msg0's behaviour).
++        const TRIES: usize = 40;
++        let mut accepted = false;
++        let mut last_err = ETIMEDOUT;
++        let mut tally = Ep84Drain::default();
++        for _ in 0..TRIES {
++            match dev.ctrl_send(&frame, Delta::from_millis(5), GFP_KERNEL) {
++                Ok(_) => {
++                    accepted = true;
++                    break;
++                }
++                Err(e) => {
++                    last_err = e;
++                    tally.add(Self::drain_ep84(
++                        dev,
++                        q.as_deref_mut(),
++                        resp,
++                        session,
++                        edid_out,
++                        Delta::from_millis(10),
++                    ));
++                }
++            }
++        }
++        if !accepted {
++            return Err(last_err);
++        }
++        // Collect the dock's reply, including a possible get-EDID id=0x194 frame.
++        tally.add(Self::drain_ep84(
++            dev,
++            q.as_deref_mut(),
++            resp,
++            session,
++            edid_out,
++            Delta::from_millis(10),
++        ));
++        Ok(tally)
++    }
++
++    /// Log one EP84 wire header and its decoded inner header when available.
++    fn log_ep84(session: &Session, frame: &[u8]) {
++        let len = frame.len();
++        let wtype = if len >= 8 {
++            u32::from_le_bytes([frame[4], frame[5], frame[6], frame[7]])
++        } else {
++            0
++        };
++        let wsub = if len >= 10 {
++            u16::from_le_bytes([frame[8], frame[9]])
++        } else {
++            0
++        };
++        let aux = if len >= 12 {
++            u16::from_le_bytes([frame[10], frame[11]])
++        } else {
++            0
++        };
++        let wseq = if len >= 16 {
++            u32::from_le_bytes([frame[12], frame[13], frame[14], frame[15]])
++        } else {
++            0
++        };
++        {
++            // Bound dynamic-debug output and split large frames below printk's line limit.
++            let cap = len.min(768);
++            if cap <= 64 {
++                let raw = &frame[..cap];
++                vino_debug!("vino: dock EP84 RAW {len}B {raw:02x?}\n");
++            } else {
++                vino_debug!("vino: dock EP84 RAW {len}B (first {cap} B in 128-B chunks):\n");
++                let mut o = 0usize;
++                while o < cap {
++                    let e = (o + 128).min(cap);
++                    let chunk = &frame[o..e];
++                    vino_debug!("vino:   ep84[{o:#06x}] {chunk:02x?}\n");
++                    o = e;
++                }
++            }
++        }
++        match cp::decode_any(&session.ks, &session.riv, frame) {
++            Some((rivtag, rid, rsub, rictr, _)) => {
++                vino_debug!("vino: EP84 {rivtag} id={rid:#x} sub={rsub:#x} ctr={rictr:#x}\n");
++            }
++            None => vino_debug!(
++                "vino: EP84 type={wtype} sub={wsub:#x} aux={aux:#x} seq={wseq:#x} len={len}\n"
++            ),
++        }
++    }
++
++    /// Read one EP84 frame from the persistent queue or the synchronous fallback.
++    fn read_ep84(
++        dev: &UsbLink<'_>,
++        q: Option<&mut usb::BulkInQueue>,
++        buf: &mut [u8],
++        to: Delta,
++    ) -> Result<usize> {
++        match q {
++            Some(queue) => match queue.recv(dev.io(), buf, to) {
++                Ok(Some(n)) => Ok(n),
++                Ok(None) => Err(ETIMEDOUT),
++                Err(e) => Err(e),
++            },
++            None => dev.ctrl_recv(buf, to, GFP_KERNEL),
++        }
++    }
++
++    fn drain_ep84(
++        dev: &UsbLink<'_>,
++        mut q: Option<&mut usb::BulkInQueue>,
++        buf: &mut [u8],
++        session: &Session,
++        edid_out: &mut Option<KVec<u8>>,
++        // The first read may cover an HDCP computation interval; subsequent reads only drain a
++        // contiguous reply burst.
++        first_wait: Delta,
++    ) -> Ep84Drain {
++        const MAX_READS: usize = 16;
++        let mut out = Ep84Drain::default();
++        // Read EP84 before doing any unrelated work: the control plane is lockstep.
++        for i in 0..MAX_READS {
++            let wait = if i == 0 {
++                first_wait
++            } else {
++                Delta::from_millis(10)
++            };
++            match Self::read_ep84(dev, q.as_deref_mut(), buf, wait) {
++                Ok(len) if len > 0 => {
++                    out.reads += 1;
++                    Self::log_ep84(session, &buf[..len]);
++                    // Capture the per-head Rrx from the `id=0x10 sub=0x84`
++                    // push for the downstream repeater AKE.
++                    if out.perhead_rrx.is_none() {
++                        out.perhead_rrx = cp::perhead_rrx(&session.ks, &session.riv, &buf[..len]);
++                    }
++                    if len >= 10 && u16::from_le_bytes([buf[8], buf[9]]) == 0x45 {
++                        // The 0x45 wire tag is shared by status traffic. Only a valid decrypted
++                        // inner header proves that this session's cipher is engaged.
++                        match cp::verify_in_ack(&session.ks, &session.riv, &buf[..len]) {
++                            Some((id, sub, ctr)) => {
++                                out.acks += 1;
++                                vino_debug!(
++                                    "vino: CP acknowledgment id={id:#x} sub={sub:#x} ctr={ctr}\n"
++                                );
++                                // A display-capability reply identifies a
++                                // present monitor and echoes the request counter.
++                                if id == 0x78 && sub == 0x30 {
++                                    out.display_cap_ctr = Some(ctr);
++                                }
++                                // Capture the first `id=0x194 sub=0x21` EDID
++                                // reply for the standard DRM mode helpers.
++                                if edid_out.is_none() {
++                                    if let Ok(Some(e)) = cp::parse_edid_from_reply(
++                                        &session.ks,
++                                        &session.riv,
++                                        &buf[..len],
++                                    ) {
++                                        vino_debug!(
++                                            "vino: EDID read from dock ({} bytes)\n",
++                                            e.len()
++                                        );
++                                        *edid_out = Some(e);
++                                    }
++                                }
++                                // Track the downstream-DDC readiness bit so
++                                // the EDID loop can distinguish pending work.
++                                if let Some(true) =
++                                    cp::edid_poll_ready(&session.ks, &session.riv, &buf[..len])
++                                {
++                                    out.edid_ready = true;
++                                }
++                            }
++                            None => {
++                                match cp::decode_in_lenient(&session.ks, &session.riv, &buf[..len])
++                                {
++                                    // A structurally valid header with an uncatalogued sub-id still
++                                    // proves possession of the session key.
++                                    Some((id, sub, ctr)) => {
++                                        out.acks += 1;
++                                        vino_debug!(
++                                            "vino: CP reply id={id:#x} sub={sub:#x} ctr={ctr}\n"
++                                        );
++                                    }
++                                    // No supported reply nonce produces a valid header.
++                                    None => {
++                                        out.rejects += 1;
++                                        pr_warn!("vino: invalid encrypted CP reply\n");
++                                    }
++                                }
++                            }
++                        }
++                    }
++                }
++                _ => break,
++            }
++        }
++        out
++    }
++
++    /// Drain replies until a verified inner counter echoes the submitted request.
++    ///
++    /// Asynchronous pushes are processed while waiting, and the operation remains bounded.
++    fn lockstep_reply(
++        dev: &UsbLink<'_>,
++        mut q: Option<&mut usb::BulkInQueue>,
++        buf: &mut [u8],
++        session: &Session,
++        ictr: u16,
++        edid_out: &mut Option<KVec<u8>>,
++    ) -> Ep84Drain {
++        const MAX_READS: usize = 8;
++        let mut out = Ep84Drain::default();
++        for _ in 0..MAX_READS {
++            match Self::read_ep84(dev, q.as_deref_mut(), buf, Delta::from_millis(30)) {
++                Ok(len) if len > 16 => {
++                    out.reads += 1;
++                    Self::log_ep84(session, &buf[..len]);
++                    if u16::from_le_bytes([buf[8], buf[9]]) != 0x45 {
++                        continue;
++                    }
++                    match cp::verify_in_ack(&session.ks, &session.riv, &buf[..len]) {
++                        Some((id, sub, ctr)) => {
++                            out.acks += 1;
++                            let echo = if ctr == ictr {
++                                " (echoes our ictr)"
++                            } else {
++                                ""
++                            };
++                            vino_debug!("vino: CP reply id={id:#x} sub={sub:#x} ctr={ctr}{echo}\n");
++                            // Opportunistically extract an EDID from an id=0x194 reply.
++                            if edid_out.is_none() {
++                                if let Ok(Some(e)) = cp::parse_edid_from_reply(
++                                    &session.ks,
++                                    &session.riv,
++                                    &buf[..len],
++                                ) {
++                                    vino_debug!("vino: EDID read from dock ({} bytes)\n", e.len());
++                                    *edid_out = Some(e);
++                                }
++                            }
++                            // Stop early once the dock acknowledges the counter we sent.
++                            if ctr == ictr {
++                                break;
++                            }
++                        }
++                        None => match cp::decode_in_lenient(&session.ks, &session.riv, &buf[..len])
++                        {
++                            // Decrypts to a plausible CP header, just an unlisted `sub` -- a valid
++                            // ack (cipher engaged), not a rejection. See the drain_ep84 branch.
++                            Some((id, sub, ctr)) => {
++                                out.acks += 1;
++                                vino_debug!("vino: CP reply id={id:#x} sub={sub:#x} ctr={ctr}\n");
++                            }
++                            None => {
++                                out.rejects += 1;
++                                pr_warn!("vino: invalid encrypted CP reply\n");
++                            }
++                        },
++                    }
++                }
++                // A short, header-only frame (bare ack/keepalive, len <= 16): not a CP
++                // reply, but the dock is still talking -- keep reading for the 0x45 rather
++                // than dropping the rest of the lockstep window.
++                Ok(_) => continue,
++                // Read error / nothing queued within the window: the dock is idle, stop.
++                Err(_) => break,
++            }
++        }
++        out
++    }
++}
++
++kernel::usb_device_table!(
++    USB_TABLE,
++    MODULE_USB_TABLE,
++    <VinoDriver as usb::Driver>::IdInfo,
++    [(usb::DeviceId::from_id(VID_DISPLAYLINK, PID_D6000), ())]
++);
++
++impl usb::Driver for VinoDriver {
++    type IdInfo = ();
++    type Data<'bound> = VinoBoundData;
++    const ID_TABLE: usb::IdTable<Self::IdInfo> = &USB_TABLE;
++
++    fn probe<'bound>(
++        intf: &'bound usb::Interface<Core<'_>>,
++        _id: &usb::DeviceId,
++        _info: &'bound Self::IdInfo,
++        io: Arc<usb::IoWindow>,
++    ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound {
++        let cdev: &device::Device<Core<'_>> = intf.as_ref();
++        // The D6000 exposes several interfaces (0/1/5/6 match us; 2-4 are audio).
++        // The control endpoints (0x02/0x84) and the whole HDCP session live on
++        // interface 0 -- drive bring-up only there so we don't run the preamble and
++        // AKE four times and pollute the dock's state machine. Other interfaces
++        // bind (so usbcore doesn't hand them to another driver) but stay idle.
++        // An interface with no active alternate setting has no endpoints to drive.
++        let ifnum = intf.number().ok_or(ENODEV)?;
++        if ifnum != 0 {
++            // Keep the app-specific interface paired with the display function. Let the audio
++            // (2-4) and Ethernet (5-6) interfaces fall through to their class drivers. Returning
++            // ENODEV tells usbcore that this driver does not handle the interface.
++            if ifnum != 1 {
++                dev_info!(
++                    cdev,
++                    "vino: declining D6000 interface {ifnum} (left to its class driver)\n"
++                );
++                return Err(ENODEV);
++            }
++            dev_info!(
++                cdev,
++                "vino: bound D6000 interface {ifnum} (idle -- control is iface 0)\n"
++            );
++            return Ok(VinoBoundData {
++                _intf: intf.into(),
++                registration: None,
++                bringup: KBox::pin_init(new_mutex!(None), GFP_KERNEL)?,
++            });
++        }
++        dev_info!(cdev, "vino: bound DisplayLink D6000 control interface\n");
++        // Register the DRM/KMS device on the control interface. Keep a refcounted interface handle
++        // in the bound data while the DRM device retains the I/O window used by its workers.
++        let intf_ref: ARef<usb::Interface> = intf.into();
++
++        // Resolve the dock's endpoints against interface 0's descriptor once, so every later
++        // transfer names a direction/type-checked endpoint instead of a bare address.
++        let eps = Endpoints::resolve(intf)?;
++
++        // DRM device lifecycle: allocate an `UnregisteredDevice`, wire up the KMS pipeline on it
++        // while still unregistered, then register it. The `Registration` is stored in the bound
++        // data below, so the card is unregistered by the ordered unbind rather than by a
++        // driver-local force-unplug.
++        let unreg = drm::UnregisteredDevice::<drm_sink::VinoDrmDriver>::new(
++            intf,
++            drm_sink::VinoDrmData::new(io.clone(), eps),
++            &THIS_MODULE,
++        )?;
++        // `Core` derefs to `Bound`; name the context explicitly so `as_ref()`
++        // resolves to the bound parent required by DRM registration.
++        let bound_intf: &usb::Interface<device::Bound> = intf;
++        let parent: &device::Device<device::Bound> = bound_intf.as_ref();
++        let registration = drm::Registration::new_static(parent, unreg, (), 0)?;
++        let ddev: ARef<drm_sink::VinoDrmDevice> = registration.device().into();
++        dev_info!(cdev, "vino: DRM/KMS device registered\n");
++
++        // The session preamble, HDCP authentication and control setup use blocking USB transfers.
++        // Run them on the device's ordered session queue so probe can return immediately. The work
++        // item owns the DRM device, and the bound data retains a handle so quiesce can cancel or
++        // flush it before the I/O window closes.
++        let bringup = BringUp::new(ddev.clone())?;
++        let bringup_slot = KBox::pin_init(new_mutex!(Some(bringup.clone())), GFP_KERNEL)?;
++
++        let data: &drm_sink::VinoDrmData = &ddev;
++        data.session_queue().enqueue(bringup).map_err(|_| EBUSY)?;
++
++        Ok(VinoBoundData {
++            _intf: intf_ref,
++            registration: Some(registration),
++            bringup: bringup_slot,
++        })
++    }
++
++    fn quiesce<'bound>(_intf: &'bound usb::Interface<Core<'_>>, data: Pin<&VinoBoundData>) {
++        // Publish the producers' stop flag before waiting on anything. This is only the flag: the
++        // teardown that must not run until USB I/O is quiesced (vblank timers, the device's
++        // self-reference cycles) still happens in `shutdown()` further down.
++        if let Some(reg) = data.registration.as_ref() {
++            let drm_data: &drm_sink::VinoDrmData = reg.device();
++            drm_data.begin_shutdown();
++        }
++
++        // Take the sole driver-owned bring-up handle. The queued work holds its own Arc until it
++        // runs or is cancelled, while this local Arc keeps the embedded Work pinned and live
++        // throughout the `cancel_sync` below.
++        let bringup = data.bringup.lock().take();
++
++        // Flush the deferred bring-up before the interface is unbound: `cancel_sync` dequeues it
++        // if pending and blocks until it returns if already running, so no USB I/O races the
++        // unbind. Safe when the work already finished or never ran -- it then simply reports that
++        // nothing was pending. The reclaimed `Arc<BringUp>` (returned only if the work was still
++        // queued) is dropped here.
++        if let Some(work) = bringup.as_ref() {
++            drop(work.work.cancel_sync());
++        }
++
++        // `bringup` drops here, releasing its DRM reference before I/O is revoked.
++    }
++
++    fn disconnect<'bound>(intf: &'bound usb::Interface<Core<'_>>, data: Pin<&VinoBoundData>) {
++        let dev: &device::Device<Core<'_>> = intf.as_ref();
++
++        // Stop every producer. The DRM device itself is unregistered by `Registration`'s `Drop`
++        // when the bound data is released -- the accepted registration teardown already calls
++        // `drm_dev_unplug()`, so there is no driver-local force-unplug here any more.
++        //
++        // Take the device through the registration. `shutdown()` also breaks
++        // vblank self-references before registration teardown.
++        if let Some(reg) = data.registration.as_ref() {
++            let drm_data: &drm_sink::VinoDrmData = reg.device();
++            drm_data.shutdown();
++        }
++        dev_info!(dev, "vino: D6000 disconnected\n");
++    }
++}
++
++kernel::module_usb_driver! {
++    type: VinoDriver,
++    name: "vino",
++    authors: ["Mike Lothian"],
++    description: "DisplayLink DL3 (Vino) open driver",
++    license: "GPL v2",
++    params: {
++        debug: u8 {
++            default: 0,
++            description: "Enable verbose Vino protocol and scanout diagnostics",
++        },
++    },
++}
++
++/// Offline self-tests for the pure protocol builders/parsers and crypto bindings the control plane
++/// relies on. `CONFIG_DRM_VINO_KUNIT_TEST` keeps them out of an ordinary driver build, while
++/// allowing a KUnit test kernel to run the published known-answer vectors and byte-exact wire
++/// checks when the module is loaded.
++#[cfg(CONFIG_DRM_VINO_KUNIT_TEST)]
++#[kunit_tests(vino_protocol)]
++mod tests {
++    use super::*;
++    use kernel::drm::kms::modes::{DisplayMode, ModeFlags, ModeTimings};
++    use kernel::error::code::EINVAL;
++
++    #[test]
++    fn aes128_ecb_fips197_kat() -> Result {
++        // FIPS-197 / NIST SP800-38A F.1.1 AES-128 ECB known-answer vector.
++        let key = [
++            0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf,
++            0x4f, 0x3c,
++        ];
++        let pt = [
++            0x6b, 0xc1, 0xbe, 0xe2, 0x2e, 0x40, 0x9f, 0x96, 0xe9, 0x3d, 0x7e, 0x11, 0x73, 0x93,
++            0x17, 0x2a,
++        ];
++        assert_eq!(
++            crypto::aes128_ecb(&key, &pt)?,
++            [
++                0x3a, 0xd7, 0x7b, 0xb4, 0x0d, 0x7a, 0x36, 0x60, 0xa8, 0x9e, 0xca, 0xf3, 0x24, 0x66,
++                0xef, 0x97,
++            ]
++        );
++        Ok(())
++    }
++
++    #[test]
++    fn colour_frame_ep08_damage_selects_changed_strips() -> Result {
++        // Deterministic gradient source (a plain fn item so it's Copy/reusable across calls).
++        fn g(x: usize, y: usize) -> (u8, u8, u8) {
++            (
++                ((x * 7) & 0xff) as u8,
++                ((y * 5) & 0xff) as u8,
++                (((x + y) * 3) & 0xff) as u8,
++            )
++        }
++        let total = |fs: &KVec<KVec<u8>>| fs.iter().map(|f| f.len()).sum::<usize>();
++        let flat = |fs: &KVec<KVec<u8>>| -> Result<KVec<u8>> {
++            let mut v = KVec::new();
++            for f in fs.iter() {
++                v.extend_from_slice(f, GFP_KERNEL)?;
++            }
++            Ok(v)
++        };
++        // Damage granularity is the 256x64 macro-tile (`MACRO_W`/`MACRO_H`), not the 64x16 strip:
++        // every strip of a touched macro-tile is resent. Use several macro-tiles so the partial
++        // update assertions below can distinguish one selected tile from the full frame.
++        //
++        // 512x128 = 8 strips wide (512/64) x 8 bands (128/16) = 64 strips
++        //         = 2 x 2 macro-tiles, each 4 strips wide x 4 bands = 16 strips.
++        let (w, h) = (512usize, 128usize);
++        const STRIPS_PER_MACRO: usize = 16;
++        let (full, _) = video::wht::colour_frame_ep08(w, h, 0, 0, true, false, g)?;
++
++        // A damage clip covering the WHOLE surface selects every strip in the same raster order as
++        // the full-frame path, so the wire bytes are identical.
++        let (dfull, _) =
++            video::wht::colour_frame_ep08_damage(w, h, 0, 0, &[(0, 0, w, h)], true, false, g)?;
++        assert_eq!(flat(&full)?.as_slice(), flat(&dfull)?.as_slice());
++
++        // No damage -> no strips -> empty frame list (caller must skip the USB write).
++        let (empty, _) = video::wht::colour_frame_ep08_damage(w, h, 0, 0, &[], true, false, g)?;
++        assert!(empty.is_empty());
++
++        // Selection is exact and macro-tile-quantised. Assert the strip COUNT directly (the shared
++        // selector both encoders use) as well as the byte totals -- a count is a far sharper
++        // statement than "smaller than full", and it is what actually pins the tiling behaviour.
++        let coords = |clips: &[(usize, usize, usize, usize)]| -> Result<usize> {
++            Ok(video::wht::damage_strip_coords(w, h, clips)?.len())
++        };
++        assert_eq!(coords(&[])?, 0);
++        assert_eq!(coords(&[(0, 0, w, h)])?, 4 * STRIPS_PER_MACRO); // all four macro-tiles
++
++        // A 1-pixel clip lands in ONE macro-tile and selects all 16 of its strips -- not 1.
++        assert_eq!(coords(&[(1, 1, 2, 2)])?, STRIPS_PER_MACRO);
++        let (d1, _) =
++            video::wht::colour_frame_ep08_damage(w, h, 0, 0, &[(1, 1, 2, 2)], true, false, g)?;
++        assert!(!d1.is_empty());
++        assert!(total(&d1) < total(&full));
++
++        // A 1-pixel-wide clip down the whole left edge spans the left macro-tile COLUMN: 2 tiles.
++        assert_eq!(coords(&[(0, 0, 1, h)])?, 2 * STRIPS_PER_MACRO);
++        let (d2, _) =
++            video::wht::colour_frame_ep08_damage(w, h, 0, 0, &[(0, 0, 1, h)], true, false, g)?;
++        assert!(total(&d1) < total(&d2) && total(&d2) < total(&full));
++
++        // Non-aligned geometry is rejected (same contract as colour_frame_ep08).
++        assert!(video::wht::colour_frame_ep08_damage(
++            100,
++            32,
++            0,
++            0,
++            &[(0, 0, 1, 1)],
++            true,
++            false,
++            g
++        )
++        .is_err());
++        Ok(())
++    }
++
++    #[test]
++    fn black_training_frame_matches_captured_1440p_size() -> Result {
++        // Captured first writes are 205,696 bytes:
++        // 2,560-byte arm prefix + 203,040-byte black image + 96-byte frame trailer.
++        let frame = video::wht::black_frame_ep08(2560, 1440, 0, true, false)?;
++        let image_len = frame.iter().map(|part| part.len()).sum::<usize>();
++        assert_eq!(image_len, 203_040);
++        assert_eq!(
++            2_560 + image_len + video::wht::frame_trailer(0, 0).len(),
++            205_696
++        );
++        Ok(())
++    }
++
++    #[test]
++    fn aes_cmac_rfc4493_kat() -> Result {
++        // RFC 4493 sec 4 AES-CMAC test vectors (same key as above).
++        let key = [
++            0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf,
++            0x4f, 0x3c,
++        ];
++        assert_eq!(
++            crypto::aes_cmac(&key, &[]),
++            [
++                0xbb, 0x1d, 0x69, 0x29, 0xe9, 0x59, 0x37, 0x28, 0x7f, 0xa3, 0x7d, 0x12, 0x9b, 0x75,
++                0x67, 0x46,
++            ]
++        );
++        let msg = [
++            0x6b, 0xc1, 0xbe, 0xe2, 0x2e, 0x40, 0x9f, 0x96, 0xe9, 0x3d, 0x7e, 0x11, 0x73, 0x93,
++            0x17, 0x2a,
++        ];
++        assert_eq!(
++            crypto::aes_cmac(&key, &msg),
++            [
++                0x07, 0x0a, 0x16, 0xb4, 0x6b, 0x4d, 0x41, 0x44, 0xf7, 0x9b, 0xdd, 0x9d, 0xd0, 0x4a,
++                0x28, 0x7c,
++            ]
++        );
++        Ok(())
++    }
++
++    #[test]
++    fn seal_livemac_roundtrip() -> Result {
++        // A sealed CP frame must decrypt back to its content under the IN riv, and its
++        // appended tag must equal a fresh Dl3Cmac over the ciphertext (encrypt-then-MAC).
++        let ks = [
++            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
++            0xee, 0xff,
++        ];
++        let riv = [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17];
++        let content = [0xa5u8; 32];
++        let mut hdr = [0u8; 16];
++        hdr[12..16].copy_from_slice(&4u32.to_le_bytes()); // wire_seq = 4
++        let frame = cp::seal_livemac(&ks, &riv, &hdr, &content)?;
++        assert_eq!(frame.len(), 16 + 32 + 16);
++        let ct = &frame[16..16 + 32];
++        // `open_in` applies AES-CTR with the supplied nonce. Use the same RIV that sealed this
++        // host-to-dock fixture; the receive direction uses a distinct nonce and keystream.
++        assert_eq!(&cp::open_in(&ks, &riv, 4, ct)?[..], &content[..]);
++        // And pin that contract rather than leaving it implicit: the IN nonce really is different,
++        // so opening with it must NOT recover the plaintext.
++        assert_ne!(cp::in_riv(&riv), riv);
++        assert_ne!(
++            &cp::open_in(&ks, &cp::in_riv(&riv), 4, ct)?[..],
++            &content[..]
++        );
++        assert_eq!(&frame[16 + 32..], &cp::dl3cmac_tag(&ks, &riv, 4, ct)?[..]);
++        Ok(())
++    }
++
++    #[test]
++    fn reply_decoders_accept_all_supported_rivs() -> Result {
++        let ks = [0x5au8; 16];
++        let out_head0 = [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17];
++        let in_head0 = cp::in_riv(&out_head0);
++        let mut out_head1 = out_head0;
++        out_head1[0] ^= 0x80;
++        let mut in_head1 = in_head0;
++        in_head1[0] ^= 0x80;
++
++        let mut header = [0u8; 16];
++        header[8..10].copy_from_slice(&0x45u16.to_le_bytes());
++        header[12..16].copy_from_slice(&7u32.to_le_bytes());
++        let inner = [0x14, 0, 0x30, 0, 9, 0, 0, 0];
++
++        for riv in [in_head0, in_head1, out_head0, out_head1] {
++            let frame = cp::seal_livemac(&ks, &riv, &header, &inner)?;
++            assert_eq!(
++                cp::verify_in_ack(&ks, &out_head0, &frame),
++                Some((0x14, 0x30, 9))
++            );
++            assert_eq!(
++                cp::decode_in_lenient(&ks, &out_head0, &frame),
++                Some((0x14, 0x30, 9))
++            );
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn video_content_nonce_matches_golden_vectors() {
++        // Golden vectors cover each head's video seal channel.
++        let h0 = cp::video_content_nonce(&[0xa1, 0x2b, 0xaa, 0xb7, 0x0e, 0x0b, 0x02, 0x74], 0);
++        assert_eq!(h0, [0xa1, 0x2b, 0xaa, 0xb7, 0x0e, 0x0b, 0x02, 0x7c]);
++
++        let h1 = cp::video_content_nonce(&[0xd0, 0x2a, 0xc0, 0x83, 0xb6, 0x42, 0x72, 0x57], 1);
++        assert_eq!(h1, [0xd0, 0x2a, 0xc0, 0x83, 0xb6, 0x42, 0x72, 0x5e]);
++    }
++
++    #[test]
++    fn aux_for_id_constants() {
++        // The CP header `aux` field is a per-inner-id constant, not body_len/4.
++        assert_eq!(cp::aux_for_id(0x14, 48), 0x0a);
++        assert_eq!(cp::aux_for_id(0x15, 32), 0x09);
++        assert_eq!(cp::aux_for_id(0x36, 80), 0x08);
++        assert_eq!(cp::aux_for_id(0x48, 96), 0x06);
++        // Cursor message IDs have fixed auxiliary fields; deriving them as `body_len / 4` would
++        // produce 0x0c for all three.
++        assert_eq!(cp::aux_for_id(0x1a, 48), 0x04); // cursor move
++        assert_eq!(cp::aux_for_id(0x1b, 48), 0x03); // cursor create
++        assert_eq!(cp::aux_for_id(0x1c, 48), 0x02); // cursor image
++        assert_eq!(cp::aux_for_id(0x99, 40), 10); // unknown id falls back to body_len/4
++    }
++
++    #[test]
++    fn cp_setup_burst_table_framing() -> Result {
++        // Pin the post-msg0 `(aux, body_len)` wire profile. `body_len` includes the encrypted
++        // content and its 16-byte Dl3Cmac tag.
++        const PER_HEAD_FINGERPRINT: [(u16, usize); 9] = [
++            (0x0c, 64),
++            (0x0f, 64),
++            (0x04, 176),
++            (0x0c, 64),
++            (0x0c, 80),
++            (0x04, 64),
++            (0x08, 64),
++            (0x0a, 48),
++            (0x05, 48),
++        ];
++        // Finalization bodies contain 32 bytes of content and a 16-byte tag. Keep one fingerprint
++        // per `CP_SETUP_FINALIZE` entry so table growth cannot cause an out-of-bounds test access.
++        const FINALIZE_FINGERPRINT: [(u16, usize); 6] = [
++            (0x08, 48),
++            (0x09, 48),
++            (0x08, 48),
++            (0x08, 48),
++            (0x09, 48),
++            (0x08, 48),
++        ];
++        // Keep the fingerprint table and the burst table in lockstep: growing one without the
++        // other is exactly the defect above.
++        build_assert!(FINALIZE_FINGERPRINT.len() == cp::CP_SETUP_FINALIZE.len());
++
++        let ks = [0x5au8; 16];
++        let riv = [0x11u8; 8];
++        for (i, &(id, _sub, content_len)) in cp::CP_SETUP_PER_HEAD.iter().enumerate() {
++            let content = KVec::from_elem(0u8, content_len, GFP_KERNEL)?;
++            let frame = cp::seal_interactive(&ks, &riv, id, 0, &content)?;
++            let (want_aux, want_body) = PER_HEAD_FINGERPRINT[i];
++            assert_eq!(frame.len(), 16 + want_body);
++            assert_eq!(u16::from_le_bytes([frame[10], frame[11]]), want_aux);
++        }
++        for (i, &(id, _sub, _off22)) in cp::CP_SETUP_FINALIZE.iter().enumerate() {
++            let frame = cp::seal_interactive(&ks, &riv, id, 0, &[0u8; 32])?;
++            let (want_aux, want_body) = FINALIZE_FINGERPRINT[i];
++            assert_eq!(frame.len(), 16 + want_body);
++            assert_eq!(u16::from_le_bytes([frame[10], frame[11]]), want_aux);
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn stream_manage_restatement_matches_dlm() -> Result {
++        // All deterministic fields must match the captured plaintext for both heads. The head
++        // marker is at offset 23, the HDCP message ID at offset 27, and the final three u32 fields
++        // contain `0`, `1`, and `head + 8`.
++        const WANT: [[u8; 40]; 2] = [
++            [
++                0x26, 0x00, 0x10, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00,
++                0x00, 0x01, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
++                0x08, 0x00, 0x00, 0x00,
++            ],
++            [
++                0x26, 0x00, 0x10, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00,
++                0x00, 0x02, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
++                0x09, 0x00, 0x00, 0x00,
++            ],
++        ];
++        for head in 0..2u8 {
++            let c = cp::stream_manage_restatement(0, head)?;
++            assert_eq!(c.len(), 48);
++            // Bytes 4..6 are the live counter (passed as 0 here, so already covered); the last
++            // 8 bytes (offset 40..48) are host-random.
++            assert_eq!(&c[..40], &WANT[head as usize][..]);
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn video_arm_burst_table_framing() -> Result {
++        // Pin every video-arm entry's type, sub-ID, auxiliary value, and body length to captured
++        // traffic. Head 0 uses the table's base sub-IDs; the builders add one for head 1. The
++        // compile-time length check prevents the fixture and production table from drifting.
++        const FINGERPRINT_H0: [(u32, u16, u16, usize); 10] = [
++            (2, 0x0008, 0x0000, 16),
++            (2, 0x0018, 0x0000, 16),
++            (4, 0x0008, 0x000a, 16),
++            (4, 0x0018, 0x000a, 16),
++            (2, 0x0000, 0x0000, 16),
++            (2, 0x0010, 0x0000, 16),
++            (4, 0x0000, 0x0004, 16),
++            (4, 0x0010, 0x0004, 16),
++            (4, 0x0008, 0x000e, 1104),
++            (4, 0x0018, 0x000e, 1104),
++        ];
++        build_assert!(FINGERPRINT_H0.len() == cp::VIDEO_ARM_BURST.len());
++        let ks = [0x5au8; 16];
++        let riv = [0x11u8; 8];
++        for (i, &(wire_type, sub_base, aux, body_len)) in cp::VIDEO_ARM_BURST.iter().enumerate() {
++            let (want_type, want_sub, want_aux, want_body) = FINGERPRINT_H0[i];
++            assert_eq!(
++                (wire_type, sub_base, aux, body_len),
++                (want_type, want_sub, want_aux, want_body)
++            );
++            if wire_type == 2 {
++                let body = cp::video_arm_plaintext_body(i, 0);
++                let frame = cp::video_arm_plain_frame(sub_base, &body);
++                assert_eq!(frame.len(), 32);
++                assert_eq!(u16::from_le_bytes([frame[8], frame[9]]), want_sub);
++            } else {
++                let content = KVec::from_elem(0u8, body_len, GFP_KERNEL)?;
++                let frame = cp::seal_video_arm(&ks, &riv, sub_base, aux, 0, &content)?;
++                assert_eq!(frame.len(), 16 + body_len + 16);
++                assert_eq!(u16::from_le_bytes([frame[8], frame[9]]), want_sub);
++                assert_eq!(u16::from_le_bytes([frame[10], frame[11]]), want_aux);
++            }
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn edid_reply_guards() -> Result {
++        // The pre-decrypt guards reject non-EDID frames without touching the cipher.
++        let ks = [0u8; 16];
++        let riv = [0u8; 8];
++        assert!(cp::parse_edid_from_reply(&ks, &riv, &[0u8; 10])?.is_none());
++        let mut wrong_sub = [0u8; 20];
++        wrong_sub[8] = 0x44; // wire sub != 0x45
++        assert!(cp::parse_edid_from_reply(&ks, &riv, &wrong_sub)?.is_none());
++        Ok(())
++    }
++
++    #[test]
++    fn get_edid_req_matches_dlm_wire_shape() -> Result {
++        // The captured request is 32 bytes: an 8-byte header, 14 zero bytes, and a 10-byte random
++        // tail at offset 22.
++        let req = cp::get_edid_req(0x2c, 0)?;
++        assert_eq!(req.len(), 32);
++        assert_eq!(
++            &req[0..8],
++            &[0x15, 0x00, 0x21, 0x00, 0x2c, 0x00, 0x00, 0x00]
++        );
++        assert_eq!(&req[8..22], &[0u8; 14]);
++        // Pin the complete wire framing as well:
++        // aux=0x09 (cp::aux_for_id(0x15, ..)), body = 32 + 16 (tag) = 48 bytes.
++        let frame = cp::seal_interactive(&[0x5au8; 16], &[0x11u8; 8], 0x15, 0, &req)?;
++        assert_eq!(frame.len(), 16 + 32 + 16);
++        assert_eq!(u16::from_le_bytes([frame[10], frame[11]]), 0x09);
++        Ok(())
++    }
++
++    #[test]
++    fn edid_engage_req_matches_dlm_wire_shape() -> Result {
++        // Independent captures agree on `id=0x16 sub=0x0023` with the same 32-byte shape as
++        // `get_edid_req`: an 8-byte header, 14 zero bytes, and a 10-byte random tail.
++        let req = cp::edid_engage_req(0x30, 0)?;
++        assert_eq!(req.len(), 32);
++        assert_eq!(
++            &req[0..8],
++            &[0x16, 0x00, 0x23, 0x00, 0x30, 0x00, 0x00, 0x00]
++        );
++        assert_eq!(&req[8..22], &[0u8; 14]);
++        let frame = cp::seal_interactive(&[0x5au8; 16], &[0x11u8; 8], 0x16, 0, &req)?;
++        assert_eq!(frame.len(), 16 + 32 + 16);
++        assert_eq!(u16::from_le_bytes([frame[10], frame[11]]), 0x08); // cp::aux_for_id(0x16, ..)
++        Ok(())
++    }
++
++    #[test]
++    fn edid_poll_ready_byte_matches_golden_replies() -> Result {
++        // Golden dock-to-host `id=0x0044 sub=0x0020` replies pin the readiness bit at inner offset
++        // 26. The first precedes a placeholder `id=0x114` fetch and the second precedes a real
++        // `id=0x194` EDID fetch.
++        const KS: [u8; 16] = [
++            0xd9, 0xec, 0x1f, 0xbc, 0x8b, 0x5a, 0xb3, 0xd8, 0x71, 0x0f, 0xd3, 0xbd, 0x42, 0x04,
++            0x06, 0x55,
++        ];
++        const OUT_RIV: [u8; 8] = [0xf6, 0x21, 0xdc, 0x0d, 0x22, 0x7e, 0xf4, 0xaf];
++        #[rustfmt::skip]
++        const NOT_READY: [u8; 112] = [
++            0x00, 0x00, 0x6c, 0x00, 0x04, 0x00, 0x00, 0x00, 0x45, 0x00, 0x0a, 0x00, 0xcd, 0x00,
++            0x00, 0x00, 0xa5, 0xea, 0x5d, 0x51, 0xf6, 0xa8, 0x6b, 0xb6, 0x89, 0x88, 0x01, 0xa2,
++            0x47, 0x30, 0xbd, 0x6c, 0x84, 0xb8, 0xaf, 0x9f, 0x85, 0xf2, 0x8a, 0x20, 0xc8, 0xec,
++            0x51, 0x9e, 0x8d, 0xeb, 0xef, 0x5a, 0x3a, 0x1d, 0xb5, 0xc7, 0x80, 0x02, 0xfe, 0x1e,
++            0xed, 0x07, 0xdd, 0x71, 0x00, 0x7f, 0x45, 0x77, 0x6c, 0x82, 0xf6, 0xe9, 0xc3, 0x0d,
++            0xdf, 0x67, 0x82, 0xac, 0xa8, 0x23, 0xd5, 0x5a, 0x1c, 0xce, 0xcb, 0x89, 0xb5, 0x98,
++            0x65, 0xba, 0xbb, 0xb6, 0x2d, 0x0e, 0x9b, 0x55, 0xee, 0xfd, 0x46, 0x0c, 0x22, 0x35,
++            0x6f, 0x84, 0xe5, 0x36, 0x95, 0xd0, 0xdc, 0xfc, 0x6f, 0x8a, 0x57, 0xda, 0xa2, 0xae,
++        ];
++        #[rustfmt::skip]
++        const READY: [u8; 112] = [
++            0x00, 0x00, 0x6c, 0x00, 0x04, 0x00, 0x00, 0x00, 0x45, 0x00, 0x0a, 0x00, 0x59, 0x03,
++            0x00, 0x00, 0xf7, 0x8e, 0x70, 0xb2, 0xa3, 0x24, 0xe2, 0x6f, 0x9f, 0xb6, 0xe9, 0x8e,
++            0x32, 0x55, 0x11, 0x21, 0x99, 0x74, 0xf6, 0xfb, 0xea, 0x97, 0xd5, 0x7f, 0xa6, 0x45,
++            0x9d, 0x35, 0xf0, 0xa7, 0xbe, 0xd3, 0x9b, 0x19, 0x24, 0x8c, 0x98, 0xa6, 0x0c, 0xa2,
++            0x4d, 0x8e, 0x83, 0xaa, 0x74, 0xd5, 0x8b, 0xe0, 0x6f, 0xb1, 0x9f, 0xa4, 0xb9, 0xae,
++            0x39, 0xc6, 0x0a, 0x9c, 0x63, 0x70, 0xdb, 0x49, 0x74, 0xe5, 0x85, 0x42, 0x07, 0x7e,
++            0xc2, 0x49, 0xfb, 0x67, 0x54, 0xd5, 0x47, 0x72, 0xb7, 0x19, 0x24, 0x8f, 0xb1, 0xb0,
++            0xb2, 0x83, 0x89, 0x62, 0x4b, 0xcb, 0x59, 0x15, 0x1f, 0x8f, 0x85, 0xc3, 0xa5, 0x9d,
++        ];
++        assert_eq!(cp::edid_poll_ready(&KS, &OUT_RIV, &NOT_READY), Some(false));
++        assert_eq!(cp::edid_poll_ready(&KS, &OUT_RIV, &READY), Some(true));
++        Ok(())
++    }
++
++    #[test]
++    fn rgb565_packing() {
++        assert_eq!(video::rgb565(0xff, 0x00, 0x00), 0xf800);
++        assert_eq!(video::rgb565(0x00, 0xff, 0x00), 0x07e0);
++        assert_eq!(video::rgb565(0x00, 0x00, 0xff), 0x001f);
++        let _ = EINVAL; // silence unused import on configs without the assert paths
++    }
++
++    #[test]
++    fn cursor_messages_structure() -> Result {
++        // Shared 32-byte cursor layout: marker 0x02 at 22, head ID at 23, and two little-endian u16
++        // fields at 24 and 26.
++        // Create (head 0): id=0x1b sub=0x42, fields = w,h.
++        let c = cp::cursor_create(7, 0, 64, 64)?;
++        assert_eq!(c.len(), 32);
++        assert_eq!(&c[0..6], &[0x1b, 0x00, 0x42, 0x00, 0x07, 0x00]); // id, sub, counter (LE)
++        assert_eq!(c[22], 0x02); // marker
++        assert_eq!(c[23], 0); // head id
++        assert_eq!(u16::from_le_bytes([c[24], c[25]]), 64); // width
++        assert_eq!(u16::from_le_bytes([c[26], c[27]]), 64); // height
++
++        // Move (head 1): id=0x1a sub=0x43, marker@22, head@23, X@24, Y@26 (LE).
++        let m = cp::cursor_move(9, 1, 0x0140, 0x00f0)?;
++        assert_eq!(m.len(), 32);
++        assert_eq!(&m[0..4], &[0x1a, 0x00, 0x43, 0x00]); // id, sub
++        assert_eq!(m[22], 0x02); // marker
++        assert_eq!(m[23], 1); // head id
++        assert_eq!(u16::from_le_bytes([m[24], m[25]]), 0x0140); // X
++        assert_eq!(u16::from_le_bytes([m[26], m[27]]), 0x00f0); // Y
++
++        // Image: 32-byte header (inner id 0x401c, the 0x40 bitmap flag) + w*h*4 BGRA at off32;
++        // wrong-size input rejected.
++        let bitmap = KVec::from_elem(0xabu8, 64 * 64 * 4, GFP_KERNEL)?;
++        let img = cp::cursor_image(3, 0, 64, 64, &bitmap)?;
++        assert_eq!(img.len(), 32 + 64 * 64 * 4);
++        assert_eq!(&img[0..4], &[0x1c, 0x40, 0x41, 0x00]); // inner id 0x401c, sub 0x41
++        assert_eq!(img[22], 0x02); // marker
++        assert_eq!(img[32], 0xab); // bitmap begins at off32
++        assert!(cp::cursor_image(3, 0, 64, 64, &[0u8; 16]).is_err()); // wrong bitmap length
++        Ok(())
++    }
++
++    #[test]
++    fn timing_from_drm_mode_1080p60() -> Result {
++        // CEA 1920x1080@60: clock 148.5 MHz, h 2008/2052/2200, v 1084/1089/1125.
++        let mode = DisplayMode::from_timings(ModeTimings {
++            clock_khz: 148_500,
++            hdisplay: 1920,
++            hsync_start: 2008,
++            hsync_end: 2052,
++            htotal: 2200,
++            vdisplay: 1080,
++            vsync_start: 1084,
++            vsync_end: 1089,
++            vtotal: 1125,
++            flags: ModeFlags::PHSYNC | ModeFlags::PVSYNC,
++        })?;
++        assert_eq!(mode.cea_vic(), 16);
++        let t = cp::timing_from_drm_mode(&mode)?;
++        assert_eq!(t.hactive, 1920);
++        assert_eq!(t.hblank, 280); // htotal - hdisplay
++        assert_eq!(t.hsync_front, 88); // hsync_start - hdisplay
++        assert_eq!(t.hsync_width, 44); // hsync_end - hsync_start
++        assert_eq!(t.vactive, 1080);
++        assert_eq!(t.vblank, 45); // vtotal - vdisplay
++        assert_eq!(t.vsync_front, 4);
++        assert_eq!(t.vsync_width, 5);
++        assert_eq!(t.pixel_clock_10khz, 14_850); // clock(kHz) / 10
++        assert_eq!(t.refresh_hz, 60); // via drm_mode_vrefresh
++        Ok(())
++    }
++
++    /// The dock's refresh ceiling preserves the highest validated rate.
++    ///
++    /// Captured vendor traffic clamps higher compositor modes to approximately 120 Hz, and native
++    /// 165 and 180 Hz timings do not display. The mode list therefore stops at 120 Hz.
++    ///
++    /// The 120 Hz case is the one that matters most: it sits on the boundary and must pass by
++    /// **equality**. A `<` here would prune the working configuration and dark both panels.
++    #[test]
++    fn refresh_ceiling_prunes_only_the_unproven_rates() {
++        assert_eq!(drm_sink::max_refresh_hz(), 120); // no override in force under KUnit
++        let ok = drm_sink::refresh_within_limit;
++
++        // Allowed: the proven configuration, on the boundary, and everything under it. 164.96 Hz
++        // and 119.998 Hz both arrive here already rounded by `drm_mode_vrefresh`.
++        assert!(ok(120));
++        assert!(ok(60));
++        assert!(ok(119));
++        // Pruned: the two rates that were tried on hardware and left the panel dark.
++        assert!(!ok(165));
++        assert!(!ok(180));
++        // A degenerate mode reports 0 Hz; that carries no rate information, so it is not this
++        // check's business to reject it (`MAX_HEAD_CLOCK_KHZ` and the dock budget still bound it),
++        // and a signed refresh must never be read as a huge unsigned one.
++        assert!(ok(0));
++        assert!(ok(-1));
++
++        // The ceiling is refresh rather than pixel rate: 3840x2160@60 is
++        // 497,664,000 px/s and is a supported device mode.
++        let rate = drm_sink::active_pixel_rate;
++        assert!(ok(60) && rate(3840, 2160, 60) == 497_664_000);
++        assert_eq!(rate(2560, 1440, 120), 442_368_000); // validated per-head limit
++        assert_eq!(rate(65535, 65535, 65535), u32::MAX); // saturates, never wraps small
++        assert_eq!(rate(2560, 1440, -1), 0);
++    }
++
++    /// Verify set-mode geometry and profile words against independently decoded vendor messages.
++    /// The vectors also pin offset 44 as the refresh and offset 66 as timing-dependent.
++    #[test]
++    fn set_mode_matches_vendor_vectors() -> Result {
++        // (hact, htotal, hsync_start, hsync_end, vact, vtotal, vsync_start, vsync_end, clock kHz,
++        //  refresh, off42, off66)
++        let cases: [(u16, u16, u16, u16, u16, u16, u16, u16, i32, u16, u16, u16); 6] = [
++            (
++                1280, 1650, 1390, 1430, 720, 750, 725, 730, 74_250, 60, 0x0400, 0x2804,
++            ),
++            (
++                1920, 2200, 2008, 2052, 1080, 1125, 1084, 1089, 148_500, 60, 0x0400, 0x2810,
++            ),
++            (
++                1920, 2200, 2008, 2052, 1080, 1125, 1084, 1089, 297_000, 120, 0x0400, 0x083f,
++            ),
++            (
++                2560, 2720, 2608, 2640, 1440, 1481, 1443, 1448, 241_500, 60, 0x0600, 0x0800,
++            ),
++            (
++                2560, 2720, 2608, 2640, 1440, 1525, 1443, 1448, 497_750, 120, 0x0600, 0x0800,
++            ),
++            (
++                3840, 4000, 3888, 3920, 2160, 2222, 2163, 2168, 533_120, 60, 0x0604, 0x0800,
++            ),
++        ];
++        for (hact, htotal, hss, hse, vact, vtotal, vss, vse, clock, refresh, off42, off66) in cases
++        {
++            let mode = DisplayMode::from_timings(ModeTimings {
++                clock_khz: clock,
++                hdisplay: hact,
++                hsync_start: hss,
++                hsync_end: hse,
++                htotal,
++                vdisplay: vact,
++                vsync_start: vss,
++                vsync_end: vse,
++                vtotal,
++                flags: if hact <= 1920 {
++                    ModeFlags::PHSYNC | ModeFlags::PVSYNC
++                } else {
++                    ModeFlags::PHSYNC | ModeFlags::NVSYNC
++                },
++            })?;
++            let t = cp::timing_from_drm_mode(&mode)?;
++            let w = cp::set_mode(7, 1, &t)?;
++            assert_eq!(w.len(), 80);
++            let u16_at = |off: usize| u16::from_le_bytes([w[off], w[off + 1]]);
++            assert_eq!(u16_at(26), hact); // hactive
++            assert_eq!(u16_at(28), htotal - hact); // hblank
++            assert_eq!(u16_at(30), hss - hact); // hsync front porch
++            assert_eq!(u16_at(32), hse - hss); // hsync width
++            assert_eq!(u16_at(34), vact); // vactive
++            assert_eq!(u16_at(36), vtotal - vact); // vblank
++            assert_eq!(u16_at(38), vss - vact); // vsync front porch
++            assert_eq!(u16_at(40), vse - vss); // vsync width
++            assert_eq!(u16_at(42), off42);
++            assert_eq!(u16_at(44), refresh);
++            assert_eq!(u16_at(66), off66);
++            assert_eq!(u16_at(68), 0x0200);
++            assert_eq!(u16_at(70), (clock as u32 / 10) as u16); // pixel clock / 10 kHz
++            assert_eq!(&w[72..74], &[0, 0]);
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn unmeasured_mode_profile_is_rejected() -> Result {
++        let mode = DisplayMode::from_timings(ModeTimings {
++            clock_khz: 699_500,
++            hdisplay: 2560,
++            hsync_start: 2608,
++            hsync_end: 2640,
++            htotal: 2720,
++            vdisplay: 1440,
++            vsync_start: 1443,
++            vsync_end: 1451,
++            vtotal: 1559,
++            flags: ModeFlags::PHSYNC | ModeFlags::NVSYNC,
++        })?;
++        assert!(!cp::mode_supported(&mode));
++        assert!(cp::timing_from_drm_mode(&mode).is_err());
++        Ok(())
++    }
++
++    #[test]
++    fn rotation_pixel_mapping() {
++        use drm::kms::plane::Rotation;
++
++        // Source 2x3 (sw=2, sh=3). 0deg is identity; 180deg mirrors both axes.
++        assert_eq!(drm_sink::rot_src(Rotation::ROTATE_0, 0, 0, 2, 3), (0, 0));
++        assert_eq!(drm_sink::rot_src(Rotation::ROTATE_0, 1, 2, 2, 3), (1, 2));
++        assert_eq!(drm_sink::rot_src(Rotation::ROTATE_180, 0, 0, 2, 3), (1, 2));
++        assert_eq!(drm_sink::rot_src(Rotation::ROTATE_180, 1, 2, 2, 3), (0, 0));
++        // 90deg: output dims are (sh,sw)=(3,2); (dx,dy) -> (dy, sh-1-dx).
++        assert_eq!(drm_sink::rot_src(Rotation::ROTATE_90, 0, 0, 2, 3), (0, 2));
++        assert_eq!(drm_sink::rot_src(Rotation::ROTATE_90, 2, 1, 2, 3), (1, 0));
++        // 270deg: (dx,dy) -> (sw-1-dy, dx).
++        assert_eq!(drm_sink::rot_src(Rotation::ROTATE_270, 0, 0, 2, 3), (1, 0));
++        assert_eq!(drm_sink::rot_src(Rotation::ROTATE_270, 2, 1, 2, 3), (0, 2));
++        // Reflect-X composes on top of the rotation (here identity): sx -> sw-1-sx.
++        assert_eq!(
++            drm_sink::rot_src(Rotation::ROTATE_0 | Rotation::REFLECT_X, 0, 0, 2, 3),
++            (1, 0)
++        );
++    }
++
++    #[test]
++    fn parallel_encoder_matches_serial_for_every_plane_transform() -> Result {
++        use drm::kms::plane::Rotation;
++
++        let transforms = [
++            Rotation::ROTATE_0,
++            Rotation::ROTATE_90,
++            Rotation::ROTATE_180,
++            Rotation::ROTATE_270,
++            Rotation::ROTATE_0 | Rotation::REFLECT_X,
++            Rotation::ROTATE_90 | Rotation::REFLECT_X,
++            Rotation::ROTATE_180 | Rotation::REFLECT_X,
++            Rotation::ROTATE_270 | Rotation::REFLECT_X,
++            Rotation::ROTATE_0 | Rotation::REFLECT_Y,
++            Rotation::ROTATE_90 | Rotation::REFLECT_Y,
++            Rotation::ROTATE_180 | Rotation::REFLECT_Y,
++            Rotation::ROTATE_270 | Rotation::REFLECT_Y,
++            Rotation::ROTATE_0 | Rotation::REFLECT_X | Rotation::REFLECT_Y,
++            Rotation::ROTATE_90 | Rotation::REFLECT_X | Rotation::REFLECT_Y,
++            Rotation::ROTATE_180 | Rotation::REFLECT_X | Rotation::REFLECT_Y,
++            Rotation::ROTATE_270 | Rotation::REFLECT_X | Rotation::REFLECT_Y,
++        ];
++        for transform in transforms {
++            drm_sink::parallel_rotation_matches_serial(transform)?;
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn wht_colour_and_quantize() {
++        use video::wht;
++        // Colour transform against captured transform-DC values: white maps to Y=16320,
++        // achromatic pixels have zero chroma, and red's floored luma is 4032.
++        assert_eq!(wht::colour(255, 255, 255), (16320, 0, 0));
++        assert_eq!(wht::colour(128, 128, 128), (128 * 64, 0, 0));
++        assert_eq!(wht::colour(255, 0, 0), (4032, 64 * 255, 0));
++        // Green has two negative signed-chroma components.
++        assert_eq!(wht::colour(0, 255, 0), (8128, -64 * 255, -64 * 255));
++        assert_eq!(wht::colour(0, 0, 255), (4032, 0, 64 * 255));
++        // White Y_DC=16320 quantizes to 1020 at DC position zero.
++        assert_eq!(wht::quantize(16320, 0), 1020);
++        // AC clamps to the 12-bit signed long-token range.
++        assert_eq!(wht::quantize(1_000_000, 16), 2047);
++        assert_eq!(wht::quantize(-1_000_000, 16), -2048);
++    }
++
++    #[test]
++    fn wht_transform_uniform() {
++        use video::wht;
++        // A uniform block has the per-pixel value at DC and zero AC terms.
++        let block = [16320i32; wht::BLOCK];
++        let c = wht::transform(&block);
++        assert_eq!(c[0], 16320);
++        assert!(c[1..].iter().all(|&x| x == 0));
++        // White pixel -> Y plane -> WHT DC -> quantized value.
++        let (y, _, _) = wht::colour(255, 255, 255);
++        assert_eq!(wht::quantize(wht::transform(&[y; wht::BLOCK])[0], 0), 1020);
++    }
++
++    /// The quantisers divide by powers of two with arithmetic shifts, avoiding a runtime division
++    /// for every coefficient.
++    ///
++    /// The rewrite is only valid because floor division by `2^k` IS an arithmetic right shift, for
++    /// negative operands as well as positive. That identity is easy to state and easy to get wrong
++    /// (a *truncating* `/` is not the same thing on negatives), and a coefficient off by one is a
++    /// wire-visible codec change. So assert it directly, over the full coefficient range the
++    /// transform can produce, against the equivalent division.
++    #[test]
++    fn quantiser_shifts_match_division() {
++        use video::wht::{quantize, COEFFS};
++        // 8-bit input in the codec's x64 fixed point, summed over an 8x8 block and floor-divided by
++        // 64 by `transform`, bounds |coeff| well inside this; step past it on both signs anyway.
++        const LIMIT: i32 = 200_000;
++        // The luma table, restated here as DIVISORS so the test is not written against the same
++        // shift constants it is checking.
++        let step_bias = |i: usize| -> (i32, i32) {
++            match i {
++                0 | 1 | 2 => (16, 8),
++                3 => (32, 16),
++                4..=11 => (4, 2),
++                12..=15 => (8, 4),
++                16..=47 => (2, 0),
++                _ => (4, 2),
++            }
++        };
++        for i in 0..COEFFS {
++            let (step, bias) = step_bias(i);
++            for coeff in (-LIMIT..=LIMIT).step_by(37) {
++                let want = if bias == 0 {
++                    let q = coeff.abs() / step;
++                    if coeff < 0 {
++                        -q
++                    } else {
++                        q
++                    }
++                } else {
++                    (coeff + bias).div_euclid(step)
++                }
++                .clamp(-2048, 2047);
++                assert_eq!(quantize(coeff, i), want);
++            }
++        }
++        // Boundary cases the stride above can step over: every exact multiple and half-step of the
++        // coarsest divisor, on both signs, is where floor-vs-truncate actually differs.
++        for i in 0..COEFFS {
++            let (step, bias) = step_bias(i);
++            for m in -4i32..=4 {
++                for d in [-1, 0, 1, step / 2, -step / 2] {
++                    let coeff = m * step + d;
++                    let want = if bias == 0 {
++                        let q = coeff.abs() / step;
++                        if coeff < 0 {
++                            -q
++                        } else {
++                            q
++                        }
++                    } else {
++                        (coeff + bias).div_euclid(step)
++                    }
++                    .clamp(-2048, 2047);
++                    assert_eq!(quantize(coeff, i), want);
++                }
++            }
++        }
++    }
++
++    #[test]
++    fn wht_transform_haar_vectors() {
++        // Independent golden vectors cover the source gradient blocks. Input luma is
++        // `Y = 64 * gray`.
++        use video::wht::{transform, DIM, PIXELS};
++        // Build an 8x8 Y block by evaluating a gray-per-(row,col) selector.
++        fn build(gray: impl Fn(usize, usize) -> i32) -> [i32; PIXELS] {
++            let mut b = [0i32; PIXELS];
++            for r in 0..DIM {
++                for c in 0..DIM {
++                    b[r * DIM + c] = 64 * gray(r, c);
++                }
++            }
++            b
++        }
++        // vstripe2 (period-2 vertical, full contrast 0/255) -> level-2 HL band c[4..8] = -2040.
++        let c = transform(&build(|_, c| if (c / 2) & 1 != 0 { 255 } else { 0 }));
++        assert_eq!(&c[4..8], &[-2040, -2040, -2040, -2040]);
++        assert!(c[1..4].iter().all(|&x| x == 0) && c[8..].iter().all(|&x| x == 0));
++        // Period-four vertical stripe: coarse HL c[1] = -8160.
++        let c = transform(&build(|_, c| if (c / 4) & 1 != 0 { 255 } else { 0 }));
++        assert_eq!(c[1], -8160);
++        // Period-two horizontal stripe: level-two LH band is -2040.
++        let c = transform(&build(|r, _| if (r / 2) & 1 != 0 { 255 } else { 0 }));
++        assert_eq!(&c[8..12], &[-2040, -2040, -2040, -2040]);
++        // A per-column gradient exercises DC, coarse-HL, and the finest band.
++        let c = transform(&build(|_, col| 36 * col as i32));
++        assert_eq!(c[0], 8064); // DC = mean(36*0..36*7)*64/64 = 8064
++        assert_eq!(&c[4..8], &[-576, -576, -576, -576]);
++        // The level-1 tail contains three 4x4 Morton-scanned bands:
++        // c[16..32] = HL1, c[32..48] = LH1, and c[48..64] = HH1.
++        //
++        // A per-column ramp has no vertical detail: HL1 is uniformly -72 and LH1/HH1 are zero.
++        assert!(c[16..32].iter().all(|&x| x == -72)); // finest HL: horizontal detail only
++        assert!(c[32..].iter().all(|&x| x == 0)); // LH1 + HH1: no vertical detail
++    }
++
++    #[test]
++    fn wht_vlc_codebook_byte_exact() -> Result {
++        // The LSB-first entropy VLC is checked against independent golden output. Symbol 7 is the
++        // AC code
++        // 0b1110000 (LSB-first); four of them pack to the wire's per-block AC unit bytes, and the
++        // final byte is padded with 1-bits (a truncated all-ones code), exactly as the dock emits.
++        use video::wht::Vlc;
++        let mut w = Vlc::new();
++        for _ in 0..4 {
++            w.symbol(7)?;
++        }
++        assert_eq!(&w.finish()?[..], &[0x87, 0xc3, 0xe1, 0xf0]);
++        // The full per-block AC unit `0 0 0 7 7 7 7` (idx1-3 zero, idx4-7 AC) -- matches the live
++        // wire bytes `38 1c 0e ...` captured for vstripe2.
++        let mut w = Vlc::new();
++        for s in [0usize, 0, 0, 7, 7, 7, 7] {
++            w.symbol(s)?;
++        }
++        assert_eq!(&w.finish()?[..4], &[0x38, 0x1c, 0x0e, 0x87]);
++        // Symbol 0 (the 1-bit `0` code) alone -> one byte padded with seven 1-bits.
++        let mut w = Vlc::new();
++        w.symbol(0)?;
++        assert_eq!(&w.finish()?[..], &[0xfe]);
++        Ok(())
++    }
++
++    #[test]
++    fn wht_coeff_magnitude_code() -> Result {
++        // The AC magnitude-code emitter is checked against per-coefficient golden wire bits for
++        // q-4, q-8, and q-16.
++        use video::wht::Vlc;
++        // Four q-4 coefficients (category 3, zero offset) == four sym7 -- the per-block AC unit.
++        let mut w = Vlc::new();
++        for _ in 0..4 {
++            w.coeff(-4)?;
++        }
++        assert_eq!(&w.finish()?[..], &[0x87, 0xc3, 0xe1, 0xf0]);
++        // A zero coefficient is the 1-bit symbol 0 -> one byte padded with seven 1-bits.
++        let mut w = Vlc::new();
++        w.coeff(0)?;
++        assert_eq!(&w.finish()?[..], &[0xfe]);
++        // Within-category offset (q-6 = category 3, offset 2) and sign polarity (negative vs +).
++        let mut w = Vlc::new();
++        w.coeff(-6)?;
++        assert_eq!(&w.finish()?[..], &[0x97]);
++        let mut w = Vlc::new();
++        w.coeff(6)?;
++        assert_eq!(&w.finish()?[..], &[0xd7]); // same magnitude, sign bit flipped
++                                               // Category 5 with offset (q-16) spans two bytes.
++        let mut w = Vlc::new();
++        w.coeff(-16)?;
++        assert_eq!(&w.finish()?[..], &[0x1f, 0xf8]);
++        // The unsupported long-form escape is rejected.
++        let mut w = Vlc::new();
++        assert!(w.coeff(-256).is_err());
++        Ok(())
++    }
++
++    #[test]
++    fn wht_magnitude_category() {
++        // Magnitude category is `bit_length(abs(coeff))`.
++        use video::wht::mag_category;
++        assert_eq!(mag_category(0), 0);
++        assert_eq!(mag_category(1), 1);
++        assert_eq!(mag_category(-4), 3);
++        assert_eq!(mag_category(7), 3);
++        assert_eq!(mag_category(-8), 4);
++        assert_eq!(mag_category(16), 5);
++        assert_eq!(mag_category(-128), 8);
++        assert_eq!(mag_category(255), 8);
++    }
++
++    #[test]
++    fn wht_chroma_last_is_exact() {
++        use video::wht::{chroma_last, COEFFS};
++        let mut q = [0i32; COEFFS];
++        assert_eq!(chroma_last(&q), 0);
++        for exact in [1usize, 2, 3, 4, 7, 8, 11, 15, 16, 27, 31, 32, 48, 62, 63] {
++            q.fill(0);
++            q[exact] = 1;
++            assert_eq!(chroma_last(&q), exact);
++        }
++    }
++
++    #[test]
++    fn display_capability_reply_reports_presence() -> Result {
++        let key = [0x5au8; 16];
++        let riv = [0x33u8; 8];
++        let mut inner = [0u8; 32];
++        inner[0..2].copy_from_slice(&0x78u16.to_le_bytes());
++        inner[2..4].copy_from_slice(&0x20u16.to_le_bytes());
++        inner[22..26].copy_from_slice(&0x1234u32.to_le_bytes());
++        inner[26] = 0x80;
++        let mut wire = cp::seal_interactive(&key, &riv, 0x78, 11, &inner)?;
++        wire[8..10].copy_from_slice(&0x45u16.to_le_bytes());
++
++        assert_eq!(
++            cp::probe_reply_status(&key, &riv, &wire),
++            Some((0x78, 0x1234, true))
++        );
++        Ok(())
++    }
++
++    #[test]
++    fn set_mode_has_head_and_exact_dlm_plaintext_length() -> Result {
++        let timing = cp::Timing {
++            hactive: 3840,
++            hblank: 160,
++            hsync_front: 48,
++            hsync_width: 32,
++            vactive: 2160,
++            vblank: 62,
++            vsync_front: 3,
++            vsync_width: 5,
++            refresh_hz: 60,
++            pixel_clock_10khz: 0xd040,
++            field42: 0x0604,
++            off66: 0x0800,
++        };
++        let m = cp::set_mode(0x1234, 1, &timing)?;
++        assert_eq!(m.len(), 80);
++        assert_eq!(&m[0..6], &[0x48, 0x00, 0x22, 0x00, 0x34, 0x12]);
++        assert!(m[6..22].iter().all(|&x| x == 0));
++        assert_eq!(&m[22..26], &[1, 2, 0, 0]);
++        assert_eq!(u16::from_le_bytes([m[26], m[27]]), 3840);
++        assert_eq!(u16::from_le_bytes([m[34], m[35]]), 2160);
++        assert_eq!(u16::from_le_bytes([m[70], m[71]]), 0xd040);
++        assert_eq!(u16::from_le_bytes([m[68], m[69]]), 0x0200);
++        assert_eq!(&m[72..74], &[0, 0]);
++        Ok(())
++    }
++
++    #[test]
++    fn stream_marker_routes_the_selected_head() -> Result {
++        let h0 = cp::stream_marker(0x1234, 0, 0x2f, 1)?;
++        let h1 = cp::stream_marker(0x1235, 1, 0x2e, 3)?;
++        assert_eq!(&h0[0..6], &[0x16, 0, 0x2f, 0, 0x34, 0x12]);
++        assert_eq!(&h0[22..24], &[0, 1]);
++        assert_eq!(&h1[0..6], &[0x16, 0, 0x2e, 0, 0x35, 0x12]);
++        assert_eq!(&h1[22..24], &[1, 3]);
++        Ok(())
++    }
++
++    #[test]
++    fn video_frame_trailer_matches_dlm_cycle_and_head() {
++        let t0 = video::wht::frame_trailer(0, 0);
++        assert_eq!(
++            &t0[..32],
++            &[
++                0, 0, 0x1c, 0, 4, 0, 0, 0, 0, 0, 6, 0, 0, 0, 0, 0, 8, 0, 5, 0, 0, 0, 0, 0, 0, 1, 0,
++                0, 0, 0, 0, 0,
++            ]
++        );
++        assert_eq!(
++            &t0[32..64],
++            &[
++                0, 0, 0x1c, 0, 4, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0x0a, 0, 4, 2, 0, 0, 0, 8, 0, 0,
++                0, 0, 0, 0, 0, 0,
++            ]
++        );
++        // Record C ORs the head selector with 0x10. `sub` is the little-endian u16 at bytes 8..10,
++        // so the selector belongs in byte 8; placing it in byte 9 would encode 0x1100 instead of
++        // 0x0011 and prevent head 1 from presenting the frame.
++        assert_eq!(
++            &t0[64..],
++            &[
++                0, 0, 0x1c, 0, 4, 0, 0, 0, 0x10, 0, 4, 0, 0, 0, 0, 0, 0x0a, 0, 4, 2, 0, 0, 0, 8, 0,
++                0, 0, 0, 0, 0, 0, 0,
++            ]
++        );
++
++        let t1 = video::wht::frame_trailer(1, 1);
++        assert_eq!(u16::from_le_bytes([t1[8], t1[9]]), 0x0001);
++        assert_eq!(u16::from_le_bytes([t1[32 + 8], t1[32 + 9]]), 0x0001);
++        assert_eq!(u16::from_le_bytes([t1[64 + 8], t1[64 + 9]]), 0x0011);
++        assert_eq!(t1[19], 2);
++        assert_eq!(t1[23], 8);
++        assert_eq!(t1[25], 2);
++        assert_eq!(t1[32 + 19], 4);
++        assert_eq!(t1[32 + 23], 16);
++        assert_eq!(t1[32 + 27], 8);
++    }
++
++    #[test]
++    fn video_arm_configuration_uses_mode_and_nonce() -> Result {
++        let nonce = [0x5a; 14];
++        let config = video_arm::build(1920, 1080, &nonce)?;
++
++        assert_eq!(config.len(), 1104);
++        assert_eq!(&config[10..14], &[0x80, 0x07, 0x38, 0x04]);
++        assert_eq!(&config[18..22], &[0x80, 0x07, 0x38, 0x04]);
++        assert_eq!(&config[1090..], &nonce);
++        Ok(())
++    }
++}

@@ -1,7 +1,7 @@
-From 79d6310e395f05822f90bb3658167ad37effeab8 Mon Sep 17 00:00:00 2001
+From 336de39fb0b1a2a96af06c1c0d9894e16eb06162 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 23 May 2024 16:45:50 -0400
-Subject: [PATCH 040/113] rust: drm/kms: Add DriverCrtc::atomic_check()
+Subject: [PATCH 040/106] rust: drm/kms: Add DriverCrtc::atomic_check()
 
 An optional trait method for implementing a CRTC's atomic state check.
 

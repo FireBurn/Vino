@@ -1,11 +1,7 @@
-# The kernel and Revdi directories are independent working repositories.
-# Reproducible source changes are carried by patches/ and the pinned revisions
-# documented in README.md.
-/kernel/
-
 # Temporary worktrees created by the validation scripts.
 /.worktrees/
 /.patch-export.*
+/outgoing/
 
 # Kernel module build artifacts
 *.ko

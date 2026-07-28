@@ -1,7 +1,7 @@
-From 84c41aa1dd841855b9d965f2b66b9f48fc6f05a4 Mon Sep 17 00:00:00 2001
+From b6ea22e651cdc95bab3882591768412d253f0377 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Mon, 2 Mar 2026 18:16:47 -0500
-Subject: [PATCH 017/113] rust: sync: Add SpinLockIrq
+Subject: [PATCH 017/106] rust: sync: Add SpinLockIrq
 
 A variant of `SpinLock` that ensures interrupts are disabled in the
 critical section. `lock()` will ensure that either interrupts are already

@@ -1,86 +1,90 @@
 # Upstream status and review disposition
 
-Status was rechecked on 2026-07-27 against the live lore threads and remote
-branch tips.
+Status was rechecked on 2026-07-28 against the public patch threads and the
+available remote branch tips.
 
-## Current bases
+## Current base
 
-- `drm-next`: `ea97ab2759506d9a818ffed1009bde01062b4091`;
-- `drm-rust-next`: `6dcbb4b1320fa91fee349462a52bb69135f2e45e`;
-- Lyude Paul's `rvkms-slim`: unchanged at
-  `25bc8cc7e97fd292bea4b77354aaac7eba6c5385`.
+- `drm-next` parent: `ea97ab2759506d9a818ffed1009bde01062b4091`;
+- `drm-rust-next` parent: `93b9511a3bba7f31d95502e5f912f0a476b0cf4a`;
+- existing merge used as the series base:
+  `0755a4e3e809610a14befc9ad28d35e2e460da68`;
+- Lyude Paul's `rvkms-slim`: no newer complete revision was found after the
+  imported `25bc8cc7e97fd292bea4b77354aaac7eba6c5385`.
 
-The working base merges the first two tips. No newer complete `rvkms-slim`
-revision was found.
+The full integration branch is not a proposed single-list posting. Its group
+manifests separate existing work and independently owned subsystem APIs from
+the EVDI and Vino consumers.
 
 ## v1/v2 feedback carried forward
 
 ### Rust DRM/KMS
 
-Lyude Paul NAKed the v2 series shape because it lost her attribution and
-development history, mixed unrelated changes, and duplicated existing work.
-The new history preserves her commits in order, with patch-identical content
-and only her original commit messages/tags. Mike and AI attribution never
-appears on her commits. Necessary current-tree adaptations and safety fixes are
-separate Mike-authored patches.
+The v2 series obscured Lyude Paul's attribution and mixed her work with
+unrelated adaptations. The rebuilt history preserves her 37 KMS commits in
+order and patch-identical to the imported source. Her messages and original
+tags are untouched, and no Mike or assistant trailer appears on them.
+Adaptations to the current DRM APIs and all later safety extensions are
+separate Mike-authored commits.
 
-The driver uses Lyude's KMS object layer and the current shmem mapping
-infrastructure. It does not call raw C KMS from consumer code or duplicate the
-accepted registration lifetime work.
-
-Thread:
-<https://lore.kernel.org/all/20260703030123.2814-1-mike@fireburn.co.uk/>
+Consumer code uses the safe KMS object layer and validated shmem scanout views.
+It has no raw C KMS calls, direct bindings, or reconstructed object lifetimes.
 
 ### USB
 
-The v2 discussion distinguished a bound interface from the narrower period in
-which USB I/O is legal and objected to exposing device-wide operations through
-an arbitrary interface. The new series uses typed endpoints and an adapter-owned
-revocable I/O window across probe, suspend, reset, resume, and disconnect.
+The v2 review distinguished a bound interface from the narrower interval in
+which I/O is legal. The rebuilt code models that interval as an adapter-owned,
+revocable interface capability across probe, suspend, reset, resume, and
+disconnect.
 
-Colin Braun's URB RFC remains relevant overlapping work. Vino's additions are
-kept in the USB subsystem part of the series and should be coordinated there
-rather than presented as private DRM helpers.
-
-Threads:
-
-- <https://lore.kernel.org/all/20260703030020.2694-1-mike@fireburn.co.uk/>
-- <https://lore.kernel.org/all/20260712-urb-abstraction-v1-v1-0-9fa011634ead@gmail.com/>
+Colin Braun's current URB RFC overlaps this work. Its first three commits are
+retained unchanged, followed by USB-owned additions for typed revocable I/O,
+reusable persistent queues, topology lookup, and removal notification. Vino
+does not carry a private URB implementation.
 
 ### Crypto
 
-Eric Biggers objected to exposing bare, repeatedly expanded AES and to growing
-the `crypto_akcipher` API. The current implementation uses the in-tree AES-CMAC
-library, prepares AES keys once, and puts the RSA public operation in
-`lib/crypto` rather than exposing `crypto_akcipher` to Rust.
+The current implementation does not add a Vino-specific RSA primitive. It uses
+the kernel crypto implementations for AES, CMAC, SHA-256, HMAC-SHA256, and RSA,
+with safe Rust wrappers in crypto-owned patches. RSA-OAEP padding and HDCP key
+handling use a memory-wiping secret type and the existing `crypto_akcipher`
+facility.
 
-No human reply was added to the crypto v2 posting after it was sent.
+### I2C
 
-Thread:
-<https://lore.kernel.org/all/20260703030056.2763-1-mike@fireburn.co.uk/>
+Igor Korotin's active Rust I2C adapter work was checked. Its provider-lifetime
+issue is not solved privately in Vino. The kernel driver therefore does not
+register a downstream I2C adapter in this revision. Chimera retains its
+userspace-only DDC/CI vendor transaction so protocol research can continue
+without creating a competing kernel API.
 
-### Vino v2 and Revdi
+### Vino and EVDI
 
-Vino v2 received automated review but no human follow-up. Verified findings were
-folded into the production tree; the review transcript is not treated as human
-acceptance. The Rust EVDI posting also received no replies.
+Automated findings from the previous Vino posting were rechecked and corrected,
+but are not treated as human acceptance. EVDI now uses a conventional C UAPI
+header, generated Rust bindings, safe compat translation, normal DRM plane
+geometry, and the shared owned shmem view. The Vino match table remains limited
+to the hardware profile actually validated: Dell D6000 `17e9:6006`.
 
-Threads:
+## Reused external work
 
-- <https://lore.kernel.org/all/20260703030217.2886-1-mike@fireburn.co.uk/>
-- <https://lore.kernel.org/all/20260703030249.2949-1-mike@fireburn.co.uk/>
+The integration history deliberately retains:
+
+- Lyude Paul's Rust DRM/KMS commits;
+- Colin Braun's current USB URB RFC foundation;
+- Alice Ryhl's v4 owned-workqueue series;
+- Onur Özkan's `cancel_sync` workqueue patch;
+- scheduler, locking, architecture, and preemption prerequisites under their
+  original authors.
+
+No newer revisions of those selected series were found during the 2026-07-28
+check. They must still be posted and reviewed through their own maintainers;
+their presence in the integration branch is not a claim of acceptance.
 
 ## Patch authorship
 
-Third-party commits retain their authors, messages, and trailers. In
-particular:
-
-- Lyude's KMS patches contain no Mike or AI tags;
-- Onur Özkan's `cancel_sync` patch is kept as his work;
-- prerequisite commits from Joel Fernandes, Boqun Feng, and Heiko Carstens are
-  not re-authored.
-
-Every Mike-authored patch ends with this contiguous trailer block:
+Third-party commits retain their authors, messages, and trailers. Every
+Mike-authored kernel patch ends with:
 
 ```text
 Assisted-by: Claude:claude-opus-5-0
@@ -88,24 +92,30 @@ Assisted-by: Codex:gpt-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ```
 
-This follows `Documentation/process/coding-assistants.rst` in the kernel base:
-the assistant and exact model are identified with `AGENT_NAME:MODEL_VERSION`,
-and only Mike supplies the DCO sign-off. It does not invent a human identity or
-add trailers to someone else's patch.
+This follows `Documentation/process/coding-assistants.rst`: the assistant and
+model are identified, while only Mike supplies the DCO sign-off.
 
 ## Series shape
 
-The bring-up diary, hardware experiments, temporary knobs, reversions, and
-“keep going” commits are absent. Shared Rust APIs are introduced in their
-own subsystem patches with real consumers. Revdi lands once on the safe APIs.
-Vino is split into:
+The branch contains 106 commits in seven contiguous review groups:
 
-1. encrypted control and HDCP;
-2. video codec and arm configuration;
-3. DRM/KMS scanout;
-4. USB integration and lifecycle;
-5. kernel documentation.
+1. interrupt/preemption prerequisites;
+2. Lyude's Rust KMS series;
+3. DRM, crypto, and driver-core interfaces;
+4. USB interfaces;
+5. Rust runtime and further DRM interfaces;
+6. EVDI;
+7. five Vino patches: control, codec, KMS, USB/lifecycle, documentation.
 
-This is a review branch, not evidence that every new subsystem API is accepted.
-USB, crypto, I2C, sysfs, platform, workqueue, and DRM changes still need their
-respective maintainers and list routing.
+Bring-up chronology, experimental switches, reversions, temporary workarounds,
+and unsupported hardware claims are absent. Generic facilities are introduced
+in their owning subsystem rather than hidden in the driver.
+
+## References
+
+- [Rust crypto v2](https://patchew.org/linux/20260703030056.2763-1-mike%40fireburn.co.uk/)
+- [Rust KMS v2](https://patchew.org/linux/20260703030123.2814-1-mike%40fireburn.co.uk/)
+- [Vino v2](https://patchew.org/linux/20260617151249.2937-1-mike%40fireburn.co.uk/)
+- [Colin Braun's USB URB RFC](https://patchew.org/linux/20260712-urb-abstraction-v1-v1-0-9fa011634ead%40gmail.com/)
+- [Alice Ryhl's v4 workqueue series](https://patchew.org/linux/20260312-create-workqueue-v4-0-ea39c351c38f%40google.com/)
+- [Igor Korotin's Rust I2C adapter RFC](https://patchew.org/linux/20260131-i2c-adapter-v1-0-5a436e34cd1a%40gmail.com/)

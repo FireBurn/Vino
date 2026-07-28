@@ -1,7 +1,7 @@
-From 38c936e2763b0ffbf6049ed162b58b62244d20ff Mon Sep 17 00:00:00 2001
+From 0a874508e17361d5bd9aec49a494f064e461c402 Mon Sep 17 00:00:00 2001
 From: Heiko Carstens <hca@linux.ibm.com>
 Date: Tue, 26 May 2026 08:21:48 -0700
-Subject: [PATCH 013/113] s390/preempt: Enable
+Subject: [PATCH 013/106] s390/preempt: Enable
  HAS_SEPARATE_PREEMPT_RESCHED_BITS
 
 Convert s390's preempt_count to 64 bit, and change the preempt

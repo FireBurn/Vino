@@ -17,6 +17,5 @@ become mixed with kernel API design or build instructions.
 | [`testing.md`](testing.md) | Build-only validation, patch reproduction, examples, and hardware test boundary |
 
 The kernel-facing user documentation is also present in
-`kernel/Documentation/gpu/vino.rst`. It intentionally documents the supported
+`linux/Documentation/gpu/vino.rst`. It intentionally documents the supported
 production behavior, not the history of discovering it.
-

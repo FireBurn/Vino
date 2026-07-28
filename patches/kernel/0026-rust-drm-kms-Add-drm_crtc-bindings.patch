@@ -1,7 +1,7 @@
-From c041ef9e6ce0c2d41f53badd0028326064f9439e Mon Sep 17 00:00:00 2001
+From 702aea0595dbb2a33a1e1d38a5cc1d739931149b Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Fri, 17 May 2024 17:23:18 -0400
-Subject: [PATCH 026/113] rust: drm/kms: Add drm_crtc bindings
+Subject: [PATCH 026/106] rust: drm/kms: Add drm_crtc bindings
 
 This introduces basic bindings for DRM CRTCs which follow the same general
 pattern as connectors and planes (e.g. AsRawCrtc, AsRawCrtcState, etc.).

@@ -1,114 +1,107 @@
 patch	commit	author	subject
-0001-preempt-Track-NMI-nesting-to-separate-per-CPU-counte.patch	898a11184b2357edaab5ab66767d88769980ddec	Joel Fernandes <joelagnelf@nvidia.com>	preempt: Track NMI nesting to separate per-CPU counter
-0002-preempt-Introduce-HARDIRQ_DISABLE_BITS.patch	ab9cf8cd9c05e692e15e55d0c28712ae0ecbf99c	Boqun Feng <boqun.feng@gmail.com>	preempt: Introduce HARDIRQ_DISABLE_BITS
-0003-preempt-Introduce-__preempt_count_-sub-add-_return.patch	7375438684526f5807b8ae3ebbc656a3404986aa	Boqun Feng <boqun.feng@gmail.com>	preempt: Introduce __preempt_count_{sub, add}_return()
-0004-openrisc-Include-linux-cpumask.h-in-smp.h.patch	c9603deaf44e2f8a9f6f517f54dbc92059e63217	Lyude Paul <lyude@redhat.com>	openrisc: Include <linux/cpumask.h> in smp.h
-0005-irq-spin_lock-Add-counted-interrupt-disabling-enabli.patch	5e9cbad03908cd1b06af88e2613ab6f7a962781a	Boqun Feng <boqun.feng@gmail.com>	irq & spin_lock: Add counted interrupt disabling/enabling
-0006-irq-Add-KUnit-test-for-refcounted-interrupt-enable-d.patch	4427d007619a4010b3324dbfeb9690370538b4ac	Lyude Paul <lyude@redhat.com>	irq: Add KUnit test for refcounted interrupt enable/disable
-0007-locking-Switch-to-_irq_-disable-enable-variants-in-c.patch	6b54fb6004f29d6da4ee853eaec8cd30189e58b8	Boqun Feng <boqun.feng@gmail.com>	locking: Switch to _irq_{disable,enable}() variants in cleanup guards
-0008-sched-fair-stop-reading-cfsb_guard.flags-after-the-g.patch	4081deccf2419b919b74f6bedd853f95c26cef84	Mike Lothian <mike@fireburn.co.uk>	sched/fair: stop reading cfsb_guard.flags after the guard drops it
-0009-sched-Remove-the-unused-preempt_offset-parameter-of-.patch	87e3f440e01896f9e8ad5cd3360c39ecb97eaf01	Boqun Feng <boqun@kernel.org>	sched: Remove the unused preempt_offset parameter of __cant_sleep()
-0010-sched-Avoid-signed-comparison-of-preempt_count-in-__.patch	d984e7c2101ee4f829a8e60ccd15555ff5243ead	Boqun Feng <boqun@kernel.org>	sched: Avoid signed comparison of preempt_count() in __cant_migrate()
-0011-preempt-Introduce-HAS_SEPARATE_PREEMPT_RESCHED_BITS.patch	c5ca262cb49ae4b6a07b78ffa7daded5b03141b9	Boqun Feng <boqun@kernel.org>	preempt: Introduce HAS_SEPARATE_PREEMPT_RESCHED_BITS
-0012-arm64-sched-preempt-Enable-HAS_SEPARATE_PREEMPT_RESC.patch	c146994a1be8134a1e3e6c5bd12d68c5ecdd3dd4	Boqun Feng <boqun@kernel.org>	arm64: sched/preempt: Enable HAS_SEPARATE_PREEMPT_RESCHED_BITS
-0013-s390-preempt-Enable-HAS_SEPARATE_PREEMPT_RESCHED_BIT.patch	38c936e2763b0ffbf6049ed162b58b62244d20ff	Heiko Carstens <hca@linux.ibm.com>	s390/preempt: Enable HAS_SEPARATE_PREEMPT_RESCHED_BITS
-0014-rust-Introduce-interrupt-module.patch	629fc6d73137df2bafc206863425f2edce390336	Lyude Paul <lyude@redhat.com>	rust: Introduce interrupt module
-0015-rust-helper-Add-spin_-un-lock_irq_-enable-disable-he.patch	48e1c2221865949a40cbe17fd89ee2ca04698bd1	Boqun Feng <boqun.feng@gmail.com>	rust: helper: Add spin_{un,}lock_irq_{enable,disable}() helpers
-0016-rust-sync-use-super-in-spinlock.rs.patch	f989131c8b4c531e621eb0ee9daf625715b0faf5	Lyude Paul <lyude@redhat.com>	rust: sync: use super::* in spinlock.rs
-0017-rust-sync-Add-SpinLockIrq.patch	84c41aa1dd841855b9d965f2b66b9f48fc6f05a4	Lyude Paul <lyude@redhat.com>	rust: sync: Add SpinLockIrq
-0018-rust-sync-Introduce-SpinLockIrq-lock_with-and-friend.patch	8dacdd1a398e336e3bc24e40d2645ae9e51ce4e4	Lyude Paul <lyude@redhat.com>	rust: sync: Introduce SpinLockIrq::lock_with() and friends
-0019-WIP-drm-modes-Fix-arg-types-in-drm_set_preferred_mod.patch	cd9b08cd6a8fcc29aafac5e440fe72091053d725	Lyude Paul <lyude@redhat.com>	WIP: drm/modes: Fix arg types in drm_set_preferred_mode
-0020-rust-helpers-drm.c-Split-into-its-own-folder.patch	491dfffd093490ae8532761247bc9691766a7d3f	Lyude Paul <lyude@redhat.com>	rust: helpers/drm.c: Split into its own folder
-0021-rust-drm-Add-a-small-handful-of-fourcc-bindings.patch	7d0ffa97f23df6c41c608467a20aa78aa9af4be8	Lyude Paul <lyude@redhat.com>	rust: drm: Add a small handful of fourcc bindings
-0022-rust-drm-Add-traits-for-registering-KMS-devices.patch	28db09f6ab9af3e1da9d01fab5d2e31ca1f4515e	Lyude Paul <lyude@redhat.com>	rust: drm: Add traits for registering KMS devices
-0023-rust-drm-kms-Introduce-the-main-ModeConfigObject-tra.patch	9b93a6581b7489733b06115f63003bfc9a4a4622	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Introduce the main ModeConfigObject traits
-0024-rust-drm-kms-Add-drm_connector-bindings.patch	61cb2a49c15fd854b43c78c5264619b575d4eab1	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add drm_connector bindings
-0025-rust-drm-kms-Add-drm_plane-bindings.patch	f958a024aadac7e88a6352b83d6489275ad4d139	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add drm_plane bindings
-0026-rust-drm-kms-Add-drm_crtc-bindings.patch	c041ef9e6ce0c2d41f53badd0028326064f9439e	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add drm_crtc bindings
-0027-rust-drm-kms-Add-drm_encoder-bindings.patch	42e83b1a00557fa0af9e0beba564c222ab14265a	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add drm_encoder bindings
-0028-rust-drm-kms-Add-UnregisteredConnector-attach_encode.patch	cc507166f5f3381f0fe4b82fc95a26cfee3b3570	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add UnregisteredConnector::attach_encoder()
-0029-rust-drm-kms-Add-DriverConnector-get_mode-callback.patch	bf765d0f04b91b9ad3799d693f00dbaf91c83064	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add DriverConnector::get_mode callback
-0030-rust-drm-kms-Add-ConnectorGuard-add_modes_noedid.patch	be20968702059aa2fa89332e452cead5c42f36c9	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add ConnectorGuard::add_modes_noedid()
-0031-rust-drm-kms-Add-ConnectorGuard-set_preferred_mode.patch	ac7eb53377c7a17a8f62fea24353fb188908f752	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add ConnectorGuard::set_preferred_mode
-0032-rust-drm-kms-Add-RawConnector-and-RawConnectorState.patch	d33aa88a6b4ea7c519875730b25c82f5718157d2	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add RawConnector and RawConnectorState
-0033-rust-drm-kms-Add-RawPlane-and-RawPlaneState.patch	cba9da096fdd86118ff714692edce3b5e4b929ab	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add RawPlane and RawPlaneState
-0034-rust-drm-kms-Add-OpaqueConnector-and-OpaqueConnector.patch	11f0c8f331393b4405ecac937f620e063a07e2c7	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add OpaqueConnector and OpaqueConnectorState
-0035-rust-drm-kms-Add-OpaqueCrtc-and-OpaqueCrtcState.patch	3c6dedb30df286668aa5cd3dbe509c20218f2e62	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add OpaqueCrtc and OpaqueCrtcState
-0036-rust-drm-kms-Add-OpaquePlane-and-OpaquePlaneState.patch	6e004b25dd7979012ba8958cba9e901aed3c8533	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add OpaquePlane and OpaquePlaneState
-0037-rust-drm-kms-Add-OpaqueEncoder.patch	7dbb942e658b0ea92fe527ad6f0b433660168c40	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add OpaqueEncoder
-0038-rust-drm-kms-Add-drm_atomic_state-bindings.patch	4b54bfaa774586942e7be89f335bbf66b5629a71	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add drm_atomic_state bindings
-0039-rust-drm-kms-Introduce-impl_atomic_state_token_ops.patch	276a3402daa95915bf79f158e207acb4ef8bffa1	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Introduce impl_atomic_state_token_ops!
-0040-rust-drm-kms-Add-DriverCrtc-atomic_check.patch	79d6310e395f05822f90bb3658167ad37effeab8	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add DriverCrtc::atomic_check()
-0041-rust-drm-kms-Add-DriverPlane-atomic_update.patch	d1df3fb4b43d1f81a7b909367234de1585c847f7	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add DriverPlane::atomic_update()
-0042-rust-drm-kms-Add-DriverPlane-atomic_check.patch	bb127364b6bc33468106856061e9646dda483238	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add DriverPlane::atomic_check()
-0043-rust-drm-kms-Add-DriverPlane-atomic_check.patch	4ab5773e4fa1d0181d219b765b51413d3b7473f1	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add DriverPlane::atomic_check()
-0044-rust-drm-kms-Add-RawCrtcState-active.patch	4dbdb112fd37a5691122e4d833b91d6b02559671	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add RawCrtcState::active()
-0045-rust-drm-kms-Add-RawPlaneState-crtc.patch	cedf6d68ec6a0132bbf3034754ce6a32d6e769fd	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add RawPlaneState::crtc()
-0046-rust-drm-kms-Add-RawPlaneState-atomic_helper_check.patch	00cdb3895447449d447ff3b4c1881c1206315f03	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add RawPlaneState::atomic_helper_check()
-0047-rust-drm-kms-Add-drm_framebuffer-bindings.patch	6951fa08ad78cc65c6d3a411d1ca189a4e566c56	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add drm_framebuffer bindings
-0048-rust-drm-kms-Add-RawPlane-framebuffer.patch	0ddedb7cf557a7c9a8b5cd6c9379f058431802ee	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add RawPlane::framebuffer()
-0049-rust-drm-kms-Add-DriverCrtc-atomic_begin-and-atomic_.patch	a8ca1a22a2e085ffc5266d527049414fee6d5c2e	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add DriverCrtc::atomic_begin() and atomic_flush()
-0050-rust-drm-kms-Add-DriverCrtc-atomic_enable-and-atomic.patch	5e38b54a7a8d9157e9a33bd2062a439f571880e8	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add DriverCrtc::atomic_enable() and atomic_disable()
-0051-rust-drm-Add-Device-event_lock.patch	46b02bf85e632aae0c7515684e3e02449297bde9	Lyude Paul <lyude@redhat.com>	rust: drm: Add Device::event_lock()
-0052-rust-drm-kms-Add-Device-num_crtcs.patch	4f7ee7434f8d5bcf3444b4685982209ab0408f2f	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add Device::num_crtcs()
-0053-rust-drm-kms-Add-VblankSupport.patch	dd2a20ac80de56da7e76e84cd0c639e85a17d376	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add VblankSupport
-0054-rust-drm-kms-Add-Kms-atomic_commit_tail.patch	7a2ea65d322120b4a207de310701b4d65db98814	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add Kms::atomic_commit_tail
-0055-rust-drm-kms-adapt-Lyude-s-KMS-series-to-current-DRM.patch	716617e45dd667c459363b7553a2a4d45eaad9c0	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: adapt Lyude's KMS series to current DRM APIs
-0056-rust-drm-kms-tie-mode-object-references-to-their-own.patch	64a57ca5fbc45427cea8f2fa55d1dae1af35b47f	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: tie mode-object references to their owners
-0057-rust-drm-kms-constrain-connector-encoder-attachment.patch	d672ec9958330be1735bd12a9766fd383c6ca0a8	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: constrain connector encoder attachment
-0058-rust-drm-reject-cross-device-GEM-handle-creation.patch	19f03dfe00674f527f3b418274a8d4a70a9a32fa	Mike Lothian <mike@fireburn.co.uk>	rust: drm: reject cross-device GEM handle creation
-0059-drm-tyr-mark-the-Rust-DRM-driver-as-non-KMS.patch	d49cb070d2a1e4e079a3a78a51ed87e9627e1aec	Mike Lothian <mike@fireburn.co.uk>	drm/tyr: mark the Rust DRM driver as non-KMS
-0060-WIP-Add-very-basic-bindings-for-modes.patch	216c68594dc3a93e79a3582e8ee858d080443eb6	Lyude Paul <lyude@redhat.com>	WIP: Add very basic bindings for modes
-0061-rust-drm-kms-add-common-state-and-connector-helpers.patch	a21464802bd7fb6d5a79fa53c3db83abd31788f5	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: add common state and connector helpers
-0062-rust-drm-add-typed-RAII-event-channels.patch	afb3e63e0c1ff99e8295133806818a92c5724ed1	Mike Lothian <mike@fireburn.co.uk>	rust: drm: add typed RAII event channels
-0063-rust-drm-expose-drm-display-drm_hdcp.h-HDCP-2.2-mess.patch	78a2741f9eb75bc0e3e9e4c8ff697471eb37639f	Mike Lothian <mike@fireburn.co.uk>	rust: drm: expose <drm/display/drm_hdcp.h> HDCP 2.2 message definitions
-0064-rust-drm-add-CRTC-gamma-LUT-and-plane-rotation-prope.patch	0601ec574a3be69df38a588549bb2d691460c450	Mike Lothian <mike@fireburn.co.uk>	rust: drm: add CRTC gamma LUT and plane rotation property bindings
-0065-rust-drm-kms-add-connector-detect-and-mode_valid-hoo.patch	e79c215cb7387147cac9308c771ee7def1e65a8d	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: add connector detect() and mode_valid() hooks
-0066-rust-drm-kms-add-plane-damage-clip-accessors.patch	575413addb69c4c08a111323e9798e6bfa2140e9	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: add plane damage-clip accessors
-0067-rust-drm-allow-drivers-to-declare-ioctls-from-their-.patch	130776e290c6460c97cb86f93131c727b3553334	Mike Lothian <mike@fireburn.co.uk>	rust: drm: allow drivers to declare ioctls from their own uAPI module
-0068-rust-platform-add-runtime-platform-device-creation.patch	e0878e40ce840ce56733c0c9c074bf184d0ce5de	Mike Lothian <mike@fireburn.co.uk>	rust: platform: add runtime platform device creation
-0069-rust-i2c-add-adapter-provider-bus-registration.patch	60df89e46dd2472e3ff21dfbff69196bc362162f	Mike Lothian <mike@fireburn.co.uk>	rust: i2c: add adapter-provider bus registration
-0070-rust-sysfs-add-root-device-attribute-groups.patch	f5d72868796e15ed194418ae405a3e650fc0fc1a	Mike Lothian <mike@fireburn.co.uk>	rust: sysfs: add root-device attribute groups
-0071-rust-drm-framebuffer-add-validated-shmem-scanout-vie.patch	cfc7cf4168a229575e3758e1019c6d6b125d5d3e	Mike Lothian <mike@fireburn.co.uk>	rust: drm: framebuffer: add validated shmem scanout views
-0072-rust-crypto-add-library-AES-128-SHA-256-HMAC-SHA256-.patch	441ab37bdad98edd2490a45aba56001369cf3ad5	Mike Lothian <mike@fireburn.co.uk>	rust: crypto: add library AES-128 / SHA-256 / HMAC-SHA256 bindings
-0073-rust-crypto-use-the-in-tree-AES-CMAC-library.patch	5a0214939c3b4b2b7c726912e7d88b71b8154d5e	Mike Lothian <mike@fireburn.co.uk>	rust: crypto: use the in-tree AES-CMAC library
-0074-rust-crypto-add-an-RSA-public-key-primitive-in-lib-c.patch	fa27c8dd999d38031175aef133e88b773f875c9f	Mike Lothian <mike@fireburn.co.uk>	rust: crypto: add an RSA public-key primitive in lib/crypto
-0075-rust-drm-kms-keep-mode-config-vtables-alive.patch	b47e0959048a18fc8ece6961192baa6466b3edda	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: keep mode-config vtables alive
-0076-rust-drm-kms-add-virtual-cursor-accessors.patch	c5af986f8ce07b08edd97b7d42793a5ccc491b92	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: add virtual cursor accessors
-0077-rust-drm-kms-mark-the-mode-object-macro-sketch-as-no.patch	1dde984a641c79c8db01328060f39da50d176ee6	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: mark the mode-object macro sketch as non-test
-0078-rust-usb-add-typed-endpoints-and-a-revocable-I-O-win.patch	375ed13ae71b0f445c672376da9d4dbf57f2193d	Mike Lothian <mike@fireburn.co.uk>	rust: usb: add typed endpoints and a revocable I/O window
-0079-rust-drm-add-the-DRIVER_CURSOR_HOTSPOT-feature-flag.patch	636a714ce177dbd7f445aa4caf46d8904c9f4400	Mike Lothian <mike@fireburn.co.uk>	rust: drm: add the DRIVER_CURSOR_HOTSPOT feature flag
-0080-rust-usb-add-power-management-and-reset-driver-callb.patch	18a02b3c0bf755d4b505c25a095d42ecf26d252c	Mike Lothian <mike@fireburn.co.uk>	rust: usb: add power-management and reset driver callbacks
-0081-rust-drm-kms-add-owned-CRTC-and-vblank-references.patch	c311dd4d148fb30345d65b6e952b1259d4bbf831	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: add owned CRTC and vblank references
-0082-rust-drm-kms-plane-add-FB_DAMAGE_CLIPS-property-supp.patch	d542df466107a1f6b31f3f0c9b19d78ffc09f12c	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: plane: add FB_DAMAGE_CLIPS property support
-0083-rust-hrtimer-add-ArcHrTimerHandle-restart.patch	1cea7f299f943627a40f4fc409c67ba43ca7e15d	Mike Lothian <mike@fireburn.co.uk>	rust: hrtimer: add ArcHrTimerHandle::restart
-0084-rust-add-xxhash-and-random-abstractions.patch	cf81efd8ed6bfc285726c37f96dd4fbedb783e8d	Mike Lothian <mike@fireburn.co.uk>	rust: add xxhash and random abstractions
-0085-rust-workqueue-add-cancel_sync-support.patch	dfb11358af92fa3a9dda989fb118a7d674554a1c	Onur Özkan <work@onurozkan.dev>	rust: workqueue: add cancel_sync support
-0086-rust-workqueue-add-an-owned-named-workqueue.patch	8d206f7ed8b2e195e023b0f65f1590ee04633db1	Mike Lothian <mike@fireburn.co.uk>	rust: workqueue: add an owned, named workqueue
-0087-rust-io-add-checked-offset-copy-helpers.patch	e3da054001a1c69ff0a9a3a2d5931871a9cef332	Mike Lothian <mike@fireburn.co.uk>	rust: io: add checked offset copy helpers
-0088-rust-hrtimer-expose-interrupt-state-in-hard-callback.patch	76c01993757122c4b08d1212aeeedafd84899f0a	Mike Lothian <mike@fireburn.co.uk>	rust: hrtimer: expose interrupt state in hard callbacks
-0089-drm-add-a-safe-constructor-for-owned-registration-da.patch	9fc973b8ca06340edb47c4bee656dfc6b548ba33	Mike Lothian <mike@fireburn.co.uk>	drm: add a safe constructor for owned registration data
-0090-rust-drm-pin-the-owner-while-DRM-files-remain-open.patch	7ebb30e3e1b43f9fe937720c6db62cbdeaa247eb	Mike Lothian <mike@fireburn.co.uk>	rust: drm: pin the owner while DRM files remain open
-0091-rust-drm-kms-add-the-plane-blend-mode-property.patch	f648601a82e979a2fc0a80f0a6a4e37631f8cbf2	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: add the plane blend-mode property
-0092-rust-usb-own-driver-data-through-disconnect.patch	d23352d0ef551ea186aeceb83e71a3d8d90fc447	Mike Lothian <mike@fireburn.co.uk>	rust: usb: own driver data through disconnect
-0093-rust-usb-manage-I-O-windows-in-the-driver-adapter.patch	97616b6d08fe3eef2165ecdc23cb6a03912dc0cc	Mike Lothian <mike@fireburn.co.uk>	rust: usb: manage I/O windows in the driver adapter
-0094-rust-drm-name-32-bit-RGB-formats-consistently.patch	703cfde54c11b587990191f56e4877c02686a681	Mike Lothian <mike@fireburn.co.uk>	rust: drm: name 32-bit RGB formats consistently
-0095-rust-workqueue-type-owned-queue-allocation-flags.patch	af27f5c5a0228b4e5a2ef4a6deafb6ddf3a024fc	Mike Lothian <mike@fireburn.co.uk>	rust: workqueue: type owned queue allocation flags
-0096-rust-drm-expose-HDCP-2.2-message-identifiers.patch	17f25cf735e523f7f531e90204bcb3e15c0d9334	Mike Lothian <mike@fireburn.co.uk>	rust: drm: expose HDCP 2.2 message identifiers
-0097-rust-drm-type-plane-properties-and-color-LUTs.patch	80ad7d325c1140b3016db17aad2b8b00494a5d7e	Mike Lothian <mike@fireburn.co.uk>	rust: drm: type plane properties and color LUTs
-0098-rust-workqueue-add-an-ordered-owned-queue-constructo.patch	42d4519dbfe10bd53c54576a6ee0a251dbd3ca9c	Mike Lothian <mike@fireburn.co.uk>	rust: workqueue: add an ordered owned queue constructor
-0099-rust-error-expose-EPROTO.patch	43a1d5c7d22cd7efac7e6ecc693d0013d6e4dfb9	Mike Lothian <mike@fireburn.co.uk>	rust: error: expose EPROTO
-0100-drm-add-an-owned-display-mode-constructor.patch	d83c45bb3fbde6de25c8cdab9652cad133adba08	Mike Lothian <mike@fireburn.co.uk>	drm: add an owned display mode constructor
-0101-rust-drm-expose-mode-flags-and-CTA-VIC-matching.patch	d76698add6fe8f1640c42821b70ecc7370a0b998	Mike Lothian <mike@fireburn.co.uk>	rust: drm: expose mode flags and CTA VIC matching
-0102-rust-drm-expose-CRTC-mode-changes.patch	c1c86f16aed892eb14e80bcfae3d8072f15cbdab	Mike Lothian <mike@fireburn.co.uk>	rust: drm: expose CRTC mode changes
-0103-rust-drm-kms-add-synthesized-CVT-connector-modes.patch	272591602d5dc791bc9ef2a33b4bbebe08a25b6c	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: add synthesized CVT connector modes
-0104-rust-drm-kms-scope-mode-list-access-to-validation.patch	b970b451fad375af160a2fd981817ba8cc266992	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: scope mode-list access to validation
-0105-rust-drm-validate-driver-event-payload-layouts.patch	87c7394f9ca5a0a11c5a5042356466c9fd053982	Mike Lothian <mike@fireburn.co.uk>	rust: drm: validate driver event payload layouts
-0106-rust-sysfs-add-a-safe-device-link-helper.patch	6a008c0a3fac0c19d05044bd85b0ba91948f13d2	Mike Lothian <mike@fireburn.co.uk>	rust: sysfs: add a safe device-link helper
-0107-rust-usb-add-owned-device-discovery-and-removal-noti.patch	9a203ef24b9594b4ed46da2e38e99b9fa0d0b2ce	Mike Lothian <mike@fireburn.co.uk>	rust: usb: add owned device discovery and removal notification
-0108-drm-evdi-add-the-Rust-virtual-display-driver.patch	c4b5e1dc794318cf67bce93fbbe0517d22053dff	Mike Lothian <mike@fireburn.co.uk>	drm/evdi: add the Rust virtual display driver
-0109-drm-vino-add-the-encrypted-control-protocol.patch	8e04470d541ebaf4b256d030acb1329d9dbcb109	Mike Lothian <mike@fireburn.co.uk>	drm/vino: add the encrypted control protocol
-0110-drm-vino-add-the-DL3-video-codec-and-stream-setup.patch	ed22097064f1c494e76c41b26bd8eac403271fbf	Mike Lothian <mike@fireburn.co.uk>	drm/vino: add the DL3 video codec and stream setup
-0111-drm-vino-add-the-DRM-KMS-scanout-engine.patch	5dad55028135b1edc91773ecfc554a0692416225	Mike Lothian <mike@fireburn.co.uk>	drm/vino: add the DRM/KMS scanout engine
-0112-drm-vino-add-the-DisplayLink-DL3-USB-driver.patch	bf5d392ac0565afdbf22e1d10617da6a14d5958b	Mike Lothian <mike@fireburn.co.uk>	drm/vino: add the DisplayLink DL3 USB driver
-0113-docs-gpu-document-the-Vino-driver.patch	9ca0e1fa033fa81ae9ad3342613335387befbc77	Mike Lothian <mike@fireburn.co.uk>	docs: gpu: document the Vino driver
+0001-preempt-Track-NMI-nesting-to-separate-per-CPU-counte.patch	f2a0e3199c64747c907f32294b0f41452d46aaae	Joel Fernandes <joelagnelf@nvidia.com>	preempt: Track NMI nesting to separate per-CPU counter
+0002-preempt-Introduce-HARDIRQ_DISABLE_BITS.patch	b66190f2c29c0c28bf52ae2b625ae4838b0254aa	Boqun Feng <boqun.feng@gmail.com>	preempt: Introduce HARDIRQ_DISABLE_BITS
+0003-preempt-Introduce-__preempt_count_-sub-add-_return.patch	f52387e8ecfaba9451075c9550d07435dd634f6c	Boqun Feng <boqun.feng@gmail.com>	preempt: Introduce __preempt_count_{sub, add}_return()
+0004-openrisc-Include-linux-cpumask.h-in-smp.h.patch	ac2357a35c185ddfe890c41fb88c74df890ef5ec	Lyude Paul <lyude@redhat.com>	openrisc: Include <linux/cpumask.h> in smp.h
+0005-irq-spin_lock-Add-counted-interrupt-disabling-enabli.patch	840bfb35c63e30842448245271218bd23293e182	Boqun Feng <boqun.feng@gmail.com>	irq & spin_lock: Add counted interrupt disabling/enabling
+0006-irq-Add-KUnit-test-for-refcounted-interrupt-enable-d.patch	58c7fdd2ce44dd9b14ab23b1b1fa5b49196d06a6	Lyude Paul <lyude@redhat.com>	irq: Add KUnit test for refcounted interrupt enable/disable
+0007-locking-Switch-to-_irq_-disable-enable-variants-in-c.patch	ca4e310832958fc05b889177010fd6f19505860a	Boqun Feng <boqun.feng@gmail.com>	locking: Switch to _irq_{disable,enable}() variants in cleanup guards
+0008-sched-fair-stop-reading-cfsb_guard.flags-after-the-g.patch	6735eb94c4426f27b517127fad1601b35e45487f	Mike Lothian <mike@fireburn.co.uk>	sched/fair: stop reading cfsb_guard.flags after the guard drops it
+0009-sched-Remove-the-unused-preempt_offset-parameter-of-.patch	124f5f1e56f14268120e168eaa1b3d190cf3212d	Boqun Feng <boqun@kernel.org>	sched: Remove the unused preempt_offset parameter of __cant_sleep()
+0010-sched-Avoid-signed-comparison-of-preempt_count-in-__.patch	60b664eda92810dc2b9ae46f73da4579b654df74	Boqun Feng <boqun@kernel.org>	sched: Avoid signed comparison of preempt_count() in __cant_migrate()
+0011-preempt-Introduce-HAS_SEPARATE_PREEMPT_RESCHED_BITS.patch	d328ce6cf897ac5bb125c9adff9e7d0077dc0646	Boqun Feng <boqun@kernel.org>	preempt: Introduce HAS_SEPARATE_PREEMPT_RESCHED_BITS
+0012-arm64-sched-preempt-Enable-HAS_SEPARATE_PREEMPT_RESC.patch	3f8336b357c6f400ecf8b902329d4ab2208b203e	Boqun Feng <boqun@kernel.org>	arm64: sched/preempt: Enable HAS_SEPARATE_PREEMPT_RESCHED_BITS
+0013-s390-preempt-Enable-HAS_SEPARATE_PREEMPT_RESCHED_BIT.patch	0a874508e17361d5bd9aec49a494f064e461c402	Heiko Carstens <hca@linux.ibm.com>	s390/preempt: Enable HAS_SEPARATE_PREEMPT_RESCHED_BITS
+0014-rust-Introduce-interrupt-module.patch	4f83673d0096a49d95c0ffe3108290f915ae41be	Lyude Paul <lyude@redhat.com>	rust: Introduce interrupt module
+0015-rust-helper-Add-spin_-un-lock_irq_-enable-disable-he.patch	fed80e2abb776da975ec58f7a6cb9f690f01bf82	Boqun Feng <boqun.feng@gmail.com>	rust: helper: Add spin_{un,}lock_irq_{enable,disable}() helpers
+0016-rust-sync-use-super-in-spinlock.rs.patch	edea954dd4c8a09482984ab4e4e447c99fc40b8a	Lyude Paul <lyude@redhat.com>	rust: sync: use super::* in spinlock.rs
+0017-rust-sync-Add-SpinLockIrq.patch	b6ea22e651cdc95bab3882591768412d253f0377	Lyude Paul <lyude@redhat.com>	rust: sync: Add SpinLockIrq
+0018-rust-sync-Introduce-SpinLockIrq-lock_with-and-friend.patch	b6f8c2e74a85852dcec3430e5d54c9ee61922036	Lyude Paul <lyude@redhat.com>	rust: sync: Introduce SpinLockIrq::lock_with() and friends
+0019-WIP-drm-modes-Fix-arg-types-in-drm_set_preferred_mod.patch	0daa2aaff0db629e02fdc0427fe7cce42c7eb910	Lyude Paul <lyude@redhat.com>	WIP: drm/modes: Fix arg types in drm_set_preferred_mode
+0020-rust-helpers-drm.c-Split-into-its-own-folder.patch	4ed55bdc79542e795243043f7783026829a9f8b8	Lyude Paul <lyude@redhat.com>	rust: helpers/drm.c: Split into its own folder
+0021-rust-drm-Add-a-small-handful-of-fourcc-bindings.patch	f260b0cfab0ac527be3b5f83b5d131d9abecfe2f	Lyude Paul <lyude@redhat.com>	rust: drm: Add a small handful of fourcc bindings
+0022-rust-drm-Add-traits-for-registering-KMS-devices.patch	b5e671719e0704b5ee1a2e9c4bc69f69f76e4b93	Lyude Paul <lyude@redhat.com>	rust: drm: Add traits for registering KMS devices
+0023-rust-drm-kms-Introduce-the-main-ModeConfigObject-tra.patch	db3fc87b34278e3db314a37d6e589ca8dd50ab2c	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Introduce the main ModeConfigObject traits
+0024-rust-drm-kms-Add-drm_connector-bindings.patch	9b84b686ebbe1fa171813450cb642cd4d18b0fc4	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add drm_connector bindings
+0025-rust-drm-kms-Add-drm_plane-bindings.patch	e4658f2488e9fa8ce419e50cf0b5228067ddbba1	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add drm_plane bindings
+0026-rust-drm-kms-Add-drm_crtc-bindings.patch	702aea0595dbb2a33a1e1d38a5cc1d739931149b	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add drm_crtc bindings
+0027-rust-drm-kms-Add-drm_encoder-bindings.patch	3bb615b746372d1b559e7acd6ad7fbb51e922ed8	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add drm_encoder bindings
+0028-rust-drm-kms-Add-UnregisteredConnector-attach_encode.patch	6e65a67994a7d130c415d863ea7a58b99767469a	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add UnregisteredConnector::attach_encoder()
+0029-rust-drm-kms-Add-DriverConnector-get_mode-callback.patch	f5cd1445e40c59b35ec83c60a23dce2af9b759bd	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add DriverConnector::get_mode callback
+0030-rust-drm-kms-Add-ConnectorGuard-add_modes_noedid.patch	3fec09da95e79bd0b37639f15ad3f69da6013071	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add ConnectorGuard::add_modes_noedid()
+0031-rust-drm-kms-Add-ConnectorGuard-set_preferred_mode.patch	c79e31638282f50744a5b0e2842bb1f7674a0a7f	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add ConnectorGuard::set_preferred_mode
+0032-rust-drm-kms-Add-RawConnector-and-RawConnectorState.patch	82e4dd7d2a4e39d0317793dd7d466eb72f9c102d	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add RawConnector and RawConnectorState
+0033-rust-drm-kms-Add-RawPlane-and-RawPlaneState.patch	51e484e13698270e906d8c7cd5476df068761f8c	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add RawPlane and RawPlaneState
+0034-rust-drm-kms-Add-OpaqueConnector-and-OpaqueConnector.patch	17188d3061d64b7f12dd28940f22259419941734	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add OpaqueConnector and OpaqueConnectorState
+0035-rust-drm-kms-Add-OpaqueCrtc-and-OpaqueCrtcState.patch	0971dd6ce1e957315798a3b58582e7248e594231	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add OpaqueCrtc and OpaqueCrtcState
+0036-rust-drm-kms-Add-OpaquePlane-and-OpaquePlaneState.patch	448b744207bfea6054bd767fe4e434bf536ec16e	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add OpaquePlane and OpaquePlaneState
+0037-rust-drm-kms-Add-OpaqueEncoder.patch	bdfae461e56e01249afb3f41b4e2f0d8ad63b2da	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add OpaqueEncoder
+0038-rust-drm-kms-Add-drm_atomic_state-bindings.patch	bb7024bc2b41f8f3947542c964fd850344d4b4a7	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add drm_atomic_state bindings
+0039-rust-drm-kms-Introduce-impl_atomic_state_token_ops.patch	aec87481c7f6e72210e40c5e279c006ceac17a34	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Introduce impl_atomic_state_token_ops!
+0040-rust-drm-kms-Add-DriverCrtc-atomic_check.patch	336de39fb0b1a2a96af06c1c0d9894e16eb06162	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add DriverCrtc::atomic_check()
+0041-rust-drm-kms-Add-DriverPlane-atomic_update.patch	e8df2f6dfa518878310337a2d3b10925a9ab4aeb	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add DriverPlane::atomic_update()
+0042-rust-drm-kms-Add-DriverPlane-atomic_check.patch	fdddddf26c78fc48a17798a357c86eeddc2323de	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add DriverPlane::atomic_check()
+0043-rust-drm-kms-Add-DriverPlane-atomic_check.patch	a1e7037ccd867ea75d4d2f1e255f900fc06b23c2	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add DriverPlane::atomic_check()
+0044-rust-drm-kms-Add-RawCrtcState-active.patch	cb87b029611a20d465f3ee2605bfb7f6b8efd474	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add RawCrtcState::active()
+0045-rust-drm-kms-Add-RawPlaneState-crtc.patch	b34cb9b597736995d110bdee1c11d99089e552e0	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add RawPlaneState::crtc()
+0046-rust-drm-kms-Add-RawPlaneState-atomic_helper_check.patch	8b59d1fe54de5abc0a0abe062868195cc0b4f5dd	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add RawPlaneState::atomic_helper_check()
+0047-rust-drm-kms-Add-drm_framebuffer-bindings.patch	3dd79b73b35e6f9638627760a77aff93a86d7b60	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add drm_framebuffer bindings
+0048-rust-drm-kms-Add-RawPlane-framebuffer.patch	6de7d4172aa5ccd47db3a8baa804e755358da977	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add RawPlane::framebuffer()
+0049-rust-drm-kms-Add-DriverCrtc-atomic_begin-and-atomic_.patch	6004fa2a99cce7350b1d0dd11a2242d1315b0438	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add DriverCrtc::atomic_begin() and atomic_flush()
+0050-rust-drm-kms-Add-DriverCrtc-atomic_enable-and-atomic.patch	251b43119a73faff928a2a48a5a5c3469b6ddf33	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add DriverCrtc::atomic_enable() and atomic_disable()
+0051-rust-drm-Add-Device-event_lock.patch	504a2fe926b21ab035378866db0902616b76d06b	Lyude Paul <lyude@redhat.com>	rust: drm: Add Device::event_lock()
+0052-rust-drm-kms-Add-Device-num_crtcs.patch	faa2d3f1283223b1831ab537c4eb4fa058a9f7cd	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add Device::num_crtcs()
+0053-rust-drm-kms-Add-VblankSupport.patch	36a0433909a1b10b94b3cf440b6dec780e0e4e53	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add VblankSupport
+0054-rust-drm-kms-Add-Kms-atomic_commit_tail.patch	d3e5bb063fa9d5950d4130a6c8338f327082c297	Lyude Paul <lyude@redhat.com>	rust: drm/kms: Add Kms::atomic_commit_tail
+0055-WIP-Add-very-basic-bindings-for-modes.patch	14f615353dcf26ed5bc0e4e2a295be09286d3489	Lyude Paul <lyude@redhat.com>	WIP: Add very basic bindings for modes
+0056-rust-drm-kms-adapt-Lyude-s-KMS-series-to-current-DRM.patch	c8b88740b0d8a63ee8fe154731cf11f9300a0e63	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: adapt Lyude's KMS series to current DRM APIs
+0057-rust-drm-kms-tie-mode-object-references-to-their-own.patch	5147721107be8c6116d1f6021cb81e0d8cc70ff0	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: tie mode-object references to their owners
+0058-rust-drm-kms-constrain-connector-encoder-attachment.patch	d84052217197ee296319ae17301da15316878a01	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: constrain connector encoder attachment
+0059-rust-drm-reject-cross-device-GEM-handle-creation.patch	d48c2391ae275bdc27bcefcb1f26ec70a60cfbd4	Mike Lothian <mike@fireburn.co.uk>	rust: drm: reject cross-device GEM handle creation
+0060-drm-tyr-mark-the-Rust-DRM-driver-as-non-KMS.patch	e12c2631aeec2b3e639871b5c6c344c523d051ab	Mike Lothian <mike@fireburn.co.uk>	drm/tyr: mark the Rust DRM driver as non-KMS
+0061-rust-drm-kms-add-common-state-and-connector-helpers.patch	a737c6ede797531d4df9dfd31b0f252debe30ef9	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: add common state and connector helpers
+0062-rust-drm-add-typed-RAII-event-channels.patch	562108c77729b7c4e4c9ce6cacd31d3522fc6429	Mike Lothian <mike@fireburn.co.uk>	rust: drm: add typed RAII event channels
+0063-rust-drm-expose-HDCP-2.2-message-identifiers.patch	83fbcb352b1c4b8e9a7efa324dd7178abb23f580	Mike Lothian <mike@fireburn.co.uk>	rust: drm: expose HDCP 2.2 message identifiers
+0064-rust-drm-kms-add-typed-color-and-rotation-properties.patch	693fc269c1b6bbdcad638dbea826401d2163f70d	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: add typed color and rotation properties
+0065-rust-drm-kms-add-connector-detect-and-mode_valid-hoo.patch	a295f8c93add2d536be69b433c5e4a1b50335376	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: add connector detect() and mode_valid() hooks
+0066-rust-drm-kms-add-plane-damage-clip-accessors.patch	271a8c6d9343f65024d18e964e4d634e21ad7b7d	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: add plane damage-clip accessors
+0067-rust-drm-add-private-ioctl-compat-translations.patch	f9947fcdc754b6b808af4be7e20f1d1d410904b1	Mike Lothian <mike@fireburn.co.uk>	rust: drm: add private ioctl compat translations
+0068-rust-platform-add-runtime-platform-device-creation.patch	d703c44d818caf11da4e4efe16ba08badee0cf8d	Mike Lothian <mike@fireburn.co.uk>	rust: platform: add runtime platform device creation
+0069-rust-sysfs-add-root-device-attribute-groups.patch	2084c105141b481f9d87275496ab3be4cba8b62b	Mike Lothian <mike@fireburn.co.uk>	rust: sysfs: add root-device attribute groups
+0070-rust-drm-framebuffer-add-validated-shmem-scanout-vie.patch	28b2131fc052a8455afa5fb0db98ce4520f63d88	Mike Lothian <mike@fireburn.co.uk>	rust: drm: framebuffer: add validated shmem scanout views
+0071-rust-crypto-add-AES-128-AES-CMAC-SHA-256-and-HMAC-bi.patch	dfb98ff843839028a3adbb60922e740e63391183	Mike Lothian <mike@fireburn.co.uk>	rust: crypto: add AES-128, AES-CMAC, SHA-256, and HMAC bindings
+0072-rust-crypto-add-synchronous-RSA-akcipher-support.patch	62d89c4891df87d0c8b250e205d50bb64ac643e8	Mike Lothian <mike@fireburn.co.uk>	rust: crypto: add synchronous RSA akcipher support
+0073-rust-drm-kms-expose-checked-plane-geometry.patch	7696198d26686048c1a65d290b6527575ca25d2b	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: expose checked plane geometry
+0074-rust-usb-add-USB-ch9-standard-descriptors-and-consta.patch	cf0e6e2bade7f4fd62029d1eb68557e294942a96	Colin Braun <colinbrauncl@gmail.com>	rust: usb: add USB ch9 standard descriptors and constants
+0075-rust-usb-add-usb-host-interface-and-endpoint-abstrac.patch	15d7a44b9d89b9aafbdc1d2b06bee107e6615c1b	Colin Braun <colinbrauncl@gmail.com>	rust: usb: add usb host interface and endpoint abstractions
+0076-rust-usb-add-urb-abstraction-with-control-and-isochr.patch	9a8e87cae29c96458f9ce989d66982b96bf47f95	Colin Braun <colinbrauncl@gmail.com>	rust: usb: add urb abstraction with control and isochronous support
+0077-rust-sync-completion-add-single-shot-and-timed-opera.patch	4a42719e0ab7fc75529e5add0532e4e93a58cf68	Mike Lothian <mike@fireburn.co.uk>	rust: sync: completion: add single-shot and timed operations
+0078-rust-usb-add-revocable-typed-interface-I-O.patch	9d8c79325d7ba874aeb44221ddc4f1d47f748318	Mike Lothian <mike@fireburn.co.uk>	rust: usb: add revocable typed interface I/O
+0079-rust-usb-add-reusable-URBs-and-persistent-bulk-queue.patch	29e3eacc60733ad0f3e51658dfadd97f644f1a5a	Mike Lothian <mike@fireburn.co.uk>	rust: usb: add reusable URBs and persistent bulk queues
+0080-rust-usb-add-topology-lookup-and-removal-notificatio.patch	727b7e6be593f8ab1c5c38a585b4a5174985ec85	Mike Lothian <mike@fireburn.co.uk>	rust: usb: add topology lookup and removal notification
+0081-rust-drm-kms-add-owned-CRTC-and-vblank-references.patch	31a467594eda69d4e20ab669b7b445cdc9e81756	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: add owned CRTC and vblank references
+0082-rust-drm-kms-plane-add-FB_DAMAGE_CLIPS-property-supp.patch	cad5ed940e9debbcad1fceec572a8edf792d43ac	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: plane: add FB_DAMAGE_CLIPS property support
+0083-rust-hrtimer-add-ArcHrTimerHandle-restart.patch	e4f8db3febfc3cd53aea09d4816b0bf6fae68d75	Mike Lothian <mike@fireburn.co.uk>	rust: hrtimer: add ArcHrTimerHandle::restart
+0084-rust-random-add-a-safe-get_random_bytes-wrapper.patch	f08acd9863389dd01fb125a6de2ad3927ebabe2e	Mike Lothian <mike@fireburn.co.uk>	rust: random: add a safe get_random_bytes wrapper
+0085-rust-xxhash-add-a-safe-xxh64-wrapper.patch	d4b7a76c37b70fbb9c3708de6d289a009f6fd1e5	Mike Lothian <mike@fireburn.co.uk>	rust: xxhash: add a safe xxh64 wrapper
+0086-rust-workqueue-restrict-delayed-work-to-global-wqs.patch	44ab7722ac7a49a0f703fd482db55cafe1bd8ea8	Alice Ryhl <aliceryhl@google.com>	rust: workqueue: restrict delayed work to global wqs
+0087-rust-workqueue-create-workqueue-subdirectory.patch	4299cc32e4b75091b3a66f0616cad47814a4c5c8	Alice Ryhl <aliceryhl@google.com>	rust: workqueue: create workqueue subdirectory
+0088-rust-workqueue-add-creation-of-workqueues.patch	62c1bdb4f1301f3ad4fd287f53139b002b3c191c	Alice Ryhl <aliceryhl@google.com>	rust: workqueue: add creation of workqueues
+0089-rust-workqueue-make-OwnedQueue-thread-safe.patch	dcae3feaeeff630f2fdc860f8cfaf0b7b595e4c0	Mike Lothian <mike@fireburn.co.uk>	rust: workqueue: make OwnedQueue thread-safe
+0090-rust-workqueue-add-cancel_sync-support.patch	1690b29babff16b914743fad76ba0d72a19a04a0	Onur Özkan <work@onurozkan.dev>	rust: workqueue: add cancel_sync support
+0091-rust-io-add-checked-offset-copy-helpers.patch	3853ad9f6937533b7295759b9378f088bd156af7	Mike Lothian <mike@fireburn.co.uk>	rust: io: add checked offset copy helpers
+0092-rust-hrtimer-expose-interrupt-state-in-hard-callback.patch	33e889e0fc4bebfa1d16b289229f1644ac49d791	Mike Lothian <mike@fireburn.co.uk>	rust: hrtimer: expose interrupt state in hard callbacks
+0093-rust-drm-add-a-safe-constructor-for-owned-registrati.patch	a4e202572862e4420434ad91778dbd5d5cbc2fc6	Mike Lothian <mike@fireburn.co.uk>	rust: drm: add a safe constructor for owned registration data
+0094-rust-drm-pin-the-owner-while-DRM-files-remain-open.patch	117de0182e850cf9d4389a01040a8ac950ee47f6	Mike Lothian <mike@fireburn.co.uk>	rust: drm: pin the owner while DRM files remain open
+0095-rust-drm-kms-add-the-plane-blend-mode-property.patch	85fd2dcb52aba9e35ed9cd15b28bf518079e4e1e	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: add the plane blend-mode property
+0096-rust-error-expose-EPROTO.patch	d66d73e8a9f3b804cf6d30d8840a337beb1308eb	Mike Lothian <mike@fireburn.co.uk>	rust: error: expose EPROTO
+0097-rust-drm-add-an-owned-display-mode-constructor.patch	03fdc4408182be4a881c3dbbcde5ef817ff368e7	Mike Lothian <mike@fireburn.co.uk>	rust: drm: add an owned display mode constructor
+0098-rust-drm-expose-mode-flags-and-CTA-VIC-matching.patch	635b38274bb2fec81a9a35759184051c25b56b5f	Mike Lothian <mike@fireburn.co.uk>	rust: drm: expose mode flags and CTA VIC matching
+0099-rust-drm-expose-CRTC-mode-changes.patch	b1cc1e0177614b2fbe4d7891a7cc0e997648ded2	Mike Lothian <mike@fireburn.co.uk>	rust: drm: expose CRTC mode changes
+0100-rust-drm-kms-add-synthesized-CVT-connector-modes.patch	0c984f25b25f314c3fe60f11037861fc7b0fb351	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: add synthesized CVT connector modes
+0101-drm-evdi-add-the-Rust-virtual-display-driver.patch	597f177b59fd1555415631b549ca89a111dc7de6	Mike Lothian <mike@fireburn.co.uk>	drm/evdi: add the Rust virtual display driver
+0102-drm-vino-add-the-encrypted-control-protocol.patch	8b55d2c08045c5cc155236e3de5a35e346165a67	Mike Lothian <mike@fireburn.co.uk>	drm/vino: add the encrypted control protocol
+0103-drm-vino-add-the-DL3-video-codec-and-stream-setup.patch	eac7b6d3571f40305cc670803d3911be91f250e6	Mike Lothian <mike@fireburn.co.uk>	drm/vino: add the DL3 video codec and stream setup
+0104-drm-vino-add-the-DRM-KMS-scanout-engine.patch	3aace12b538ae07b56228dd4058e4b304507fbc8	Mike Lothian <mike@fireburn.co.uk>	drm/vino: add the DRM/KMS scanout engine
+0105-drm-vino-add-the-Dell-D6000-USB-display-driver.patch	9f6655f38c7e1addd8114ae7b14cb835a709bb28	Mike Lothian <mike@fireburn.co.uk>	drm/vino: add the Dell D6000 USB display driver
+0106-docs-gpu-document-the-Vino-driver.patch	ef9d133e44e6c13b1c8e2a030c8e0440ea1bfb0a	Mike Lothian <mike@fireburn.co.uk>	docs: gpu: document the Vino driver

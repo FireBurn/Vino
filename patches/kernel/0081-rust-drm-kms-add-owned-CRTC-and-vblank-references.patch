@@ -1,28 +1,31 @@
-From c311dd4d148fb30345d65b6e952b1259d4bbf831 Mon Sep 17 00:00:00 2001
+From 31a467594eda69d4e20ab669b7b445cdc9e81756 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 21:52:01 +0100
-Subject: [PATCH 081/113] rust: drm: kms: add owned CRTC and vblank references
+Subject: [PATCH 081/106] rust: drm: kms: add owned CRTC and vblank references
 
-`&Crtc<T>` is only valid for the callback DRM handed it to, and `VblankRef`
-borrows one. That does not fit two common shapes:
+`&Crtc<T>` is only valid for the callback DRM handed it to, and
+`VblankRef` borrows one. That does not fit two common shapes:
 
-  - a driver that enables vblanks in `atomic_enable` and releases them in
-    `atomic_disable` holds the reference across two callbacks, so it has to
-    `mem::forget` the guard and hand-balance a raw `drm_crtc_vblank_put`;
+  - a driver that enables vblanks in `atomic_enable` and releases
+  them in
+    `atomic_disable` holds the reference across two callbacks,
+    so it has to `mem::forget` the guard and hand-balance a raw
+    `drm_crtc_vblank_put`;
 
-  - a driver with a software vblank clock must reach its CRTC from a timer
+  - a driver with a software vblank clock must reach its CRTC from
+  a timer
     callback, so it stashes a raw `drm_crtc` pointer and calls
     `drm_crtc_handle_vblank` on it.
 
-Both are safe in principle -- mode objects live until their DRM device is
-freed -- but neither can be expressed, so drivers reintroduce raw pointers
-that the safe KMS API exists to remove.
+Both are safe in principle -- mode objects live until their DRM device
+is freed -- but neither can be expressed, so drivers reintroduce raw
+pointers that the safe KMS API exists to remove.
 
-Add `CrtcRef`, an owned handle holding an `ARef` to the DRM device, which
-keeps the CRTC alive and hands back a `&Crtc<T>` from any context, and
-`OwnedVblankRef`, a vblank reference built on it and obtained by converting
-a `VblankRef` with `into_owned()`. The vblank reference is still released
-exactly once, on drop.
+Add `CrtcRef`, an owned handle holding an `ARef` to the DRM device,
+which keeps the CRTC alive and hands back a `&Crtc<T>` from any context,
+and `OwnedVblankRef`, a vblank reference built on it and obtained by
+converting a `VblankRef` with `into_owned()`. The vblank reference
+is still released exactly once, on drop.
 
 Assisted-by: Claude:claude-opus-5-0
 Assisted-by: Codex:gpt-5
@@ -33,7 +36,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  2 files changed, 101 insertions(+)
 
 diff --git a/rust/kernel/drm/kms/crtc.rs b/rust/kernel/drm/kms/crtc.rs
-index f5f0a7994824..782d74c53624 100644
+index a7024d8921ca..892f04f04e22 100644
 --- a/rust/kernel/drm/kms/crtc.rs
 +++ b/rust/kernel/drm/kms/crtc.rs
 @@ -14,6 +14,7 @@
@@ -44,7 +47,7 @@ index f5f0a7994824..782d74c53624 100644
      types::{NotThreadSafe, Opaque},
  };
  use core::{
-@@ -283,6 +284,59 @@ pub(crate) fn get_vblank_ptr(&self) -> *mut bindings::drm_vblank_crtc {
+@@ -304,6 +305,59 @@ pub(crate) fn get_vblank_ptr(&self) -> *mut bindings::drm_vblank_crtc {
      pub(crate) const fn has_vblank() -> bool {
          T::OPS.funcs.enable_vblank.is_some()
      }

@@ -1,7 +1,7 @@
-From 00cdb3895447449d447ff3b4c1881c1206315f03 Mon Sep 17 00:00:00 2001
+From 8b59d1fe54de5abc0a0abe062868195cc0b4f5dd Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 23 May 2024 16:52:01 -0400
-Subject: [PATCH 046/113] rust: drm/kms: Add
+Subject: [PATCH 046/106] rust: drm/kms: Add
  RawPlaneState::atomic_helper_check()
 
 Add a binding for drm_atomic_helper_check_plane_state(). Since we want to

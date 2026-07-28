@@ -1,73 +1,31 @@
-# Testing and regeneration
+# Testing, regeneration, and submission
 
-All commands in this document are build-only or operate on disposable Git
-worktrees. They do not install or load modules, install a kernel, alter a
-bootloader, start or stop DisplayLink services, access hardware, or reboot.
+The commands here are build-only or use disposable Git worktrees. They do not
+install or load modules, install or boot a kernel, change the bootloader, stop
+the desktop, access the dock, or reboot.
 
-## Regenerate patches
-
-From the repository root:
+## Regenerate and verify patches
 
 ```sh
 ./tools/regenerate-patches.sh
-```
-
-Override a path or range when reproducing elsewhere:
-
-```sh
-KERNEL_TREE=/work/linux \
-KERNEL_BASE=integration/base-20260727 \
-KERNEL_HEAD=series/vino-upstream \
-REVDI_TREE=/work/revdi \
-./tools/regenerate-patches.sh
-```
-
-The script writes kernel and Revdi patches plus `series` and `manifest.tsv`
-files under `patches/`.
-
-## Verify patch application
-
-```sh
 ./tools/check-series.sh
 ```
 
-The script creates temporary detached worktrees, applies the generated patches
-with `git am`, compares the resulting tree object with the named source head,
-and removes the worktrees.
-
-The combined validator also runs strict `checkpatch.pl` checks over the final
-EVDI and Vino consumer patches. The generic prerequisite series is left to its
-respective subsystem review and is not silently reformatted.
-
-## Kernel build
-
-The focused build used during cleanup is:
+To reproduce from another kernel checkout:
 
 ```sh
-make -C kernel LLVM=1 -j16 \
-  rust/kernel.o \
-  drivers/gpu/drm/evdi/evdi.o \
-  drivers/gpu/drm/vino/vino.o
+KERNEL_TREE=/work/linux \
+KERNEL_BASE=integration/base-20260728 \
+KERNEL_HEAD=vino-upstream-rebuild \
+./tools/regenerate-patches.sh
 ```
 
-An external-module `modpost` requires a complete matching kernel build and
-`Module.symvers`; its absence is not a Rust compile failure.
+The first command writes the kernel patches, manifest, full `series`, and
+review-group manifests under `patches/kernel/`. The second applies the complete
+series with `git am` in a disposable worktree and compares its tree object with
+the source branch.
 
-## Revdi and Chimera
-
-```sh
-make -C revdi check-sync KSRC=../kernel
-make -C revdi test
-cargo test --manifest-path revdi/Cargo.toml \
-  -p vino-chimera --all-features
-make -C revdi chimera
-```
-
-The first command ensures the standalone copies match the kernel. Tests cover
-the workspace, the ABI-compatible library, protocol fixtures, mode profiles,
-video-arm construction, DDC/CI response bounds, pixel conversion, cursor
-repacking, padding, and codec framing. The all-features run also compiles and
-tests the daemon integration path.
+Revdi and Chimera are directly tracked source, not a generated patch set.
 
 ## Combined validation
 
@@ -75,30 +33,70 @@ tests the daemon integration path.
 ./tools/validate.sh
 ```
 
-Use `SKIP_BUILD=1` for policy, patch, and synchronization checks only:
+For policy, patch-application, formatting, and source-sync checks without
+compilation:
 
 ```sh
 SKIP_BUILD=1 ./tools/validate.sh
 ```
 
-## Documentation
+The build uses a temporary out-of-tree kernel output unless `KBUILD_OUTPUT` is
+provided. It compiles `rust/kernel.o`, `evdi.o`, and `vino.o`, then runs the
+Revdi/Chimera workspace, all-feature, library, and protocol-oracle tests.
 
-The kernel document can be rendered through the normal kernel Sphinx target
-when Sphinx is already available:
+Focused source commands are:
 
 ```sh
-make -C kernel htmldocs SPHINXDIRS=gpu
+make -C revdi check-sync KSRC=../linux
+cargo test --manifest-path revdi/Cargo.toml --workspace --all-features
+cargo test --manifest-path revdi/library/Cargo.toml
 ```
 
-This cleanup did not install Sphinx or TeX packages. Missing documentation
-tooling should be reported as an environment prerequisite, not worked around by
-installing packages without permission.
+## Prepare a v3 posting
+
+Review groups are listed in `patches/kernel/groups/`. Generate a correctly
+renumbered v3 Vino draft:
+
+```sh
+./tools/send-series.sh vino --version 3
+```
+
+Edit `outgoing/vino-v3/v3-0000-cover-letter.patch`, then verify recipients and
+mail formatting without sending:
+
+```sh
+./tools/send-series.sh vino --version 3 --dry-run \
+  --to dri-devel@lists.freedesktop.org \
+  --cc rust-for-linux@vger.kernel.org
+```
+
+The helper delegates per-patch recipient discovery to the kernel's
+`scripts/get_maintainer.pl`. Transmission requires the separate, explicit
+`--send` option:
+
+```sh
+./tools/send-series.sh vino --version 3 --send \
+  --to dri-devel@lists.freedesktop.org \
+  --cc rust-for-linux@vger.kernel.org
+```
+
+The script refuses to dry-run or send while the generated cover letter still
+contains placeholders.
+
+## Kernel documentation
+
+When Sphinx is already installed:
+
+```sh
+make -C linux htmldocs SPHINXDIRS=gpu
+```
+
+No documentation packages are installed by the scripts.
 
 ## Hardware boundary
 
-Hardware testing is intentionally separate. A release candidate should later
-cover cold plug, warm plug, both heads, each supported mode, mode changes,
-DPMS, cursor, DDC/CI, monitor removal/reappearance, USB reset, suspend/resume,
-module unload with open and closed DRM files, and sustained damage traffic.
-That procedure may stop services or load modules and is therefore never run by
-the validation scripts.
+Hardware validation remains deliberately manual. A release candidate should
+cover cold and warm plug, both heads, every advertised mode, rotations and
+reflections, mode changes, DPMS, cursor, monitor removal and reappearance, USB
+reset, suspend/resume, control-plane recovery, unload with open and closed DRM
+files, and sustained damage traffic.

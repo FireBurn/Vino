@@ -1,7 +1,7 @@
-From 5e38b54a7a8d9157e9a33bd2062a439f571880e8 Mon Sep 17 00:00:00 2001
+From 251b43119a73faff928a2a48a5a5c3469b6ddf33 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Fri, 6 Sep 2024 12:52:06 -0400
-Subject: [PATCH 050/113] rust: drm/kms: Add DriverCrtc::atomic_enable() and
+Subject: [PATCH 050/106] rust: drm/kms: Add DriverCrtc::atomic_enable() and
  atomic_disable()
 
 Optional trait methods for implementing the atomic_enable and

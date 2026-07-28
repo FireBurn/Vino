@@ -1,32 +1,40 @@
 # Kernel patch series
 
-The series is generated from:
-
 ```text
-base: integration/base-20260727
-head: series/vino-upstream
+base: 0755a4e3e809610a14befc9ad28d35e2e460da68
+head: ef9d133e44e6c13b1c8e2a030c8e0440ea1bfb0a
+range: integration/base-20260728..vino-upstream-rebuild
 ```
 
-The base is the 2026-07-27 `drm-next` tip
-`ea97ab2759506d9a818ffed1009bde01062b4091` merged with the matching
-`drm-rust-next` tip `6dcbb4b1320fa91fee349462a52bb69135f2e45e`.
-The resulting local integration commit is
-`90e13d487b3b828669dab730cfdf72d417825869`.
-
-Apply in the order recorded by `series`:
+Apply the exact integration series in recorded order:
 
 ```sh
-git am /path/to/vino/patches/kernel/*.patch
+git am $(sed 's#^#/path/to/vino/patches/kernel/#' series)
 ```
 
-For an exact local check, use `../../tools/check-series.sh`.
+`../../tools/check-series.sh` performs this in a disposable worktree and
+compares the resulting tree object with the source branch.
 
-The series preserves the prerequisite and Lyude KMS commits as individual
-authored patches. Shared Rust additions follow their subsystem boundaries.
-Revdi is the first safe virtual-KMS consumer. Vino is introduced in control,
-video, KMS, USB/lifecycle, and documentation patches without the historical
-bring-up experiments.
+## Review groups
 
-[`COVER_LETTER.md`](COVER_LETTER.md) is a maintained submission draft rather
-than generated `git format-patch` output.
+The full branch is useful for dependency and build testing. The manifests in
+`groups/` identify contiguous pieces that belong in separate subsystem
+discussions:
 
+| Group | Patches | Ownership |
+|---|---:|---|
+| `interrupt-prerequisites` | 18 | scheduler, locking, architecture, Rust |
+| `kms-lyude` | 37 | Lyude Paul's original Rust KMS work |
+| `drm-crypto-platform` | 18 | DRM, crypto, driver core |
+| `usb` | 7 | USB and Rust |
+| `rust-runtime-drm` | 20 | Rust core, timer/workqueue, DRM |
+| `evdi` | 1 | DRM |
+| `vino` | 5 | DRM and USB |
+
+Lyude's commits remain individual and patch-identical to the imported source;
+current-tree adaptations are later Mike-authored commits. Colin Braun's first
+three USB RFC patches, Alice Ryhl's v4 workqueue series, and Onur Özkan's
+`cancel_sync` patch are likewise retained as their authors' work.
+
+`../../tools/send-series.sh GROUP --version 3` rerolls a selected group with
+correct per-group numbering and a cover letter. It does not send by default.

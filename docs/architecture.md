@@ -19,7 +19,7 @@ The bound USB device owns:
 - the authenticated control session and its counters;
 - the revocable USB I/O window;
 - ordered control and per-head scanout workers;
-- I2C adapters, vblank timers, coherent snapshots, and USB queues.
+- vblank timers, coherent snapshots, and USB queues.
 
 Normal lifecycle code in `drivers/gpu/drm/vino` and
 `drivers/gpu/drm/evdi` contains no `unsafe` blocks, direct `bindings::` calls,
@@ -73,7 +73,7 @@ Disconnect and failed resume/reset follow one ownership boundary:
 3. close the USB I/O window;
 4. cancel and drain work, timers, and request queues;
 5. unplug the DRM device;
-6. unregister I2C and auxiliary objects;
+6. unregister auxiliary objects;
 7. drop snapshots, registrations, and session state.
 
 The USB adapter owns the I/O window and invokes the driver's quiesce callback
@@ -84,7 +84,7 @@ before revocation. A consumer cannot reopen that capability independently.
 | File | Responsibility |
 |---|---|
 | `vino.rs` | USB binding, session state, AKE/control orchestration, lifecycle |
-| `drm_sink.rs` | DRM/KMS objects, desired state, scanout, damage, cursor, DDC/CI |
+| `drm_sink.rs` | DRM/KMS objects, desired state, scanout, damage, and cursor |
 | `ake.rs` | HDCP wire message encoding and parsing |
 | `hdcp.rs` | HDCP 2.2 derivations and verification |
 | `cp.rs` | typed encrypted-control message builders and sealing |

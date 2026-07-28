@@ -1,7 +1,7 @@
-From a8ca1a22a2e085ffc5266d527049414fee6d5c2e Mon Sep 17 00:00:00 2001
+From 6004fa2a99cce7350b1d0dd11a2242d1315b0438 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Fri, 6 Sep 2024 12:50:52 -0400
-Subject: [PATCH 049/113] rust: drm/kms: Add DriverCrtc::atomic_begin() and
+Subject: [PATCH 049/106] rust: drm/kms: Add DriverCrtc::atomic_begin() and
  atomic_flush()
 
 Optional trait methods for implementing the atomic_begin and atomic_flush

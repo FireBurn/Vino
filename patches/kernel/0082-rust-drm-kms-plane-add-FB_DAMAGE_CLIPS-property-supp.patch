@@ -1,22 +1,22 @@
-From d542df466107a1f6b31f3f0c9b19d78ffc09f12c Mon Sep 17 00:00:00 2001
+From cad5ed940e9debbcad1fceec572a8edf792d43ac Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 21:52:01 +0100
-Subject: [PATCH 082/113] rust: drm: kms: plane: add FB_DAMAGE_CLIPS property
+Subject: [PATCH 082/106] rust: drm: kms: plane: add FB_DAMAGE_CLIPS property
  support
 
 Userspace can only hand a driver the rectangles that actually changed
 between two framebuffers if the plane advertises the FB_DAMAGE_CLIPS
-property. Without it a compositor supplies nothing, and unchanged commits
-are indistinguishable from missing damage information -- which forces a
-driver either to freeze or to re-send whole frames.
+property. Without it a compositor supplies nothing, and unchanged
+commits are indistinguishable from missing damage information --
+which forces a driver either to freeze or to re-send whole frames.
 
 That matters most for drivers uploading their scanout over a slow link.
-Wrap `drm_plane_enable_fb_damage_clips()` so a plane can attach the
-property before registration, alongside the existing rotation property
-helper.
+Wrap `drm_plane_enable_fb_damage_clips()` so a plane can attach
+the property before registration, alongside the existing rotation
+property helper.
 
-The consumer is the vino DisplayLink driver, which encodes and sends only
-the changed strips of each frame over USB.
+The consumer is the vino DisplayLink driver, which encodes and sends
+only the changed strips of each frame over USB.
 
 Assisted-by: Claude:claude-opus-5-0
 Assisted-by: Codex:gpt-5
@@ -26,10 +26,10 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  1 file changed, 21 insertions(+)
 
 diff --git a/rust/kernel/drm/kms/plane.rs b/rust/kernel/drm/kms/plane.rs
-index c06e4882eb3d..2501ec7469e4 100644
+index bc830503b142..62de8a1dad19 100644
 --- a/rust/kernel/drm/kms/plane.rs
 +++ b/rust/kernel/drm/kms/plane.rs
-@@ -372,6 +372,27 @@ pub fn create_rotation_property(
+@@ -438,6 +438,27 @@ pub fn create_rotation_property(
              )
          })
      }

@@ -1,7 +1,7 @@
-From 491dfffd093490ae8532761247bc9691766a7d3f Mon Sep 17 00:00:00 2001
+From 4ed55bdc79542e795243043f7783026829a9f8b8 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Mon, 18 Nov 2024 15:59:34 -0500
-Subject: [PATCH 020/113] rust: helpers/drm.c: Split into its own folder
+Subject: [PATCH 020/106] rust: helpers/drm.c: Split into its own folder
 
 There's not that many bindings in here right now, but we're about to add
 quite a lot more - which means it's probably worth it to further split out

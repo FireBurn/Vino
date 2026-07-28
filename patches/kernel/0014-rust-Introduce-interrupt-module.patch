@@ -1,7 +1,7 @@
-From 629fc6d73137df2bafc206863425f2edce390336 Mon Sep 17 00:00:00 2001
+From 4f83673d0096a49d95c0ffe3108290f915ae41be Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Mon, 2 Mar 2026 18:16:44 -0500
-Subject: [PATCH 014/113] rust: Introduce interrupt module
+Subject: [PATCH 014/106] rust: Introduce interrupt module
 
 This introduces a module for dealing with interrupt-disabled contexts,
 including the ability to enable and disable interrupts along with the

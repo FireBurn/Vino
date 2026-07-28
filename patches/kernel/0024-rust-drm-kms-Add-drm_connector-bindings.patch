@@ -1,7 +1,7 @@
-From 61cb2a49c15fd854b43c78c5264619b575d4eab1 Mon Sep 17 00:00:00 2001
+From 9b84b686ebbe1fa171813450cb642cd4d18b0fc4 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 16 May 2024 15:56:14 -0400
-Subject: [PATCH 024/113] rust: drm/kms: Add drm_connector bindings
+Subject: [PATCH 024/106] rust: drm/kms: Add drm_connector bindings
 
 We start off by introducing wrappers for the first important type of mode
 object: a DRM display connector. This introduces Connector<T:

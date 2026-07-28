@@ -1,29 +1,32 @@
-From afb3e63e0c1ff99e8295133806818a92c5724ed1 Mon Sep 17 00:00:00 2001
+From 562108c77729b7c4e4c9ce6cacd31d3522fc6429 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:54:08 +0100
-Subject: [PATCH 062/113] rust: drm: add typed RAII event channels
+Subject: [PATCH 062/106] rust: drm: add typed RAII event channels
 
-Add event delivery for a concrete DRM driver/file pair. A connection token owns the logical receiver and disconnects automatically on drop.
+Add event delivery for a concrete DRM driver and file pair. A connection
+token owns the logical receiver and disconnects automatically on drop.
 
-Reserve a private pending-event anchor for each connection. DRM core clears the anchor's file pointer under event_lock during close, so send can test and queue under the same lock without retaining an untyped or dangling drm_file pointer. The channel stores the exact DRM device and never accepts an arbitrary device at send time.
-
-This replaces the erased, manually closed EventChannel from the local v2 series; it intentionally omits the unsound with_receiver type-erasure escape.
+Reserve a private pending-event anchor for each connection. DRM
+core clears its file pointer under event_lock during close, so send
+can test and queue under the same lock without retaining an erased
+or dangling drm_file pointer. Validate the event payload layout at
+compile time and bind each channel to its exact DRM device.
 
 Assisted-by: Claude:claude-opus-5-0
 Assisted-by: Codex:gpt-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- rust/kernel/drm/event.rs | 316 +++++++++++++++++++++++++++++++++++++++
+ rust/kernel/drm/event.rs | 347 +++++++++++++++++++++++++++++++++++++++
  rust/kernel/drm/mod.rs   |   1 +
- 2 files changed, 317 insertions(+)
+ 2 files changed, 348 insertions(+)
  create mode 100644 rust/kernel/drm/event.rs
 
 diff --git a/rust/kernel/drm/event.rs b/rust/kernel/drm/event.rs
 new file mode 100644
-index 000000000000..c6821cc9a444
+index 000000000000..76243f87d981
 --- /dev/null
 +++ b/rust/kernel/drm/event.rs
-@@ -0,0 +1,316 @@
+@@ -0,0 +1,347 @@
 +// SPDX-License-Identifier: GPL-2.0 OR MIT
 +
 +//! DRM event delivery to userspace.
@@ -49,22 +52,53 @@ index 000000000000..c6821cc9a444
 +};
 +use core::{marker::PhantomData, mem, ptr::NonNull};
 +
++/// Common header at the start of every DRM event payload.
++#[repr(C)]
++#[derive(Copy, Clone, Default)]
++pub struct EventHeader {
++    /// Driver-defined event type.
++    pub type_: u32,
++    /// Complete event size in bytes.
++    pub length: u32,
++}
++
++/// Marker implemented by [`declare_drm_event_payload`].
++#[doc(hidden)]
++pub trait EventPayloadSeal {}
++
 +/// A driver-defined DRM event payload.
 +///
 +/// [`EventChannel::send`] fills the leading [`bindings::drm_event`] header's type and length before
 +/// copying the payload to userspace.
-+///
-+/// # Safety
-+///
-+/// Implementers must guarantee that:
-+///
-+/// - `Self` is `#[repr(C)]` and its first field is a [`bindings::drm_event`];
-+/// - `Self` has no drop glue, kernel pointers, or uninitialized padding which could be copied to
-+///   userspace; and
-+/// - every bit pattern supplied to [`EventChannel::send`] is valid for a bytewise userspace copy.
-+pub unsafe trait EventPayload: Copy + 'static {
++pub trait EventPayload: EventPayloadSeal + Copy + 'static {
 +    /// The event type written to the leading `drm_event` header.
 +    const TYPE: u32;
++}
++
++/// Declare a C-layout DRM event payload.
++///
++/// The payload must have a field named `base` of type [`EventHeader`] as its first field. List the
++/// types of every following field in order. Compile-time size checks reject implicit padding, which
++/// would otherwise copy uninitialized kernel bytes to userspace.
++#[macro_export]
++macro_rules! declare_drm_event_payload {
++    ($type:ty, $event_type:expr, [$($field_type:ty),* $(,)?]) => {
++        const _: fn(&$type) -> &$crate::drm::event::EventHeader = |event| &event.base;
++        const _: () = {
++            assert!(::core::mem::offset_of!($type, base) == 0);
++            assert!(
++                ::core::mem::size_of::<$type>()
++                    == ::core::mem::size_of::<$crate::drm::event::EventHeader>()
++                        $(+ ::core::mem::size_of::<$field_type>())*
++            );
++        };
++
++        impl $crate::drm::event::EventPayloadSeal for $type {}
++
++        impl $crate::drm::event::EventPayload for $type {
++            const TYPE: u32 = $event_type;
++        }
++    };
 +}
 +
 +/// Allocation handed to DRM core for one delivered event.
@@ -79,9 +113,9 @@ index 000000000000..c6821cc9a444
 +
 +/// A pending event which tracks whether the connected DRM file is still alive.
 +///
-+/// The anchor is reserved but never delivered. During file teardown, DRM core clears
-+/// `pending.file_priv` under `event_lock` before freeing the file. The channel checks the same field
-+/// under the same lock before every delivery.
++/// The anchor is reserved but never delivered. During file teardown, DRM core
++/// clears `pending.file_priv` under `event_lock` before freeing the file. The
++/// channel checks the same field under the same lock before every delivery.
 +#[repr(C)]
 +struct EventAnchor {
 +    pending: bindings::drm_pending_event,

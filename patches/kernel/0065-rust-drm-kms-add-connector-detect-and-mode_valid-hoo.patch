@@ -1,36 +1,25 @@
-From e79c215cb7387147cac9308c771ee7def1e65a8d Mon Sep 17 00:00:00 2001
+From a295f8c93add2d536be69b433c5e4a1b50335376 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 16:27:50 +0100
-Subject: [PATCH 065/113] rust: drm: kms: add connector detect() and
+Subject: [PATCH 065/106] rust: drm: kms: add connector detect() and
  mode_valid() hooks
 
-The safe connector layer only exposed get_modes(), so a driver couldn't
-report hotplug state or prune modes it can't drive. Add two optional
-DriverConnector hooks, gated the same way as the plane/CRTC optionals
-(registered in the vtable only when the driver overrides them):
+Add optional connector detect() and mode_valid() callbacks to the
+safe KMS API.
 
-  - detect(&Connector, force) -> Status, wired to
-    drm_connector_funcs.detect, returning a new Status enum
-    (Connected/Disconnected/Unknown mapping to enum drm_connector_status).
-
-  - mode_valid(&Connector, &DisplayMode) -> ModeStatus, wired to
-    drm_connector_helper_funcs.mode_valid, returning a new ModeStatus enum
-    (Ok/Bad/ClockHigh/ClockLow, a common subset of enum drm_mode_status).
-
-Both leave DRM's default behaviour (always connected, all modes valid)
-unchanged for connectors that don't implement them.
-
-(cherry picked from commit 8285755ed0c2a2760daf4890d37cbba5d1708fff)
+Map connector status and common mode-validation results through typed
+enums. Connectors which do not implement the callbacks retain the
+DRM defaults of connected and mode-valid.
 
 Assisted-by: Claude:claude-opus-5-0
 Assisted-by: Codex:gpt-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- rust/kernel/drm/kms/connector.rs | 98 +++++++++++++++++++++++++++++++-
- 1 file changed, 95 insertions(+), 3 deletions(-)
+ rust/kernel/drm/kms/connector.rs | 141 ++++++++++++++++++++++++++++++-
+ 1 file changed, 138 insertions(+), 3 deletions(-)
 
 diff --git a/rust/kernel/drm/kms/connector.rs b/rust/kernel/drm/kms/connector.rs
-index 793a7bb5bfef..89fc3a68a610 100644
+index 793a7bb5bfef..dd126469788f 100644
 --- a/rust/kernel/drm/kms/connector.rs
 +++ b/rust/kernel/drm/kms/connector.rs
 @@ -5,7 +5,8 @@
@@ -113,7 +102,7 @@ index 793a7bb5bfef..89fc3a68a610 100644
              atomic_check: None,
              get_modes: Some(get_modes_callback::<Self>),
              detect_ctx: None,
-@@ -153,6 +199,28 @@ fn get_modes<'a>(
+@@ -153,6 +199,31 @@ fn get_modes<'a>(
          connector: ConnectorGuard<'a, Self>,
          guard: &ModeConfigGuard<'a, Self::Driver>,
      ) -> i32;
@@ -136,13 +125,16 @@ index 793a7bb5bfef..89fc3a68a610 100644
 +    /// prunes the mode from the probed list. If not implemented, every mode is accepted.
 +    ///
 +    /// [`drm_connector_helper_funcs.mode_valid`]: srctree/include/drm/drm_modeset_helper_vtables.h
-+    fn mode_valid(_connector: &Connector<Self>, _mode: &DisplayMode) -> ModeStatus {
++    fn mode_valid(
++        _connector: ConnectorModeValidation<'_, Self>,
++        _mode: &DisplayMode,
++    ) -> ModeStatus {
 +        build_error::build_error("This should not be reachable")
 +    }
  }
  
  /// The generated C vtable for a [`DriverConnector`].
-@@ -477,6 +545,30 @@ impl<T: AsRawConnector> RawConnector for T {}
+@@ -477,6 +548,32 @@ impl<T: AsRawConnector> RawConnector for T {}
      T::get_modes(connector.guard(&guard), &guard)
  }
  
@@ -167,9 +159,56 @@ index 793a7bb5bfef..89fc3a68a610 100644
 +    // callback, and only passes us shared access to it.
 +    let mode = unsafe { DisplayMode::as_ref(mode) };
 +
-+    T::mode_valid(connector, mode) as bindings::drm_mode_status
++    // DRM invokes the connector helper while the mode list is stable. Keep that guarantee in a
++    // capability type so drivers can safely compare this mode with the other probed modes.
++    T::mode_valid(ConnectorModeValidation(connector), mode) as bindings::drm_mode_status
 +}
 +
  /// A [`struct drm_connector`] without a known [`DriverConnector`] implementation.
  ///
  /// This is mainly for situations where our bindings can't infer the [`DriverConnector`]
+@@ -572,6 +669,44 @@ fn deref(&self) -> &Self::Target {
+     }
+ }
+ 
++/// A connector being validated while its mode list is stable.
++///
++/// This is only constructed by the DRM connector-helper callback. It permits read-only iteration
++/// over the connector's modes without exposing list pointers or extending a mode reference beyond
++/// the callback.
++#[derive(Copy, Clone)]
++pub struct ConnectorModeValidation<'a, T: DriverConnector>(&'a Connector<T>);
++
++impl<T: DriverConnector> Deref for ConnectorModeValidation<'_, T> {
++    type Target = Connector<T>;
++
++    fn deref(&self) -> &Self::Target {
++        self.0
++    }
++}
++
++impl<T: DriverConnector> ConnectorModeValidation<'_, T> {
++    /// Return whether any mode currently on this connector satisfies `predicate`.
++    pub fn any_mode(&self, mut predicate: impl FnMut(&DisplayMode) -> bool) -> bool {
++        let raw = self.as_raw();
++        // SAFETY: DRM only constructs this capability while `connector->modes` is stable. Each
++        // list entry is an initialized `drm_display_mode`, and the shared reference is confined to
++        // this callback invocation.
++        unsafe {
++            let head: *mut bindings::list_head = &raw mut (*raw).modes;
++            let mut node = (*head).next;
++            while node != head {
++                let mode = crate::container_of!(node, bindings::drm_display_mode, head);
++                if predicate(DisplayMode::as_ref(mode)) {
++                    return true;
++                }
++                node = (*node).next;
++            }
++        }
++        false
++    }
++}
++
+ impl<'a, T: DriverConnector> ConnectorGuard<'a, T> {
+     /// Add modes for a [`ConnectorGuard`] without an EDID.
+     ///

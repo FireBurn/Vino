@@ -1,23 +1,22 @@
-From 4081deccf2419b919b74f6bedd853f95c26cef84 Mon Sep 17 00:00:00 2001
+From 6735eb94c4426f27b517127fad1601b35e45487f Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 1 Jul 2026 22:40:29 +0100
-Subject: [PATCH 008/113] sched/fair: stop reading cfsb_guard.flags after the
+Subject: [PATCH 008/106] sched/fair: stop reading cfsb_guard.flags after the
  guard drops it
 
 "locking: Switch to _irq_{disable,enable}() variants in cleanup guards"
 removed the flags field from the raw_spinlock_irqsave/spinlock_irqsave
 CLASS() guards (the new *_irq_disable()/*_irq_enable() primitives don't
 need explicit flags storage), but sched_cfs_period_timer() is the one
-place in the tree that still read cfsb_guard.flags directly. A
-tree-wide grep for CLASS(raw_spinlock_irqsave, ...) and
-CLASS(spinlock_irqsave, ...) turns up no other consumer relying on the
-removed field.
+place in the tree that still read cfsb_guard.flags directly. A tree-wide
+grep for CLASS(raw_spinlock_irqsave, ...) and CLASS(spinlock_irqsave,
+...) turns up no other consumer relying on the removed field.
 
 Desugar this one call site back to plain raw_spin_lock_irqsave() /
-raw_spin_unlock_irqrestore(), bypassing the guard macro instead of the
-struct field it no longer provides. No behavioural change: the lock is
-still held for the same span (through both return paths), and
-do_sched_cfs_period_timer() still gets the same flags value.
+raw_spin_unlock_irqrestore(), bypassing the guard macro instead of
+the struct field it no longer provides. No behavioural change: the
+lock is still held for the same span (through both return paths),
+and do_sched_cfs_period_timer() still gets the same flags value.
 
 Needed as a prerequisite for the irq/locking-guard series this pulls
 in; not a vino-specific fix.

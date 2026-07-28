@@ -1,84 +1,74 @@
 # Vino upstream workspace
 
 This repository is the review and reproducibility workspace for Vino, a Rust
-DRM/KMS driver for DisplayLink DL3 USB display devices. It also carries Revdi,
-the Rust EVDI-compatible virtual display, and Chimera, the open userspace
-Revdi-to-Vino service.
-
-The production source lives in two independent working repositories:
-
-- `kernel/` — the upstream kernel series on `series/vino-upstream`;
-- `revdi/` — the standalone Revdi, `librevdi`, and Chimera project on `main`.
-
-Those large working trees are intentionally not embedded in this Git history.
-The complete, mail-ready changes are regenerated into `patches/`, and the exact
-source revisions are recorded below. This keeps the repository small while the
-local checkout still contains both complete projects.
+DRM/KMS driver for DisplayLink DL3 USB display devices. It contains the working
+kernel tree, the Revdi/Chimera source, generated kernel patches, protocol and
+device documentation, and the scripts used to reproduce the review artifacts.
 
 ## Source authority and pins
 
-The original implementation was pinned from the `vino` branch in
-`../drm-v3`; that branch remains the historical source of truth. All cleanup
-work was performed in `kernel/`; the exact pre-cleanup production snapshot is
-preserved at `reference/vino-production-20260727`, while review and subsystem
-changes are carried by `series/vino-upstream`.
+The `vino` branch in `../drm-v3` is the implementation source of truth from
+which this cleanup started. Its imported tip is preserved as
+`linux:reference/drm-v3-vino`; it is not modified. Upstream-facing work is on
+`linux:vino-upstream-rebuild`.
 
 | Item | Revision |
 |---|---|
-| `drm/drm-next` checked 2026-07-27 | `ea97ab2759506d9a818ffed1009bde01062b4091` |
-| `rust/drm-rust-next` checked 2026-07-27 | `6dcbb4b1320fa91fee349462a52bb69135f2e45e` |
-| integration base (merge of the two tips) | `90e13d487b3b828669dab730cfdf72d417825869` |
-| historical `drm-v3` Vino pin | `19a91f95f357` |
-| Lyude Paul's `rvkms-slim` tip checked 2026-07-27 | `25bc8cc7e97fd292bea4b77354aaac7eba6c5385` |
-| kernel review branch | `series/vino-upstream` |
-| Revdi base | `113e859` (`origin/main`) |
-| Revdi review branch | `main` |
+| `drm-next` parent checked 2026-07-28 | `ea97ab2759506d9a818ffed1009bde01062b4091` |
+| `drm-rust-next` parent checked 2026-07-28 | `93b9511a3bba7f31d95502e5f912f0a476b0cf4a` |
+| integration base | `0755a4e3e809610a14befc9ad28d35e2e460da68` |
+| imported `drm-v3` Vino tip | `19a91f95f35785f5f15ba57c6efffc855c47cc76` |
+| kernel review branch | `vino-upstream-rebuild` |
+| kernel review head | `ef9d133e44e6c13b1c8e2a030c8e0440ea1bfb0a` |
 
-The integration base is the current `drm-next` tip with the current
-`drm-rust-next` tip merged. This is necessary while the Rust DRM prerequisites
-have not reached `drm-next`; it does not replace either upstream history.
+The integration base is the existing `drm-rust-next` merge of the current
+`drm-next` parent. The series does not create an artificial merge or pretend
+that unmerged Rust DRM dependencies are already in `drm-next`.
 
-## What is here
+## Layout
 
-- [`docs/`](docs/README.md) — curated device, architecture, protocol,
-  reverse-engineering, upstream, Revdi/Chimera, and testing documentation;
-- [`patches/`](patches/README.md) — generated kernel and Revdi patch series;
-- [`tools/regenerate-patches.sh`](tools/regenerate-patches.sh) — reproducible
+- [`linux/`](linux/) — kernel source and authoritative review history;
+- [`revdi/`](revdi/README.md) — standalone Revdi, `librevdi`, Chimera, and
+  userspace protocol oracle source;
+- [`docs/`](docs/README.md) — curated architecture, protocol, reverse-
+  engineering, upstream, and test documentation;
+- [`patches/kernel/`](patches/kernel/README.md) — generated, mail-ready kernel
+  patch export and review-group manifests;
+- [`tools/regenerate-patches.sh`](tools/regenerate-patches.sh) — deterministic
   patch export;
-- [`tools/check-series.sh`](tools/check-series.sh) — applies the generated
-  series in disposable worktrees and compares the result;
-- [`tools/validate.sh`](tools/validate.sh) — build-only and source-policy checks.
+- [`tools/check-series.sh`](tools/check-series.sh) — apply and tree-identity
+  check in a disposable worktree;
+- [`tools/validate.sh`](tools/validate.sh) — source-policy and build-only checks;
+- [`tools/send-series.sh`](tools/send-series.sh) — prepare a rerolled review
+  group, dry-run `git send-email`, and send only when explicitly requested.
 
-The older dated notes under `../docs` are preserved as research history. They
-are not copied into production source and are not authoritative for the current
-driver.
+Revdi is maintained directly in this repository. It is not represented by a
+second generated patch archive.
 
 ## Quick start
 
-Regenerate the patch sets:
-
 ```sh
 ./tools/regenerate-patches.sh
-```
-
-Check that they apply and reproduce the source trees:
-
-```sh
 ./tools/check-series.sh
-```
-
-Run the build-only validation:
-
-```sh
 ./tools/validate.sh
 ```
 
-These scripts do not install modules, install a kernel, change the bootloader,
-start or stop services, access the dock, or reboot the machine.
+Prepare the five Vino patches as a v3 mail series:
+
+```sh
+./tools/send-series.sh vino --version 3
+```
+
+The send helper stops after creating a cover-letter draft. After editing it,
+use `--dry-run --to ADDRESS`; only `--send --to ADDRESS` transmits mail.
+
+These scripts do not install or load modules or kernels, change the bootloader,
+access the dock, or reboot.
 
 ## Validation status
 
-The kernel Rust core, in-tree Revdi object, and Vino object build from the
-reconstructed series. The Revdi source-sync check, workspace tests, library
-tests, and optimized Chimera build also pass. No live dock, module-load,
-kernel-install, or reboot test was performed during this cleanup.
+The kernel Rust core, in-tree EVDI object, and Vino object build. The generated
+106-patch series reapplies to the pinned base with an identical tree. Revdi
+source synchronization, Cargo workspace tests, library tests, the byte-exact
+DLM protocol proof, formatting, and Chimera builds pass. This cleanup did not
+install or load a module, install or boot a kernel, or perform a live dock test.

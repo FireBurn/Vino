@@ -1,7 +1,7 @@
-From ac7eb53377c7a17a8f62fea24353fb188908f752 Mon Sep 17 00:00:00 2001
+From c79e31638282f50744a5b0e2842bb1f7674a0a7f Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Wed, 22 May 2024 18:53:52 -0400
-Subject: [PATCH 031/113] rust: drm/kms: Add ConnectorGuard::set_preferred_mode
+Subject: [PATCH 031/106] rust: drm/kms: Add ConnectorGuard::set_preferred_mode
 
 Add a wrapper for `drm_set_preferred_mode()` for our new
 `ConnectorGuard` type so we can set the preferred mode for RVKMS

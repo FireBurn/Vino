@@ -1,7 +1,7 @@
-From cedf6d68ec6a0132bbf3034754ce6a32d6e769fd Mon Sep 17 00:00:00 2001
+From b34cb9b597736995d110bdee1c11d99089e552e0 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 23 May 2024 16:50:22 -0400
-Subject: [PATCH 045/113] rust: drm/kms: Add RawPlaneState::crtc()
+Subject: [PATCH 045/106] rust: drm/kms: Add RawPlaneState::crtc()
 
 Add a binding for checking drm_plane_state.crtc. Note that we don't have a
 way of knowing what DriverCrtc implementation would be used here (and want

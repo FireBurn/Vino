@@ -1,29 +1,15 @@
-From 575413addb69c4c08a111323e9798e6bfa2140e9 Mon Sep 17 00:00:00 2001
+From 271a8c6d9343f65024d18e964e4d634e21ad7b7d Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 16:27:50 +0100
-Subject: [PATCH 066/113] rust: drm: kms: add plane damage-clip accessors
+Subject: [PATCH 066/106] rust: drm: kms: add plane damage-clip accessors
 
-A driver whose "scanout" is an expensive encode-and-send (like a USB
-display) wants to repaint only the region a client marked dirty rather
-than the whole framebuffer every flip. Add two RawPlaneState accessors
-over the client's FB_DAMAGE_CLIPS (relative to the old plane state), both
-intersected with the visible source area:
+Add safe access to the FB_DAMAGE_CLIPS rectangles intersected with
+the visible source area.
 
-  - damage_merged(), wrapping drm_atomic_helper_damage_merged(): merges the
-    clips into one rectangle and returns it as a new Rect type (with
-    width()/height() helpers). None means nothing to repaint; if the client
-    supplied no clips, the full plane rectangle is returned, so a driver can
-    always treat Some as "repaint this box".
-
-  - for_each_damage_clip(), driving drm_atomic_helper_damage_iter: invokes a
-    closure once per individual clip (the rectangles damage_merged() collapses
-    into one), so a driver that forwards each changed region separately -- e.g.
-    over USB -- can repaint just those rectangles instead of their bounding box.
-
-drm_atomic_helper_damage_{merged,iter_*} live in <drm/drm_damage_helper.h>,
-so add that to bindings_helper.h.
-
-(cherry picked from commit 955aea36778cb98f2d7b41adc3c6df8d26931574)
+damage_merged() returns the bounding rectangle produced by
+drm_atomic_helper_damage_merged(). for_each_damage_clip() wraps
+the DRM damage iterator for drivers that can process the individual
+rectangles without repainting their bounding box.
 
 Assisted-by: Claude:claude-opus-5-0
 Assisted-by: Codex:gpt-5
@@ -46,10 +32,10 @@ index 28be05b46fdc..0672876a75b4 100644
  #include <drm/drm_drv.h>
  #include <drm/drm_edid.h>
 diff --git a/rust/kernel/drm/kms/plane.rs b/rust/kernel/drm/kms/plane.rs
-index 6b28a5d42216..23524d8fa691 100644
+index 8e3f711b0767..3bff4091abb2 100644
 --- a/rust/kernel/drm/kms/plane.rs
 +++ b/rust/kernel/drm/kms/plane.rs
-@@ -627,6 +627,49 @@ pub trait FromRawPlaneState: AsRawPlaneState {
+@@ -693,6 +693,49 @@ pub trait FromRawPlaneState: AsRawPlaneState {
      unsafe fn from_raw_mut<'a>(ptr: *mut bindings::drm_plane_state) -> &'a mut Self;
  }
  
@@ -99,7 +85,7 @@ index 6b28a5d42216..23524d8fa691 100644
  /// Common methods available on any type which implements [`AsRawPlane`].
  ///
  /// This is implemented internally by DRM, and provides many of the basic methods for working with
-@@ -708,6 +751,68 @@ fn atomic_helper_check<S, D>(
+@@ -774,6 +817,68 @@ fn atomic_helper_check<S, D>(
          })
      }
  

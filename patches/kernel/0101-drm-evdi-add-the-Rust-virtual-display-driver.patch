@@ -1,0 +1,1897 @@
+From 597f177b59fd1555415631b549ca89a111dc7de6 Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Tue, 28 Jul 2026 22:01:31 +0100
+Subject: [PATCH 101/106] drm/evdi: add the Rust virtual display driver
+
+Add a Rust implementation of EVDI while preserving the established
+libevdi and DisplayLinkManager display ABI. Install that ABI as
+a normal DRM UAPI header, use generated Rust UAPI bindings, and
+translate its pointer-bearing ioctls for 32-bit clients.
+
+Create cards through the established platform sysfs interface and
+expose the expected DRM ioctls and events. Use owned DRM, KMS, event,
+framebuffer, and sysfs abstractions throughout.
+
+Prepare a bounded four-entry scanout pool with owned shmem mappings so
+compositor swapchain buffers are mapped before notifying the client and
+reused for later flips and GRABPIX calls. Enforce the bandwidth limits
+supplied by userspace without applying a driver-invented multiplier.
+
+DDC/CI and cursor-control ioctls remain ABI-compatible no-ops. The
+driver advertises no cursor plane and does not register a virtual
+I2C adapter.
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ MAINTAINERS                     |   6 +
+ drivers/gpu/drm/Kconfig         |   1 +
+ drivers/gpu/drm/Makefile        |   1 +
+ drivers/gpu/drm/evdi/Kconfig    |  20 +
+ drivers/gpu/drm/evdi/Makefile   |   2 +
+ drivers/gpu/drm/evdi/evdi.rs    | 324 ++++++++++++++
+ drivers/gpu/drm/evdi/ioctl.rs   | 248 +++++++++++
+ drivers/gpu/drm/evdi/kms.rs     | 727 ++++++++++++++++++++++++++++++++
+ drivers/gpu/drm/evdi/painter.rs | 138 ++++++
+ drivers/gpu/drm/evdi/uapi.rs    | 155 +++++++
+ include/uapi/drm/evdi_drm.h     | 133 ++++++
+ rust/uapi/uapi_helper.h         |   1 +
+ 12 files changed, 1756 insertions(+)
+ create mode 100644 drivers/gpu/drm/evdi/Kconfig
+ create mode 100644 drivers/gpu/drm/evdi/Makefile
+ create mode 100644 drivers/gpu/drm/evdi/evdi.rs
+ create mode 100644 drivers/gpu/drm/evdi/ioctl.rs
+ create mode 100644 drivers/gpu/drm/evdi/kms.rs
+ create mode 100644 drivers/gpu/drm/evdi/painter.rs
+ create mode 100644 drivers/gpu/drm/evdi/uapi.rs
+ create mode 100644 include/uapi/drm/evdi_drm.h
+
+diff --git a/MAINTAINERS b/MAINTAINERS
+index 2b548bba6525..231dff3d4e8b 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -8031,6 +8031,12 @@ T:	git https://gitlab.freedesktop.org/drm/misc/kernel.git
+ F:	Documentation/devicetree/bindings/display/panel/ebbg,ft8719.yaml
+ F:	drivers/gpu/drm/panel/panel-ebbg-ft8719.c
+ 
++DRM DRIVER FOR EVDI VIRTUAL DISPLAYS
++M:	Mike Lothian <mike@fireburn.co.uk>
++L:	dri-devel@lists.freedesktop.org
++S:	Maintained
++F:	drivers/gpu/drm/evdi/
++
+ DRM DRIVER FOR FARADAY TVE200 TV ENCODER
+ M:	Linus Walleij <linusw@kernel.org>
+ S:	Maintained
+diff --git a/drivers/gpu/drm/Kconfig b/drivers/gpu/drm/Kconfig
+index 323422861e8f..3f2a70833c59 100644
+--- a/drivers/gpu/drm/Kconfig
++++ b/drivers/gpu/drm/Kconfig
+@@ -307,6 +307,7 @@ source "drivers/gpu/drm/aspeed/Kconfig"
+ source "drivers/gpu/drm/ast/Kconfig"
+ source "drivers/gpu/drm/atmel-hlcdc/Kconfig"
+ source "drivers/gpu/drm/bridge/Kconfig"
++source "drivers/gpu/drm/evdi/Kconfig"
+ source "drivers/gpu/drm/etnaviv/Kconfig"
+ source "drivers/gpu/drm/exynos/Kconfig"
+ source "drivers/gpu/drm/fsl-dcu/Kconfig"
+diff --git a/drivers/gpu/drm/Makefile b/drivers/gpu/drm/Makefile
+index e635fcffd379..0912776bc544 100644
+--- a/drivers/gpu/drm/Makefile
++++ b/drivers/gpu/drm/Makefile
+@@ -185,6 +185,7 @@ obj-$(CONFIG_DRM_VC4)  += vc4/
+ obj-$(CONFIG_DRM_VMWGFX)+= vmwgfx/
+ obj-$(CONFIG_DRM_VGEM)	+= vgem/
+ obj-$(CONFIG_DRM_VKMS)	+= vkms/
++obj-$(CONFIG_DRM_EVDI)	+= evdi/
+ obj-$(CONFIG_DRM_NOUVEAU) +=nouveau/
+ # nova-drm is built from drivers/gpu/Makefile together with nova-core.
+ obj-$(CONFIG_DRM_EXYNOS) +=exynos/
+diff --git a/drivers/gpu/drm/evdi/Kconfig b/drivers/gpu/drm/evdi/Kconfig
+new file mode 100644
+index 000000000000..2162555e2ff9
+--- /dev/null
++++ b/drivers/gpu/drm/evdi/Kconfig
+@@ -0,0 +1,20 @@
++# SPDX-License-Identifier: GPL-2.0
++config DRM_EVDI
++	tristate "Extensible Virtual Display Interface (Rust)"
++	depends on DRM
++	depends on RUST
++	select DRM_KMS_HELPER
++	select RUST_DRM_GEM_SHMEM_HELPER
++	help
++	  Rust reimplementation of DisplayLink's EVDI: a virtual DRM/KMS display
++	  whose framebuffer is pulled by a userspace client (DisplayLinkManager
++	  via libevdi) rather than scanned out to local hardware. Cards are
++	  created on demand through /sys/devices/evdi and can be bound to a USB
++	  dock so they appear/disappear with it.
++
++	  The module identifies itself to userspace as "evdi" for compatibility
++	  with the existing libevdi / DisplayLinkManager stack.
++
++	  To compile this as a module, choose M here: the module is called evdi.
++
++	  If unsure, say N.
+diff --git a/drivers/gpu/drm/evdi/Makefile b/drivers/gpu/drm/evdi/Makefile
+new file mode 100644
+index 000000000000..9c5e1a66337c
+--- /dev/null
++++ b/drivers/gpu/drm/evdi/Makefile
+@@ -0,0 +1,2 @@
++# SPDX-License-Identifier: GPL-2.0
++obj-$(CONFIG_DRM_EVDI) += evdi.o
+diff --git a/drivers/gpu/drm/evdi/evdi.rs b/drivers/gpu/drm/evdi/evdi.rs
+new file mode 100644
+index 000000000000..d8abe921affd
+--- /dev/null
++++ b/drivers/gpu/drm/evdi/evdi.rs
+@@ -0,0 +1,324 @@
++// SPDX-License-Identifier: GPL-2.0
++
++//! EVDI — Extensible Virtual Display Interface, Rust implementation.
++//!
++//! A from-scratch Rust rewrite of the DisplayLink `evdi` kernel module. It presents virtual DRM
++//! displays whose scanout is pulled by a userspace daemon (DisplayLinkManager) over a stable
++//! ioctl + `drm_event` ABI. The module name and that ABI are kept identical to the C driver so
++//! existing userspace (libevdi/DLM) keeps working unchanged.
++//!
++//! Structure:
++//! - [`uapi`]: Rust names and compat translations for the DLM-facing UAPI.
++//! - [`kms`]: the DRM/KMS device (one virtual head, GEM-shmem dumb buffers).
++//! - [`painter`]: connection state + `drm_event` delivery.
++//! - [`ioctl`]: the five driver-private ioctls.
++//! - This file: the platform driver (one DRM card per `evdi` platform device) and the module.
++
++use kernel::{
++    device::Core,
++    drm, platform,
++    prelude::*,
++    sync::{aref::ARef, new_mutex, Arc, Mutex},
++    usb, ThisModule,
++};
++
++mod ioctl;
++mod kms;
++mod painter;
++mod uapi;
++
++use kms::{EvdiDrmData, EvdiDrmDevice, EvdiDrmDriver};
++
++/// Stops the card's timers and releases its prepared scanout on unbind.
++struct ShutdownGuard(ARef<EvdiDrmDevice>);
++
++impl Drop for ShutdownGuard {
++    fn drop(&mut self) {
++        let data: &EvdiDrmData = &self.0;
++        data.shutdown();
++    }
++}
++
++/// Per-bound-device data held by the platform driver: the registered DRM card, whose lifetime is
++/// otherwise tied to the bound platform device via devres.
++struct BoundData {
++    _shutdown: ShutdownGuard,
++    _registration: drm::Registration<'static, EvdiDrmDriver>,
++}
++
++/// The `evdi` platform driver. It binds to devices created through the sysfs control interface and
++/// registers one DRM/KMS card for each.
++struct EvdiPlatformDriver;
++
++impl platform::Driver for EvdiPlatformDriver {
++    type IdInfo = ();
++    type Data<'bound> = BoundData;
++
++    fn probe<'bound>(
++        pdev: &'bound platform::Device<Core<'_>>,
++        _info: Option<&'bound Self::IdInfo>,
++    ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound {
++        // Allocate an unregistered DRM device parented to this platform device, wire up its KMS
++        // pipeline (`KmsDriver::probe` runs inside `UnregisteredDevice::new`), then register it and
++        // tie its lifetime to the bound platform device via devres. Failure fails the probe: a
++        // bound platform device with no DRM card behind it would look loaded but do nothing.
++        let unregistered =
++            drm::UnregisteredDevice::<EvdiDrmDriver>::new(pdev, EvdiDrmData::new(), &THIS_MODULE)?;
++        let registration = drm::Registration::new_static(pdev.as_ref(), unregistered, (), 0)?;
++        let ddev: ARef<EvdiDrmDevice> = registration.device().into();
++        Ok(BoundData {
++            _shutdown: ShutdownGuard(ddev.clone()),
++            _registration: registration,
++        })
++    }
++}
++
++/// One created card: its registered `evdi` platform device plus the bus/port chain of the USB
++/// device it was attached to (`usb_len == 0` for a generic, non-USB card) — used to match the
++/// dock when it is unplugged (`USB_DEVICE_REMOVE`). The chain is stored instead of the
++/// `usb_device` pointer itself because no reference is held on the device: its address could
++/// be reused by an unrelated allocation, and matching on it could then tear down the wrong card.
++struct CardEntry {
++    _dev: platform::RegisteredDevice,
++    usb_addr: [u32; MAX_USB_ADDR],
++    usb_len: usize,
++}
++
++/// The device registry behind the sysfs control interface
++/// (`/sys/devices/evdi/{count,add,remove_all}`): the set of `evdi` platform devices created on
++/// demand by the DisplayLink daemon or udev. Stored as the sysfs root device's driver data.
++#[pin_data]
++struct RegistryState {
++    #[pin]
++    devices: Mutex<KVec<CardEntry>>,
++}
++
++impl RegistryState {
++    fn new() -> impl PinInit<Self, Error> {
++        try_pin_init!(Self {
++            devices <- new_mutex!(KVec::with_capacity(MAX_CARDS, GFP_KERNEL)?),
++        })
++    }
++}
++
++#[pin_data]
++struct EvdiRegistry {
++    state: Arc<RegistryState>,
++    #[pin]
++    _notifier: usb::DeviceRemovalNotifier<RegistryState>,
++}
++
++/// Maximum bus/port depth of a parsed `usb:` device address.
++const MAX_USB_ADDR: usize = 8;
++
++/// Maximum number of evdi cards, matching C evdi's `EVDI_DEVICE_COUNT_MAX`.
++const MAX_CARDS: usize = 16;
++
++impl EvdiRegistry {
++    fn new() -> impl PinInit<Self, Error> {
++        pin_init::pin_init_scope(move || {
++            let registry_state = Arc::pin_init(RegistryState::new(), GFP_KERNEL)?;
++            Ok(try_pin_init!(Self {
++                state: registry_state.clone(),
++                _notifier <- usb::DeviceRemovalNotifier::new(registry_state),
++            }))
++        })
++    }
++}
++
++impl RegistryState {
++    /// Tear down every card attached to `usb` (the just-removed USB device). Runs in the USB
++    /// notifier's sleepable process context; the platform devices are unregistered after the
++    /// `devices` lock is released so the (sleeping) teardown does not run under the lock.
++    fn remove_usb(&self, usb: &usb::Device) {
++        let Some((addr, len)) = usb.topology_path::<MAX_USB_ADDR>() else {
++            return;
++        };
++
++        let mut to_drop = [const { None }; MAX_CARDS];
++        let mut removed = 0;
++        {
++            let mut devices = self.devices.lock();
++            let mut i = 0;
++            while i < devices.len() {
++                if devices[i].usb_len == len && devices[i].usb_addr[..len] == addr[..len] {
++                    if let Ok(entry) = devices.remove(i) {
++                        to_drop[removed] = Some(entry);
++                        removed += 1;
++                    }
++                } else {
++                    i += 1;
++                }
++            }
++        }
++        drop(to_drop);
++    }
++
++    /// Create a card for the USB device named `token` (e.g. `"2-1.1"`).
++    ///
++    /// Its platform device exposes the `device` sysfs symlink used by
++    /// libevdi and DisplayLinkManager for pairing.
++    fn add_usb_device(&self, token: &str) -> Result {
++        // Parse "<bus>-<port>[.<port>...]" into a bus/port address (bus first, leaf last).
++        let mut addr = [0u32; MAX_USB_ADDR];
++        let mut len = 0usize;
++        let (bus, ports) = token.split_once('-').ok_or(EINVAL)?;
++        if ports.contains('-') {
++            return Err(EINVAL);
++        }
++        addr[len] = bus.parse::<u32>().map_err(|_| EINVAL)?;
++        len += 1;
++        for p in ports.split('.') {
++            if len >= MAX_USB_ADDR {
++                return Err(EINVAL);
++            }
++            addr[len] = p.parse::<u32>().map_err(|_| EINVAL)?;
++            len += 1;
++        }
++
++        let usb = usb::find_device(|device| {
++            device
++                .topology_path::<MAX_USB_ADDR>()
++                .is_some_and(|(candidate, candidate_len)| {
++                    candidate_len == len && candidate[..len] == addr[..len]
++                })
++        })
++        .ok_or(EINVAL)?;
++
++        let regdev =
++            platform::RegisteredDevice::new(c"evdi", platform::DeviceId::Auto, None, None)?;
++        kernel::sysfs::create_link(regdev.device().as_ref(), usb.as_ref(), c"device")?;
++        let mut devices = self.devices.lock();
++        if devices.len() >= MAX_CARDS {
++            return Err(EINVAL);
++        }
++        devices.push(
++            CardEntry {
++                _dev: regdev,
++                usb_addr: addr,
++                usb_len: len,
++            },
++            GFP_KERNEL,
++        )?;
++        Ok(())
++    }
++}
++
++impl usb::DeviceRemovalHandler for RegistryState {
++    fn device_removed(&self, device: &usb::Device) {
++        self.remove_usb(device);
++    }
++}
++
++impl kernel::sysfs::DeviceAttributes for EvdiRegistry {
++    const ATTRS: &'static [kernel::sysfs::Attr] = &[
++        kernel::sysfs::Attr::ro(c"count"),
++        kernel::sysfs::Attr::wo(c"add"),
++        kernel::sysfs::Attr::wo(c"remove_all"),
++    ];
++
++    fn show(&self, name: &CStr, out: &mut kernel::sysfs::Writer<'_>) -> Result {
++        if name == c"count" {
++            write_uint(out, self.state.devices.lock().len())
++        } else {
++            Err(EINVAL)
++        }
++    }
++
++    fn store(&self, name: &CStr, buf: &[u8]) -> Result {
++        if name == c"add" {
++            let text = core::str::from_utf8(buf).map_err(|_| EINVAL)?.trim();
++            // DisplayLinkManager creates a card for a specific dock by writing
++            // "usb:<bus>-<port>[.<port>...]:<intf>". A bare integer creates
++            // that many generic cards.
++            if let Some(rest) = text.strip_prefix("usb:") {
++                let token = rest.split(':').next().unwrap_or("").trim();
++                self.state.add_usb_device(token)
++            } else {
++                let count: u32 = text.parse().map_err(|_| EINVAL)?;
++                let mut devices = self.state.devices.lock();
++                // Cap the total card count (mirrors C evdi's EVDI_DEVICE_COUNT_MAX) so a stray
++                // large write cannot loop creating platform devices until memory runs out.
++                if count as usize > MAX_CARDS || devices.len() + count as usize > MAX_CARDS {
++                    return Err(EINVAL);
++                }
++                for _ in 0..count {
++                    let dev = platform::RegisteredDevice::new(
++                        c"evdi",
++                        platform::DeviceId::Auto,
++                        None,
++                        None,
++                    )?;
++                    devices.push(
++                        CardEntry {
++                            _dev: dev,
++                            usb_addr: [0; MAX_USB_ADDR],
++                            usb_len: 0,
++                        },
++                        GFP_KERNEL,
++                    )?;
++                }
++                Ok(())
++            }
++        } else if name == c"remove_all" {
++            // Unregistering a platform device may sleep. Remove every entry while holding the
++            // registry lock, then unregister them after releasing it.
++            let mut to_drop: KVec<CardEntry> = KVec::new();
++            core::mem::swap(&mut *self.state.devices.lock(), &mut to_drop);
++            drop(to_drop);
++            Ok(())
++        } else {
++            Err(EINVAL)
++        }
++    }
++}
++
++/// Format `v` as decimal followed by a newline into initialized sysfs output.
++fn write_uint(out: &mut kernel::sysfs::Writer<'_>, mut v: usize) -> Result {
++    let mut tmp = [0u8; 24];
++    let mut i = tmp.len();
++    loop {
++        i -= 1;
++        tmp[i] = b'0' + (v % 10) as u8;
++        v /= 10;
++        if v == 0 {
++            break;
++        }
++    }
++    let digits = &tmp[i..];
++    out.write(digits)?;
++    out.write(b"\n")
++}
++
++/// The module state.
++///
++/// Field/drop order matters: `_sysfs` (which owns the device registry, and thus every card) is
++/// declared first so it is dropped -- unregistering every card -- *before* the driver registration.
++#[pin_data]
++struct EvdiModule {
++    _sysfs: KBox<kernel::sysfs::AttributeGroup<EvdiRegistry>>,
++    #[pin]
++    _driver: kernel::driver::Registration<platform::Adapter<EvdiPlatformDriver>>,
++}
++
++impl kernel::InPlaceModule for EvdiModule {
++    fn init(module: &'static ThisModule) -> impl PinInit<Self, Error> {
++        try_pin_init!(Self {
++            _sysfs: kernel::sysfs::AttributeGroup::register_root(
++                c"evdi",
++                module,
++                EvdiRegistry::new(),
++            )
++            .inspect_err(|e| pr_err!("evdi: sysfs root registration failed ({e:?})\n"))?,
++            _driver <- kernel::driver::Registration::new(c"evdi", module),
++        })
++    }
++}
++
++module! {
++    type: EvdiModule,
++    name: "evdi",
++    authors: ["Mike Lothian"],
++    description: "Extensible Virtual Display Interface (Rust)",
++    license: "GPL",
++}
+diff --git a/drivers/gpu/drm/evdi/ioctl.rs b/drivers/gpu/drm/evdi/ioctl.rs
+new file mode 100644
+index 000000000000..cd1d93386c98
+--- /dev/null
++++ b/drivers/gpu/drm/evdi/ioctl.rs
+@@ -0,0 +1,248 @@
++// SPDX-License-Identifier: GPL-2.0
++//
++// EVDI driver-private ioctls (libevdi / DisplayLinkManager entry points), declared via
++// `kernel::declare_drm_ioctls!` in `kms.rs`. Each handler runs inside a
++// `drm_dev_enter/exit` critical section (returns `ENODEV` if the card was unplugged).
++
++use kernel::{
++    drm,
++    io::Io as _,
++    prelude::*,
++    uaccess::{UserPtr, UserSlice},
++};
++
++use crate::kms::{EvdiDrmData, EvdiDrmDriver, EvdiDrmFile};
++use crate::uapi;
++
++/// Maximum EDID blob we accept from userspace (128-byte base block + up to 255 extensions).
++const EDID_MAX: usize = 32 * 1024;
++
++type Dev = drm::Device<EvdiDrmDriver>;
++type File = drm::File<EvdiDrmFile>;
++
++/// `DRM_IOCTL_EVDI_CONNECT`: the DLM client connects (with an EDID) or disconnects the
++/// virtual display. Registers/clears the event receiver for this device.
++pub(crate) fn connect(
++    dev: &Dev,
++    _reg: &(),
++    arg: &mut uapi::DrmEvdiConnect,
++    file: &File,
++) -> Result<u32> {
++    let data: &EvdiDrmData = dev;
++    if arg.connected != 0 {
++        // Copy the EDID the client supplied so the connector's mode list reflects the real
++        // monitor. A zero-length/NULL EDID is allowed (connector falls back to a default mode).
++        let len = arg.edid_length as usize;
++        let mut edid = KVec::new();
++        if len > 0 && !arg.edid.is_null() {
++            if len > EDID_MAX {
++                return Err(EINVAL);
++            }
++            UserSlice::new(UserPtr::from_ptr(arg.edid.cast_mut().cast()), len)
++                .read_all(&mut edid, GFP_KERNEL)?;
++        }
++
++        // Register this file as the event receiver, record the client's bandwidth limits, and
++        // publish the EDID. The hotplug causes modes to be checked against the new limits.
++        let connection = data.events.connect(dev, file)?;
++        *file.inner().connection.lock() = Some(connection);
++        data.painter.lock().connected = true;
++        data.set_mode_limits(arg.pixel_area_limit, arg.pixel_per_second_limit);
++        if !edid.is_empty() {
++            data.set_edid(dev, edid);
++        }
++    } else {
++        *file.inner().connection.lock() = None;
++        data.painter.lock().connected = data.events.is_connected();
++        // Drop the EDID so the connector reports disconnected until the next CONNECT.
++        data.clear_edid(dev);
++    }
++    Ok(0)
++}
++
++/// `DRM_IOCTL_EVDI_REQUEST_UPDATE`: the client asks to be told (via UPDATE_READY) when the
++/// next frame is ready to grab.
++pub(crate) fn request_update(
++    dev: &Dev,
++    _reg: &(),
++    _arg: &mut uapi::DrmEvdiRequestUpdate,
++    _file: &File,
++) -> Result<u32> {
++    // If an ungrabbed frame is already waiting, return 1 so the client
++    // grabs immediately (`grabImmediately`). Otherwise the next flip's
++    // UPDATE_READY event wakes it. Sending an event here would create an
++    // unbounded request/event/grab cycle without a new frame.
++    let data: &EvdiDrmData = dev;
++    if data.painter.lock().frame_dirty {
++        Ok(1)
++    } else {
++        Ok(0)
++    }
++}
++
++/// `DRM_IOCTL_EVDI_GRABPIX`: copy the current scanout framebuffer to the client's buffer.
++///
++/// The pixels are read through the prepared shmem mapping and its `SysMem` view, then written to
++/// userspace one row at a time (bounded by both the framebuffer and the client's buffer geometry).
++pub(crate) fn grabpix(
++    dev: &Dev,
++    _reg: &(),
++    arg: &mut uapi::DrmEvdiGrabpix,
++    _file: &File,
++) -> Result<u32> {
++    // XRGB8888: 4 bytes per pixel (the only format the primary plane advertises).
++    const BPP: usize = 4;
++
++    match arg.mode {
++        uapi::EVDI_GRABPIX_MODE_DIRTY => {}
++        uapi::EVDI_GRABPIX_MODE_RECTS => return Err(EINVAL),
++        _ => return Err(EINVAL),
++    }
++    if arg.num_rects < 1 {
++        return Err(EINVAL);
++    }
++
++    let data: &EvdiDrmData = dev;
++    // No frame has been flipped in yet (or the pipe is down, e.g. DPMS off): report zero rects.
++    // NOT -EAGAIN — libevdi's `drm_ioctl` retries EAGAIN in a tight loop, which would busy-spin
++    // a core until the next flip.
++    let Some(scanout) = data.prepared_scanout() else {
++        arg.num_rects = 0;
++        return Ok(0);
++    };
++    let fb = &scanout.framebuffer;
++
++    // Take the regions accumulated since the last grab and mark the frame consumed.
++    let mut dmg = {
++        let mut p = data.painter.lock();
++        p.frame_dirty = false;
++        let d = p.damage;
++        p.damage.clear();
++        d
++    };
++
++    let map = &scanout.mapping;
++    let src_len = map.view().len();
++    let src_pitch = map.pitch();
++    let fb_w = fb.width() as i32;
++    let fb_h = fb.height() as i32;
++
++    // The geometry is client-controlled: reject impossible values before any of it reaches
++    // arithmetic (a negative stride cast to usize is ~2^63 and `y * dst_stride` wraps — a
++    // kernel panic with overflow checks on).
++    if arg.buffer.is_null() || arg.buf_byte_stride <= 0 || arg.buf_width < 0 || arg.buf_height < 0 {
++        return Err(EINVAL);
++    }
++    let dst_stride = arg.buf_byte_stride as usize;
++    let max_w = core::cmp::min(fb_w, (dst_stride / BPP) as i32);
++    let max_h = core::cmp::min(fb_h, arg.buf_height);
++
++    // Nothing recorded (the client polled without a flip): fall back to one full-frame rectangle.
++    if dmg.count == 0 {
++        dmg.rects[0] = (0, 0, fb_w, fb_h);
++        dmg.count = 1;
++    }
++
++    // Clamp each rectangle to the framebuffer and the client's buffer, dropping empty ones.
++    let mut rects = [(0i32, 0i32, 0i32, 0i32); crate::painter::MAX_DAMAGE_RECTS];
++    let mut count = 0usize;
++    for &(rx1, ry1, rx2, ry2) in &dmg.rects[..dmg.count] {
++        let x1 = rx1.clamp(0, max_w);
++        let y1 = ry1.clamp(0, max_h);
++        let x2 = rx2.clamp(x1, max_w);
++        let y2 = ry2.clamp(y1, max_h);
++        if x2 > x1 && y2 > y1 {
++            rects[count] = (x1, y1, x2, y2);
++            count += 1;
++        }
++    }
++    if count == 0 {
++        // The arg is copied back to userspace as passed in, so zero the count explicitly —
++        // otherwise the client sees its own pre-filled value (MAX_DIRTS) and reports that many
++        // empty rectangles.
++        arg.num_rects = 0;
++        return Ok(0);
++    }
++    // The client's `rects` buffer holds `num_rects` entries; if we somehow have more, coalesce into
++    // a single bounding box so we never overrun it.
++    let cap = (arg.num_rects.max(1) as usize).min(crate::painter::MAX_DAMAGE_RECTS);
++    if count > cap {
++        let mut bb = rects[0];
++        for &(x1, y1, x2, y2) in &rects[1..count] {
++            bb = (bb.0.min(x1), bb.1.min(y1), bb.2.max(x2), bb.3.max(y2));
++        }
++        rects[0] = bb;
++        count = 1;
++    }
++
++    // Report the rectangles so DLM transmits exactly them
++    // (`struct drm_clip_rect` = 4x u16). An empty rectangle array tells DLM
++    // that nothing changed.
++    if !arg.rects.is_null() {
++        let mut buf = [0u8; crate::painter::MAX_DAMAGE_RECTS * 8];
++        for (i, &(x1, y1, x2, y2)) in rects[..count].iter().enumerate() {
++            let o = i * 8;
++            buf[o..o + 2].copy_from_slice(&(x1 as u16).to_ne_bytes());
++            buf[o + 2..o + 4].copy_from_slice(&(y1 as u16).to_ne_bytes());
++            buf[o + 4..o + 6].copy_from_slice(&(x2 as u16).to_ne_bytes());
++            buf[o + 6..o + 8].copy_from_slice(&(y2 as u16).to_ne_bytes());
++        }
++        UserSlice::new(UserPtr::from_ptr(arg.rects.cast()), count * 8)
++            .writer()
++            .write_slice(&buf[..count * 8])?;
++    }
++    // The IOWR arg is copied back to userspace, so the count reaches DLM.
++    arg.num_rects = count as i32;
++
++    // Copy each changed rectangle into the client's (persistent, full-frame) buffer at the same
++    // position, so the userspace frame accumulates the per-grab deltas.
++    for &(x1, y1, x2, y2) in &rects[..count] {
++        let xoff = x1 as usize * BPP;
++        let span = (x2 - x1) as usize * BPP;
++        let mut row = KVec::new();
++        row.resize(span, 0, GFP_KERNEL)?;
++        for y in y1 as usize..y2 as usize {
++            let so = y * src_pitch + xoff;
++            let end = so.checked_add(span).ok_or(EINVAL)?;
++            if end > src_len {
++                break;
++            }
++            let src = kernel::io_project!(map.view(), [try: so..end]);
++            src.copy_to_slice(&mut row);
++            // Fully checked: on 32-bit `usize` the row product can overflow even after the
++            // sign validation above.
++            let dst = y
++                .checked_mul(dst_stride)
++                .and_then(|off| off.checked_add(xoff))
++                .and_then(|off| (arg.buffer as usize).checked_add(off))
++                .ok_or(EINVAL)?;
++            UserSlice::new(UserPtr::from_ptr(dst as *mut kernel::ffi::c_void), span)
++                .writer()
++                .write_slice(&row)?;
++        }
++    }
++    Ok(0)
++}
++
++/// `DRM_IOCTL_EVDI_DDCCI_RESPONSE`: accept a DDC/CI response from an EVDI client.
++pub(crate) fn ddcci_response(
++    _dev: &Dev,
++    _reg: &(),
++    _arg: &mut uapi::DrmEvdiDdcciResponse,
++    _file: &File,
++) -> Result<u32> {
++    // DDC/CI forwarding is optional in the EVDI ABI. Accept an unsolicited
++    // response for compatibility when this device has no virtual I2C bus.
++    Ok(0)
++}
++
++/// `DRM_IOCTL_EVDI_ENABLE_CURSOR_EVENTS`: retained for compatibility with libevdi.
++pub(crate) fn enable_cursor_events(
++    _dev: &Dev,
++    _reg: &(),
++    _arg: &mut uapi::DrmEvdiEnableCursorEvents,
++    _file: &File,
++) -> Result<u32> {
++    // EVDI exposes no cursor plane, so compositors blend the cursor into the primary plane.
++    Ok(0)
++}
+diff --git a/drivers/gpu/drm/evdi/kms.rs b/drivers/gpu/drm/evdi/kms.rs
+new file mode 100644
+index 000000000000..1166018fba66
+--- /dev/null
++++ b/drivers/gpu/drm/evdi/kms.rs
+@@ -0,0 +1,727 @@
++// SPDX-License-Identifier: GPL-2.0
++//
++// The EVDI DRM/KMS device: registers a `struct drm_device` presenting one virtual
++// display head (CRTC + primary plane + virtual encoder + virtual connector) with
++// GEM-shmem dumb buffers, built on the safe KMS mode-object layer (`kernel::drm::kms`).
++//
++// Unlike a real display driver, EVDI's scanout is *pulled* by userspace: the
++// DisplayLinkManager daemon grabs framebuffer pixels via the GRABPIX ioctl and is
++// told when to do so through `drm_event`s (see `painter.rs`). The KMS callbacks here
++// therefore translate atomic commits into those events rather than programming any
++// hardware.
++
++use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
++use kernel::{
++    drm,
++    drm::event::{EventChannel, EventConnection},
++    drm::kms::{
++        connector::{self, ConnectorGuard, ConnectorModeValidation, ModeStatus},
++        crtc::{self, CrtcAtomicCommit, RawCrtc as _, RawCrtcState as _},
++        encoder,
++        framebuffer::{Framebuffer, FramebufferVMapOwned},
++        modes::DisplayMode,
++        plane::{self, PlaneAtomicCommit, RawPlaneState as _},
++        vblank::{
++            OwnedVblankRef, RawVblankCrtcState as _, VblankGuard, VblankSupport, VblankTimestamp,
++        },
++        KmsDriver, ModeConfigGuard, ModeConfigInfo, ModeObject as _, UnregisteredKmsDevice,
++    },
++    impl_has_hr_timer,
++    interrupt::LocalInterruptDisabled,
++    prelude::*,
++    sync::{
++        aref::ARef, new_mutex, new_spinlock, new_spinlock_irq, Arc, ArcBorrow, Mutex, SpinLock,
++        SpinLockIrq,
++    },
++    time::{
++        hrtimer::{
++            ArcHrTimerHandle, HrTimer, HrTimerCallback, HrTimerCallbackContext, HrTimerPointer,
++            HrTimerRestart, RelativeHardMode,
++        },
++        Delta, Monotonic,
++    },
++};
++
++use crate::painter::PainterState;
++
++static PRIMARY_FORMATS: [u32; 1] = [drm::fourcc::XRGB8888];
++
++/// Fallback mode advertised before the DLM client delivers an EDID via CONNECT.
++const FALLBACK_W: u32 = 1024;
++const FALLBACK_H: u32 = 768;
++
++// libevdi requires `major == 1 && minor >= 9`. DisplayLinkManager also
++// compares this value with the supported upstream evdi ABI, so keep it in
++// lockstep with libevdi.
++const INFO: drm::DriverInfo = drm::DriverInfo {
++    major: 1,
++    minor: 15,
++    patchlevel: 0,
++    name: c"evdi",
++    desc: c"Extensible Virtual Display Interface",
++};
++
++/// The EVDI DRM driver marker type.
++pub(crate) struct EvdiDrmDriver;
++
++/// Convenience alias for our concrete `drm::Device`.
++pub(crate) type EvdiDrmDevice = drm::Device<EvdiDrmDriver>;
++
++/// One framebuffer prepared for repeated GRABPIX calls.
++pub(crate) struct PreparedScanout {
++    pub(crate) framebuffer: ARef<Framebuffer<EvdiDrmDriver>>,
++    pub(crate) mapping: FramebufferVMapOwned<EvdiObject>,
++}
++
++const SCANOUT_BINDINGS: usize = 4;
++
++struct ScanoutState {
++    current: Option<Arc<PreparedScanout>>,
++    bindings: [Option<Arc<PreparedScanout>>; SCANOUT_BINDINGS],
++    next: usize,
++}
++
++impl ScanoutState {
++    const fn new() -> Self {
++        Self {
++            current: None,
++            bindings: [const { None }; SCANOUT_BINDINGS],
++            next: 0,
++        }
++    }
++
++    fn prepare(&mut self, fb: Option<&Framebuffer<EvdiDrmDriver>>) -> Result {
++        let Some(fb) = fb else {
++            self.discard();
++            return Ok(());
++        };
++        let prepared = if let Some(prepared) = self
++            .bindings
++            .iter()
++            .flatten()
++            .find(|prepared| &*prepared.framebuffer == fb)
++        {
++            prepared.clone()
++        } else {
++            let prepared = Arc::new(
++                PreparedScanout {
++                    framebuffer: ARef::from(fb),
++                    mapping: fb.owned_vmap::<EvdiObject>()?,
++                },
++                GFP_KERNEL,
++            )?;
++            self.bindings[self.next] = Some(prepared.clone());
++            self.next = (self.next + 1) % SCANOUT_BINDINGS;
++            prepared
++        };
++        self.current = Some(prepared);
++        Ok(())
++    }
++
++    fn discard(&mut self) {
++        self.current = None;
++        self.bindings = [const { None }; SCANOUT_BINDINGS];
++        self.next = 0;
++    }
++}
++
++/// DRM device-private data.
++#[pin_data]
++pub(crate) struct EvdiDrmData {
++    /// Event channel to the connected DLM client (`drm_event` delivery).
++    pub(crate) events: Arc<EventChannel<EvdiDrmDriver, EvdiDrmFile>>,
++    /// Painter state (connection status and dirty rectangles).
++    #[pin]
++    pub(crate) painter: Mutex<PainterState>,
++    /// The current framebuffer and a bounded set of owned, validated swapchain mappings, so
++    /// repeated flips and GRABPIX calls do not remap them.
++    #[pin]
++    scanout: Mutex<ScanoutState>,
++    /// EDID and bandwidth limits delivered by the DLM client through CONNECT.
++    #[pin]
++    cached_edid: Mutex<Option<KVec<u8>>>,
++    pixel_area_limit: AtomicU32,
++    pixel_per_second_limit: AtomicU32,
++    /// Active software-vblank timer and its cancellation handle.
++    #[pin]
++    vblank: SpinLock<Option<(Arc<VblankTimer>, ArcHrTimerHandle<VblankTimer>)>>,
++}
++
++impl EvdiDrmData {
++    pub(crate) fn new() -> impl PinInit<Self, Error> {
++        try_pin_init!(Self {
++            events: EventChannel::new()?,
++            painter <- new_mutex!(PainterState::new()),
++            scanout <- new_mutex!(ScanoutState::new()),
++            cached_edid <- new_mutex!(None),
++            pixel_area_limit: AtomicU32::new(0),
++            pixel_per_second_limit: AtomicU32::new(0),
++            vblank <- new_spinlock!(None),
++        })
++    }
++
++    /// Stop timer activity and release prepared scanout state before unbind.
++    pub(crate) fn shutdown(&self) {
++        self.scanout.lock().discard();
++        let timer = self.vblank.lock().take();
++        if let Some((timer, handle)) = timer {
++            timer.enabled.store(false, Ordering::Relaxed);
++            drop(handle);
++            if let Some(crtc) = timer.crtc.lock().take() {
++                drop(crtc.crtc().vblank_pinned.lock().take());
++            }
++        }
++    }
++
++    /// Prepare the framebuffer currently on the primary plane for later GRABPIX calls.
++    pub(crate) fn set_scanout(&self, fb: Option<&Framebuffer<EvdiDrmDriver>>) -> Result {
++        self.scanout.lock().prepare(fb)
++    }
++
++    /// Take an owned handle to the current prepared scanout, if any.
++    pub(crate) fn prepared_scanout(&self) -> Option<Arc<PreparedScanout>> {
++        self.scanout.lock().current.clone()
++    }
++
++    /// Install a new EDID blob (from CONNECT) into the connector and fire a hotplug so
++    /// the compositor re-probes the connector's mode list.
++    pub(crate) fn set_edid(&self, dev: &EvdiDrmDevice, blob: KVec<u8>) {
++        *self.cached_edid.lock() = Some(blob);
++        dev.hotplug_event();
++    }
++
++    /// Drop the connector's cached EDID (on CONNECT disconnect) and fire a hotplug so the connector
++    /// reports disconnected again -- see [`EvdiConnector::detect`].
++    pub(crate) fn clear_edid(&self, dev: &EvdiDrmDevice) {
++        *self.cached_edid.lock() = None;
++        dev.hotplug_event();
++    }
++
++    /// Store the dock bandwidth limits the client supplied via CONNECT, for
++    /// [`EvdiConnector`]'s `mode_valid` to enforce. Must be called before the EDID is
++    /// published (`set_edid`'s hotplug re-probes the mode list against these limits).
++    ///
++    pub(crate) fn set_mode_limits(&self, pixel_area: u32, pixels_per_second: u32) {
++        self.pixel_area_limit.store(pixel_area, Ordering::Relaxed);
++        self.pixel_per_second_limit
++            .store(pixels_per_second, Ordering::Relaxed);
++    }
++}
++
++/// GEM object inner data. Empty: the shmem-backed object wires
++/// `drm_gem_shmem_dumb_create`, so `DRM_IOCTL_MODE_CREATE_DUMB` works and the GRABPIX
++/// ioctl can `vmap` the resulting framebuffer to copy pixels to userspace.
++#[pin_data]
++pub(crate) struct EvdiObject {}
++
++impl drm::gem::DriverObject for EvdiObject {
++    type Driver = EvdiDrmDriver;
++    type Args = ();
++
++    fn new(
++        _dev: &drm::Device<EvdiDrmDriver>,
++        _size: usize,
++        _args: (),
++    ) -> impl PinInit<Self, Error> {
++        try_pin_init!(EvdiObject {})
++    }
++}
++
++/// Per-open DRM client state.
++#[pin_data]
++pub(crate) struct EvdiDrmFile {
++    /// The owning device, so file close can reach the event channel to disconnect.
++    dev: ARef<EvdiDrmDevice>,
++    /// The connection token is owned by the file, so closing or disconnecting drops it and
++    /// automatically detaches this receiver from the channel.
++    #[pin]
++    pub(crate) connection: Mutex<Option<EventConnection<EvdiDrmDriver, EvdiDrmFile>>>,
++}
++
++impl drm::file::DriverFile for EvdiDrmFile {
++    type Driver = EvdiDrmDriver;
++
++    fn open(dev: &drm::Device<Self::Driver>) -> Result<Pin<KBox<Self>>> {
++        KBox::try_pin_init(
++            try_pin_init!(Self {
++                dev: dev.into(),
++                connection <- new_mutex!(None),
++            }),
++            GFP_KERNEL,
++        )
++    }
++}
++
++#[vtable]
++impl drm::Driver for EvdiDrmDriver {
++    type Data = EvdiDrmData;
++    type File = EvdiDrmFile;
++    type Object = drm::gem::shmem::Object<EvdiObject>;
++    type ParentDevice<Ctx: kernel::device::DeviceContext> = kernel::platform::Device<Ctx>;
++    type RegistrationData<'a> = ();
++    type Kms = Self;
++
++    const INFO: drm::DriverInfo = INFO;
++
++    kernel::declare_drm_ioctls! {
++        (EVDI_CONNECT, drm_evdi_connect, 0, crate::ioctl::connect),
++        (EVDI_REQUEST_UPDATE, drm_evdi_request_update, 0, crate::ioctl::request_update),
++        (EVDI_GRABPIX, drm_evdi_grabpix, 0, crate::ioctl::grabpix),
++        (EVDI_DDCCI_RESPONSE, drm_evdi_ddcci_response, 0, crate::ioctl::ddcci_response),
++        (EVDI_ENABLE_CURSOR_EVENTS, drm_evdi_enable_cursor_events, 0,
++            crate::ioctl::enable_cursor_events),
++    }
++
++    kernel::declare_drm_compat_ioctls! {
++        EvdiDrmDriver;
++        (EVDI_CONNECT, drm_evdi_connect, crate::uapi::DrmEvdiConnect32, IOWR,
++            crate::ioctl::connect),
++        (EVDI_GRABPIX, drm_evdi_grabpix, crate::uapi::DrmEvdiGrabpix32, IOWR,
++            crate::ioctl::grabpix),
++    }
++}
++
++#[vtable]
++impl KmsDriver for EvdiDrmDriver {
++    type Connector = EvdiConnector;
++    type Plane = EvdiPlane;
++    type Crtc = EvdiCrtc;
++    type Encoder = EvdiEncoder;
++
++    fn mode_config_info(
++        _dev: &kernel::device::Device,
++        _drm_data: &Self::Data,
++    ) -> Result<ModeConfigInfo> {
++        Ok(ModeConfigInfo {
++            min_resolution: (0, 0),
++            max_resolution: (8192, 8192),
++            max_cursor: (64, 64),
++            preferred_depth: 32,
++            preferred_fourcc: Some(drm::fourcc::XRGB8888),
++        })
++    }
++
++    fn create_objects(dev: &UnregisteredKmsDevice<'_, Self>) -> Result {
++        let primary = plane::UnregisteredPlane::<EvdiPlane>::new(
++            dev,
++            1,
++            &PRIMARY_FORMATS,
++            None,
++            plane::Type::Primary,
++            None,
++            (),
++        )?;
++        // Advertise FB_DAMAGE_CLIPS so the compositor reports which region
++        // changed. Without it, GRABPIX must return the full plane.
++        primary.enable_fb_damage_clips();
++        // Keep cursor composition in the primary framebuffer. The driver does not advertise a
++        // separate hardware cursor plane.
++        let crtc_obj = crtc::UnregisteredCrtc::<EvdiCrtc>::new(
++            dev,
++            primary,
++            None::<&plane::UnregisteredPlane<EvdiPlane>>,
++            None,
++            (),
++        )?;
++        let enc = encoder::UnregisteredEncoder::<EvdiEncoder>::new(
++            dev,
++            encoder::Type::Virtual,
++            crtc_obj.mask(),
++            0,
++            None,
++            (),
++        )?;
++        // Use DVI-I (matching the C evdi) rather than Virtual: `__drm_connector_init` skips
++        // `drm_connector_attach_edid_property()` for VIRTUAL/WRITEBACK connectors, and without that
++        // property `drm_edid_connector_update()` can't populate `edid_blob_ptr`, so
++        // `drm_edid_connector_add_modes()` would return 0 modes for a perfectly valid EDID.
++        let conn =
++            connector::UnregisteredConnector::<EvdiConnector>::new(dev, connector::Type::DviI, ())?;
++        conn.attach_encoder(&*enc)?;
++        Ok(())
++    }
++}
++
++// ---- CRTC -------------------------------------------------------------------
++
++/// A software vblank source: an hrtimer that fires once per frame and drives
++/// `drm_crtc_handle_vblank()`, so the atomic helpers pace page-flips against a real vblank
++/// (via `drm_crtc_arm_vblank_event()` in [`EvdiCrtc::atomic_flush`]) instead of completing them
++/// immediately with a fake vblank -- which is what makes updates smooth rather than bursty.
++///
++/// The timer stops itself when vblank is disabled (mirroring the C core's
++/// `drm_vblank_timer_function`, which returns `HRTIMER_NORESTART` on a zeroed interval): the
++/// callback sees `enabled == false` and returns [`HrTimerRestart::NoRestart`], so an idle or
++/// DPMS-off output costs no wakeups. `enable_vblank` re-arms it with a raw
++/// [`HasHrTimer::start`], which re-queues the timer whether it is dead or still pending —
++/// no new handle is minted, so the single [`ArcHrTimerHandle`] taken at first start remains
++/// the sole owner and its drop (at CRTC teardown, before the `drm_crtc` is freed) is the only
++/// full `hrtimer_cancel`. Neither enable nor disable ever blocks on the callback, which is
++/// what makes them deadlock-free against `drm_crtc_handle_vblank` (see the deadlock note in
++/// `drm_crtc_vblank_cancel_timer`).
++#[pin_data]
++pub(crate) struct VblankTimer {
++    #[pin]
++    timer: HrTimer<Self>,
++    /// Owned CRTC reference used by the hard-timer callback.
++    #[pin]
++    crtc: SpinLockIrq<Option<crtc::CrtcRef<EvdiCrtc>>>,
++    /// One scanout frame in nanoseconds (from the mode's `framedur_ns`).
++    interval_ns: AtomicI64,
++    /// Whether vblanks should currently be delivered (toggled by enable/disable_vblank).
++    enabled: AtomicBool,
++}
++
++impl VblankTimer {
++    fn new() -> impl PinInit<Self> {
++        pin_init!(VblankTimer {
++            timer <- HrTimer::new(),
++            crtc <- new_spinlock_irq!(None, "evdi::vblank_crtc"),
++            interval_ns: AtomicI64::new(16_666_666), // ~60 Hz until a mode sets it
++            enabled: AtomicBool::new(false),
++        })
++    }
++}
++
++impl HrTimerCallback for VblankTimer {
++    type Pointer<'a> = Arc<Self>;
++
++    fn run(this: ArcBorrow<'_, Self>, mut ctx: HrTimerCallbackContext<'_, Self>) -> HrTimerRestart {
++        // Vblank is off: let the timer die instead of ticking uselessly; `enable_vblank`
++        // re-arms it. A concurrent re-arm racing this return is safe — hrtimer keeps a timer
++        // that was re-queued during its callback enqueued even on NORESTART.
++        if !this.enabled.load(Ordering::Relaxed) {
++            return HrTimerRestart::NoRestart;
++        }
++        let crtc = this.crtc.lock_with(ctx.local_interrupt_disabled()).clone();
++        if let Some(crtc) = crtc {
++            crtc.crtc().handle_vblank();
++        }
++        let interval = this.interval_ns.load(Ordering::Relaxed).max(1_000_000);
++        ctx.forward_now(Delta::from_nanos(interval));
++        HrTimerRestart::Restart
++    }
++}
++
++impl_has_hr_timer! {
++    impl HasHrTimer<Self> for VblankTimer {
++        mode: RelativeHardMode<Monotonic>, field: self.timer
++    }
++}
++
++#[pin_data]
++pub(crate) struct EvdiCrtc {
++    /// The software vblank source for this CRTC.
++    vblank: Arc<VblankTimer>,
++    /// Driver-owned vblank reference held for the active interval.
++    #[pin]
++    vblank_pinned: Mutex<Option<OwnedVblankRef<EvdiCrtc>>>,
++}
++
++#[derive(Clone, Default)]
++pub(crate) struct EvdiCrtcState;
++
++impl crtc::DriverCrtcState for EvdiCrtcState {
++    type Crtc = EvdiCrtc;
++}
++
++#[vtable]
++impl crtc::DriverCrtc for EvdiCrtc {
++    type Args = ();
++    type Driver = EvdiDrmDriver;
++    type State = EvdiCrtcState;
++    type VblankImpl = Self;
++
++    fn new(_device: &drm::Device<Self::Driver>, _args: &()) -> impl PinInit<Self, Error> {
++        try_pin_init!(EvdiCrtc {
++            vblank: Arc::pin_init(VblankTimer::new(), GFP_KERNEL)?,
++            vblank_pinned <- new_mutex!(None),
++        })
++    }
++
++    /// Display turning on: enable vblank delivery, then tell the DLM client DPMS-on + the mode.
++    fn atomic_enable(commit: CrtcAtomicCommit<'_, Self>) {
++        let crtc = commit.crtc();
++        crtc.vblank_on();
++        let mut pinned = crtc.vblank_pinned.lock();
++        if pinned.is_none() {
++            if let Ok(vblank_ref) = crtc.vblank_get() {
++                *pinned = Some(vblank_ref.into_owned());
++            }
++        }
++        drop(pinned);
++        let dev = crtc.drm_dev();
++        let data: &EvdiDrmData = dev;
++        let new = commit.take_new_state();
++        let mode = new.mode();
++        crate::painter::notify_dpms(data, dev, crate::painter::DPMS_ON);
++        crate::painter::notify_mode_changed(
++            data,
++            dev,
++            mode.hdisplay() as i32,
++            mode.vdisplay() as i32,
++            mode.vrefresh(),
++            32,
++            drm::fourcc::XRGB8888,
++        );
++    }
++
++    /// Display turning off: stop vblank delivery and tell the DLM client DPMS-off.
++    fn atomic_disable(commit: CrtcAtomicCommit<'_, Self>) {
++        let crtc = commit.crtc();
++        drop(crtc.vblank_pinned.lock().take());
++        crtc.vblank_off();
++        let dev = crtc.drm_dev();
++        let data: &EvdiDrmData = dev;
++        let _ = data.set_scanout(None);
++        crate::painter::notify_dpms(data, dev, crate::painter::DPMS_OFF);
++    }
++
++    /// Arm the page-flip completion event to be sent by the next vblank tick, so userspace is paced
++    /// to the refresh rate rather than signalled immediately.
++    fn atomic_flush(commit: CrtcAtomicCommit<'_, Self>) {
++        let crtc = commit.crtc();
++        let mut new = commit.take_new_state();
++        if let Some(pending) = new.get_pending_vblank_event() {
++            match crtc.vblank_get() {
++                Ok(vbl_ref) => pending.arm(vbl_ref),
++                // Vblank couldn't be enabled (e.g. mid-teardown): fall back to sending now.
++                Err(_) => pending.send(),
++            }
++        }
++    }
++}
++
++impl VblankSupport for EvdiCrtc {
++    type Crtc = EvdiCrtc;
++
++    fn enable_vblank(
++        crtc: &crtc::Crtc<Self::Crtc>,
++        vblank_guard: &VblankGuard<'_, Self::Crtc>,
++        irq: &LocalInterruptDisabled,
++    ) -> Result {
++        let data: &EvdiCrtc = crtc;
++        // Track the mode's real frame duration so the tick matches the negotiated refresh rate.
++        let fd = vblank_guard.frame_duration();
++        if fd > 0 {
++            data.vblank.interval_ns.store(fd as i64, Ordering::Relaxed);
++        }
++        {
++            let mut published = data.vblank.crtc.lock_with(irq);
++            if published.is_none() {
++                *published = Some(crtc.to_owned_ref());
++            }
++        }
++        data.vblank.enabled.store(true, Ordering::Relaxed);
++        let interval = data.vblank.interval_ns.load(Ordering::Relaxed);
++        let drm_data: &EvdiDrmData = crtc.drm_dev();
++        let mut timer = drm_data.vblank.lock();
++        match &*timer {
++            None => {
++                *timer = Some((
++                    data.vblank.clone(),
++                    data.vblank.clone().start(Delta::from_nanos(interval)),
++                ));
++            }
++            Some((_, handle)) => {
++                handle.restart(Delta::from_nanos(interval));
++            }
++        }
++        Ok(())
++    }
++
++    fn disable_vblank(
++        crtc: &crtc::Crtc<Self::Crtc>,
++        _vblank_guard: &VblankGuard<'_, Self::Crtc>,
++        _irq: &LocalInterruptDisabled,
++    ) {
++        let data: &EvdiCrtc = crtc;
++        data.vblank.enabled.store(false, Ordering::Relaxed);
++    }
++
++    fn get_vblank_timestamp(
++        _crtc: &crtc::Crtc<Self::Crtc>,
++        _in_vblank_irq: bool,
++    ) -> Option<VblankTimestamp> {
++        // Let DRM estimate the timestamp from the mode timings.
++        None
++    }
++}
++
++// ---- Primary plane -----------------------------------------------------------
++
++#[pin_data]
++pub(crate) struct EvdiPlane;
++
++#[derive(Clone, Default)]
++pub(crate) struct EvdiPlaneState;
++
++impl plane::DriverPlaneState for EvdiPlaneState {
++    type Plane = EvdiPlane;
++}
++
++#[vtable]
++impl plane::DriverPlane for EvdiPlane {
++    type Args = ();
++    type Driver = EvdiDrmDriver;
++    type State = EvdiPlaneState;
++
++    fn new(_device: &drm::Device<Self::Driver>, _args: ()) -> impl PinInit<Self, Error> {
++        try_pin_init!(EvdiPlane {})
++    }
++
++    /// A new framebuffer was flipped in.
++    ///
++    /// EVDI records the new scanout buffer and signals the DLM client to grab it (UPDATE_READY).
++    fn atomic_update(commit: PlaneAtomicCommit<'_, Self>) {
++        let plane = commit.plane();
++        let dev = plane.drm_dev();
++        let data: &EvdiDrmData = dev;
++
++        // Record the framebuffer plus each region the compositor changed, accumulate them for
++        // GRABPIX, and signal the client. UPDATE_READY fires on every real flip; REQUEST_UPDATE
++        // deliberately does not self-signal, avoiding a request/event/grab busy loop.
++        let (old, new) = commit.take_old_new_state();
++        let fb = new.framebuffer::<EvdiDrmDriver>();
++        if let Err(error) = data.set_scanout(fb) {
++            pr_warn!("evdi: failed to prepare scanout framebuffer ({error:?})\n");
++            return;
++        }
++        if fb.is_some() {
++            {
++                let mut p = data.painter.lock();
++                new.for_each_damage_clip(old, |r| p.damage.push((r.x1, r.y1, r.x2, r.y2)));
++                p.frame_dirty = true;
++            }
++            crate::painter::notify_update_ready(data, dev);
++        }
++    }
++}
++
++// ---- Encoder ----------------------------------------------------------------
++
++#[pin_data]
++pub(crate) struct EvdiEncoder;
++
++#[vtable]
++impl encoder::DriverEncoder for EvdiEncoder {
++    type Driver = EvdiDrmDriver;
++    type Args = ();
++
++    fn new(_device: &drm::Device<Self::Driver>, _args: ()) -> impl PinInit<Self, Error> {
++        try_pin_init!(EvdiEncoder {})
++    }
++}
++
++// ---- Connector --------------------------------------------------------------
++
++#[pin_data]
++pub(crate) struct EvdiConnector;
++
++#[derive(Clone, Default)]
++pub(crate) struct EvdiConnectorState;
++
++impl connector::DriverConnectorState for EvdiConnectorState {
++    type Connector = EvdiConnector;
++}
++
++#[vtable]
++impl connector::DriverConnector for EvdiConnector {
++    type Args = ();
++    type Driver = EvdiDrmDriver;
++    type State = EvdiConnectorState;
++
++    fn new(_device: &drm::Device<Self::Driver>, _args: ()) -> impl PinInit<Self, Error> {
++        try_pin_init!(EvdiConnector {})
++    }
++
++    /// Install the DLM-provided EDID when present, else advertise a fallback mode list so
++    /// the connector stays usable before CONNECT.
++    fn get_modes<'a>(
++        connector: ConnectorGuard<'a, Self>,
++        guard: &ModeConfigGuard<'a, Self::Driver>,
++    ) -> i32 {
++        let data: &EvdiDrmData = connector.drm_dev();
++        if let Some(blob) = data.cached_edid.lock().as_ref() {
++            match connector.add_edid_modes(blob) {
++                Ok(n) if n > 0 => return n,
++                _ => {}
++            }
++        }
++        let _ = guard;
++        let n = connector.add_modes_noedid((FALLBACK_W, FALLBACK_H));
++        connector.set_preferred_mode((FALLBACK_W, FALLBACK_H));
++        n
++    }
++
++    /// Report the display as connected after CONNECT supplies an EDID.
++    ///
++    /// This mirrors C evdi's hotplug sequencing and prevents userspace from
++    /// configuring a fallback mode before the monitor modes are available.
++    fn detect(connector: &connector::Connector<Self>, _force: bool) -> connector::Status {
++        let data: &EvdiDrmData = connector.drm_dev();
++        if data.cached_edid.lock().is_some() {
++            connector::Status::Connected
++        } else {
++            connector::Status::Disconnected
++        }
++    }
++
++    /// Reject modes the dock cannot move, using the `pixel_area_limit` /
++    /// `pixel_per_second_limit` the DLM client supplied through CONNECT -- a port of the C
++    /// evdi's `evdi_mode_valid`. Like C, the lowest-refresh mode of each resolution is kept
++    /// even when it exceeds the pixel-rate budget (the device then runs it at a limited frame
++    /// rate rather than losing the resolution entirely).
++    fn mode_valid(connector: ConnectorModeValidation<'_, Self>, mode: &DisplayMode) -> ModeStatus {
++        let data: &EvdiDrmData = connector.drm_dev();
++        let pps = data.pixel_per_second_limit.load(Ordering::Relaxed);
++        if pps == 0 {
++            return ModeStatus::Ok;
++        }
++        let area = u32::from(mode.hdisplay()) * u32::from(mode.vdisplay());
++        let vrefresh = mode.vrefresh().max(0) as u32;
++        if area > data.pixel_area_limit.load(Ordering::Relaxed) {
++            pr_debug!(
++                "evdi: mode {}x{}@{} rejected: mode area too big\n",
++                mode.hdisplay(),
++                mode.vdisplay(),
++                vrefresh
++            );
++            return ModeStatus::Bad;
++        }
++        if area.saturating_mul(vrefresh) <= pps {
++            return ModeStatus::Ok;
++        }
++        if is_lowest_frequency_mode_of_resolution(&connector, mode) {
++            pr_debug!(
++                "evdi: mode {}x{}@{} exceeds pixel limit; frame rate may be reduced\n",
++                mode.hdisplay(),
++                mode.vdisplay(),
++                vrefresh
++            );
++            return ModeStatus::Ok;
++        }
++        pr_debug!(
++            "evdi: mode {}x{}@{} rejected: pixel rate too high\n",
++            mode.hdisplay(),
++            mode.vdisplay(),
++            vrefresh
++        );
++        ModeStatus::Bad
++    }
++}
++
++/// C evdi's `is_lowest_frequency_mode_of_given_resolution`: true if no probed mode of the
++/// same resolution has a lower vrefresh than `mode`.
++fn is_lowest_frequency_mode_of_resolution(
++    connector: &ConnectorModeValidation<'_, EvdiConnector>,
++    mode: &DisplayMode,
++) -> bool {
++    let (hdisplay, vdisplay) = (mode.hdisplay(), mode.vdisplay());
++    let vrefresh = mode.vrefresh();
++    !connector.any_mode(|candidate| {
++        candidate.hdisplay() == hdisplay
++            && candidate.vdisplay() == vdisplay
++            && candidate.vrefresh() < vrefresh
++    })
++}
+diff --git a/drivers/gpu/drm/evdi/painter.rs b/drivers/gpu/drm/evdi/painter.rs
+new file mode 100644
+index 000000000000..ef08c10182e8
+--- /dev/null
++++ b/drivers/gpu/drm/evdi/painter.rs
+@@ -0,0 +1,138 @@
++// SPDX-License-Identifier: GPL-2.0
++//
++// The EVDI "painter": the per-device connection + event-delivery bookkeeping that
++// bridges the KMS callbacks (and ioctls) to the DisplayLinkManager userspace client.
++//
++// Events are delivered through the DRM-core `drm_event` mechanism (the safe
++// `kernel::drm::event::EventChannel` binding), which serializes delivery against file
++// close under `event_lock` — so an event can never be sent to a client that has just
++// disconnected.
++
++use crate::kms::{EvdiDrmData, EvdiDrmDevice};
++use crate::uapi;
++
++/// DPMS mode codes as understood by the DLM client (matching `DRM_MODE_DPMS_*`).
++pub(crate) const DPMS_ON: i32 = 0;
++pub(crate) const DPMS_OFF: i32 = 3;
++
++/// Mutable per-device painter state, guarded by a mutex in [`EvdiDrmData`].
++///
++/// The connected client's EDID is the connector's `cached_edid` (the source of truth for the mode
++/// list), so it is not duplicated here.
++pub(crate) struct PainterState {
++    /// Whether a DLM client has issued CONNECT.
++    pub(crate) connected: bool,
++    /// A frame has been flipped in but not yet grabbed (the C evdi's `num_dirts > 0`). Lets
++    /// REQUEST_UPDATE answer "grab now" (ioctl returns 1) when fresh pixels are already waiting,
++    /// instead of self-triggering an UPDATE_READY event (which busy-loops the client).
++    pub(crate) frame_dirty: bool,
++    /// Regions changed since the last GRABPIX, accumulated across flips.
++    ///
++    /// GRABPIX reports and copies these rectangles, then clears them.
++    pub(crate) damage: Damage,
++}
++
++/// Maximum number of distinct damage rectangles tracked between grabs (mirrors the C evdi's
++/// `MAX_DIRTS`); on overflow they collapse into a single bounding box.
++pub(crate) const MAX_DAMAGE_RECTS: usize = 16;
++
++/// Accumulated frame damage: up to [`MAX_DAMAGE_RECTS`] changed rectangles `(x1, y1, x2, y2)` since
++/// the last GRABPIX. `count == 0` means nothing was recorded (GRABPIX falls back to a full frame).
++#[derive(Copy, Clone)]
++pub(crate) struct Damage {
++    pub(crate) rects: [(i32, i32, i32, i32); MAX_DAMAGE_RECTS],
++    pub(crate) count: usize,
++}
++
++impl Damage {
++    pub(crate) const fn new() -> Self {
++        Self {
++            rects: [(0, 0, 0, 0); MAX_DAMAGE_RECTS],
++            count: 0,
++        }
++    }
++
++    /// Record a changed rectangle.
++    ///
++    /// When full, collapse the list and `r` into a single bounding box.
++    pub(crate) fn push(&mut self, r: (i32, i32, i32, i32)) {
++        if self.count < MAX_DAMAGE_RECTS {
++            self.rects[self.count] = r;
++            self.count += 1;
++            return;
++        }
++        let mut bb = r;
++        for i in 0..self.count {
++            let (x1, y1, x2, y2) = self.rects[i];
++            bb = (bb.0.min(x1), bb.1.min(y1), bb.2.max(x2), bb.3.max(y2));
++        }
++        self.rects[0] = bb;
++        self.count = 1;
++    }
++
++    pub(crate) fn clear(&mut self) {
++        self.count = 0;
++    }
++}
++
++impl PainterState {
++    pub(crate) fn new() -> Self {
++        Self {
++            connected: false,
++            frame_dirty: false,
++            damage: Damage::new(),
++        }
++    }
++}
++
++kernel::declare_drm_event_payload!(
++    uapi::DrmEvdiEventUpdateReady,
++    uapi::DRM_EVDI_EVENT_UPDATE_READY,
++    []
++);
++kernel::declare_drm_event_payload!(uapi::DrmEvdiEventDpms, uapi::DRM_EVDI_EVENT_DPMS, [i32]);
++kernel::declare_drm_event_payload!(
++    uapi::DrmEvdiEventModeChanged,
++    uapi::DRM_EVDI_EVENT_MODE_CHANGED,
++    [i32, i32, i32, i32, u32]
++);
++/// Zeroed `drm_event` header; [`EventChannel::send`] overwrites `type`/`length`.
++const fn hdr() -> uapi::DrmEvent {
++    uapi::DrmEvent {
++        type_: 0,
++        length: 0,
++    }
++}
++
++/// Tell the DLM client a fresh frame is ready to be grabbed (`UPDATE_READY`).
++pub(crate) fn notify_update_ready(data: &EvdiDrmData, _dev: &EvdiDrmDevice) {
++    let ev = uapi::DrmEvdiEventUpdateReady { base: hdr() };
++    let _ = data.events.send(ev);
++}
++
++/// Tell the DLM client the display's DPMS power state changed.
++pub(crate) fn notify_dpms(data: &EvdiDrmData, _dev: &EvdiDrmDevice, mode: i32) {
++    let ev = uapi::DrmEvdiEventDpms { base: hdr(), mode };
++    let _ = data.events.send(ev);
++}
++
++/// Tell the DLM client the negotiated mode changed.
++pub(crate) fn notify_mode_changed(
++    data: &EvdiDrmData,
++    _dev: &EvdiDrmDevice,
++    hdisplay: i32,
++    vdisplay: i32,
++    vrefresh: i32,
++    bits_per_pixel: i32,
++    pixel_format: u32,
++) {
++    let ev = uapi::DrmEvdiEventModeChanged {
++        base: hdr(),
++        hdisplay,
++        vdisplay,
++        vrefresh,
++        bits_per_pixel,
++        pixel_format,
++    };
++    let _ = data.events.send(ev);
++}
+diff --git a/drivers/gpu/drm/evdi/uapi.rs b/drivers/gpu/drm/evdi/uapi.rs
+new file mode 100644
+index 000000000000..00f4b1da5cc4
+--- /dev/null
++++ b/drivers/gpu/drm/evdi/uapi.rs
+@@ -0,0 +1,155 @@
++// SPDX-License-Identifier: GPL-2.0
++
++//! Rust names for the EVDI UAPI generated from `include/uapi/drm/evdi_drm.h`.
++
++use kernel::{
++    drm::ioctl::CompatIoctl,
++    prelude::*,
++    uaccess::{UserPtr, UserSlice},
++};
++
++pub(crate) use kernel::uapi::{
++    drm_evdi_connect as DrmEvdiConnect, drm_evdi_ddcci_response as DrmEvdiDdcciResponse,
++    drm_evdi_enable_cursor_events as DrmEvdiEnableCursorEvents, drm_evdi_grabpix as DrmEvdiGrabpix,
++    drm_evdi_request_update as DrmEvdiRequestUpdate, DRM_EVDI_EVENT_DPMS,
++    DRM_EVDI_EVENT_MODE_CHANGED, DRM_EVDI_EVENT_UPDATE_READY,
++};
++
++pub(crate) type DrmEvent = kernel::drm::event::EventHeader;
++
++// Local payload types are needed to implement the driver's sealed EventPayload trait. Their
++// declarations are checked against the UAPI layout by declare_drm_event_payload! in painter.rs.
++#[repr(C)]
++#[derive(Copy, Clone)]
++pub(crate) struct DrmEvdiEventUpdateReady {
++    pub(crate) base: DrmEvent,
++}
++
++#[repr(C)]
++#[derive(Copy, Clone)]
++pub(crate) struct DrmEvdiEventDpms {
++    pub(crate) base: DrmEvent,
++    pub(crate) mode: i32,
++}
++
++#[repr(C)]
++#[derive(Copy, Clone)]
++pub(crate) struct DrmEvdiEventModeChanged {
++    pub(crate) base: DrmEvent,
++    pub(crate) hdisplay: i32,
++    pub(crate) vdisplay: i32,
++    pub(crate) vrefresh: i32,
++    pub(crate) bits_per_pixel: i32,
++    pub(crate) pixel_format: u32,
++}
++
++const _: () = {
++    assert!(
++        core::mem::size_of::<DrmEvdiEventUpdateReady>()
++            == core::mem::size_of::<kernel::uapi::drm_evdi_event_update_ready>()
++    );
++    assert!(
++        core::mem::size_of::<DrmEvdiEventDpms>()
++            == core::mem::size_of::<kernel::uapi::drm_evdi_event_dpms>()
++    );
++    assert!(
++        core::mem::size_of::<DrmEvdiEventModeChanged>()
++            == core::mem::size_of::<kernel::uapi::drm_evdi_event_mode_changed>()
++    );
++};
++
++pub(crate) const EVDI_GRABPIX_MODE_RECTS: u32 =
++    kernel::uapi::drm_evdi_grabpix_mode_EVDI_GRABPIX_MODE_RECTS;
++pub(crate) const EVDI_GRABPIX_MODE_DIRTY: u32 =
++    kernel::uapi::drm_evdi_grabpix_mode_EVDI_GRABPIX_MODE_DIRTY;
++
++/// 32-bit layout of `drm_evdi_connect`.
++#[repr(C)]
++pub(crate) struct DrmEvdiConnect32 {
++    connected: i32,
++    dev_index: i32,
++    edid: u32,
++    edid_length: u32,
++    pixel_area_limit: u32,
++    pixel_per_second_limit: u32,
++}
++
++impl CompatIoctl for DrmEvdiConnect32 {
++    type Native = DrmEvdiConnect;
++
++    fn read_from_user(ptr: UserPtr) -> Result<Self> {
++        let mut reader = UserSlice::new(ptr, core::mem::size_of::<Self>()).reader();
++        Ok(Self {
++            connected: reader.read()?,
++            dev_index: reader.read()?,
++            edid: reader.read()?,
++            edid_length: reader.read()?,
++            pixel_area_limit: reader.read()?,
++            pixel_per_second_limit: reader.read()?,
++        })
++    }
++
++    fn into_native(&self) -> Self::Native {
++        DrmEvdiConnect {
++            connected: self.connected,
++            dev_index: self.dev_index,
++            edid: self.edid as usize as *const u8,
++            edid_length: self.edid_length,
++            pixel_area_limit: self.pixel_area_limit,
++            pixel_per_second_limit: self.pixel_per_second_limit,
++        }
++    }
++}
++
++/// 32-bit layout of `drm_evdi_grabpix`.
++#[repr(C)]
++pub(crate) struct DrmEvdiGrabpix32 {
++    mode: u32,
++    buf_width: i32,
++    buf_height: i32,
++    buf_byte_stride: i32,
++    buffer: u32,
++    num_rects: i32,
++    rects: u32,
++}
++
++const _: () = {
++    assert!(core::mem::size_of::<DrmEvdiConnect32>() == 24);
++    assert!(core::mem::size_of::<DrmEvdiGrabpix32>() == 28);
++};
++
++impl CompatIoctl for DrmEvdiGrabpix32 {
++    type Native = DrmEvdiGrabpix;
++
++    fn read_from_user(ptr: UserPtr) -> Result<Self> {
++        let mut reader = UserSlice::new(ptr, core::mem::size_of::<Self>()).reader();
++        Ok(Self {
++            mode: reader.read()?,
++            buf_width: reader.read()?,
++            buf_height: reader.read()?,
++            buf_byte_stride: reader.read()?,
++            buffer: reader.read()?,
++            num_rects: reader.read()?,
++            rects: reader.read()?,
++        })
++    }
++
++    fn into_native(&self) -> Self::Native {
++        DrmEvdiGrabpix {
++            mode: self.mode,
++            buf_width: self.buf_width,
++            buf_height: self.buf_height,
++            buf_byte_stride: self.buf_byte_stride,
++            buffer: self.buffer as usize as *mut u8,
++            num_rects: self.num_rects,
++            rects: self.rects as usize as *mut kernel::uapi::drm_clip_rect,
++        }
++    }
++
++    fn write_back(&mut self, native: &Self::Native, ptr: UserPtr) -> Result {
++        self.num_rects = native.num_rects;
++        UserSlice::new(ptr.wrapping_byte_add(20), core::mem::size_of::<i32>())
++            .writer()
++            .write_slice(&self.num_rects.to_ne_bytes())
++    }
++}
+diff --git a/include/uapi/drm/evdi_drm.h b/include/uapi/drm/evdi_drm.h
+new file mode 100644
+index 000000000000..cbc7a6a9c91d
+--- /dev/null
++++ b/include/uapi/drm/evdi_drm.h
+@@ -0,0 +1,133 @@
++/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note
++ *
++ * Copyright (c) 2015 - 2020 DisplayLink (UK) Ltd.
++ */
++
++#ifndef __UAPI_EVDI_DRM_H__
++#define __UAPI_EVDI_DRM_H__
++
++#include <linux/types.h>
++#include <drm/drm.h>
++
++/* Output events sent from the driver to libevdi. */
++#define DRM_EVDI_EVENT_UPDATE_READY	0x80000000
++#define DRM_EVDI_EVENT_DPMS		0x80000001
++#define DRM_EVDI_EVENT_MODE_CHANGED	0x80000002
++#define DRM_EVDI_EVENT_CRTC_STATE	0x80000003
++#define DRM_EVDI_EVENT_CURSOR_SET	0x80000004
++#define DRM_EVDI_EVENT_CURSOR_MOVE	0x80000005
++#define DRM_EVDI_EVENT_DDCCI_DATA	0x80000006
++
++struct drm_evdi_event_update_ready {
++	struct drm_event base;
++};
++
++struct drm_evdi_event_dpms {
++	struct drm_event base;
++	__s32 mode;
++};
++
++struct drm_evdi_event_mode_changed {
++	struct drm_event base;
++	__s32 hdisplay;
++	__s32 vdisplay;
++	__s32 vrefresh;
++	__s32 bits_per_pixel;
++	__u32 pixel_format;
++};
++
++struct drm_evdi_event_crtc_state {
++	struct drm_event base;
++	__s32 state;
++};
++
++struct drm_evdi_connect {
++	__s32 connected;
++	__s32 dev_index;
++	const __u8 * __user edid;
++	__u32 edid_length;
++	__u32 pixel_area_limit;
++	__u32 pixel_per_second_limit;
++};
++
++struct drm_evdi_request_update {
++	__s32 reserved;
++};
++
++enum drm_evdi_grabpix_mode {
++	EVDI_GRABPIX_MODE_RECTS = 0,
++	EVDI_GRABPIX_MODE_DIRTY = 1,
++};
++
++struct drm_evdi_grabpix {
++	enum drm_evdi_grabpix_mode mode;
++	__s32 buf_width;
++	__s32 buf_height;
++	__s32 buf_byte_stride;
++	__u8 __user *buffer;
++	__s32 num_rects;
++	struct drm_clip_rect __user *rects;
++};
++
++struct drm_evdi_event_cursor_set {
++	struct drm_event base;
++	__s32 hot_x;
++	__s32 hot_y;
++	__u32 width;
++	__u32 height;
++	__u8 enabled;
++	__u32 buffer_handle;
++	__u32 buffer_length;
++	__u32 pixel_format;
++	__u32 stride;
++};
++
++struct drm_evdi_event_cursor_move {
++	struct drm_event base;
++	__s32 x;
++	__s32 y;
++};
++
++struct drm_evdi_ddcci_response {
++	const __u8 * __user buffer;
++	__u32 buffer_length;
++	__u8 result;
++};
++
++struct drm_evdi_enable_cursor_events {
++	struct drm_event base;
++	__u8 enable;
++};
++
++#define DDCCI_BUFFER_SIZE 64
++
++struct drm_evdi_event_ddcci_data {
++	struct drm_event base;
++	__u8 buffer[DDCCI_BUFFER_SIZE];
++	__u32 buffer_length;
++	__u16 flags;
++	__u16 address;
++};
++
++/* Input ioctls from libevdi to the driver. */
++#define DRM_EVDI_CONNECT		0x00
++#define DRM_EVDI_REQUEST_UPDATE		0x01
++#define DRM_EVDI_GRABPIX		0x02
++#define DRM_EVDI_DDCCI_RESPONSE		0x03
++#define DRM_EVDI_ENABLE_CURSOR_EVENTS	0x04
++
++/* This is an enum so that it can be resolved by Rust bindgen. */
++enum {
++	DRM_IOCTL_EVDI_CONNECT = DRM_IOWR(DRM_COMMAND_BASE +
++		DRM_EVDI_CONNECT, struct drm_evdi_connect),
++	DRM_IOCTL_EVDI_REQUEST_UPDATE = DRM_IOWR(DRM_COMMAND_BASE +
++		DRM_EVDI_REQUEST_UPDATE, struct drm_evdi_request_update),
++	DRM_IOCTL_EVDI_GRABPIX = DRM_IOWR(DRM_COMMAND_BASE +
++		DRM_EVDI_GRABPIX, struct drm_evdi_grabpix),
++	DRM_IOCTL_EVDI_DDCCI_RESPONSE = DRM_IOWR(DRM_COMMAND_BASE +
++		DRM_EVDI_DDCCI_RESPONSE, struct drm_evdi_ddcci_response),
++	DRM_IOCTL_EVDI_ENABLE_CURSOR_EVENTS = DRM_IOWR(DRM_COMMAND_BASE +
++		DRM_EVDI_ENABLE_CURSOR_EVENTS, struct drm_evdi_enable_cursor_events),
++};
++
++#endif /* __UAPI_EVDI_DRM_H__ */
+diff --git a/rust/uapi/uapi_helper.h b/rust/uapi/uapi_helper.h
+index 06d7d1a2e8da..dca8fde909f6 100644
+--- a/rust/uapi/uapi_helper.h
++++ b/rust/uapi/uapi_helper.h
+@@ -8,6 +8,7 @@
+ 
+ #include <uapi/asm-generic/ioctl.h>
+ #include <uapi/drm/drm.h>
++#include <uapi/drm/evdi_drm.h>
+ #include <uapi/drm/nova_drm.h>
+ #include <uapi/drm/panthor_drm.h>
+ #include <uapi/linux/android/binder.h>

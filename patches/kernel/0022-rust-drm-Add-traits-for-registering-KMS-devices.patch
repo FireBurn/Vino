@@ -1,7 +1,7 @@
-From 28db09f6ab9af3e1da9d01fab5d2e31ca1f4515e Mon Sep 17 00:00:00 2001
+From b5e671719e0704b5ee1a2e9c4bc69f69f76e4b93 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 16 May 2024 15:26:20 -0400
-Subject: [PATCH 022/113] rust: drm: Add traits for registering KMS devices
+Subject: [PATCH 022/106] rust: drm: Add traits for registering KMS devices
 
 This commit adds some traits for registering DRM devices with KMS support,
 implemented through the kernel::drm::kms::KmsDriver trait. Devices which

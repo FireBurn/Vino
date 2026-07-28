@@ -12,7 +12,7 @@ The D6000 profile exposes two independent DRM heads. Each head has:
 - one XRGB8888 primary plane;
 - one ARGB8888 cursor plane;
 - one CRTC, encoder, and connector;
-- one downstream EDID and DDC/CI path;
+- one downstream monitor and EDID control path;
 - one video bulk-OUT endpoint.
 
 The control and authentication session is shared by the device. Mode,
@@ -61,4 +61,3 @@ The protocol contains per-session nonce transforms and per-mode constants.
 Those behaviors are isolated in the D6000 implementation and backed by captured
 vectors and tests. New hardware should add a device profile with its own
 evidence rather than silently widening the D6000 match.
-

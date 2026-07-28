@@ -1,0 +1,455 @@
+From 2084c105141b481f9d87275496ab3be4cba8b62b Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Thu, 2 Jul 2026 07:10:55 +0100
+Subject: [PATCH 069/106] rust: sysfs: add root-device attribute groups
+
+Add owned root-device and attribute-group abstractions for drivers
+which expose control files directly below /sys/devices.
+
+Allocate and pin the complete group and callback context before
+publishing any attribute. Track the successfully created prefix and
+remove it before callback state is cleared on registration unwind
+and normal teardown.
+
+Use an initialized-output Writer for show callbacks, handle empty store
+buffers without constructing a slice from a possibly null pointer,
+and cover writer accounting and partial-registration unwind with
+KUnit tests.
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/helpers/device.c |  14 ++
+ rust/kernel/lib.rs    |   1 +
+ rust/kernel/sysfs.rs  | 387 ++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 402 insertions(+)
+ create mode 100644 rust/kernel/sysfs.rs
+
+diff --git a/rust/helpers/device.c b/rust/helpers/device.c
+index 3be4ee590784..979df5adc34d 100644
+--- a/rust/helpers/device.c
++++ b/rust/helpers/device.c
+@@ -30,3 +30,17 @@ __rust_helper const char *rust_helper_dev_name(const struct device *dev)
+ {
+ 	return dev_name(dev);
+ }
++
++__rust_helper int
++rust_helper_device_add_group(struct device *dev,
++			     const struct attribute_group *group)
++{
++	return device_add_group(dev, group);
++}
++
++__rust_helper void
++rust_helper_device_remove_group(struct device *dev,
++				const struct attribute_group *group)
++{
++	device_remove_group(dev, group);
++}
+diff --git a/rust/kernel/lib.rs b/rust/kernel/lib.rs
+index 08e5730753eb..cf7b7f2dec0e 100644
+--- a/rust/kernel/lib.rs
++++ b/rust/kernel/lib.rs
+@@ -130,6 +130,7 @@
+ pub mod std_vendor;
+ pub mod str;
+ pub mod sync;
++pub mod sysfs;
+ pub mod task;
+ pub mod time;
+ pub mod tracepoint;
+diff --git a/rust/kernel/sysfs.rs b/rust/kernel/sysfs.rs
+new file mode 100644
+index 000000000000..23388dc9d6ab
+--- /dev/null
++++ b/rust/kernel/sysfs.rs
+@@ -0,0 +1,387 @@
++// SPDX-License-Identifier: GPL-2.0
++
++//! Sysfs device attributes.
++//!
++//! A driver can expose a set of named sysfs files on a device by implementing [`DeviceAttributes`]
++//! for the type it stores as that device's driver data, and registering an [`AttributeGroup`].
++//! Reads and writes are dispatched by attribute name to the type's [`show`](DeviceAttributes::show)
++//! and [`store`](DeviceAttributes::store) methods; the file mode (see [`Attr`]) controls which are
++//! reachable from userspace.
++//!
++//! [`AttributeGroup::register_root`] additionally creates a standalone "root" device
++//! (`root_device_register()`, appearing under `/sys/devices/<name>`) to host the group -- the shape
++//! DisplayLink's evdi uses for its `add`/`remove`/`count` control files.
++//!
++//! C headers: [`include/linux/sysfs.h`](srctree/include/linux/sysfs.h),
++//! [`include/linux/device.h`](srctree/include/linux/device.h)
++
++use crate::{
++    bindings, device,
++    error::{from_err_ptr, to_result},
++    page::PAGE_SIZE,
++    prelude::*,
++    ThisModule,
++};
++
++/// An initialized-output writer for one sysfs `show` callback.
++///
++/// The kernel supplies an uninitialized page to the callback. This type only exposes append
++/// operations and tracks exactly how many bytes have been initialized, so safe implementations
++/// cannot claim bytes they did not write.
++pub struct Writer<'a> {
++    buf: *mut u8,
++    len: usize,
++    _lifetime: core::marker::PhantomData<&'a mut [core::mem::MaybeUninit<u8>]>,
++}
++
++impl Writer<'_> {
++    /// Append `bytes` to the sysfs output.
++    pub fn write(&mut self, bytes: &[u8]) -> Result {
++        let end = self.len.checked_add(bytes.len()).ok_or(EOVERFLOW)?;
++        if end > PAGE_SIZE {
++            return Err(ENOSPC);
++        }
++
++        // SAFETY: `self.buf` names the writable page supplied by sysfs, the checked range ending
++        // at `end` is within that page, and `bytes` is a valid source slice.
++        unsafe {
++            core::ptr::copy_nonoverlapping(bytes.as_ptr(), self.buf.add(self.len), bytes.len())
++        };
++        self.len = end;
++        Ok(())
++    }
++
++    /// Append a UTF-8 string to the sysfs output.
++    #[inline]
++    pub fn write_str(&mut self, value: &str) -> Result {
++        self.write(value.as_bytes())
++    }
++
++    /// Return the number of initialized output bytes.
++    #[inline]
++    pub fn len(&self) -> usize {
++        self.len
++    }
++
++    /// Return whether no output has been written.
++    #[inline]
++    pub fn is_empty(&self) -> bool {
++        self.len == 0
++    }
++}
++
++/// Definition of one sysfs attribute file: its name and permission mode (e.g. `0o444` read-only,
++/// `0o200` write-only, `0o644` read-write).
++pub struct Attr {
++    /// The file name.
++    pub name: &'static CStr,
++    /// The permission bits (`umode_t`).
++    pub mode: u16,
++}
++
++impl Attr {
++    /// A read-only (`0o444`) attribute.
++    pub const fn ro(name: &'static CStr) -> Self {
++        Self { name, mode: 0o444 }
++    }
++    /// A write-only (`0o200`) attribute.
++    pub const fn wo(name: &'static CStr) -> Self {
++        Self { name, mode: 0o200 }
++    }
++    /// A read-write (`0o644`) attribute.
++    pub const fn rw(name: &'static CStr) -> Self {
++        Self { name, mode: 0o644 }
++    }
++}
++
++/// The show/store behaviour of a device's sysfs attribute group.
++///
++/// Implemented by the type a device stores as its driver data. A shared reference to it is handed
++/// to [`show`](Self::show)/[`store`](Self::store), dispatched by the attribute `name`.
++pub trait DeviceAttributes: Send + Sync + 'static {
++    /// The attributes exposed by this group.
++    const ATTRS: &'static [Attr];
++
++    /// Handle a read of attribute `name`, appending initialized bytes to `out`.
++    ///
++    /// Only called for readable (`ro`/`rw`) attributes.
++    fn show(&self, name: &CStr, out: &mut Writer<'_>) -> Result {
++        let _ = (name, out);
++        Err(EINVAL)
++    }
++
++    /// Handle a write of `buf` to attribute `name`. Only called for writable (`wo`/`rw`)
++    /// attributes.
++    fn store(&self, name: &CStr, buf: &[u8]) -> Result {
++        let _ = (name, buf);
++        Err(EINVAL)
++    }
++}
++
++/// Create a symlink named `name` in `owner`'s sysfs directory pointing to `target`.
++///
++/// The link is removed automatically when `owner` is unregistered. The sysfs core synchronizes
++/// target removal with link creation.
++pub fn create_link(owner: &device::Device, target: &device::Device, name: &CStr) -> Result {
++    // SAFETY: Both device references are live, and sysfs takes the references it needs while
++    // creating the link.
++    to_result(unsafe {
++        bindings::sysfs_create_link(
++            &raw mut (*owner.as_raw()).kobj,
++            &raw mut (*target.as_raw()).kobj,
++            name.as_char_ptr(),
++        )
++    })
++}
++
++/// A registered sysfs attribute group hosted on a `root_device_register()` device.
++///
++/// Dropping it removes the files, reclaims the driver data, and unregisters the root device.
++pub struct AttributeGroup<T: DeviceAttributes> {
++    root: *mut bindings::device,
++    /// Backing storage for the attributes referenced by `group`.
++    _attrs: KVec<bindings::device_attribute>,
++    /// Null-terminated array referenced by `group.attrs_const`.
++    _attr_ptrs: KVec<*const bindings::attribute>,
++    group: bindings::attribute_group,
++    registered: bool,
++    _ctx: Pin<KBox<T>>,
++}
++
++// SAFETY: the root device and its attributes are internally synchronized by the driver core; `T`
++// is `Send + Sync`.
++unsafe impl<T: DeviceAttributes> Send for AttributeGroup<T> {}
++// SAFETY: see `Send`.
++unsafe impl<T: DeviceAttributes> Sync for AttributeGroup<T> {}
++
++impl<T: DeviceAttributes> AttributeGroup<T> {
++    /// # Safety
++    /// `dev`'s driver data is a live `T` set via [`device::Device::set_drvdata`].
++    unsafe extern "C" fn show_trampoline(
++        dev: *mut bindings::device,
++        attr: *const bindings::device_attribute,
++        buf: *mut crate::ffi::c_char,
++    ) -> isize {
++        // SAFETY: `dev` is a valid device with `T` driver data (invariant of `register_root`).
++        let ctx = unsafe { borrow_ctx::<T>(dev) };
++        // SAFETY: the attribute name is a valid C string for the callback's duration.
++        let name = unsafe { as_cstr((*attr).attr.name) };
++        let mut out = Writer {
++            buf: buf.cast(),
++            len: 0,
++            _lifetime: core::marker::PhantomData,
++        };
++        match T::show(ctx, name, &mut out) {
++            Ok(()) => out.len() as isize,
++            Err(e) => e.to_errno() as isize,
++        }
++    }
++
++    /// # Safety
++    /// `dev`'s driver data is a live `T` set via [`device::Device::set_drvdata`].
++    unsafe extern "C" fn store_trampoline(
++        dev: *mut bindings::device,
++        attr: *const bindings::device_attribute,
++        buf: *const crate::ffi::c_char,
++        count: usize,
++    ) -> isize {
++        // SAFETY: as in `show_trampoline`.
++        let ctx = unsafe { borrow_ctx::<T>(dev) };
++        // SAFETY: the attribute name is a valid C string for the callback's duration.
++        let name = unsafe { as_cstr((*attr).attr.name) };
++        let slice = if count == 0 {
++            &[]
++        } else {
++            // SAFETY: sysfs guarantees `buf` holds `count` readable bytes. The empty case above
++            // avoids constructing a slice from a potentially null C pointer.
++            unsafe { core::slice::from_raw_parts(buf.cast::<u8>(), count) }
++        };
++        match T::store(ctx, name, slice) {
++            Ok(()) => count as isize,
++            Err(e) => e.to_errno() as isize,
++        }
++    }
++
++    fn make_attr(a: &Attr) -> bindings::device_attribute {
++        let mut da: bindings::device_attribute = bindings::device_attribute::default();
++        da.attr.name = a.name.as_char_ptr();
++        da.attr.mode = a.mode;
++        da.__bindgen_anon_1.show_const = Some(Self::show_trampoline);
++        da.__bindgen_anon_2.store_const = Some(Self::store_trampoline);
++        da
++    }
++
++    /// Create a root device named `name` and expose `T`'s attributes on it.
++    ///
++    /// `T` becomes the device's driver data; the attribute callbacks recover it by name-dispatch.
++    pub fn register_root(
++        name: &CStr,
++        module: &'static ThisModule,
++        ctx: impl PinInit<T, Error>,
++    ) -> Result<KBox<Self>> {
++        Self::register_root_inner(name, module, ctx, false)
++    }
++
++    fn register_root_inner(
++        name: &CStr,
++        module: &'static ThisModule,
++        ctx: impl PinInit<T, Error>,
++        inject_failure: bool,
++    ) -> Result<KBox<Self>> {
++        // Build both arrays before acquiring external resources. Their allocations are not changed
++        // after the pointers below are established.
++        let mut attrs: KVec<bindings::device_attribute> =
++            KVec::with_capacity(T::ATTRS.len(), GFP_KERNEL)?;
++        for a in T::ATTRS {
++            attrs.push(Self::make_attr(a), GFP_KERNEL)?;
++        }
++        let mut attr_ptrs: KVec<*const bindings::attribute> =
++            KVec::with_capacity(attrs.len() + 1, GFP_KERNEL)?;
++        for attr in &attrs {
++            attr_ptrs.push(core::ptr::from_ref(&attr.attr), GFP_KERNEL)?;
++        }
++        attr_ptrs.push(core::ptr::null(), GFP_KERNEL)?;
++
++        let mut attr_group = bindings::attribute_group::default();
++        attr_group.__bindgen_anon_2.attrs_const = attr_ptrs.as_ptr();
++
++        // Allocate the complete owner before publishing callbacks. On any later failure, Drop
++        // unregisters the root device before releasing `_ctx`.
++        let mut group = KBox::new(
++            Self {
++                root: core::ptr::null_mut(),
++                _attrs: attrs,
++                _attr_ptrs: attr_ptrs,
++                group: attr_group,
++                registered: false,
++                _ctx: KBox::pin_init(ctx, GFP_KERNEL)?,
++            },
++            GFP_KERNEL,
++        )?;
++
++        // SAFETY: `name` is a valid C string; `module` is this module.
++        let root = from_err_ptr(unsafe {
++            bindings::__root_device_register(name.as_char_ptr(), module.as_ptr())
++        })?;
++        group.root = root;
++
++        let ctx_ptr = core::ptr::from_ref(group._ctx.as_ref().get_ref())
++            .cast_mut()
++            .cast();
++        // SAFETY: `root` is freshly registered and `ctx_ptr` points into the pinned context owned
++        // by `group`, which remains alive until all published files are removed.
++        unsafe { bindings::dev_set_drvdata(root, ctx_ptr) };
++
++        if inject_failure {
++            return Err(ENOMEM);
++        }
++
++        // SAFETY: `root` is registered. `group`, its attributes, and the null-terminated pointer
++        // array have stable backing allocations owned by this object and outlive registration.
++        to_result(unsafe { bindings::device_add_group(root, &group.group) })?;
++        group.registered = true;
++
++        Ok(group)
++    }
++}
++
++impl<T: DeviceAttributes> Drop for AttributeGroup<T> {
++    fn drop(&mut self) {
++        if self.root.is_null() {
++            return;
++        }
++
++        if self.registered {
++            // SAFETY: this exact group was successfully registered on `self.root`; its attribute
++            // storage is still alive. Removal prevents new callbacks and synchronizes with any
++            // callback already running.
++            unsafe { bindings::device_remove_group(self.root, &self.group) };
++        }
++        // SAFETY: No callback can now recover the context, so clear the borrowed pointer before
++        // unregistering the root. `_ctx` is dropped only after this Drop implementation returns.
++        unsafe {
++            bindings::dev_set_drvdata(self.root, core::ptr::null_mut());
++            bindings::root_device_unregister(self.root);
++        }
++    }
++}
++
++/// Borrow the `T` driver data of the device `ptr`.
++///
++/// # Safety
++/// `ptr` is a valid `struct device` whose driver data points to the pinned `T` owned by its
++/// [`AttributeGroup`], valid for the returned reference's lifetime.
++unsafe fn borrow_ctx<'a, T>(ptr: *mut bindings::device) -> &'a T {
++    // SAFETY: `ptr` is a valid device by the contract.
++    let data = unsafe { bindings::dev_get_drvdata(ptr) };
++    // SAFETY: `data` points to the pinned context owned by the attribute group and remains live for
++    // the callback because file removal synchronizes before that context is dropped.
++    unsafe { &*(data as *const T) }
++}
++
++/// # Safety
++/// `ptr` is a valid, NUL-terminated C string for the returned reference's lifetime.
++#[inline]
++unsafe fn as_cstr<'a>(ptr: *const crate::ffi::c_char) -> &'a CStr {
++    // SAFETY: by the contract, `ptr` is a valid NUL-terminated C string. `crate::ffi::c_char` is
++    // `u8` while `core::ffi::CStr::from_ptr` takes `*const i8`, so cast the pointer.
++    unsafe { CStr::from_ptr(ptr.cast()) }
++}
++
++#[kunit_tests(rust_sysfs)]
++mod tests {
++    use super::*;
++    use core::sync::atomic::{AtomicUsize, Ordering};
++
++    static DROPS: AtomicUsize = AtomicUsize::new(0);
++    // SAFETY: The kernel crate and its KUnit tests are built into the kernel, where `THIS_MODULE`
++    // is null.
++    static TEST_MODULE: ThisModule = unsafe { ThisModule::from_ptr(core::ptr::null_mut()) };
++
++    #[pin_data(PinnedDrop)]
++    struct TestContext;
++
++    #[pinned_drop]
++    impl PinnedDrop for TestContext {
++        fn drop(self: Pin<&mut Self>) {
++            DROPS.fetch_add(1, Ordering::Relaxed);
++        }
++    }
++
++    impl DeviceAttributes for TestContext {
++        const ATTRS: &'static [Attr] = &[Attr::ro(c"first"), Attr::ro(c"second")];
++    }
++
++    #[test]
++    fn writer_reports_only_initialized_bytes() -> Result {
++        let mut backing = [core::mem::MaybeUninit::<u8>::uninit(); PAGE_SIZE];
++        let mut writer = Writer {
++            buf: backing.as_mut_ptr().cast(),
++            len: 0,
++            _lifetime: core::marker::PhantomData,
++        };
++
++        writer.write(b"12")?;
++        writer.write_str("34")?;
++        assert_eq!(writer.len(), 4);
++
++        // SAFETY: Writer initialized exactly the first four bytes above.
++        let output = unsafe { core::slice::from_raw_parts(backing.as_ptr().cast::<u8>(), 4) };
++        assert_eq!(output, b"1234");
++        Ok(())
++    }
++
++    #[test]
++    fn registration_failure_drops_context_after_unwind() {
++        DROPS.store(0, Ordering::Relaxed);
++        let result = AttributeGroup::<TestContext>::register_root_inner(
++            c"rust-sysfs-kunit",
++            &TEST_MODULE,
++            try_pin_init!(TestContext {}),
++            true,
++        );
++
++        assert!(result.is_err());
++        assert_eq!(DROPS.load(Ordering::Relaxed), 1);
++    }
++}

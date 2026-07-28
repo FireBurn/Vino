@@ -56,10 +56,10 @@ sent until the repeater stream-management exchange completes successfully.
 - standard message IDs: `kernel::drm::display::hdcp::MessageId`;
 - AES and AES-CMAC: kernel crypto library wrappers;
 - SHA-256 and HMAC-SHA256: kernel crypto library wrappers;
-- RSA public operation: the `lib/crypto` primitive introduced separately;
+- RSA public operation: the existing `crypto_akcipher` implementation through a
+  safe synchronous Rust public-key wrapper;
 - random session material: the kernel random interface.
 
 The protocol code does not expose keys through a userspace ABI. Known-answer
 tests and captured transcripts exercise the implementation without sharing an
 encoder and decoder that could repeat the same mistake.
-

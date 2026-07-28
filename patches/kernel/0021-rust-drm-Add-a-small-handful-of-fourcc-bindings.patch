@@ -1,7 +1,7 @@
-From 7d0ffa97f23df6c41c608467a20aa78aa9af4be8 Mon Sep 17 00:00:00 2001
+From f260b0cfab0ac527be3b5f83b5d131d9abecfe2f Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Mon, 4 Mar 2024 19:01:10 -0500
-Subject: [PATCH 021/113] rust: drm: Add a small handful of fourcc bindings
+Subject: [PATCH 021/106] rust: drm: Add a small handful of fourcc bindings
 
 This adds some very basic rust bindings for fourcc. We only have a single
 format code added for the moment, but this is enough to get a driver

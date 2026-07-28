@@ -1,0 +1,33 @@
+From b1cc1e0177614b2fbe4d7891a7cc0e997648ded2 Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Mon, 27 Jul 2026 21:38:46 +0100
+Subject: [PATCH 099/106] rust: drm: expose CRTC mode changes
+
+Allow Rust DRM drivers to distinguish a modeset or enable transition
+from an ordinary atomic page flip. This avoids repeating mode-specific
+validation on the page-flip hot path.
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/kernel/drm/kms/crtc.rs | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/rust/kernel/drm/kms/crtc.rs b/rust/kernel/drm/kms/crtc.rs
+index 892f04f04e22..9989bf073599 100644
+--- a/rust/kernel/drm/kms/crtc.rs
++++ b/rust/kernel/drm/kms/crtc.rs
+@@ -766,6 +766,12 @@ fn active(&self) -> bool {
+         unsafe { (*self.as_raw()).active }
+     }
+ 
++    /// Returns whether the mode or enable state changed in this atomic state.
++    fn mode_changed(&self) -> bool {
++        // SAFETY: The atomic-state API serializes access to this state, including its bitfields.
++        unsafe { (*self.as_raw()).mode_changed() }
++    }
++
+     /// Return the display mode programmed into this CRTC state.
+     fn mode(&self) -> &DisplayMode {
+         // SAFETY: `mode` is embedded in the CRTC state and therefore has the same lifetime. The

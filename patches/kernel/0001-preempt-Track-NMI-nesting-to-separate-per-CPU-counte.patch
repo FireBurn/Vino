@@ -1,7 +1,7 @@
-From 898a11184b2357edaab5ab66767d88769980ddec Mon Sep 17 00:00:00 2001
+From f2a0e3199c64747c907f32294b0f41452d46aaae Mon Sep 17 00:00:00 2001
 From: Joel Fernandes <joelagnelf@nvidia.com>
 Date: Tue, 26 May 2026 08:21:37 -0700
-Subject: [PATCH 001/113] preempt: Track NMI nesting to separate per-CPU
+Subject: [PATCH 001/106] preempt: Track NMI nesting to separate per-CPU
  counter
 
 Move NMI nesting tracking from the preempt_count bits to a separate per-CPU
@@ -135,4 +135,4 @@ index 67ff7882299e..e4e12001fce9 100644
  #define PREEMPT_SHIFT	0
  #define SOFTIRQ_SHIFT	(PREEMPT_SHIFT + PREEMPT_BITS)
 
-base-commit: 90e13d487b3b828669dab730cfdf72d417825869
+base-commit: 0755a4e3e809610a14befc9ad28d35e2e460da68
