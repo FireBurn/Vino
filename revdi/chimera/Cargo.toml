@@ -9,20 +9,22 @@ description = "Chimera rig: compiles the LITERAL in-kernel vino cp.rs/proto.rs/a
 path = "src/lib.rs"
 
 [dependencies]
-# The ONLY crypto deps: AES block cipher, SHA-256, HMAC-SHA256, and raw RSA
-# modexp (for hdcp.rs's OAEP km-wrap). AES-CTR and AES-CMAC ("Dl3Cmac") are
+# The crypto deps implement the userspace versions of the kernel primitives.
+# AES-CTR and AES-CMAC ("Dl3Cmac") are
 # built on the AES primitive inside the kernel-prelude shim, so the kernel
 # cp.rs AES-CTR/CMAC math runs verbatim with no extra third-party MAC crate.
 aes = "0.8"
 cipher = "0.4"
 sha2 = "0.10"
 hmac = "0.12"
-num-bigint = "0.4"
 getrandom = "0.2"
 # A crate literally named `kernel` so `ake.rs`'s nested `id` submodule's bare
 # `use kernel::bindings;` resolves via the extern prelude, exactly like the
 # real kernel crate does there (see `kernel-shim`'s own doc comment).
 kernel = { package = "kernel-shim", path = "../kernel-shim" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(CONFIG_DRM_VINO_KUNIT_TEST)"] }
 
 [features]
 # `live` pulls in the USB transport (rusb via vino-driver) for the hardware

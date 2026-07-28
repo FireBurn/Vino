@@ -22,8 +22,6 @@ pub(crate) const DPMS_OFF: i32 = 3;
 pub(crate) struct PainterState {
     /// Whether a DLM client has issued CONNECT.
     pub(crate) connected: bool,
-    /// Whether the client asked to receive cursor events.
-    pub(crate) cursor_events_enabled: bool,
     /// A frame has been flipped in but not yet grabbed (the C evdi's `num_dirts > 0`). Lets
     /// REQUEST_UPDATE answer "grab now" (ioctl returns 1) when fresh pixels are already waiting,
     /// instead of self-triggering an UPDATE_READY event (which busy-loops the client).
@@ -81,7 +79,6 @@ impl PainterState {
     pub(crate) fn new() -> Self {
         Self {
             connected: false,
-            cursor_events_enabled: false,
             frame_dirty: false,
             damage: Damage::new(),
         }
@@ -99,27 +96,6 @@ kernel::declare_drm_event_payload!(
     uapi::DRM_EVDI_EVENT_MODE_CHANGED,
     [i32, i32, i32, i32, u32]
 );
-kernel::declare_drm_event_payload!(
-    uapi::DrmEvdiEventCrtcState,
-    uapi::DRM_EVDI_EVENT_CRTC_STATE,
-    [i32]
-);
-kernel::declare_drm_event_payload!(
-    uapi::DrmEvdiEventCursorSet,
-    uapi::DRM_EVDI_EVENT_CURSOR_SET,
-    [i32, i32, u32, u32, u8, [u8; 3], u32, u32, u32, u32]
-);
-kernel::declare_drm_event_payload!(
-    uapi::DrmEvdiEventCursorMove,
-    uapi::DRM_EVDI_EVENT_CURSOR_MOVE,
-    [i32, i32]
-);
-kernel::declare_drm_event_payload!(
-    uapi::DrmEvdiEventDdcciData,
-    uapi::DRM_EVDI_EVENT_DDCCI_DATA,
-    [[u8; uapi::DDCCI_BUFFER_SIZE], u32, u16, u16]
-);
-
 /// Zeroed `drm_event` header; [`EventChannel::send`] overwrites `type`/`length`.
 const fn hdr() -> uapi::DrmEvent {
     uapi::DrmEvent {

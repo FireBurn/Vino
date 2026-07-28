@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
 
-//! HDCP 2.2 AKE wire layer (sec 5.1 OUT framing, sec 5.2 IN parsing) -- the byte-exact
-//! message builders the AKE state machine drives, mirroring the verified userspace
-//! oracle (`vino-driver::hdcp_msgs`). DLM hardcodes per-message `sub_size` /
-//! `sub_len_dw` values the dock validates, so they are reproduced verbatim rather
-//! than derived.
+//! HDCP 2.2 AKE wire layer: byte-exact message builders for the state machine.
+//! The dock validates fixed per-message `sub_size` and `sub_len_dw` values, so
+//! the vendor framing records those values explicitly rather than deriving them.
 //!
 //! OUT body layout (sec 5.1), after the 16-byte sec 3 transport header:
 //! ```text
-//!   body[0..2]   u16 sub_size      (DLM-fixed per message)
+//!   body[0..2]   u16 sub_size      (fixed per message)
 //!   body[2..4]   u16 = 0x0010
 //!   body[4..8]   u32 hdcp_seq      increments 1..7 across the AKE OUT messages
 //!   body[8..22]  14 zero bytes
@@ -66,8 +64,8 @@ fn body(body_len: usize, sub_size: u16, hdcp_seq: u32, msg_id: u8) -> Result<KVe
     Ok(b)
 }
 
-/// Wrap a finished HDCP body in the sec 3 transport header (type=4 sub=0x04) with
-/// the DLM-fixed `sub_len_dw` and the transport `seq`.
+/// Wrap a finished HDCP body in the vendor transport header (type=4 sub=0x04)
+/// with the message's fixed `sub_len_dw` and transport `seq`.
 fn wrap(sub_len_dw: u16, seq: u32, body: &[u8]) -> Result<KVec<u8>> {
     let mut frame = KVec::with_capacity(16 + body.len(), GFP_KERNEL)?;
     proto::push_frame_with(&mut frame, 0x04, SUB_HDCP, sub_len_dw, seq, body)?;
@@ -89,11 +87,11 @@ pub(super) fn session_init_ack(hdcp_seq: u32, seq: u32) -> Result<KVec<u8>> {
 }
 
 /// `AKE_Init` (msg_id 0x02): `rtx[8] || TxCaps[3]`, padded to a 48-byte body
-/// (`sub_size=0x22`, `sub_len_dw=0x0c` -- guide sec 5.4 table).
+/// (`sub_size=0x22`, `sub_len_dw=0x0c`).
 pub(super) fn ake_init(
     hdcp_seq: u32,
     seq: u32,
-    rtx: &[u8; 8],
+    rtx: &[u8; drm_hdcp::RTX_LEN],
     tx_caps: &[u8; 3],
 ) -> Result<KVec<u8>> {
     let mut b = body(48, 0x0022, hdcp_seq, id::AKE_INIT)?;
@@ -102,7 +100,7 @@ pub(super) fn ake_init(
     wrap(0x000c, seq, &b)
 }
 
-/// `AKE_Transmitter_Info` (msg_id 0x13): byte-exact DLM framing
+/// `AKE_Transmitter_Info` (msg_id 0x13): byte-exact vendor framing
 /// (`sub_size=0x1f`, `sub_len_dw=0x0f`), payload `00 06 02 00 02`.
 pub(super) fn ake_transmitter_info(hdcp_seq: u32, seq: u32) -> Result<KVec<u8>> {
     let mut b = body(48, 0x001f, hdcp_seq, id::AKE_TRANSMITTER_INFO)?;
@@ -111,8 +109,12 @@ pub(super) fn ake_transmitter_info(hdcp_seq: u32, seq: u32) -> Result<KVec<u8>> 
 }
 
 /// `AKE_No_Stored_km` (msg_id 0x04): the 128-byte RSA-OAEP-SHA256 `Ekpub(km)`
-/// in a 160-byte body (`sub_size=0x9a`, `sub_len_dw=0x04` -- guide sec 5.4 table).
-pub(super) fn ake_no_stored_km(hdcp_seq: u32, seq: u32, ekpub_km: &[u8; 128]) -> Result<KVec<u8>> {
+/// in a 160-byte body (`sub_size=0x9a`, `sub_len_dw=0x04`).
+pub(super) fn ake_no_stored_km(
+    hdcp_seq: u32,
+    seq: u32,
+    ekpub_km: &[u8; drm_hdcp::ENCRYPTED_MASTER_KEY_LEN],
+) -> Result<KVec<u8>> {
     let mut b = body(160, 0x009a, hdcp_seq, id::AKE_NO_STORED_KM)?;
     b[28..156].copy_from_slice(ekpub_km);
     wrap(0x0004, seq, &b)
@@ -120,7 +122,7 @@ pub(super) fn ake_no_stored_km(hdcp_seq: u32, seq: u32, ekpub_km: &[u8; 128]) ->
 
 /// `LC_Init` (msg_id 0x09): `rn[8]` in a 48-byte body
 /// (`sub_size=0x22`, `sub_len_dw=0x0c`).
-pub(super) fn lc_init(hdcp_seq: u32, seq: u32, rn: &[u8; 8]) -> Result<KVec<u8>> {
+pub(super) fn lc_init(hdcp_seq: u32, seq: u32, rn: &[u8; drm_hdcp::RN_LEN]) -> Result<KVec<u8>> {
     let mut b = body(48, 0x0022, hdcp_seq, id::LC_INIT)?;
     b[28..36].copy_from_slice(rn);
     wrap(0x000c, seq, &b)
@@ -131,8 +133,8 @@ pub(super) fn lc_init(hdcp_seq: u32, seq: u32, rn: &[u8; 8]) -> Result<KVec<u8>>
 pub(super) fn ske_send_eks(
     hdcp_seq: u32,
     seq: u32,
-    edkey_ks: &[u8; 16],
-    riv: &[u8; 8],
+    edkey_ks: &[u8; drm_hdcp::ENCRYPTED_SESSION_KEY_LEN],
+    riv: &[u8; drm_hdcp::RIV_LEN],
 ) -> Result<KVec<u8>> {
     let mut b = body(64, 0x0032, hdcp_seq, id::SKE_SEND_EKS)?;
     b[28..44].copy_from_slice(edkey_ks);
@@ -142,7 +144,11 @@ pub(super) fn ske_send_eks(
 
 /// `RepeaterAuth_Send_ACK` (msg_id 0x0f): the full `V[16]` in a 48-byte body
 /// (`sub_size=0x2a`, `sub_len_dw=0x04`).
-pub(super) fn repeater_auth_send_ack(hdcp_seq: u32, seq: u32, v: &[u8; 16]) -> Result<KVec<u8>> {
+pub(super) fn repeater_auth_send_ack(
+    hdcp_seq: u32,
+    seq: u32,
+    v: &[u8; drm_hdcp::V_PRIME_HALF_LEN],
+) -> Result<KVec<u8>> {
     let mut b = body(48, 0x002a, hdcp_seq, id::REPEATERAUTH_SEND_ACK)?;
     b[28..44].copy_from_slice(v);
     wrap(0x0004, seq, &b)

@@ -183,6 +183,11 @@ dependencies = [
 [[package]]
 name = "kernel-shim"
 version = "0.0.1"
+dependencies = [
+ "num-bigint",
+ "sha2",
+ "zeroize",
+]
 
 [[package]]
 name = "lazy_static"
@@ -517,7 +522,6 @@ dependencies = [
  "getrandom",
  "hmac",
  "kernel-shim",
- "num-bigint",
  "revdi",
  "sha2",
  "vino-driver",

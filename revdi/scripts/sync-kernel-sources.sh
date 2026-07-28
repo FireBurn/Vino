@@ -24,7 +24,7 @@
 #
 #     --check   report drift and exit non-zero if any, copying nothing.
 #               Suitable for CI or a pre-release gate.
-#     KDIR      kernel tree to sync from. Defaults to $KDIR, then to ../kernel
+#     KDIR      kernel tree to sync from. Defaults to $KDIR, then to ../linux
 #               (the layout inside the vino working repository).
 #
 # Exit status: 0 in sync / synced, 1 drift found (--check), 2 usage or bad tree.
@@ -43,7 +43,7 @@ for arg in "$@"; do
 done
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-kdir="${kdir:-${KDIR:-$here/../kernel}}"
+kdir="${kdir:-${KDIR:-$here/../linux}}"
 
 if [ ! -d "$kdir/drivers/gpu/drm" ]; then
     echo "error: '$kdir' is not a kernel tree (no drivers/gpu/drm)." >&2
@@ -92,6 +92,16 @@ echo "module/ (evdi.ko sources) <- drivers/gpu/drm/evdi/"
 mkdir -p "$here/module"
 for f in "$kdir"/drivers/gpu/drm/evdi/*.rs; do
     sync_one "$f" "$here/module/$(basename "$f")" "module/$(basename "$f")"
+done
+for f in "$here"/module/*.rs; do
+    if [ ! -f "$kdir/drivers/gpu/drm/evdi/$(basename "$f")" ]; then
+        echo "  STALE    module/$(basename "$f")"
+        drift=1
+        if [ "$check_only" -eq 0 ]; then
+            rm -- "$f"
+            copied=$((copied + 1))
+        fi
+    fi
 done
 
 echo "chimera/vino/ (compiled verbatim by chimera) <- drivers/gpu/drm/vino/"

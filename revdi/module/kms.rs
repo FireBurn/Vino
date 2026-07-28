@@ -30,8 +30,8 @@ use kernel::{
     interrupt::LocalInterruptDisabled,
     prelude::*,
     sync::{
-        aref::ARef, new_condvar, new_mutex, new_spinlock, new_spinlock_irq, Arc, ArcBorrow,
-        CondVar, CondVarTimeoutResult, Mutex, SpinLock, SpinLockIrq,
+        aref::ARef, new_mutex, new_spinlock, new_spinlock_irq, Arc, ArcBorrow, Mutex, SpinLock,
+        SpinLockIrq,
     },
     time::{
         hrtimer::{
@@ -43,25 +43,10 @@ use kernel::{
 };
 
 use crate::painter::PainterState;
-use crate::uapi;
-use kernel::error::code::{ENODEV, ERESTARTSYS, ETIMEDOUT};
-
-/// DDC/CI slave address on the virtual I2C bus (as used by monitor-control tools).
-pub(crate) const DDCCI_ADDRESS: u16 = 0x37;
-/// How long a DDC/CI transfer waits for the userspace client's reply.
-const DDCCI_TIMEOUT_MS: u32 = 50;
-/// Maximum DDC/CI payload carried in one event.
-const DDCCI_BUFFER_SIZE: usize = 64;
 
 static PRIMARY_FORMATS: [u32; 1] = [drm::fourcc::XRGB8888];
 
 /// Fallback mode advertised before the DLM client delivers an EDID via CONNECT.
-/// Multiplier applied to the DLM client's raw pixel-rate limit before `mode_valid` enforces it --
-/// see [`EvdiDrmData::set_mode_limits`] for why the raw figure is an under-estimate. `1` restores
-/// the previous behaviour exactly (and caps this dock at 1440p@120); raise it to offer higher-rate
-/// modes to the compositor.
-const BANDWIDTH_HEADROOM: u32 = 2;
-
 const FALLBACK_W: u32 = 1024;
 const FALLBACK_H: u32 = 768;
 
@@ -145,19 +130,13 @@ impl ScanoutState {
 pub(crate) struct EvdiDrmData {
     /// Event channel to the connected DLM client (`drm_event` delivery).
     pub(crate) events: Arc<EventChannel<EvdiDrmDriver, EvdiDrmFile>>,
-    /// Painter state (connection status, cached EDID, cursor-events flag, dirty rects).
+    /// Painter state (connection status and dirty rectangles).
     #[pin]
     pub(crate) painter: Mutex<PainterState>,
     /// The current framebuffer and a bounded set of owned, validated swapchain mappings, so
     /// repeated flips and GRABPIX calls do not remap them.
     #[pin]
     scanout: Mutex<ScanoutState>,
-    /// Slot for a DDC/CI reply from the client, guarding the request/response handshake between
-    /// the I2C `master_xfer` (which waits) and the DDCCI_RESPONSE ioctl (which fills + notifies).
-    #[pin]
-    pub(crate) ddcci_resp: Mutex<Option<KVec<u8>>>,
-    #[pin]
-    pub(crate) ddcci_cv: CondVar,
     /// EDID and bandwidth limits delivered by the DLM client through CONNECT.
     #[pin]
     cached_edid: Mutex<Option<KVec<u8>>>,
@@ -166,10 +145,6 @@ pub(crate) struct EvdiDrmData {
     /// Active software-vblank timer and its cancellation handle.
     #[pin]
     vblank: SpinLock<Option<(Arc<VblankTimer>, ArcHrTimerHandle<VblankTimer>)>>,
-    /// Set (once, never cleared) when the card is being torn down, so blocking paths bail out
-    /// with `ENODEV` instead of stalling the teardown — e.g. a DDC/CI transfer waiting out its
-    /// full timeout would otherwise hold up `i2c_del_adapter` on unbind.
-    pub(crate) dying: AtomicBool,
 }
 
 impl EvdiDrmData {
@@ -178,22 +153,15 @@ impl EvdiDrmData {
             events: EventChannel::new()?,
             painter <- new_mutex!(PainterState::new()),
             scanout <- new_mutex!(ScanoutState::new()),
-            ddcci_resp <- new_mutex!(None),
-            ddcci_cv <- new_condvar!(),
             cached_edid <- new_mutex!(None),
             pixel_area_limit: AtomicU32::new(0),
             pixel_per_second_limit: AtomicU32::new(0),
             vblank <- new_spinlock!(None),
-            dying: AtomicBool::new(false),
         })
     }
 
-    /// Begin card shutdown: mark the device dying and wake every in-kernel waiter so teardown
-    /// (platform unbind → I2C adapter + DRM unregistration) cannot stall behind them. Called
-    /// before the rest of the bound data drops; safe to call more than once.
+    /// Stop timer activity and release prepared scanout state before unbind.
     pub(crate) fn shutdown(&self) {
-        self.dying.store(true, Ordering::Relaxed);
-        self.ddcci_cv.notify_all();
         self.scanout.lock().discard();
         let timer = self.vblank.lock().take();
         if let Some((timer, handle)) = timer {
@@ -203,77 +171,6 @@ impl EvdiDrmData {
                 drop(crtc.crtc().vblank_pinned.lock().take());
             }
         }
-    }
-
-    /// Send one DDC/CI message to the connected client and wait for its reply. A write buffer is
-    /// copied into the event; a read buffer is filled from the reply, up to its length.
-    pub(crate) fn ddcci_transfer(
-        &self,
-        addr: u16,
-        flags: u16,
-        buffer: kernel::i2c::MsgBuffer<'_>,
-    ) -> Result {
-        if self.dying.load(Ordering::Relaxed) {
-            return Err(ENODEV);
-        }
-        let (is_read, len) = match &buffer {
-            kernel::i2c::MsgBuffer::Write(buf) => (false, buf.len()),
-            kernel::i2c::MsgBuffer::Read(buf) => (true, buf.len()),
-        };
-        let mut ev = uapi::DrmEvdiEventDdcciData {
-            base: uapi::DrmEvent {
-                type_: 0,
-                length: 0,
-            },
-            buffer: [0u8; DDCCI_BUFFER_SIZE],
-            buffer_length: len as u32,
-            flags,
-            address: addr,
-        };
-        if let kernel::i2c::MsgBuffer::Write(buf) = &buffer {
-            let n = core::cmp::min(buf.len(), DDCCI_BUFFER_SIZE);
-            ev.buffer[..n].copy_from_slice(&buf[..n]);
-        }
-
-        // Hold the slot lock across send+wait so the reply cannot be signalled before we wait
-        // (no lost wakeup): `ddcci_respond` can only run once `wait_*` has released the lock.
-        let mut slot = self.ddcci_resp.lock();
-        *slot = None;
-        self.events.send(ev)?;
-        // Condvar waits can wake spuriously, so loop until the reply actually arrives,
-        // carrying the remaining timeout. A wake landing exactly at expiry is reported as
-        // `Timeout`, so re-check the slot once before giving up.
-        let mut jiffies = kernel::time::msecs_to_jiffies(DDCCI_TIMEOUT_MS);
-        while slot.is_none() {
-            if self.dying.load(Ordering::Relaxed) {
-                return Err(ENODEV);
-            }
-            match self.ddcci_cv.wait_interruptible_timeout(&mut slot, jiffies) {
-                CondVarTimeoutResult::Woken { jiffies: remaining } => jiffies = remaining,
-                CondVarTimeoutResult::Timeout => {
-                    if slot.is_some() {
-                        break;
-                    }
-                    return Err(ETIMEDOUT);
-                }
-                CondVarTimeoutResult::Signal { .. } => return Err(ERESTARTSYS),
-            }
-        }
-        if is_read {
-            if let kernel::i2c::MsgBuffer::Read(buf) = buffer {
-                if let Some(resp) = slot.take() {
-                    let m = core::cmp::min(resp.len(), buf.len());
-                    buf[..m].copy_from_slice(&resp[..m]);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Store a DDC/CI reply from the client (DDCCI_RESPONSE ioctl) and wake the waiting transfer.
-    pub(crate) fn ddcci_respond(&self, resp: KVec<u8>) {
-        *self.ddcci_resp.lock() = Some(resp);
-        self.ddcci_cv.notify_one();
     }
 
     /// Prepare the framebuffer currently on the primary plane for later GRABPIX calls.
@@ -304,17 +201,7 @@ impl EvdiDrmData {
     /// [`EvdiConnector`]'s `mode_valid` to enforce. Must be called before the EDID is
     /// published (`set_edid`'s hotplug re-probes the mode list against these limits).
     ///
-    /// The client limit is a raw-pixel-rate proxy and does not account for transport compression.
-    /// Apply the bounded [`BANDWIDTH_HEADROOM`] multiplier before mode validation. This controls
-    /// which EDID modes are offered; the client remains responsible for rejecting a mode its
-    /// transport cannot present.
     pub(crate) fn set_mode_limits(&self, pixel_area: u32, pixels_per_second: u32) {
-        let pixels_per_second = pixels_per_second.saturating_mul(BANDWIDTH_HEADROOM);
-        pr_info!(
-            "evdi: mode limits -- area {pixel_area}, pixel rate {pixels_per_second}/s \
-             (client supplied {}/s x{BANDWIDTH_HEADROOM} compression headroom)\n",
-            pixels_per_second / BANDWIDTH_HEADROOM
-        );
         self.pixel_area_limit.store(pixel_area, Ordering::Relaxed);
         self.pixel_per_second_limit
             .store(pixels_per_second, Ordering::Relaxed);
@@ -376,22 +263,21 @@ impl drm::Driver for EvdiDrmDriver {
 
     const INFO: drm::DriverInfo = INFO;
 
-    kernel::declare_drm_ioctls_ext! {
-        (EVDI_CONNECT, crate::uapi::DrmEvdiConnect,
-            crate::uapi::DRM_IOCTL_EVDI_CONNECT, 0, crate::ioctl::connect),
-        (EVDI_REQUEST_UPDATE, crate::uapi::DrmEvdiRequestUpdate,
-            crate::uapi::DRM_IOCTL_EVDI_REQUEST_UPDATE, 0, crate::ioctl::request_update),
-        (EVDI_GRABPIX, crate::uapi::DrmEvdiGrabpix,
-            crate::uapi::DRM_IOCTL_EVDI_GRABPIX, 0, crate::ioctl::grabpix),
-        (EVDI_DDCCI_RESPONSE, crate::uapi::DrmEvdiDdcciResponse,
-            crate::uapi::DRM_IOCTL_EVDI_DDCCI_RESPONSE, 0, crate::ioctl::ddcci_response),
-        (
-            EVDI_ENABLE_CURSOR_EVENTS,
-            crate::uapi::DrmEvdiEnableCursorEvents,
-            crate::uapi::DRM_IOCTL_EVDI_ENABLE_CURSOR_EVENTS,
-            0,
-            crate::ioctl::enable_cursor_events
-        ),
+    kernel::declare_drm_ioctls! {
+        (EVDI_CONNECT, drm_evdi_connect, 0, crate::ioctl::connect),
+        (EVDI_REQUEST_UPDATE, drm_evdi_request_update, 0, crate::ioctl::request_update),
+        (EVDI_GRABPIX, drm_evdi_grabpix, 0, crate::ioctl::grabpix),
+        (EVDI_DDCCI_RESPONSE, drm_evdi_ddcci_response, 0, crate::ioctl::ddcci_response),
+        (EVDI_ENABLE_CURSOR_EVENTS, drm_evdi_enable_cursor_events, 0,
+            crate::ioctl::enable_cursor_events),
+    }
+
+    kernel::declare_drm_compat_ioctls! {
+        EvdiDrmDriver;
+        (EVDI_CONNECT, drm_evdi_connect, crate::uapi::DrmEvdiConnect32, IOWR,
+            crate::ioctl::connect),
+        (EVDI_GRABPIX, drm_evdi_grabpix, crate::uapi::DrmEvdiGrabpix32, IOWR,
+            crate::ioctl::grabpix),
     }
 }
 
@@ -428,10 +314,8 @@ impl KmsDriver for EvdiDrmDriver {
         // Advertise FB_DAMAGE_CLIPS so the compositor reports which region
         // changed. Without it, GRABPIX must return the full plane.
         primary.enable_fb_damage_clips();
-        // Keep cursor composition in the primary framebuffer for now. Creating a GEM handle for
-        // a separate control client's cursor event may sleep, while a drm_file has no independent
-        // refcount that a safe asynchronous channel can retain. Advertising no cursor plane avoids
-        // reintroducing the erased raw-file lifetime protocol removed from EventChannel.
+        // Keep cursor composition in the primary framebuffer. The driver does not advertise a
+        // separate hardware cursor plane.
         let crtc_obj = crtc::UnregisteredCrtc::<EvdiCrtc>::new(
             dev,
             primary,
@@ -664,10 +548,7 @@ impl VblankSupport for EvdiCrtc {
     }
 }
 
-// ---- Planes (primary + cursor) ----------------------------------------------
-//
-// The safe KMS layer allows a single `DriverPlane` type per driver, so one `EvdiPlane` type serves
-// both the primary and cursor planes, told apart by `is_cursor` (set from the plane's `Args`).
+// ---- Primary plane -----------------------------------------------------------
 
 #[pin_data]
 pub(crate) struct EvdiPlane;
@@ -800,7 +681,7 @@ impl connector::DriverConnector for EvdiConnector {
         let area = u32::from(mode.hdisplay()) * u32::from(mode.vdisplay());
         let vrefresh = mode.vrefresh().max(0) as u32;
         if area > data.pixel_area_limit.load(Ordering::Relaxed) {
-            pr_warn!(
+            pr_debug!(
                 "evdi: mode {}x{}@{} rejected: mode area too big\n",
                 mode.hdisplay(),
                 mode.vdisplay(),
@@ -812,7 +693,7 @@ impl connector::DriverConnector for EvdiConnector {
             return ModeStatus::Ok;
         }
         if is_lowest_frequency_mode_of_resolution(&connector, mode) {
-            pr_warn!(
+            pr_debug!(
                 "evdi: mode {}x{}@{} exceeds pixel limit; frame rate may be reduced\n",
                 mode.hdisplay(),
                 mode.vdisplay(),
@@ -820,7 +701,7 @@ impl connector::DriverConnector for EvdiConnector {
             );
             return ModeStatus::Ok;
         }
-        pr_warn!(
+        pr_debug!(
             "evdi: mode {}x{}@{} rejected: pixel rate too high\n",
             mode.hdisplay(),
             mode.vdisplay(),

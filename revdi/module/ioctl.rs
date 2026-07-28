@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 //
 // EVDI driver-private ioctls (libevdi / DisplayLinkManager entry points), declared via
-// `kernel::declare_drm_ioctls_ext!` in `kms.rs`. Each handler runs inside a
+// `kernel::declare_drm_ioctls!` in `kms.rs`. Each handler runs inside a
 // `drm_dev_enter/exit` critical section (returns `ENODEV` if the card was unplugged).
 
 use kernel::{
@@ -34,17 +34,16 @@ pub(crate) fn connect(
         // monitor. A zero-length/NULL EDID is allowed (connector falls back to a default mode).
         let len = arg.edid_length as usize;
         let mut edid = KVec::new();
-        if len > 0 && arg.edid != 0 {
+        if len > 0 && !arg.edid.is_null() {
             if len > EDID_MAX {
                 return Err(EINVAL);
             }
-            UserSlice::new(UserPtr::from_ptr(arg.edid as *mut kernel::ffi::c_void), len)
+            UserSlice::new(UserPtr::from_ptr(arg.edid.cast_mut().cast()), len)
                 .read_all(&mut edid, GFP_KERNEL)?;
         }
 
-        // Register this file as the event receiver, then record the client's dock bandwidth
-        // limits and publish the EDID (which fires a hotplug so the compositor re-probes the
-        // connector's modes -- with `mode_valid` now filtering against those limits).
+        // Register this file as the event receiver, record the client's bandwidth limits, and
+        // publish the EDID. The hotplug causes modes to be checked against the new limits.
         let connection = data.events.connect(dev, file)?;
         *file.inner().connection.lock() = Some(connection);
         data.painter.lock().connected = true;
@@ -94,6 +93,15 @@ pub(crate) fn grabpix(
     // XRGB8888: 4 bytes per pixel (the only format the primary plane advertises).
     const BPP: usize = 4;
 
+    match arg.mode {
+        uapi::EVDI_GRABPIX_MODE_DIRTY => {}
+        uapi::EVDI_GRABPIX_MODE_RECTS => return Err(EINVAL),
+        _ => return Err(EINVAL),
+    }
+    if arg.num_rects < 1 {
+        return Err(EINVAL);
+    }
+
     let data: &EvdiDrmData = dev;
     // No frame has been flipped in yet (or the pipe is down, e.g. DPMS off): report zero rects.
     // NOT -EAGAIN — libevdi's `drm_ioctl` retries EAGAIN in a tight loop, which would busy-spin
@@ -122,7 +130,7 @@ pub(crate) fn grabpix(
     // The geometry is client-controlled: reject impossible values before any of it reaches
     // arithmetic (a negative stride cast to usize is ~2^63 and `y * dst_stride` wraps — a
     // kernel panic with overflow checks on).
-    if arg.buffer == 0 || arg.buf_byte_stride <= 0 || arg.buf_width < 0 || arg.buf_height < 0 {
+    if arg.buffer.is_null() || arg.buf_byte_stride <= 0 || arg.buf_width < 0 || arg.buf_height < 0 {
         return Err(EINVAL);
     }
     let dst_stride = arg.buf_byte_stride as usize;
@@ -170,7 +178,7 @@ pub(crate) fn grabpix(
     // Report the rectangles so DLM transmits exactly them
     // (`struct drm_clip_rect` = 4x u16). An empty rectangle array tells DLM
     // that nothing changed.
-    if arg.rects != 0 {
+    if !arg.rects.is_null() {
         let mut buf = [0u8; crate::painter::MAX_DAMAGE_RECTS * 8];
         for (i, &(x1, y1, x2, y2)) in rects[..count].iter().enumerate() {
             let o = i * 8;
@@ -179,18 +187,15 @@ pub(crate) fn grabpix(
             buf[o + 4..o + 6].copy_from_slice(&(x2 as u16).to_ne_bytes());
             buf[o + 6..o + 8].copy_from_slice(&(y2 as u16).to_ne_bytes());
         }
-        UserSlice::new(
-            UserPtr::from_ptr(arg.rects as *mut kernel::ffi::c_void),
-            count * 8,
-        )
-        .writer()
-        .write_slice(&buf[..count * 8])?;
+        UserSlice::new(UserPtr::from_ptr(arg.rects.cast()), count * 8)
+            .writer()
+            .write_slice(&buf[..count * 8])?;
     }
     // The IOWR arg is copied back to userspace, so the count reaches DLM.
     arg.num_rects = count as i32;
 
     // Copy each changed rectangle into the client's (persistent, full-frame) buffer at the same
-    // position, so DLM's frame accumulates the per-grab deltas.
+    // position, so the userspace frame accumulates the per-grab deltas.
     for &(x1, y1, x2, y2) in &rects[..count] {
         let xoff = x1 as usize * BPP;
         let span = (x2 - x1) as usize * BPP;
@@ -209,7 +214,7 @@ pub(crate) fn grabpix(
             let dst = y
                 .checked_mul(dst_stride)
                 .and_then(|off| off.checked_add(xoff))
-                .and_then(|off| arg.buffer.checked_add(off))
+                .and_then(|off| (arg.buffer as usize).checked_add(off))
                 .ok_or(EINVAL)?;
             UserSlice::new(UserPtr::from_ptr(dst as *mut kernel::ffi::c_void), span)
                 .writer()
@@ -219,38 +224,25 @@ pub(crate) fn grabpix(
     Ok(0)
 }
 
-/// `DRM_IOCTL_EVDI_DDCCI_RESPONSE`: the client returns a DDC/CI reply to be handed back to
-/// the in-kernel I2C adapter.
+/// `DRM_IOCTL_EVDI_DDCCI_RESPONSE`: accept a DDC/CI response from an EVDI client.
 pub(crate) fn ddcci_response(
-    dev: &Dev,
+    _dev: &Dev,
     _reg: &(),
-    arg: &mut uapi::DrmEvdiDdcciResponse,
+    _arg: &mut uapi::DrmEvdiDdcciResponse,
     _file: &File,
 ) -> Result<u32> {
-    // Copy the client's DDC/CI reply (capped at the 64-byte DDC/CI payload) and hand it to the
-    // waiting I2C transfer.
-    let len = core::cmp::min(arg.buffer_length as usize, uapi::DDCCI_BUFFER_SIZE);
-    let mut resp = KVec::new();
-    if len > 0 && arg.buffer != 0 {
-        UserSlice::new(
-            UserPtr::from_ptr(arg.buffer as *mut kernel::ffi::c_void),
-            len,
-        )
-        .read_all(&mut resp, GFP_KERNEL)?;
-    }
-    let data: &EvdiDrmData = dev;
-    data.ddcci_respond(resp);
+    // DDC/CI forwarding is optional in the EVDI ABI. Accept an unsolicited
+    // response for compatibility when this device has no virtual I2C bus.
     Ok(0)
 }
 
-/// `DRM_IOCTL_EVDI_ENABLE_CURSOR_EVENTS`: toggle delivery of CURSOR_SET/CURSOR_MOVE events.
+/// `DRM_IOCTL_EVDI_ENABLE_CURSOR_EVENTS`: retained for compatibility with libevdi.
 pub(crate) fn enable_cursor_events(
-    dev: &Dev,
+    _dev: &Dev,
     _reg: &(),
-    arg: &mut uapi::DrmEvdiEnableCursorEvents,
+    _arg: &mut uapi::DrmEvdiEnableCursorEvents,
     _file: &File,
 ) -> Result<u32> {
-    let data: &EvdiDrmData = dev;
-    data.painter.lock().cursor_events_enabled = arg.enable != 0;
+    // EVDI exposes no cursor plane, so compositors blend the cursor into the primary plane.
     Ok(0)
 }

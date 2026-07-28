@@ -33,8 +33,9 @@ The daemon:
 6. sends the video-arm prefix and training carrier; and
 7. encodes coherent Revdi updates with Vino's kernel codec and submits them to the matching USB
    endpoint;
-8. forwards DPMS and hardware-cursor state; and
-9. completes Revdi DDC/CI writes and reads through Vino's encrypted monitor-control tunnel;
+8. reconciles DPMS and any compatibility cursor events; and
+9. can complete DDC/CI writes and reads through its userspace-only encrypted
+   monitor-control tunnel when a client supplies them;
 10. debounces monitor removal and recreates Revdi outputs after reattachment; and
 11. rebuilds the owned dock session after transport failure.
 
@@ -50,9 +51,10 @@ cargo run --bin chimera-prove
 cargo test -p vino-chimera --all-features
 ```
 
-The oracle checks byte-exact control sealing, message builders, codec records, mode profiles, video
-arm construction, DDC/CI reply bounds, Revdi pixel conversion, cursor repacking, and strip-grid
-padding. Hardware-dependent operations are deliberately excluded from the automated suite.
+The oracle checks byte-exact control sealing, message builders, codec records,
+mode profiles, video-arm construction, userspace DDC/CI reply bounds, Revdi
+pixel conversion, cursor repacking, and strip-grid padding. Hardware-dependent
+operations are deliberately excluded from the automated suite.
 
 The DPMS, cursor, DDC/CI, topology, and session-recovery paths are implemented, but the cleanup
 revision has not been run against a live dock. They remain part of the hardware validation matrix.
@@ -62,8 +64,8 @@ revision has not been run against a live dock. They remain part of the hardware 
 From the Revdi repository root:
 
 ```sh
-make sync KSRC=/path/to/drm-next
-make check-sync
+make sync KSRC=../linux
+make check-sync KSRC=../linux
 ```
 
 `check-sync` is read-only and fails when either the external Revdi module or Chimera's Vino source

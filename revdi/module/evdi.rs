@@ -8,21 +8,20 @@
 //! existing userspace (libevdi/DLM) keeps working unchanged.
 //!
 //! Structure:
-//! - [`uapi`]: the DLM-facing ABI ([`evdi_drm.h`] mirror).
+//! - [`uapi`]: Rust names and compat translations for the DLM-facing UAPI.
 //! - [`kms`]: the DRM/KMS device (one virtual head, GEM-shmem dumb buffers).
 //! - [`painter`]: connection state + `drm_event` delivery.
 //! - [`ioctl`]: the five driver-private ioctls.
 //! - This file: the platform driver (one DRM card per `evdi` platform device) and the module.
 
 use kernel::{
-    device::{self, Core},
+    device::Core,
     drm, platform,
     prelude::*,
     sync::{aref::ARef, new_mutex, Arc, Mutex},
     usb, ThisModule,
 };
 
-mod ddcci;
 mod ioctl;
 mod kms;
 mod painter;
@@ -30,10 +29,7 @@ mod uapi;
 
 use kms::{EvdiDrmData, EvdiDrmDevice, EvdiDrmDriver};
 
-/// Flags the card as dying and wakes its in-kernel waiters. Declared as the FIRST field of
-/// [`BoundData`] so it drops first on unbind: any DDC/CI transfer parked on the reply condvar
-/// bails out with `ENODEV` immediately instead of making `i2c_del_adapter` (and thus the whole
-/// unbind) wait out its timeout.
+/// Stops the card's timers and releases its prepared scanout on unbind.
 struct ShutdownGuard(ARef<EvdiDrmDevice>);
 
 impl Drop for ShutdownGuard {
@@ -44,17 +40,14 @@ impl Drop for ShutdownGuard {
 }
 
 /// Per-bound-device data held by the platform driver: the registered DRM card, whose lifetime is
-/// otherwise tied to the bound platform device via devres. Dropped when the platform device
-/// unbinds; fields drop in declaration order (shutdown flag → I2C adapter → DRM device ref).
+/// otherwise tied to the bound platform device via devres.
 struct BoundData {
     _shutdown: ShutdownGuard,
-    /// The DDC/CI virtual I2C adapter (dropped → `i2c_del_adapter` on unbind).
-    _i2c: Option<Pin<KBox<kernel::i2c::BusAdapter<ddcci::EvdiI2c>>>>,
     _registration: drm::Registration<'static, EvdiDrmDriver>,
 }
 
-/// The `evdi` platform driver. It binds to the `evdi` platform devices created by [`EvdiModule`]
-/// (and, later, by the sysfs `add` attribute) and registers a DRM/KMS card parented to each.
+/// The `evdi` platform driver. It binds to devices created through the sysfs control interface and
+/// registers one DRM/KMS card for each.
 struct EvdiPlatformDriver;
 
 impl platform::Driver for EvdiPlatformDriver {
@@ -65,8 +58,6 @@ impl platform::Driver for EvdiPlatformDriver {
         pdev: &'bound platform::Device<Core<'_>>,
         _info: Option<&'bound Self::IdInfo>,
     ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound {
-        let cdev: &device::Device<Core<'_>> = pdev.as_ref();
-
         // Allocate an unregistered DRM device parented to this platform device, wire up its KMS
         // pipeline (`KmsDriver::probe` runs inside `UnregisteredDevice::new`), then register it and
         // tie its lifetime to the bound platform device via devres. Failure fails the probe: a
@@ -75,28 +66,8 @@ impl platform::Driver for EvdiPlatformDriver {
             drm::UnregisteredDevice::<EvdiDrmDriver>::new(pdev, EvdiDrmData::new(), &THIS_MODULE)?;
         let registration = drm::Registration::new_static(pdev.as_ref(), unregistered, (), 0)?;
         let ddev: ARef<EvdiDrmDevice> = registration.device().into();
-        dev_info!(cdev, "evdi: DRM/KMS card registered\n");
-
-        // Register the DDC/CI virtual I2C adapter, parented to this platform device, so
-        // monitor-control tools can reach the display. Non-fatal.
-        let i2c = match kernel::i2c::BusAdapter::<ddcci::EvdiI2c>::new(
-            c"DisplayLink I2C Adapter",
-            cdev,
-            ddev.clone(),
-        ) {
-            Ok(a) => Some(a),
-            Err(e) => {
-                dev_err!(
-                    cdev,
-                    "evdi: DDC/CI I2C adapter registration failed ({e:?})\n"
-                );
-                None
-            }
-        };
-
         Ok(BoundData {
             _shutdown: ShutdownGuard(ddev.clone()),
-            _i2c: i2c,
             _registration: registration,
         })
     }
@@ -123,9 +94,9 @@ struct RegistryState {
 }
 
 impl RegistryState {
-    fn new() -> impl PinInit<Self> {
-        pin_init!(Self {
-            devices <- new_mutex!(KVec::new()),
+    fn new() -> impl PinInit<Self, Error> {
+        try_pin_init!(Self {
+            devices <- new_mutex!(KVec::with_capacity(MAX_CARDS, GFP_KERNEL)?),
         })
     }
 }
@@ -164,14 +135,16 @@ impl RegistryState {
             return;
         };
 
-        let mut to_drop: KVec<CardEntry> = KVec::new();
+        let mut to_drop = [const { None }; MAX_CARDS];
+        let mut removed = 0;
         {
             let mut devices = self.devices.lock();
             let mut i = 0;
             while i < devices.len() {
                 if devices[i].usb_len == len && devices[i].usb_addr[..len] == addr[..len] {
                     if let Ok(entry) = devices.remove(i) {
-                        let _ = to_drop.push(entry, GFP_KERNEL);
+                        to_drop[removed] = Some(entry);
+                        removed += 1;
                     }
                 } else {
                     i += 1;
@@ -189,11 +162,13 @@ impl RegistryState {
         // Parse "<bus>-<port>[.<port>...]" into a bus/port address (bus first, leaf last).
         let mut addr = [0u32; MAX_USB_ADDR];
         let mut len = 0usize;
-        let mut dash = token.split('-');
-        let bus = dash.next().ok_or(EINVAL)?;
+        let (bus, ports) = token.split_once('-').ok_or(EINVAL)?;
+        if ports.contains('-') {
+            return Err(EINVAL);
+        }
         addr[len] = bus.parse::<u32>().map_err(|_| EINVAL)?;
         len += 1;
-        for p in dash.next().ok_or(EINVAL)?.split('.') {
+        for p in ports.split('.') {
             if len >= MAX_USB_ADDR {
                 return Err(EINVAL);
             }
@@ -210,7 +185,8 @@ impl RegistryState {
         })
         .ok_or(EINVAL)?;
 
-        let regdev = platform::RegisteredDevice::new(c"evdi", platform::DEVID_AUTO, None, 0)?;
+        let regdev =
+            platform::RegisteredDevice::new(c"evdi", platform::DeviceId::Auto, None, None)?;
         kernel::sysfs::create_link(regdev.device().as_ref(), usb.as_ref(), c"device")?;
         let mut devices = self.devices.lock();
         if devices.len() >= MAX_CARDS {
@@ -267,8 +243,12 @@ impl kernel::sysfs::DeviceAttributes for EvdiRegistry {
                     return Err(EINVAL);
                 }
                 for _ in 0..count {
-                    let dev =
-                        platform::RegisteredDevice::new(c"evdi", platform::DEVID_AUTO, None, 0)?;
+                    let dev = platform::RegisteredDevice::new(
+                        c"evdi",
+                        platform::DeviceId::Auto,
+                        None,
+                        None,
+                    )?;
                     devices.push(
                         CardEntry {
                             _dev: dev,
@@ -281,13 +261,8 @@ impl kernel::sysfs::DeviceAttributes for EvdiRegistry {
                 Ok(())
             }
         } else if name == c"remove_all" {
-            // The emergency teardown: take the entries out under the lock, then drop them after
-            // releasing it — dropping a `CardEntry` unregisters the platform device (sleeping
-            // DRM + I2C teardown), which must not run under the registry mutex (mirrors
-            // `remove_usb`). Clients holding the DRM node see `ENODEV` on every subsequent call
-            // (the cards are unplugged, not freed under them), so this is safe to use with
-            // DisplayLinkManager still attached; once it closes its fds the module can be
-            // unloaded normally.
+            // Unregistering a platform device may sleep. Remove every entry while holding the
+            // registry lock, then unregister them after releasing it.
             let mut to_drop: KVec<CardEntry> = KVec::new();
             core::mem::swap(&mut *self.state.devices.lock(), &mut to_drop);
             drop(to_drop);
@@ -321,22 +296,20 @@ fn write_uint(out: &mut kernel::sysfs::Writer<'_>, mut v: usize) -> Result {
 /// declared first so it is dropped -- unregistering every card -- *before* the driver registration.
 #[pin_data]
 struct EvdiModule {
-    _sysfs: Option<KBox<kernel::sysfs::AttributeGroup<EvdiRegistry>>>,
+    _sysfs: KBox<kernel::sysfs::AttributeGroup<EvdiRegistry>>,
     #[pin]
     _driver: kernel::driver::Registration<platform::Adapter<EvdiPlatformDriver>>,
 }
 
 impl kernel::InPlaceModule for EvdiModule {
     fn init(module: &'static ThisModule) -> impl PinInit<Self, Error> {
-        pr_info!("evdi: Rust EVDI loading\n");
         try_pin_init!(Self {
             _sysfs: kernel::sysfs::AttributeGroup::register_root(
                 c"evdi",
                 module,
                 EvdiRegistry::new(),
             )
-            .inspect_err(|e| pr_err!("evdi: sysfs root registration failed ({e:?})\n"))
-            .ok(),
+            .inspect_err(|e| pr_err!("evdi: sysfs root registration failed ({e:?})\n"))?,
             _driver <- kernel::driver::Registration::new(c"evdi", module),
         })
     }

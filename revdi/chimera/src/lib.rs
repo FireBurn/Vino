@@ -20,6 +20,7 @@
 
 #[cfg(all(feature = "live", feature = "revdi"))]
 pub mod daemon;
+pub mod ddcci;
 #[cfg(feature = "live")]
 pub mod edid_fetch;
 pub mod kshim;
@@ -33,7 +34,7 @@ pub mod session;
 #[cfg(test)]
 mod kshim_crypto_kat {
     //! Known-answer tests for the crypto primitives added to `kshim::crypto` to
-    //! support `hdcp.rs` (SHA-256, HMAC-SHA256, raw RSA modexp) -- the genuinely
+    //! support `hdcp.rs` (SHA-256 and HMAC-SHA256) -- the genuinely
     //! new userspace-specific risk, since `hdcp.rs` itself is the literal,
     //! already-HW-proven kernel file. AES-CTR/CMAC are exercised by
     //! `chimera-prove`'s 192/192 byte-exact proof already.
@@ -66,21 +67,5 @@ mod kshim_crypto_kat {
                 0x2e, 0x32, 0xcf, 0xf7,
             ]
         );
-    }
-
-    #[test]
-    fn rsa_pubkey_encrypt_textbook() {
-        // Textbook RSA KAT (n=3233=61*53, e=17, d=2753): 65^17 mod 3233 == 2790.
-        let n = 3233u32.to_be_bytes();
-        let e = 17u32.to_be_bytes();
-        let m = 65u32.to_be_bytes();
-        let mut out = [0u8; 4];
-        crypto::rsa_pubkey_encrypt(&n, &e, &m, &mut out).unwrap();
-        assert_eq!(u32::from_be_bytes(out), 2790);
-        // And the inverse with d=2753 recovers 65 (round-trips through the same op).
-        let d = 2753u32.to_be_bytes();
-        let mut back = [0u8; 4];
-        crypto::rsa_pubkey_encrypt(&n, &d, &out, &mut back).unwrap();
-        assert_eq!(u32::from_be_bytes(back), 65);
     }
 }

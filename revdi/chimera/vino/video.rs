@@ -5,6 +5,7 @@
 use super::*;
 
 /// Pack 8-bit RGB into RGB565.
+#[cfg(CONFIG_DRM_VINO_KUNIT_TEST)]
 pub(crate) fn rgb565(r: u8, g: u8, b: u8) -> u16 {
     ((r as u16 >> 3) << 11) | ((g as u16 >> 2) << 5) | (b as u16 >> 3)
 }
@@ -17,6 +18,7 @@ pub(crate) mod wht {
     pub(crate) const DIM: usize = 8;
     pub(crate) const PIXELS: usize = DIM * DIM;
     pub(crate) const COEFFS: usize = 64;
+    #[cfg(CONFIG_DRM_VINO_KUNIT_TEST)]
     pub(crate) const BLOCK: usize = PIXELS;
 
     /// Vino colour transform, in the codec's 64x fixed point: `Cb = 64(R-G)`,
@@ -117,7 +119,7 @@ pub(crate) mod wht {
 
     /// Apply the codec's 8x8 2-D Haar (Mallat) transform, floor-divided by 64. `block` is
     /// 8x8 luma (`Y` in the
-    /// codec's x64 fixed point); the output is 64 coefficients in DLM's Mallat layout:
+    /// codec's x64 fixed point); the output is 64 coefficients in the wire's Mallat layout:
     /// `c[0]` = LL; `c[1..4]` = level-3 HL/LH/HH; `c[4..8]/[8..12]/[12..16]` = level-2 HL/LH/HH
     /// (2x2 row-major each); `c[16..32]`, `c[32..48]`, and `c[48..64]` are the level-1 HL, LH,
     /// and HH 4x4 bands. Each level-1 band uses the same 2x2 Morton scan. A uniform block yields
@@ -127,7 +129,7 @@ pub(crate) mod wht {
     /// transform scratch arrays with its callers and can exhaust a 16-KiB kernel stack.
     #[inline(never)]
     pub(crate) fn transform(block: &[i32; PIXELS]) -> [i32; COEFFS] {
-        let sh = |x: i32| x >> 6; // arithmetic shift = floor division by 64 (matches DLM/`//64`)
+        let sh = |x: i32| x >> 6; // arithmetic shift: wire fixed-point floor division by 64
         let mut c = [0i32; COEFFS];
         // Level 1: 8x8 -> three 4x4 detail bands.
         let (mut ll1, mut hl1, mut lh1, mut hh1) = ([0i32; 16], [0i32; 16], [0i32; 16], [0i32; 16]);
@@ -160,6 +162,7 @@ pub(crate) mod wht {
     /// Vino entropy VLC, indexed by symbol as `(code, nbits)` and emitted least-significant bit
     /// first.
     /// Symbol 0 = the 1-bit code `0` (zero / most common); symbol 31 = the all-ones escape prefix.
+    #[cfg(CONFIG_DRM_VINO_KUNIT_TEST)]
     pub(crate) const CODEBOOK: [(u32, u8); 32] = [
         (0, 1),
         (1, 3),
@@ -196,13 +199,15 @@ pub(crate) mod wht {
     ];
 
     /// LSB-first VLC bit packer matching the dock (final byte padded with **1-bits** -- a
-    /// truncated all-ones code, as DLM emits).
+    /// truncated all-ones code required by the wire format).
+    #[cfg(CONFIG_DRM_VINO_KUNIT_TEST)]
     pub(crate) struct Vlc {
         out: KVec<u8>,
         acc: u32,
         nbits: u32,
     }
 
+    #[cfg(CONFIG_DRM_VINO_KUNIT_TEST)]
     impl Vlc {
         pub(crate) fn new() -> Self {
             Self {
@@ -288,7 +293,7 @@ pub(crate) mod wht {
     /// coefficient still carries the unary 0-terminator that luma's omits.
     const CHROMA_AC_CMAX: u32 = 10;
 
-    /// LSB-first bit accumulator for the AC-strip coder (no final padding, unlike [`Vlc`]).
+    /// LSB-first bit accumulator for the production AC-strip coder.
     ///
     /// Bits are buffered in a 64-bit word and copied to `out` a byte at a time. `out` is incomplete
     /// until [`Bits::finish`] flushes the final zero-padded partial byte.
@@ -927,7 +932,7 @@ pub(crate) mod wht {
                 n += 1;
                 i += 1;
             }
-            // DLM pads each complete record stride to 16 bytes and carries that exact padding count
+            // The wire format pads each complete record stride to 16 bytes and carries that count
             // in `aux`. There is no additional trailer or inter-record gap: `size` counts from
             // after the four-byte pad+size prefix, so `stride = size + 4` lands on the next record.
             let pad = (16 - (record.len() & 15)) & 15;

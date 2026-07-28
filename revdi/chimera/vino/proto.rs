@@ -8,7 +8,7 @@ use super::*;
 /// little-endian header (`pad(2) | size(2)=total-4 | type(4) | sub_id(2) |
 /// sub_len_dw(2) | seq(4)`) followed by `body`.
 ///
-/// HDCP OUT messages (sec 5.1) carry DLM-fixed `sub_len_dw` values that are *not*
+/// HDCP OUT messages carry fixed `sub_len_dw` values that are *not*
 /// `body.len() / 4`, so the framer cannot derive it -- the caller passes it.
 pub(super) fn push_frame_with(
     out: &mut KVec<u8>,

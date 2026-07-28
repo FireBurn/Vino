@@ -24,11 +24,10 @@ const STREAM_OPEN: [u8; 64] = [
 ];
 
 struct SessionKeys {
-    control_key: [u8; 16],
+    control_key: kernel::crypto::Secret<16>,
     control_nonce: [u8; 8],
     next_counter: u16,
-    modulus: [u8; 128],
-    exponent: [u8; 3],
+    rsa: kvino::RsaPublicKey,
     receiver_id_list: Vec<u8>,
 }
 
@@ -48,9 +47,9 @@ impl ControlSession {
         let dock = Dock::open().map_err(|e| format!("open DisplayLink dock: {e}"))?;
         device_open_preamble(&dock)?;
         session_init(&dock)?;
-        let keys = authenticate(&dock)?;
+        let mut keys = authenticate(&dock)?;
         let (wire_seq, inner_counter, video_keys, acknowledgements) =
-            configure_control(&dock, &keys)?;
+            configure_control(&dock, &mut keys)?;
         if acknowledgements == 0 {
             return Err("dock did not acknowledge the encrypted control session".into());
         }
@@ -272,22 +271,21 @@ impl ControlSession {
     ) -> Result<Vec<u8>, String> {
         const I2C_M_RD: u16 = 0x0001;
 
-        if address != kvino::DDCCI_I2C_ADDR {
+        if address != crate::ddcci::I2C_ADDR {
             return Err(format!("unsupported DDC/CI address {address:#04x}"));
         }
         if flags & I2C_M_RD == 0 {
-            let message = kvino::ddc_forward(self.inner_counter, head, payload)
+            let message = crate::ddcci::forward(self.inner_counter, head, payload)
                 .map_err(build_error("DDC/CI write"))?;
             self.send_control(0x36, &message)?;
             return Ok(Vec::new());
         }
 
-        let message =
-            kvino::ddc_read_req(self.inner_counter, head).map_err(build_error("DDC/CI read"))?;
+        let message = crate::ddcci::read_request(self.inner_counter, head);
         let reply = self
             .send_control(0x15, &message)?
             .ok_or_else(|| "dock did not return a DDC/CI read reply".to_string())?;
-        kvino::parse_ddc_reply(&self.keys.control_key, &self.keys.control_nonce, &reply)
+        crate::ddcci::parse_reply(&self.keys.control_key, &self.keys.control_nonce, &reply)
             .map_err(build_error("DDC/CI reply"))?
             .ok_or_else(|| "dock returned an invalid DDC/CI read reply".to_string())
     }
@@ -422,8 +420,9 @@ fn authenticate(dock: &Dock) -> Result<SessionKeys, String> {
 
     let mut km = [0; 16];
     kvino::rng::fill(&mut km);
-    let encrypted_km =
-        kvino::oaep_encrypt_km(&modulus, &exponent, &km).map_err(build_error("OAEP"))?;
+    let mut rsa =
+        kvino::rsa_public_key(&modulus, &exponent).map_err(build_error("RSA public key"))?;
+    let encrypted_km = kvino::oaep_encrypt_km(&mut rsa, &km).map_err(build_error("OAEP"))?;
     send_plain(
         dock,
         &kvino::ake_no_stored_km(sequence, 0, &encrypted_km)
@@ -515,15 +514,14 @@ fn authenticate(dock: &Dock) -> Result<SessionKeys, String> {
         control_key: kvino::cp_session_key(&raw_session_key),
         control_nonce,
         next_counter: sequence as u16,
-        modulus,
-        exponent,
+        rsa,
         receiver_id_list,
     })
 }
 
 fn configure_control(
     dock: &Dock,
-    keys: &SessionKeys,
+    keys: &mut SessionKeys,
 ) -> Result<(u32, u16, [[u8; 24]; HEADS], usize), String> {
     send_plain(dock, &STREAM_OPEN)?;
     let mut wire_seq = 0u32;
@@ -607,7 +605,7 @@ fn configure_control(
 #[allow(clippy::too_many_arguments)]
 fn configure_head(
     dock: &Dock,
-    keys: &SessionKeys,
+    keys: &mut SessionKeys,
     head: u8,
     wire_seq: &mut u32,
     inner_counter: &mut u16,
@@ -624,9 +622,9 @@ fn configure_head(
     kvino::rng::fill(&mut rn);
     kvino::rng::fill(&mut raw_video_key);
     kvino::rng::fill(&mut delivered_nonce);
-    let encrypted_km =
-        kvino::oaep_encrypt_km(&keys.modulus, &keys.exponent, &km).map_err(build_error("OAEP"))?;
-    video_key[..16].copy_from_slice(&kvino::cp_session_key(&raw_video_key));
+    let encrypted_km = kvino::oaep_encrypt_km(&mut keys.rsa, &km).map_err(build_error("OAEP"))?;
+    let whitened_video_key = kvino::cp_session_key(&raw_video_key);
+    video_key[..16].copy_from_slice(&whitened_video_key[..]);
     video_key[16..].copy_from_slice(&kvino::video_content_nonce(&delivered_nonce, head));
 
     let mut receiver_random = None;

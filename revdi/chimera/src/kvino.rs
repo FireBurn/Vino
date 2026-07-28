@@ -14,6 +14,7 @@
 // `bindings` modules) into scope as the parent the included files resolve
 // `super::*` against.
 pub use crate::kshim::*;
+pub use ::kernel::drm::display::hdcp as drm_hdcp;
 
 // The literal kernel files, loaded as real modules (so their inner `//!` docs and
 // `#![allow(..)]` resolve natively). They live in `chimera/vino/`, vendored from
@@ -145,7 +146,7 @@ pub fn stream_commit(counter: u16, head: u8) -> Result<Vec<u8>> {
     Ok(cp::stream_commit(counter, head)?.into_vec())
 }
 
-pub fn cp_session_key(ske_ks: &[u8; 16]) -> [u8; 16] {
+pub fn cp_session_key(ske_ks: &[u8; 16]) -> ::kernel::crypto::Secret<16> {
     cp::cp_session_key(ske_ks)
 }
 
@@ -162,24 +163,6 @@ pub fn get_edid_req(counter: u16, head: u8) -> Result<Vec<u8>> {
 /// (`0x20` readiness probe / `0x21` fetch).
 pub fn get_edid_req_sub(counter: u16, sub: u16, head: u8) -> Result<Vec<u8>> {
     Ok(cp::get_edid_req_sub(counter, sub, head)?.into_vec())
-}
-
-/// The monitor-control I2C address accepted by the dock's DDC/CI tunnel.
-pub const DDCCI_I2C_ADDR: u16 = cp::DDCCI_I2C_ADDR as u16;
-
-/// `cp::ddc_forward` — tunnel one raw DDC/CI write to a downstream head.
-pub fn ddc_forward(counter: u16, head: u8, payload: &[u8]) -> Result<Vec<u8>> {
-    Ok(cp::ddc_forward(counter, head, payload)?.into_vec())
-}
-
-/// `cp::ddc_read_req` — fetch the result of the preceding DDC/CI command.
-pub fn ddc_read_req(counter: u16, head: u8) -> Result<Vec<u8>> {
-    Ok(cp::ddc_read_req(counter, head)?.into_vec())
-}
-
-/// `cp::parse_ddc_reply` — decode the bounded DDC/CI payload from a dock reply.
-pub fn parse_ddc_reply(ks: &[u8; 16], out_riv: &[u8; 8], wire: &[u8]) -> Result<Option<Vec<u8>>> {
-    Ok(cp::parse_ddc_reply(ks, out_riv, wire)?.map(|payload| payload.into_vec()))
 }
 
 /// `cp::device_query_req` — OUT `id=0x14` device-status/capability query with an
@@ -545,7 +528,7 @@ pub fn ake_parse_in(body: &[u8]) -> Option<(u8, &[u8])> {
 }
 
 pub fn derive_kd(km: &[u8; 16], rtx: &[u8; 8], rrx: &[u8; 8]) -> Result<[u8; 32]> {
-    hdcp::derive_kd(km, rtx, rrx)
+    hdcp::derive_kd(km, rtx, rrx).map(|key| *key)
 }
 pub fn compute_h(kd: &[u8; 32], rtx: &[u8; 8], repeater: bool) -> [u8; 32] {
     hdcp::compute_h(kd, rtx, repeater)
@@ -556,8 +539,14 @@ pub fn compute_l(kd: &[u8; 32], rrx: &[u8; 8], rn: &[u8; 8]) -> [u8; 32] {
 pub fn compute_v_full(kd: &[u8; 32], list_header: &[u8]) -> [u8; 32] {
     hdcp::compute_v_full(kd, list_header)
 }
-pub fn oaep_encrypt_km(modulus: &[u8; 128], exponent: &[u8], km: &[u8; 16]) -> Result<[u8; 128]> {
-    hdcp::oaep_encrypt_km(modulus, exponent, km)
+pub type RsaPublicKey = ::kernel::crypto::akcipher::RsaPublicKey;
+
+pub fn rsa_public_key(modulus: &[u8; 128], exponent: &[u8]) -> Result<RsaPublicKey> {
+    Ok(RsaPublicKey::new(modulus, exponent, GFP_KERNEL)?)
+}
+
+pub fn oaep_encrypt_km(key: &mut RsaPublicKey, km: &[u8; 16]) -> Result<[u8; 128]> {
+    hdcp::oaep_encrypt_km(key, km)
 }
 pub fn compute_eks(
     km: &[u8; 16],
@@ -601,28 +590,6 @@ mod production_builders {
                 .len(),
             2560
         );
-    }
-
-    #[test]
-    fn ddc_reply_uses_only_the_declared_payload() {
-        let key = [0x5a; 16];
-        let riv = [0x33; 8];
-        let mut inner = [0; 32];
-        inner[0..2].copy_from_slice(&0x20u16.to_le_bytes());
-        inner[2..4].copy_from_slice(&0x25u16.to_le_bytes());
-        inner[22] = 4;
-        inner[23..27].copy_from_slice(&[0x6e, 0x88, 0x02, 0x90]);
-        let mut frame = seal_interactive(&key, &riv, 0x20, 9, &inner).unwrap();
-        frame[8..10].copy_from_slice(&0x45u16.to_le_bytes());
-
-        assert_eq!(
-            parse_ddc_reply(&key, &riv, &frame).unwrap().unwrap(),
-            [0x6e, 0x88, 0x02, 0x90]
-        );
-        inner[22] = 16;
-        let mut malformed = seal_interactive(&key, &riv, 0x20, 10, &inner).unwrap();
-        malformed[8..10].copy_from_slice(&0x45u16.to_le_bytes());
-        assert!(parse_ddc_reply(&key, &riv, &malformed).is_err());
     }
 
     #[test]

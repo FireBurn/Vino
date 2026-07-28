@@ -8,3 +8,8 @@ description = "A crate literally named 'kernel', so `use kernel::bindings;` insi
 [lib]
 name = "kernel"
 path = "src/lib.rs"
+
+[dependencies]
+num-bigint = "0.4"
+sha2 = "0.10"
+zeroize = "1"

@@ -24,7 +24,7 @@ kernel driver.
 
 | Path          | What it is | License |
 |---------------|------------|---------|
-| `module/`     | The Rust EVDI kernel module (`evdi.ko`). Virtual DRM/KMS display, EVDI private ioctls, USB-dock pairing, DDC/CI bridge, damage-tracked GRABPIX. | GPL-2.0 |
+| `module/`     | The Rust EVDI kernel module (`evdi.ko`). Virtual DRM/KMS display, EVDI private ioctls, USB-dock pairing, and damage-tracked GRABPIX. | GPL-2.0 |
 | `library/`    | `librevdi`: a Rust `cdylib` exposing the exact `evdi_lib.h` C ABI, installed as `libevdi.so.1`. | LGPL-2.1-or-later |
 | `chimera/`    | The DLM-replacement daemon and offline oracle. It compiles Vino's kernel protocol and codec sources in userspace. See `chimera/README.md`. | GPL-2.0-or-later |
 | `vino-driver/`| libusb transport for the dock, a frame oracle, and a focused traffic probe. | GPL-2.0-or-later |
@@ -50,7 +50,7 @@ files that are *edited in the kernel tree*:
 The kernel tree is authoritative. Refresh the copies with:
 
 ```sh
-make sync KSRC=/path/to/drm-next       # defaults to ../kernel
+make sync KSRC=/path/to/drm-next       # defaults to ../linux
 make check-sync                        # report drift, change nothing, exit 1 if any
 ```
 
@@ -128,10 +128,9 @@ sudo rmmod evdi
 ```
 
 `remove_all` unplugs every card in one shot without holding the registry lock
-across the (sleeping) DRM/I2C teardown, and it is safe even while clients still
+across the sleeping DRM teardown, and it is safe even while clients still
 hold the DRM nodes: the cards are unplugged, not freed under them, so every
-subsequent ioctl returns `ENODEV` and any in-kernel waiter (e.g. a pending
-DDC/CI transfer) is woken and bails out instead of stalling the teardown. Once
+subsequent ioctl returns `ENODEV` and in-kernel waiters are drained. Once
 the last client closes its file descriptors the module refcount drops to zero
 and `rmmod evdi` succeeds. (`rmmod` while a client still has the node open is
 refused with `EBUSY` by design — that is the kernel protecting you from a
@@ -142,16 +141,16 @@ The same drain-then-drop path runs automatically when a dock is unplugged
 
 ## Status
 
-**Module + library:** working end-to-end on a Dell D6000 under KWin/Wayland:
-multi-head output, live frame updates with delta damage, hardware cursor, DDC/CI,
-and clean teardown on dock unplug. See `docs/` for the design notes and the
-kernel-tree patch set.
+**Module + library:** the virtual output, live frame updates with delta damage,
+and clean dock-paired teardown have been exercised on a Dell D6000 under
+KWin/Wayland. The compatibility cursor and DDC/CI ioctls remain accepted, but
+the module advertises no cursor plane and no virtual I2C adapter in this
+revision.
 
-**Chimera:** the production service connects Revdi frames to the Vino control,
-mode, codec, USB, DPMS, cursor, DDC/CI, dynamic-topology, and session-recovery
-paths. Its optimized build and offline tests pass. The cleanup revision has not
-been exercised against hardware, so live parity remains a validation claim
-until the hardware test matrix in the companion Vino repository is complete.
+**Chimera:** the service connects Revdi frames to the Vino control, mode, codec,
+USB, DPMS, dynamic-topology, and session-recovery paths. It retains a
+userspace-only DDC/CI tunnel for research. Its optimized build and offline tests
+pass; this cleanup revision has not been exercised against hardware.
 
 ## License
 

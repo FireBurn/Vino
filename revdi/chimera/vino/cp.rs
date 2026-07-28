@@ -19,12 +19,12 @@ pub(super) const CP_KEY_WHITEN: [u8; 16] = [
 /// The result of `ske_ks XOR `[`CP_KEY_WHITEN`] keys the AES-CTR content
 /// cipher and the Dl3Cmac in [`seal_livemac`]. The input is wrapped into
 /// `Edkey`; the dock applies the same XOR.
-pub(super) fn cp_session_key(ske_ks: &[u8; 16]) -> [u8; 16] {
+pub(super) fn cp_session_key(ske_ks: &[u8; 16]) -> kernel::crypto::Secret<16> {
     let mut key = *ske_ks;
     for i in 0..16 {
         key[i] ^= CP_KEY_WHITEN[i];
     }
-    key
+    kernel::crypto::Secret::new(key)
 }
 
 /// Derive the AES-CTR content nonce for one video head from the RIV carried by that head's
@@ -211,7 +211,7 @@ fn mode_words(mode: &kernel::drm::kms::modes::DisplayMode) -> Option<(u16, u16)>
         mode.vtotal(),
     );
     match timing {
-        // 2560x1440@60 and @120 CVT-RB, both captured from DLM 3.4.26.
+        // Validated 2560x1440@60 and @120 CVT-RB profiles.
         (241_500, 2560, 2608, 2640, 2720, 1440, 1443, 1448, 1481)
         | (497_750, 2560, 2608, 2640, 2720, 1440, 1443, 1448, 1525) => Some((0x0600, 0x0800)),
         // 3840x2160@60 CVT-RB vendor vector.
@@ -220,7 +220,7 @@ fn mode_words(mode: &kernel::drm::kms::modes::DisplayMode) -> Option<(u16, u16)>
     }
 }
 
-/// Whether the dock has a captured mode profile for `mode`.
+/// Whether the dock has a validated mode profile for `mode`.
 pub(super) fn mode_supported(mode: &kernel::drm::kms::modes::DisplayMode) -> bool {
     mode_words(mode).is_some()
 }
@@ -253,11 +253,11 @@ pub(super) fn set_mode(counter: u16, head: u8, t: &Timing) -> Result<KVec<u8>> {
         b.extend_from_slice(&v.to_le_bytes(), GFP_KERNEL)?;
     }
     pad_to(&mut b, 58)?;
-    b.extend_from_slice(&0x0080u16.to_le_bytes(), GFP_KERNEL)?; // off58 (observed const)
-    b.extend_from_slice(&0x00ffu16.to_le_bytes(), GFP_KERNEL)?; // off60 (observed const)
+    b.extend_from_slice(&0x0080u16.to_le_bytes(), GFP_KERNEL)?; // off58: profile constant
+    b.extend_from_slice(&0x00ffu16.to_le_bytes(), GFP_KERNEL)?; // off60: profile constant
     pad_to(&mut b, 66)?;
     b.extend_from_slice(&t.off66.to_le_bytes(), GFP_KERNEL)?; // off66: see `mode_words`
-    b.extend_from_slice(&0x0200u16.to_le_bytes(), GFP_KERNEL)?; // off68: DLM 3.4.26 constant
+    b.extend_from_slice(&0x0200u16.to_le_bytes(), GFP_KERNEL)?; // off68: profile constant
     b.extend_from_slice(&t.pixel_clock_10khz.to_le_bytes(), GFP_KERNEL)?; // off70: 10 kHz units
     pad_to(&mut b, 74)?;
     let mut tail = [0u8; 6];
@@ -265,114 +265,6 @@ pub(super) fn set_mode(counter: u16, head: u8, t: &Timing) -> Result<KVec<u8>> {
     b.extend_from_slice(&tail, GFP_KERNEL)?; // off74..79: fresh per-message token
     Ok(b)
 }
-/// VESA MCCS 2.2 VCP feature codes carried over DDC/CI.
-pub(super) const VCP_BRIGHTNESS: u8 = 0x10;
-pub(super) const VCP_CONTRAST: u8 = 0x12;
-/// VCP 0xD6 "Power mode": value 0x01 = on, 0x04 = off (DPMS-off / hard standby). Lets DPMS
-/// blank the panel backlight instead of freezing the last frame (see [`crtc_atomic_disable`]).
-pub(super) const VCP_POWER_MODE: u8 = 0xd6;
-pub(super) const POWER_OFF: u16 = 0x04;
-/// Build a DDC/CI "Set VCP Feature" request: the 7 bytes a DDC/CI host writes to the
-/// monitor's I2C slave 0x37, after the 0x6e (= 0x37<<1) write address (VESA DDC/CI 1.1
-/// sec 4.4). Layout: source 0x51, length `0x80 | 4`, opcode 0x03 (Set VCP), VCP code,
-/// value-hi, value-lo, then an XOR checksum seeded with the destination address 0x6e. Pure
-/// and fully standard, so it is unit-tested byte-exact against the spec
-/// ([`super::tests::ddc_ci_set_vcp_checksum`]).
-pub(super) fn ddc_ci_set_vcp(vcp: u8, value: u16) -> [u8; 7] {
-    let body = [0x51u8, 0x84, 0x03, vcp, (value >> 8) as u8, value as u8];
-    let mut chk = 0x6eu8; // checksum seed = destination slave-write address (0x37 << 1)
-    for &x in &body {
-        chk ^= x;
-    }
-    [body[0], body[1], body[2], body[3], body[4], body[5], chk]
-}
-/// CP message that tunnels a DDC/CI Set-VCP write to one downstream monitor.
-pub(super) fn ddc_set_vcp(counter: u16, head: u8, vcp: u8, value: u16) -> Result<KVec<u8>> {
-    ddc_forward(counter, head, &ddc_ci_set_vcp(vcp, value))
-}
-/// The DDC/CI I2C slave address on the monitor bus.
-pub(super) const DDCCI_I2C_ADDR: u8 = 0x37;
-/// Tunnel a raw DDC/CI write to `head`.
-///
-/// Offset 22 selects the head, offset 23 contains the payload length, offsets 24 through 55 contain
-/// the DDC bytes and zero padding, and offsets 56 through 63 contain a fresh token. The monitor's
-/// I2C address is implicit.
-pub(super) fn ddc_forward(counter: u16, head: u8, payload: &[u8]) -> Result<KVec<u8>> {
-    if payload.len() > 32 {
-        return Err(EINVAL);
-    }
-    let mut b = KVec::with_capacity(64, GFP_KERNEL)?;
-    header(&mut b, 0x36, 0x26, counter)?;
-    pad_to(&mut b, 22)?;
-    b.push(head, GFP_KERNEL)?;
-    b.push(payload.len() as u8, GFP_KERNEL)?;
-    b.extend_from_slice(payload, GFP_KERNEL)?;
-    pad_to(&mut b, 56)?;
-    let mut tail = [0u8; 8];
-    rng::fill(&mut tail);
-    b.extend_from_slice(&tail, GFP_KERNEL)?;
-    Ok(b)
-}
-
-/// Request the result of the preceding DDC/CI read command for `head`. DLM sends this 32-byte
-/// `id=0x15 sub=0x25` message after forwarding a Get-VCP write; the dock responds with
-/// `id=0x20 sub=0x25`, response length at inner off22 and raw DDC bytes at off23.
-pub(super) fn ddc_read_req(counter: u16, head: u8) -> Result<KVec<u8>> {
-    let mut b = KVec::with_capacity(32, GFP_KERNEL)?;
-    header(&mut b, 0x15, 0x25, counter)?;
-    pad_to(&mut b, 22)?;
-    b.push(head, GFP_KERNEL)?;
-    let mut tail = [0u8; 9];
-    rng::fill(&mut tail);
-    b.extend_from_slice(&tail, GFP_KERNEL)?;
-    Ok(b)
-}
-
-/// Decode the `id=0x20 sub=0x25` reply to [`ddc_read_req`].
-///
-/// The response length is at inner offset 22 and the DDC/CI bytes begin at offset 23. Firmware
-/// uses the same four inbound RIV variants as the other interactive replies, so accept only a
-/// message whose complete inner header and declared payload validate under one of them.
-pub(super) fn parse_ddc_reply(
-    ks: &[u8; 16],
-    out_riv: &[u8; 8],
-    wire: &[u8],
-) -> Result<Option<KVec<u8>>> {
-    if wire.len() < 32
-        || u32::from_le_bytes([wire[4], wire[5], wire[6], wire[7]]) != 4
-        || u16::from_le_bytes([wire[8], wire[9]]) != 0x45
-    {
-        return Ok(None);
-    }
-    let seq = u32::from_le_bytes([wire[12], wire[13], wire[14], wire[15]]);
-    let encrypted = &wire[16..wire.len() - 16];
-    for riv in inbound_reply_rivs(out_riv) {
-        let Ok(plaintext) = open_in(ks, &riv, seq, encrypted) else {
-            continue;
-        };
-        if plaintext.len() < 23 {
-            continue;
-        }
-        let id = u16::from_le_bytes([plaintext[0], plaintext[1]]);
-        let sub = u16::from_le_bytes([plaintext[2], plaintext[3]]);
-        let pad = u16::from_le_bytes([plaintext[6], plaintext[7]]);
-        if id != 0x20 || sub != 0x25 || pad != 0 {
-            continue;
-        }
-        let len = plaintext[22] as usize;
-        let Some(end) = 23usize.checked_add(len) else {
-            return Err(EPROTO);
-        };
-        let Some(payload) = plaintext.get(23..end) else {
-            return Err(EPROTO);
-        };
-        let mut out = KVec::with_capacity(len, GFP_KERNEL)?;
-        out.extend_from_slice(payload, GFP_KERNEL)?;
-        return Ok(Some(out));
-    }
-    Ok(None)
-}
-
 /// Convert a DRM display mode into the dock's set-mode timing representation.
 pub(super) fn timing_from_drm_mode(mode: &kernel::drm::kms::modes::DisplayMode) -> Result<Timing> {
     let refresh = mode.vrefresh() as u16;
@@ -611,7 +503,7 @@ pub(super) fn cursor_create(counter: u16, head: u8, w: u16, h: u16) -> Result<KV
     cursor_header(&mut b, 0x1b, 0x42, counter, head)?;
     b.extend_from_slice(&w.to_le_bytes(), GFP_KERNEL)?; // off24..25
     b.extend_from_slice(&h.to_le_bytes(), GFP_KERNEL)?; // off26..27
-    pad_to(&mut b, 32)?; // off28..31 (DLM uninit; we zero)
+    pad_to(&mut b, 32)?; // off28..31 reserved
     Ok(b)
 }
 /// cursor move (sec 8.6.1): `id=0x1a sub=0x43`, head id @23, X @24, Y @26 (LE).
@@ -620,7 +512,7 @@ pub(super) fn cursor_move(counter: u16, head: u8, x: u16, y: u16) -> Result<KVec
     cursor_header(&mut b, 0x1a, 0x43, counter, head)?;
     b.extend_from_slice(&x.to_le_bytes(), GFP_KERNEL)?; // off24..25
     b.extend_from_slice(&y.to_le_bytes(), GFP_KERNEL)?; // off26..27
-    pad_to(&mut b, 32)?; // off28..31 (DLM uninit; we zero)
+    pad_to(&mut b, 32)?; // off28..31 reserved
     Ok(b)
 }
 /// cursor image (sec 8.6.1): inner `id=0x401c sub=0x41` (the 0x40 high-byte flag marks the
