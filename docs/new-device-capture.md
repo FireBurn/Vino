@@ -31,8 +31,37 @@ Invalid firmware: beginning of TLV / body of TLV / wrong length of TLV
 ```
 
 So there is a **firmware compatibility enforcer** with a platform-specific selector, a **DFU** path to
-push an image, and a TLV-structured package per platform. The Ella image also **changed between DLM
-releases** here (920,416 B in 6.4.24.0 → 928,464 B in 6.8.1.0), so it is actively maintained.
+push an image, and a TLV-structured package per platform.
+
+**Each package carries its own version, in plaintext.** The container is `"ELLA"` + a `u32` LE total
+length (the format is named after the first platform to use it, not the contents), and somewhere inside
+sits a build descriptor: the platform codename, an 8-hex build id, and a build date. Read it with:
+
+```bash
+strings -n 6 /opt/displaylink/ella-dock-release.spkg \
+  | grep -E '^[0-9a-f]{8}$|^20[0-9]{2}-[0-9]{2}-[0-9]{2}$' | head -2
+```
+
+The codenames match the vendor identity blob tails exactly — `EllaDockOW`, `RidgeDocOW` — so a
+device's blob names the package that targets it.
+
+Measured across four shipped releases:
+
+| source | ella-dock | ridge-dock (= D6000) | navarro-dock | firefly-monitor |
+|---|---|---|---|---|
+| Linux 6.4.24 | `99fc983d` 2023-09-21 | `ad23f7e3` 2024-02-02 | `0f416ea2` 2024-01-31 | `0f416ea2` 2024-01-31 |
+| Linux 6.8.1 | `57bed729` 2025-12-03 | `3d85201b` 2026-03-23 | `52aef616` 2026-03-27 | `57bed729` 2025-12-03 |
+| macOS 16.1 | `57bed729` 2025-12-03 | `3d85201b` 2026-03-23 | `7785f9fb` 2026-05-14 | `57bed729` 2025-12-03 |
+| macOS 16.2 | `57bed729` 2025-12-03 | `3d85201b` 2026-03-23 | `914777de` 2026-06-18 | `57bed729` 2025-12-03 |
+
+**Ella has been static since Linux 6.8.1** and is byte-identical in macOS 16.1 and 16.2
+(sha256 `b44ba56e…`); only **Navarro** is iterating. So the image an Ella dock would be flashed with is
+`57bed729` / 2025-12-03 regardless of which recent DLM you use — there is no newer one to chase, and
+no reason to prefer 16.2 over 6.8.1 for this purpose.
+
+⚠ Extracting the macOS `.pkg` takes three layers: xar → `pbzx` (chunked xz — `7z` stops after the
+first 16 MB chunk, so decode the chunk list properly) → cpio. The packages land in
+`DisplayLink Manager.app/Contents/Resources/`.
 
 **Why this matters more than it looks.** A dock that has been in a drawer for a decade is almost
 certainly running firmware older than the shipped image. If DLM decides to bring it up to date, that
