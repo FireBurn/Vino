@@ -146,6 +146,43 @@ any change must be conditional on device generation and must not regress it.
 
 ---
 
+## 2a. Prerequisites — do all of these once
+
+```bash
+# Wire capture. usbmon is NOT autoloaded; this is the single most common lost capture.
+sudo modprobe usbmon
+ls /dev/usbmon*                       # expect usbmon0..N
+sudo apt install wireshark-cli        # or: tshark / wireshark, for dumpcap + tshark
+
+# Key extraction. Install as your NORMAL user, not root -- see the PYTHONPATH gotcha below.
+pip install --user frida pycryptodome
+
+# DLM needs evdi loaded to do anything at all.
+lsmod | grep evdi || sudo modprobe evdi
+systemctl status displaylink-driver.service
+
+# The harness and the offline decryptor.
+git clone https://github.com/FireBurn/vino-scripts && cd vino-scripts
+```
+
+**Stop anything racing DLM for the interface.** DLM and the kernel drivers fight over the same
+interface, and a half-bound device produces a capture that looks like a protocol bug:
+
+```bash
+sudo tee /etc/modprobe.d/zz-dl-capture.conf >/dev/null <<'EOF'
+blacklist udl
+blacklist udlfb
+blacklist vino
+EOF
+```
+
+then **reboot**, or unplug/replug the device, so nothing is still holding it.
+
+**Disk.** A whole-bus capture also records video traffic if a panel lights up — hundreds of MB per
+minute at speed. Have a few GB free, or pass `-b filesize:200000` to `dumpcap` for a 200 MB ring.
+
+---
+
 ## 3. What would help
 
 ### (a) Confirm the platform — two minutes, no DLM, no risk ★
@@ -196,7 +233,102 @@ What this answers:
 Send `lsusb-verbose.txt`, `interfaces.txt`, `vino-identity.txt`. **That, plus the archived transcript,
 may be enough to produce a patch to test** — no wire capture needed.
 
-### (b) A DLM capture designed to catch the firmware update ★★
+### (b) The capture that actually adds support: wire **plus keys** ★★★
+
+**This is the important one.** The init sequence and the whole HDCP AKE go over the wire in the clear
+— which is why the archived transcript was enough to find the `init_4` bug. But everything after
+`SKE_SEND_EKS` is **AES-CTR sealed**, and that is exactly where display support lives:
+
+* `id=0x48 sub=0x22` — set-mode (timings, the mode profile words)
+* `id=0x194` — the real EDID
+* the post-msg0 setup burst, per-head restatement, stream markers
+
+So a plain usbmon capture of DLM gives us sealed bytes we cannot read. **The keys have to be captured
+from DLM in the same session**, and that is a solved problem — it is how the D6000's control plane was
+decoded.
+
+#### Two captures, simultaneously, one session
+
+Keys are per-session, so the wire capture and the key capture must overlap. Run both:
+
+| what | tool | why |
+|---|---|---|
+| the wire | **usbmon** | authoritative bytes, all endpoints, timing |
+| `(ks, riv)` | **frida** on live DLM | the session key; hooks DLM's AES core |
+
+⚠ Do **not** rely on frida for the wire — its USB hook drops bulk transfers (measured: 0 against
+usbmon's 249 for the same traffic). usbmon is the source of truth for bytes; frida supplies only keys.
+
+#### Version matching — please read, it decides whether this works
+
+The key hook attaches at a **build-specific offset** inside DLM. Ours is derived for:
+
+```
+DLM package 6.8.1.0
+/opt/displaylink/DisplayLinkManager  sha256 d3584c4369a594e9bcac…   (stripped PIE, BuildID 27c7a1f2…)
+AES core @ 0x269dd0        round key INLINE at rdi+16 (not a pointer at rdi+8)
+```
+
+**Easiest path: install DLM 6.8.1.0** and the harness works unchanged.
+
+If you must use a different version, send the binary's `sha256sum` (or the package version) and the
+offset can be re-derived at this end — DLM uses a **software** AES, not AES-NI, so the anchor is the
+Rijndael S-box (single occurrence, file offset `0x8ba5a0` in 6.8.1.0) and the function that references
+it. Please don't guess the offset; a wrong hook yields an empty key and a silently keyless capture,
+which has cost a hardware run here before.
+
+#### Running it
+
+```bash
+git clone https://github.com/FireBurn/vino-scripts && cd vino-scripts
+sudo modprobe usbmon                                  # NOT autoloaded
+lsusb -d 17e9: -t                                     # note the BUS
+
+# 1) wire, whole bus, full snaplen, in the background
+sudo dumpcap -i usbmon<BUS> -s 0 -w keyed-wire.pcapng &
+
+# 2) keys -- attach to the LIVE DLM (never --spawn: it wedges the dock)
+sudo env PYTHONPATH=$HOME/.local/lib/python3*/site-packages \
+  python3 vino-re/frida/decode-modeset-live.py --secs 120 --out keyed-keys.json \
+  | tee keyed-keys.log
+
+# 3) while both are running, make DLM do the things we need to see:
+#    - let the device connect and reach a picture if it can
+#    - change resolution, so a set-mode is emitted
+sleep 5
+sudo pkill dumpcap
+```
+
+⚠ `--secs` must cover the whole window, and **only one frida session at a time**.
+
+⚠ **Never hook DLM's hot AES paths** — the harness deliberately hooks the block function, not the
+per-round helpers, because hooking those stalls DLM into a watchdog restart.
+
+⚠ CP crypto is **dormant on a warm dock**: if DLM already has an established session, no AKE and no
+fresh keys will appear. Start the capture, then **connect the device** (or restart DLM) so a real
+session initialises inside the capture window.
+
+⚠ For a resolution change to emit a set-mode, note that DLM only reprograms the dock's timing at
+**connect** on the D6000 — a runtime change makes it scale instead. If nothing appears, restart DLM
+between modes rather than switching live.
+
+#### Verify it before sending — this is the whole point
+
+Prove the sealed traffic actually decrypts, rather than discovering weeks later that it doesn't:
+
+```bash
+python3 -c 'import json;print(len(json.load(open("keys.candidates.json"))),"key candidates")'
+scripts/decrypt-dlm-cp.py wire.pcapng keys.candidates.json | head -40
+```
+
+You are looking for decoded inner messages — `id=0x48 sub=0x22` (set-mode), `id=0x194` (EDID),
+`wsub=0x24`/`0x45` sealed traffic rendered as structured plaintext. If you get plausible message ids
+and lengths, the capture is good.
+
+**Even a keyless run is worth sending.** The wire capture cannot be recaptured later; keys can be
+re-extracted from the recorded DLM build hash. Send it either way and say which you got.
+
+### (c) A capture designed to catch the firmware update ★★
 
 Read §0 first — this run may rewrite the device. What follows is arranged so that if a flash happens,
 we get all of it, and so that we can *prove* it happened.
@@ -318,7 +450,7 @@ If nothing like it appears, that is still a useful answer: it means the enforcer
 firmware was already acceptable, and the `bcdDevice` diff in step 4 will corroborate that nothing
 changed.
 
-### (c) Re-run the archived implementation, if you have it
+### (d) Re-run the archived implementation, if you have it
 
 If it still reaches `H values matched` / `L values matched` on that hardware, that is a live
 independent oracle and by far the strongest evidence available. If it now fails where it once passed,
@@ -330,11 +462,17 @@ the firmware has moved and the transcript is historical.
 
 ```bash
 D=dl-capture-$(date +%Y%m%d); mkdir -p $D
-mv lsusb-verbose.txt interfaces.txt vino-identity.txt run*.pcapng run*.log run*.txt $D/ 2>/dev/null
+mv lsusb-verbose.txt interfaces.txt vino-identity.txt $D/ 2>/dev/null
+# the keyed capture directory from scripts/capture-newdevice.sh, whole:
+mv ~/dlcap-keyed $D/keyed 2>/dev/null
+mv run*.pcapng run*.log run*.txt fwcap $D/ 2>/dev/null
 cat > $D/NOTES.txt <<'EOF'
 device:        <product name and PID>  -- WHICH physical unit, if you have several
 same unit as the archived transcript?   <yes / no / unsure>
 has DLM ever been run against it?       <yes / no / unsure>   <- decides if firmware may have moved
+key candidates captured?                <number, from the verify step>
+did decrypt-dlm-cp.py show plaintext?   <yes / no / not tried>
+DLM build sha256:                       <from dlm-sha256.txt, needed to re-derive the key offset>
 monitor:       <make/model, native mode>, connected via <VGA/DVI/HDMI>
 through a hub? <yes/no>
 DLM version:   <package version>
@@ -365,13 +503,61 @@ not knowing that much about a capture.
 
 ---
 
-## Appendix — capture troubleshooting
+## Appendix — every gotcha, each of which has cost a real run
+
+### Wire capture
+
+| gotcha | consequence | do this |
+|---|---|---|
+| **`usbmon` is not autoloaded** | `dumpcap` cannot open the interface | `sudo modprobe usbmon` before anything |
+| capture is empty | wrong bus | `busnum` **changes across replugs**; re-check after every plug |
+| **default snaplen truncates** | payloads cut; a sealed frame or firmware chunk is unusable | always `dumpcap -s 0` |
+| filtering by device or PID | a **DFU re-enumerates, possibly under a different product ID**, and you lose exactly the interesting part | capture the whole **bus**; `usbmon0` (all buses) if it may move bus |
+| usbmon `read()` caps at ~61 KB/URB | a >61 KB URB loses its tail, desyncing a record walk | fine for control traffic; for byte-exact video use `MON_IOCX_MFETCH` + mmap |
+| stopping too early | a ~1 MB firmware image over a control pipe takes **minutes** | run 5–10 min for a flash watch; watch `dmesg -w` |
+| whole-bus capture fills the disk | run dies mid-flash | few GB free, or `-b filesize:200000` |
+
+### Key extraction (frida)
+
+| gotcha | consequence | do this |
+|---|---|---|
+| **`sudo python3` cannot see user-site frida** | `ModuleNotFoundError: frida` | `sudo env PYTHONPATH=$HOME/.local/lib/python3.X/site-packages python3 …` |
+| **the frida USB hook drops bulk transfers** | measured 0 against usbmon's 249 for the same traffic | usbmon is the source of truth for **bytes**; frida supplies **keys** only |
+| **build-specific AES offset** | a wrong hook yields an **empty key** and a silently keyless capture | match DLM 6.8.1.0, or send the binary hash so it can be re-derived. Never guess |
+| the round key is **inline at `rdi+16`** | the `rdi+8`-as-pointer form reads null and yields empty keys | already handled in the harness; do not "fix" it |
+| **hooking the hot AES helpers** (`0x269e69`, `0x1cf436`) | stalls DLM into a **watchdog restart** | hook only the block function, as the harness does |
+| **more than one frida session** | they interfere; captures come back empty | one at a time |
+| **`--spawn`** | **wedges the dock firmware** — blank screen, needs replug or reboot | never on hardware you care about; attach to the live DLM |
+| decrypting before persisting | a decrypt bug throws away a hardware run | the harness writes raw **first**; keep `keys-raw.json` |
+| `--secs` shorter than the window | keys captured, session missed, or vice versa | cover the whole capture |
+
+### Getting DLM to do the thing
+
+| gotcha | consequence | do this |
+|---|---|---|
+| **CP crypto is dormant on a warm dock** | no AKE, no fresh keys, nothing to decrypt with | start the capture, **then** connect the device or restart DLM |
+| **DLM reprograms the dock timing only at connect** | a runtime resolution change makes it **scale**; no set-mode on the wire | restart DLM between modes rather than switching live |
+| **`kscreen-doctor` mode indices are renumbered** between `-o` calls | a stale index silently sets the **wrong mode** and still returns 0 | address modes as `WxH@rate`, never by number |
+| `udl` / `udlfb` / `vino` loaded | they race DLM for the interface; the capture looks like a protocol bug | blacklist all three, then **reboot** |
+| `evdi` not loaded | DLM does nothing at all | `modprobe evdi`; check the service status |
+| **interrupting a firmware flash** | **bricks the device** | never unplug or suspend mid-write; if in doubt, wait |
+
+### Analysis, if you look yourself
+
+| gotcha | consequence | do this |
+|---|---|---|
+| **numpy 1.26.4 on Python 3.14 corrupts large arrays** | silently overwrites live array locals ≥256 KiB **inside functions** | use a venv with a matched numpy; treat any large-array result from that combo as suspect |
+| a "contentless ACK" | the device ACKs malformed messages and then ignores them, so **nothing on the wire says no** | never treat an ACK as proof a message was understood — that is exactly the `init_4` bug |
+| comparing against a forced-key run | a forced key can hide a real key bug for weeks | re-diff with a fresh random session |
+
+### Quick reference
 
 | symptom | cause |
 |---|---|
 | `dumpcap` cannot initiate capture on `usbmon<N>` | `sudo modprobe usbmon` |
-| capture empty | wrong bus; `busnum` changes across replugs |
-| DLM does nothing | `systemctl status displaylink-driver.service`; needs `evdi` loaded |
-| device grabbed before DLM sees it | blacklist not applied — reboot after writing it |
-| mode-set capture looks empty | DLM only reprograms timing at **connect**; a runtime change makes it scale |
-| `kscreen-doctor` set the wrong mode | mode **indices are renumbered** between calls — use `WxH@rate` |
+| capture empty | wrong bus number |
+| `ModuleNotFoundError: frida` under sudo | missing `PYTHONPATH` |
+| 0 key candidates | warm dock (no AKE in window), or wrong AES offset for your build |
+| keys present but nothing decrypts | keys from a different session than the wire — they must overlap |
+| DLM does nothing | `evdi` not loaded, or service not running |
+| mode-set capture looks empty | DLM only reprograms at connect |
