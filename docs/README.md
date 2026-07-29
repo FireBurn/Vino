@@ -11,6 +11,7 @@ become mixed with kernel API design or build instructions.
 | [`protocol/control.md`](protocol/control.md) | Plain initialization and encrypted control-plane structure |
 | [`protocol/hdcp.md`](protocol/hdcp.md) | HDCP 2.2 message flow and verified key derivations |
 | [`protocol/video.md`](protocol/video.md) | Video arm, codec, records, damage, and submission |
+| [`new-device-capture.md`](new-device-capture.md) | Onboarding DisplayLink hardware vino cannot yet drive: descriptor triage, the gen-1 `init_4` divergence, and a capture procedure built to record a firmware update |
 | [`reverse-engineering.md`](reverse-engineering.md) | Evidence policy, capture method, independent oracles, and adding findings |
 | [`revdi-chimera.md`](revdi-chimera.md) | Revdi ABI compatibility and Chimera data flow |
 | [`upstream.md`](upstream.md) | Current bases, v1/v2 feedback disposition, authorship, and subsystem ownership |
