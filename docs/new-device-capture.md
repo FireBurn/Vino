@@ -332,6 +332,46 @@ session initialises inside the capture window.
 **connect** on the D6000 — a runtime change makes it scale instead. If nothing appears, restart DLM
 between modes rather than switching live.
 
+#### What to DO while it captures — this is most of the value
+
+A capture is only as good as what happened during it. Every entry below is here because its absence
+cost real time: the behaviour had to be inferred, or was inferred **wrongly**, from a corpus that
+never contained the action.
+
+`capture-newdevice.sh` walks you through it and **timestamps every step into `journal.tsv`**, so the
+wire can be sliced by action afterwards. The timestamps are epoch seconds, which is exactly what
+`decrypt-dlm-cp.py --start/--end` takes:
+
+```bash
+awk -F'\t' '/cursor/' ~/dlcap-keyed/journal.tsv
+tools/capture/decrypt-dlm-cp.py wire.pcapng keys.candidates.json --start <t> --end <t>
+```
+
+Without a journal, a three-minute capture is an undifferentiated wall of frames and matching bytes to
+behaviour is guesswork.
+
+| Step | Do this | Why it matters |
+|---|---|---|
+| `idle-before` | nothing at all | Establishes the resting cadence. DLM sends **zero** bytes on a static desktop; we only learned that by measuring it deliberately, and it turned an apparent vino bug into a real one. |
+| `connect` | plug the dock in, or restart DLM | The whole init, HDCP AKE, certificate, EDID and **set-mode**. Almost everything that defines a device is here. ⚠ A warm dock has no AKE and yields **no keys**. |
+| `settle` | leave it alone | Separates activation from steady state. |
+| `cursor-move` | move the pointer slowly on the dock screen | Cursor position messages. The head id sits at off22 and the visible flag at off23 — read the wrong way round for a long time, because on a single-head capture the two share values. |
+| `cursor-shape` | hover a text field, then a link | Forces **bitmap** changes as distinct from movement. A capture with only movement cannot separate the two, and the bitmap offset (off34, not off32) is invisible until a non-transparent pixel differs. |
+| `cursor-off` | move the pointer off the dock screen | The **hide** path. Hiding by parking the cursor off-screen leaves a ghost at the panel's top-left, because the dock wraps an out-of-range origin instead of clipping. Only a capture containing a real hide shows the correct encoding. |
+| `window-drag` | drag a window around | Damage/delta encoding under partial change. Two separate drag bugs were found this way. |
+| `video` | play something fullscreen | Sustained full-frame throughput, and the retransmit behaviour. |
+| `idle-after` | stop, do not touch the mouse | True quiescence. A driver that keeps sending here has a bug — that is precisely how a runaway repaint was caught. |
+| `mode-change` | change resolution, addressed as `WxH@rate` | ⚠ On the D6000, DLM only reprograms the dock at **connect**; a runtime change makes it **scale**. Capturing this documents which behaviour your device has. ⚠ Never address modes by index — the numbers are renumbered between calls. |
+| `dpms` | blank the screen, then wake it | The sink power-down. The existing corpus **cannot** settle this: a DLM output toggle emits the same `0x2e`/`0x2f` sequence as a mode-set bracket, so it needs an isolated action to disentangle. |
+| `monitor-unplug` | unplug the monitor from the dock, wait, replug | Hotplug. The dock announces a replug **twice**, in two different ways, several seconds apart — that took a whole session to establish because no capture contained a real unplug. |
+| `dock-unplug` | unplug the dock | Teardown. |
+
+If your device has **two heads**, run the cursor and mode steps once per head; per-head state is
+where several asymmetries hide.
+
+If a step does not apply — no second head, no monitor you can unplug — let it run out rather than
+skipping. A labelled window with nothing in it is itself evidence.
+
 #### Verify it before sending — this is the whole point
 
 Prove the sealed traffic actually decrypts, rather than discovering weeks later that it doesn't:

@@ -22,7 +22,12 @@
 #   * raw frames are persisted BEFORE any decrypt attempt, so a decrypt bug cannot discard the run.
 set -uo pipefail
 
-OUT="${1:?usage: sudo tools/capture/capture-newdevice.sh <outdir> [seconds]}"
+GUIDED=1
+case "${1:-}" in
+  --unguided) GUIDED=0; shift ;;
+  --guided)   GUIDED=1; shift ;;
+esac
+OUT="${1:?usage: sudo tools/capture/capture-newdevice.sh [--unguided] <outdir> [seconds]}"
 SECS="${2:-180}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VID=17e9
@@ -113,16 +118,59 @@ else
   warn "not attaching frida (no DLM running, or frida unavailable) -- WIRE ONLY"
 fi
 
-cat <<EOF
+# ---- the choreography ----------------------------------------------------------------
+# Each step is journalled with an epoch timestamp so the capture can be sliced by action
+# afterwards. decrypt-dlm-cp.py takes --start/--end in exactly these units, so a journal line is
+# directly usable: without it, a long capture is an undifferentiated wall of frames and working out
+# which bytes belong to which action is guesswork. That guesswork is what made several of these
+# behaviours take whole sessions to pin down.
+JOURNAL="$OUT/journal.tsv"
+: > "$JOURNAL"
+mark() { printf '%s\t%s\n' "$(date +%s.%N)" "$1" | tee -a "$JOURNAL" >/dev/null; }
+
+step() { # step <seconds> <label> <instruction...>
+  local secs="$1" label="$2"; shift 2
+  printf '\n\033[1;32m>>>\033[0m %s\n' "$*"
+  mark "begin:$label"
+  local i="$secs"
+  while [ "$i" -gt 0 ]; do printf '\r    %2ds ' "$i"; sleep 1; i=$((i-1)); done
+  printf '\r        \r'
+  mark "end:$label"
+}
+
+if [ "$GUIDED" = 1 ] && [ -t 0 ]; then
+  cat <<'EOF'
+
+  A guided capture follows. Each step is timestamped so the wire can be sliced by action.
+  Do each one when prompted; if a step does not apply (no second head, no monitor to
+  unplug) just let it run out. Do NOT unplug anything if a firmware flash starts.
+
+EOF
+  read -rp "  press enter to begin: " _ || true
+
+  step 15 idle-before      "Leave everything ALONE. Baseline: what the link does with nothing happening."
+  step 30 connect          "PLUG THE DOCK IN NOW (or restart DLM). This carries init, the HDCP AKE, EDID and the mode-set."
+  step 15 settle           "Leave it alone until the picture settles."
+  step 15 cursor-move      "Move the mouse pointer around ON THE DOCK SCREEN, slowly."
+  step 15 cursor-shape     "Hover over a TEXT FIELD then a LINK, so the pointer CHANGES SHAPE a few times."
+  step 10 cursor-off       "Move the pointer OFF the dock screen entirely and leave it off."
+  step 15 window-drag      "DRAG A WINDOW around the dock screen."
+  step 20 video            "Play a VIDEO FULLSCREEN on the dock screen."
+  step 30 idle-after       "Stop everything. Do not touch the mouse. True idle."
+  step 20 mode-change      "Change the dock output's RESOLUTION (address it as WxH@rate, not by index)."
+  step 20 dpms             "Blank the screen and wake it (DPMS off, then on)."
+  step 20 monitor-unplug   "UNPLUG THE MONITOR from the dock, wait, then PLUG IT BACK IN."
+  step 10 dock-unplug      "UNPLUG THE DOCK."
+else
+  cat <<EOF
 
   >>> NOW: plug the device in, or restart DLM, so a FRESH session initialises. <<<
       A warm dock has no AKE and yields no keys.
-      If you want a set-mode too, change resolution -- but note DLM may only
-      reprogram the dock at connect, in which case restart DLM instead.
       Capturing for ${SECS}s. Do NOT unplug if a firmware flash starts.
 
 EOF
-sleep "$SECS"
+  sleep "$SECS"
+fi
 
 [ -n "$FRIDA" ] && wait $FRIDA 2>/dev/null
 kill $DUMP 2>/dev/null; wait $DUMP 2>/dev/null
@@ -159,5 +207,11 @@ echo
 say "sanity-check the sealed traffic decrypts:"
 echo "   tools/capture/decrypt-dlm-cp.py $OUT/wire.pcapng $OUT/keys.candidates.json | head -40"
 echo
+if [ -s "$JOURNAL" ]; then
+  printf '   journal        : %s step(s) -> %s\n' "$(($(wc -l < "$JOURNAL") / 2))" "$JOURNAL"
+  say "slice the capture by action, e.g. the cursor steps:"
+  echo "   awk -F'\t' '/cursor/ {print}' $JOURNAL"
+  echo "   tools/capture/decrypt-dlm-cp.py $OUT/wire.pcapng $OUT/keys.candidates.json --start <t> --end <t>"
+fi
 say "then send the whole directory. Even a keyless run is worth sending -- the wire cannot be"
 say "recaptured later, but keys can be re-extracted from the recorded DLM build hash."

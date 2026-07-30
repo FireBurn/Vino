@@ -6,7 +6,7 @@ recorded. The procedure, prerequisites and the accumulated gotchas are in
 
 | Script | Purpose |
 |---|---|
-| `capture-newdevice.sh` | One command: usbmon wire capture **and** frida key extraction over the same session, with before/after device state so a firmware flash is provable. Start here. |
+| `capture-newdevice.sh` | One command: usbmon wire capture **and** frida key extraction over the same session, with before/after device state so a firmware flash is provable. **Guided by default** — prompts through a choreography and timestamps each step into `journal.tsv`. Start here. |
 | `decode-modeset-live.py` | Attaches frida to a live DLM and recovers the `(ks, riv)` session keys. Called by the above; usable standalone. |
 | `decrypt-dlm-cp.py` | Offline: decrypts the sealed CP frames in a usbmon pcapng using those keys. |
 | `usb-session-stats.py` | usbmon pcapng reader, imported by `decrypt-dlm-cp.py`. Also useful alone for endpoint/byte accounting. |
@@ -25,6 +25,18 @@ live. So the wire alone is unreadable exactly where device support comes from.
 ⚠ The key hook attaches at a **build-specific** offset. It is derived for DLM package 6.8.1.0
 (`DisplayLinkManager` sha256 `d3584c4369a594e9bcac…`). On another build the offset must be
 re-derived -- do not guess, because a wrong hook yields an empty key and a silently keyless capture.
+
+## Slicing a capture by action
+
+The guided run writes `journal.tsv` as `epoch<TAB>begin:label` / `epoch<TAB>end:label`. Those are the
+units `decrypt-dlm-cp.py --start/--end` takes, so a step maps straight onto a window of wire:
+
+```sh
+awk -F'\t' '/cursor-shape/' out/journal.tsv
+./decrypt-dlm-cp.py out/wire.pcapng out/keys.candidates.json --start <t> --end <t>
+```
+
+Without it, a long capture is an undifferentiated wall of frames.
 
 ## Requirements
 
