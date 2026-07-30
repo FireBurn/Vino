@@ -56,6 +56,14 @@ change emits `CURSOR_SET` and a movement emits `CURSOR_MOVE`. Shape changes are 
 framebuffer identity, because the compositor commits the cursor plane on every movement and each
 `CURSOR_SET` costs the client a map, a copy and a handle close.
 
+No hotspot is reported. The compositor has already applied it when it placed the plane, so the
+destination rect **is** where the bitmap goes; reporting one as well would have the client subtract
+it a second time and shift the pointer. vino, which drives the same sinks, positions by the bitmap
+corner for the same reason. The position sent is the **unclipped** origin
+(`destination - source`): when the cursor straddles an edge the helper clips the destination and
+advances the source by the same amount, so the difference recovers where the corner actually is,
+including off-screen. `destination` alone pins the pointer to the edge and makes it drift.
+
 `CURSOR_SET` carries a GEM handle minted in the *client's* file, which libevdi maps, copies out and
 closes — so a fresh handle is needed per change, and a pre-minted or reused one does not work.
 Minting allocates and takes mutexes, so it cannot run under `event_lock` where the channel's only

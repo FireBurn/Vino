@@ -773,10 +773,13 @@ fn update_cursor(
         .is_none_or(|previous| !core::ptr::eq(previous, fb));
     if shape_changed {
         if let (Ok(object), Ok(stride)) = (fb.object::<EvdiObject>(), fb.pitch(0)) {
-            let (hot_x, hot_y) = new.hotspot();
             let shape = crate::painter::CursorShape {
-                hot_x,
-                hot_y,
+                // Report no hotspot. The compositor has already applied it when it placed the
+                // plane, so the destination rect below IS where the bitmap goes; reporting one as
+                // well would have the client subtract it a second time and shift the pointer. This
+                // matches vino, which drives the same sinks and positions by the bitmap corner.
+                hot_x: 0,
+                hot_y: 0,
                 width: fb.width(),
                 height: fb.height(),
                 pixel_format: fb.format(),
@@ -787,8 +790,14 @@ fn update_cursor(
         }
     }
 
-    // The client positions the pointer itself, so send the unclipped plane origin.
-    if let Some(destination) = new.visible_destination() {
-        crate::painter::notify_cursor_move(data, dev, destination.x1, destination.y1);
+    // Send the UNCLIPPED origin. When the cursor straddles an edge the helper clips the destination
+    // and advances the source by the same amount, so the difference recovers where the bitmap's
+    // corner actually is -- including off-screen. `destination` alone would pin the pointer to the
+    // edge and make it drift as it left the screen.
+    if let (Ok(Some(source)), Some(destination)) = (new.visible_source(), new.visible_destination())
+    {
+        let x = destination.x1 - source.x1;
+        let y = destination.y1 - source.y1;
+        crate::painter::notify_cursor_move(data, dev, x, y);
     }
 }
