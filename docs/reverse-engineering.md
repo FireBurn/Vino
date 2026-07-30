@@ -52,9 +52,10 @@ the concise protocol document once verified.
 
 ## Historical archive
 
-The original research ledger remains in `../docs` relative to the parent
-`dl-scripts` checkout. It contains captures, refuted hypotheses, decompiler
-addresses, and dated handovers. It is intentionally static. When it conflicts
-with the current kernel source, the source plus its tests and the curated docs
-in this repository are authoritative.
+The original research ledger lives in a separate, **retired** scripts checkout: captures, refuted
+hypotheses, decompiler addresses and dated handovers. It is intentionally static and is no longer
+developed against. Everything still needed to reproduce or extend the work has been brought into this
+repository -- see [`../tools/capture/`](../tools/capture/) for the device-capture toolkit. When the
+archive conflicts with the current kernel source, the source plus its tests and the curated docs here
+are authoritative.
 

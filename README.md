@@ -34,6 +34,8 @@ that unmerged Rust DRM dependencies are already in `drm-next`.
   engineering, upstream, and test documentation;
 - [`patches/kernel/`](patches/kernel/README.md) — generated, mail-ready kernel
   patch export and review-group manifests;
+- [`tools/capture/`](tools/capture/) — device-capture toolkit: wire plus session
+  keys from a live DLM, and the offline CP decryptor;
 - [`tools/regenerate-patches.sh`](tools/regenerate-patches.sh) — deterministic
   patch export;
 - [`tools/check-series.sh`](tools/check-series.sh) — apply and tree-identity

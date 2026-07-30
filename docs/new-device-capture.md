@@ -182,8 +182,8 @@ pip install --user frida pycryptodome
 lsmod | grep evdi || sudo modprobe evdi
 systemctl status displaylink-driver.service
 
-# The harness and the offline decryptor.
-git clone https://github.com/FireBurn/vino-scripts && cd vino-scripts
+# The capture toolkit and the offline decryptor.
+git clone https://gitlab.freedesktop.org/FireBurn/Vino.git && cd Vino
 ```
 
 **Stop anything racing DLM for the interface.** DLM and the kernel drivers fight over the same
@@ -301,7 +301,6 @@ which has cost a hardware run here before.
 #### Running it
 
 ```bash
-git clone https://github.com/FireBurn/vino-scripts && cd vino-scripts
 sudo modprobe usbmon                                  # NOT autoloaded
 lsusb -d 17e9: -t                                     # note the BUS
 
@@ -310,7 +309,7 @@ sudo dumpcap -i usbmon<BUS> -s 0 -w keyed-wire.pcapng &
 
 # 2) keys -- attach to the LIVE DLM (never --spawn: it wedges the dock)
 sudo env PYTHONPATH=$HOME/.local/lib/python3*/site-packages \
-  python3 vino-re/frida/decode-modeset-live.py --secs 120 --out keyed-keys.json \
+  python3 tools/capture/decode-modeset-live.py --secs 120 --out keyed-keys.json \
   | tee keyed-keys.log
 
 # 3) while both are running, make DLM do the things we need to see:
@@ -339,7 +338,7 @@ Prove the sealed traffic actually decrypts, rather than discovering weeks later 
 
 ```bash
 python3 -c 'import json;print(len(json.load(open("keys.candidates.json"))),"key candidates")'
-scripts/decrypt-dlm-cp.py wire.pcapng keys.candidates.json | head -40
+tools/capture/decrypt-dlm-cp.py wire.pcapng keys.candidates.json | head -40
 ```
 
 You are looking for decoded inner messages — `id=0x48 sub=0x22` (set-mode), `id=0x194` (EDID),
@@ -484,7 +483,7 @@ the firmware has moved and the transcript is historical.
 ```bash
 D=dl-capture-$(date +%Y%m%d); mkdir -p $D
 mv lsusb-verbose.txt interfaces.txt vino-identity.txt $D/ 2>/dev/null
-# the keyed capture directory from scripts/capture-newdevice.sh, whole:
+# the keyed capture directory from tools/capture/capture-newdevice.sh, whole:
 mv ~/dlcap-keyed $D/keyed 2>/dev/null
 mv run*.pcapng run*.log run*.txt fwcap $D/ 2>/dev/null
 cat > $D/NOTES.txt <<'EOF'
