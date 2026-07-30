@@ -335,6 +335,10 @@ impl KmsDriver for EvdiDrmDriver {
             None,
             true,
         )?;
+        // ARGB8888 exposes alpha, and DRM core requires a blend mode alongside it -- without this
+        // drm_mode_config_validate() warns "pixel format with alpha exposed but blend mode not
+        // setup" at registration. The bitmap the client receives is premultiplied.
+        cursor.create_blend_mode_property(plane::BlendModes::PREMULTIPLIED)?;
         let crtc_obj =
             crtc::UnregisteredCrtc::<EvdiCrtc>::new(dev, primary, Some(&cursor), None, ())?;
         let enc = encoder::UnregisteredEncoder::<EvdiEncoder>::new(
