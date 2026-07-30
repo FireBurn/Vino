@@ -146,8 +146,14 @@ impl ControlSession {
         let mode = kvino::set_mode_profile(self.inner_counter, head, width16, height16, refresh16)
             .map_err(build_error("mode profile"))?;
         self.send_control(0x48, &mode)?;
-        let anchor = Instant::now();
+        // Anchor AFTER the first status poll, not before it. The whole activation bracket is paced
+        // against this anchor over 125 ms, but the poll's USB write can block for far longer than
+        // that -- measured at 1.9 s on a dock that had just reported its monitor. Anchoring first
+        // meant every later wait_mode_offset() was already past its deadline and returned
+        // immediately, collapsing the bracket into a couple of milliseconds. The dock answers that
+        // by resetting.
         self.poll_status()?;
+        let anchor = Instant::now();
         self.wait_mode_offset(anchor, 5);
         self.send_marker(head, 0x2f, 1)?;
         self.wait_mode_offset(anchor, 9);
@@ -167,12 +173,21 @@ impl ControlSession {
         self.poll_status()?;
         self.wait_mode_offset(anchor, 110);
         self.poll_status()?;
+        // If anything stalled badly enough that the bracket is no longer being paced, abandon and
+        // let the caller retry rather than sending a compressed sequence the dock will reject.
+        let late = anchor.elapsed();
+        if late > Duration::from_millis(300) {
+            return Err(format!(
+                "activation bracket overran ({} ms before first video); retrying",
+                late.as_millis()
+            ));
+        }
         let opening = prefix_frame(&arm, &prompt);
         self.submit_video(head, &opening)?;
         for _ in 0..2 {
             let commit = kvino::stream_commit(self.inner_counter, head)
                 .map_err(build_error("stream commit"))?;
-            self.send_control(0x16, &commit)?;
+            self.send_control(0x16, &commit).map(|_| ())?;
         }
         self.wait_mode_offset(anchor, 123);
         self.send_marker(head, 0x2f, 0)?;
