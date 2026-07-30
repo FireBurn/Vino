@@ -100,3 +100,19 @@ cover cold and warm plug, both heads, every advertised mode, rotations and
 reflections, mode changes, DPMS, cursor, monitor removal and reappearance, USB
 reset, suspend/resume, control-plane recovery, unload with open and closed DRM
 files, and sustained damage traffic.
+
+[`tools/hardware/`](../tools/hardware/README.md) supports that work:
+
+```sh
+sudo tools/hardware/vino-cycle.sh      # safe unbind/unload/load/rebind cycle
+sudo tools/hardware/vino-perf.py --secs 30
+```
+
+⚠ Never `modprobe -r` while a DRM file is open — it frees the fops under the
+compositor and hangs the machine. `vino-cycle.sh` refuses instead of forcing.
+
+⚠ `usbmon` is not autoloaded; `vino-perf.py` needs it.
+
+Capturing an unfamiliar device driving under DLM, rather than under Vino, is a
+separate exercise: see [`new-device-capture.md`](new-device-capture.md) and
+[`tools/capture/`](../tools/capture/README.md).
