@@ -39,7 +39,7 @@ pub(crate) mod wht {
     ///
     /// All steps are powers of two. Arithmetic right shift therefore implements the required floor
     /// division for both positive and negative coefficients without an integer division.
-    fn step_bias(i: usize) -> (u32, i32) {
+    const fn step_bias(i: usize) -> (u32, i32) {
         match i {
             0 => (4, 8),
             1 | 2 => (4, 8),
@@ -51,10 +51,42 @@ pub(crate) mod wht {
         }
     }
 
+    /// [`step_bias`] and the chroma-AC shift, resolved for every coefficient at compile time.
+    ///
+    /// Both are pure functions of the coefficient index over only 64 inputs, but they were being
+    /// evaluated per coefficient -- 64 times per plane, three planes per block, sixteen blocks per
+    /// strip. Profiling `colour_block` found the resulting range-test chains dominating it: 190
+    /// compare and branch instructions against 61 arithmetic ones. A table turns each into a load.
+    static STEP_BIAS: [(u32, i32); COEFFS] = {
+        let mut t = [(0u32, 0i32); COEFFS];
+        let mut i = 0;
+        while i < COEFFS {
+            t[i] = step_bias(i);
+            i += 1;
+        }
+        t
+    };
+
+    static CHROMA_AC_SHIFT: [u32; COEFFS] = {
+        let mut t = [0u32; COEFFS];
+        let mut i = 0;
+        while i < COEFFS {
+            t[i] = if matches!(i, 1 | 2 | 4..=11) {
+                4
+            } else if i >= 48 {
+                6
+            } else {
+                5
+            };
+            i += 1;
+        }
+        t
+    };
+
     /// Quantize coefficient `coeff` at position `i`: `sign(coeff) * floor((|coeff| + bias) / step)`
     /// and clamp it to the 12-bit signed long-token range.
     pub(crate) fn quantize(coeff: i32, i: usize) -> i32 {
-        let (shift, bias) = step_bias(i);
+        let (shift, bias) = STEP_BIAS[i];
         // Coarse bands round half-up on the signed value; the finest bands truncate towards zero.
         let q = if bias == 0 {
             let q = coeff.abs() >> shift;
@@ -454,13 +486,7 @@ pub(crate) mod wht {
     /// Shifts rather than divisions, for the reason given on [`step_bias`]; steps 16/32/64 are
     /// shifts 4/5/6 and `step / 2` is `1 << (shift - 1)`.
     fn quantize_chroma_ac(coeff: i32, i: usize) -> i32 {
-        let shift: u32 = if matches!(i, 1 | 2 | 4..=11) {
-            4
-        } else if i >= 48 {
-            6
-        } else {
-            5
-        };
+        let shift = CHROMA_AC_SHIFT[i];
         (coeff + (1 << (shift - 1))) >> shift
     }
 
