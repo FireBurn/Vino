@@ -12,6 +12,9 @@ use vino_driver::{Dock, Error as UsbError};
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(1);
 const REPLY_TIMEOUT: Duration = Duration::from_millis(8);
 const HDCP_HPRIME_WAIT: Duration = Duration::from_micros(165_000);
+/// Frames to drain from EP84 after each control message, matching the kernel driver's
+/// `drain_ep84`. The dock queues unprompted pushes alongside acknowledgements.
+const EP84_DRAIN_READS: usize = 16;
 const SET_INTERFACE: u8 = 0x0b;
 const GET_DESCRIPTOR: u8 = 0x06;
 const HEADS: usize = 2;
@@ -715,7 +718,15 @@ fn configure_head(
 
         let sent_at = Instant::now();
         send_interactive(dock, keys, id, *wire_seq, &content)?;
-        if let Some(reply) = receive_optional(dock, Duration::from_millis(10))? {
+        // Drain everything the dock has queued, not just the first frame. The control plane is
+        // lockstep but the dock also pushes unprompted -- the per-head AKE_Send_Rrx among them --
+        // so reading a single reply per message leaves the rest queued and every later read is one
+        // or more frames stale. That desynchronisation is what made head 1 miss its Rrx while head
+        // 0, which happened to receive its push inside the index-2 burst, succeeded.
+        for _ in 0..EP84_DRAIN_READS {
+            let Some(reply) = receive_optional(dock, Duration::from_millis(10))? else {
+                break;
+            };
             receiver_random = receiver_random
                 .or_else(|| kvino::perhead_rrx(&keys.control_key, &keys.control_nonce, &reply));
             if is_control_ack(&reply) {
@@ -724,7 +735,7 @@ fn configure_head(
         }
         if index == 2 {
             wait_until(sent_at, HDCP_HPRIME_WAIT);
-            for _ in 0..8 {
+            for _ in 0..EP84_DRAIN_READS {
                 let Some(reply) = receive_optional(dock, Duration::from_millis(10))? else {
                     break;
                 };
