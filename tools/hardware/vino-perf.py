@@ -41,9 +41,9 @@ import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-CAPTURE = ROOT / "scripts" / "capture-usbmon-session.py"
-CLIP = ROOT / "captures" / "perf-load-2560x1440-60.mp4"
+HERE = Path(__file__).resolve().parent
+CAPTURE = HERE / "capture-usbmon-session.py"
+CLIP = HERE / "perf-load-2560x1440-60.mp4"
 
 # usbmon record layout written by capture-usbmon-session.py.
 REC = "<IBBBBHqiiII"
