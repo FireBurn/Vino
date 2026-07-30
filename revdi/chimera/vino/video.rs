@@ -579,6 +579,9 @@ pub(crate) mod wht {
     }
 
     /// Return the exact chroma AC extent.
+    /// Only the KUnit tests call this now: `colour_block` folds the same search into the pass that
+    /// writes the coefficients, so the production path never scans them a second time.
+    #[cfg(CONFIG_DRM_VINO_KUNIT_TEST)]
     pub(crate) fn chroma_last(q: &[i32; COEFFS]) -> usize {
         (1..COEFFS).rev().find(|&i| q[i] != 0).unwrap_or(0)
     }
@@ -598,23 +601,41 @@ pub(crate) mod wht {
         let tcr = transform(cr);
         let tcb = transform(cb);
         let ty = transform(y);
-        // `from_fn` writes each element exactly once. Declaring `[0i32; COEFFS]` and filling it
-        // afterwards leaves a `memset` that LLVM does not eliminate here -- profiling put the
-        // encoder's per-block zeroing at ~7% of the whole machine.
-        let qcr: [i32; COEFFS] = core::array::from_fn(|i| match i {
-            0 => quantize_dc_round(2, tcr[0]),
-            _ => quantize_chroma_ac(tcr[i], i),
-        });
-        let qcb: [i32; COEFFS] = core::array::from_fn(|i| match i {
-            0 => quantize_dc_round(1, tcb[0]),
-            _ => quantize_chroma_ac(tcb[i], i),
-        });
-        let qy: [i32; COEFFS] = core::array::from_fn(|i| match i {
-            0 => quantize_dc_round(0, ty[0]),
-            _ => quantize(ty[i], i),
-        });
-        let last = |q: &[i32; COEFFS]| (1..COEFFS).rev().find(|&i| q[i] != 0).unwrap_or(0);
-        let (lcr, lcb, ly) = (chroma_last(&qcr), chroma_last(&qcb), last(&qy));
+        // Quantise all three planes and find each one's last significant coefficient in a single
+        // pass. These were separate steps, so every block ran three further 63-element reverse
+        // scans ([`chroma_last`]) across arrays it had only just written. Folding the search into
+        // the write removes those passes and keeps the three planes in cache together.
+        //
+        // An explicit ascending loop rather than `core::array::from_fn`: the fold depends on the
+        // index order, and `from_fn` does not document one. Every element is written, so the zero
+        // initialiser costs nothing.
+        let mut qcr = [0i32; COEFFS];
+        let mut qcb = [0i32; COEFFS];
+        let mut qy = [0i32; COEFFS];
+        let (mut lcr, mut lcb, mut ly) = (0usize, 0usize, 0usize);
+        qcr[0] = quantize_dc_round(2, tcr[0]);
+        qcb[0] = quantize_dc_round(1, tcb[0]);
+        qy[0] = quantize_dc_round(0, ty[0]);
+        // Coefficient 0 is deliberately excluded: the last-significant index is over 1..COEFFS.
+        for i in 1..COEFFS {
+            let (vcr, vcb, vy) = (
+                quantize_chroma_ac(tcr[i], i),
+                quantize_chroma_ac(tcb[i], i),
+                quantize(ty[i], i),
+            );
+            if vcr != 0 {
+                lcr = i;
+            }
+            if vcb != 0 {
+                lcb = i;
+            }
+            if vy != 0 {
+                ly = i;
+            }
+            qcr[i] = vcr;
+            qcb[i] = vcb;
+            qy[i] = vy;
+        }
         ColourBlock {
             qcr,
             qcb,
