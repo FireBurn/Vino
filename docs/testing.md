@@ -101,6 +101,30 @@ reflections, mode changes, DPMS, cursor, monitor removal and reappearance, USB
 reset, suspend/resume, control-plane recovery, unload with open and closed DRM
 files, and sustained damage traffic.
 
+Building and installing the modules for a hardware run:
+
+```sh
+make -C linux LLVM=1 -j16 modules       # no `M=`
+sudo make -C linux modules_install
+sudo depmod -a
+```
+
+⛔ **Never put `M=` on a `modules_install` line.** `M=` sets `KBUILD_EXTMOD`, and
+`scripts/Makefile.modinst` then installs to `/lib/modules/$(uname -r)/updates/` rather than
+`kernel/...`. `depmod` *prefers* `updates/`, so a stray copy there silently shadows the real module
+and every later reinstall appears to do nothing — a failure that survives reboots and is invisible
+unless you look for it:
+
+```sh
+ls /lib/modules/$(uname -r)/updates/ 2>/dev/null   # must not exist
+modinfo -n vino                                     # must be under kernel/...
+```
+
+`make -C linux LLVM=1 M=drivers/gpu/drm/vino modules` is a safe, much faster **build-only**
+shortcut, but it only produces the `.ko` — place it yourself with `cp` into the matching
+`kernel/...` path and re-run `depmod -a`. ⚠ `make LLVM=1 drivers/gpu/drm/vino/` compiles objects
+only and yields no `.ko` at all.
+
 [`tools/hardware/`](../tools/hardware/README.md) supports that work:
 
 ```sh

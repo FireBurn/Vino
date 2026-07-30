@@ -9,6 +9,21 @@ For the manual validation described in
 | `drm-fd-holders.py` | Lists processes holding a DRM node open. Used by the above; useful alone before any unload. |
 | `vino-perf.py` | Per-head frames/s, MB/s, frame-interval distribution and machine CPU, from usbmon URB bursts. |
 
+## Installing a rebuilt module
+
+```sh
+make -C ../../linux LLVM=1 -j16 modules && sudo make -C ../../linux modules_install && sudo depmod -a
+```
+
+⛔ **Never add `M=` to a `modules_install` line** — it installs into `updates/`, which `depmod`
+prefers over `kernel/`, so the stray copy wins and later reinstalls appear to do nothing. Check with
+`ls /lib/modules/$(uname -r)/updates/` (must not exist) and `modinfo -n vino` (must be under
+`kernel/...`).
+
+⚠ `vino-cycle.sh` reloads whatever is **installed**, not what is merely built. Verify the resident
+module, not the file: hashing `$(modinfo -n vino)` tells you about the file on disk, which can differ
+from what is loaded in memory.
+
 ## Reloading safely
 
 ⚠ **Unloading while a DRM file is open frees the fops under the compositor and hangs the machine.**
