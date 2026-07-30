@@ -44,6 +44,9 @@ use kernel::{
 
 use crate::painter::PainterState;
 
+/// Cursor-plane format list. libevdi reports the format to the client, which expects ARGB.
+static CURSOR_FORMATS: [u32; 1] = [drm::fourcc::ARGB8888];
+
 static PRIMARY_FORMATS: [u32; 1] = [drm::fourcc::XRGB8888];
 
 /// Fallback mode advertised before the DLM client delivers an EDID via CONNECT.
@@ -145,6 +148,11 @@ pub(crate) struct EvdiDrmData {
     /// Active software-vblank timer and its cancellation handle.
     #[pin]
     vblank: SpinLock<Option<(Arc<VblankTimer>, ArcHrTimerHandle<VblankTimer>)>>,
+    /// Whether the client asked for cursor events (`EVDI_ENABLE_CURSOR_EVENTS`).
+    ///
+    /// Cleared by default: a client that has not opted in composites the pointer into the primary
+    /// framebuffer itself and must not also receive it out of band.
+    pub(crate) cursor_events: AtomicBool,
 }
 
 impl EvdiDrmData {
@@ -157,6 +165,7 @@ impl EvdiDrmData {
             pixel_area_limit: AtomicU32::new(0),
             pixel_per_second_limit: AtomicU32::new(0),
             vblank <- new_spinlock!(None),
+            cursor_events: AtomicBool::new(false),
         })
     }
 
@@ -309,20 +318,24 @@ impl KmsDriver for EvdiDrmDriver {
             None,
             plane::Type::Primary,
             None,
-            (),
+            false,
         )?;
         // Advertise FB_DAMAGE_CLIPS so the compositor reports which region
         // changed. Without it, GRABPIX must return the full plane.
         primary.enable_fb_damage_clips();
-        // Keep cursor composition in the primary framebuffer. The driver does not advertise a
-        // separate hardware cursor plane.
-        let crtc_obj = crtc::UnregisteredCrtc::<EvdiCrtc>::new(
+        // A real cursor plane, so the compositor keeps the pointer out of the primary framebuffer
+        // and the client can drive its sink's own cursor. Without one, every pointer movement
+        // dirties the desktop and costs a full frame.
+        let cursor = plane::UnregisteredPlane::<EvdiPlane>::new(
             dev,
-            primary,
-            None::<&plane::UnregisteredPlane<EvdiPlane>>,
+            1,
+            &CURSOR_FORMATS,
             None,
-            (),
+            plane::Type::Cursor,
+            None,
+            true,
         )?;
+        let crtc_obj = crtc::UnregisteredCrtc::<EvdiCrtc>::new(dev, primary, Some(&cursor), None, ())?;
         let enc = encoder::UnregisteredEncoder::<EvdiEncoder>::new(
             dev,
             encoder::Type::Virtual,
@@ -551,7 +564,10 @@ impl VblankSupport for EvdiCrtc {
 // ---- Primary plane -----------------------------------------------------------
 
 #[pin_data]
-pub(crate) struct EvdiPlane;
+pub(crate) struct EvdiPlane {
+    /// Cursor planes report their contents to the client instead of being composited here.
+    is_cursor: bool,
+}
 
 #[derive(Clone, Default)]
 pub(crate) struct EvdiPlaneState;
@@ -562,12 +578,12 @@ impl plane::DriverPlaneState for EvdiPlaneState {
 
 #[vtable]
 impl plane::DriverPlane for EvdiPlane {
-    type Args = ();
+    type Args = bool;
     type Driver = EvdiDrmDriver;
     type State = EvdiPlaneState;
 
-    fn new(_device: &drm::Device<Self::Driver>, _args: ()) -> impl PinInit<Self, Error> {
-        try_pin_init!(EvdiPlane {})
+    fn new(_device: &drm::Device<Self::Driver>, is_cursor: bool) -> impl PinInit<Self, Error> {
+        try_pin_init!(EvdiPlane { is_cursor })
     }
 
     /// A new framebuffer was flipped in.
@@ -577,6 +593,11 @@ impl plane::DriverPlane for EvdiPlane {
         let plane = commit.plane();
         let dev = plane.drm_dev();
         let data: &EvdiDrmData = dev;
+
+        if plane.is_cursor {
+            update_cursor(commit, data, dev);
+            return;
+        }
 
         // Record the framebuffer plus each region the compositor changed, accumulate them for
         // GRABPIX, and signal the client. UPDATE_READY fires on every real flip; REQUEST_UPDATE
@@ -724,4 +745,50 @@ fn is_lowest_frequency_mode_of_resolution(
             && candidate.vdisplay() == vdisplay
             && candidate.vrefresh() < vrefresh
     })
+}
+
+/// Report a cursor-plane commit to the client.
+///
+/// Shape changes carry a fresh GEM handle for the bitmap; movements carry only coordinates, and are
+/// far more frequent. Both are dropped unless the client asked for cursor events, because a client
+/// that composites the pointer itself must not also receive it out of band.
+fn update_cursor(
+    commit: PlaneAtomicCommit<'_, EvdiPlane>,
+    data: &EvdiDrmData,
+    dev: &EvdiDrmDevice,
+) {
+    if !data.cursor_events.load(Ordering::Relaxed) {
+        return;
+    }
+    let (old, new) = commit.take_old_new_state();
+    let Some(fb) = new.framebuffer::<EvdiDrmDriver>() else {
+        crate::painter::notify_cursor_disabled(data, dev);
+        return;
+    };
+
+    // Re-send the bitmap only when it actually changed: the compositor commits the cursor plane on
+    // every movement, and each CURSOR_SET costs the client a map, a copy and a handle close.
+    let shape_changed = old
+        .framebuffer::<EvdiDrmDriver>()
+        .is_none_or(|previous| !core::ptr::eq(previous, fb));
+    if shape_changed {
+        if let (Ok(object), Ok(stride)) = (fb.object::<EvdiObject>(), fb.pitch(0)) {
+            let (hot_x, hot_y) = new.hotspot();
+            let shape = crate::painter::CursorShape {
+                hot_x,
+                hot_y,
+                width: fb.width(),
+                height: fb.height(),
+                pixel_format: fb.format(),
+                stride,
+                buffer_length: stride.saturating_mul(fb.height()),
+            };
+            crate::painter::notify_cursor_set(data, dev, object, &shape);
+        }
+    }
+
+    // The client positions the pointer itself, so send the unclipped plane origin.
+    if let Some(destination) = new.visible_destination() {
+        crate::painter::notify_cursor_move(data, dev, destination.x1, destination.y1);
+    }
 }

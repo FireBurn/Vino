@@ -45,6 +45,39 @@ The byte-exact proof checks the production protocol builders against DLM
 captures. This cleanup did not exercise the service against hardware, so full
 live DLM parity remains a hardware-validation claim.
 
+## Cursor
+
+The module advertises a real cursor plane, so the compositor keeps the pointer out of the primary
+framebuffer and every pointer movement no longer dirties the desktop.
+
+Cursor reporting is opt-in through `DRM_IOCTL_EVDI_ENABLE_CURSOR_EVENTS`; a client that has not asked
+for it composites the pointer itself and must not also receive it out of band. Once enabled, a shape
+change emits `CURSOR_SET` and a movement emits `CURSOR_MOVE`. Shape changes are filtered on the
+framebuffer identity, because the compositor commits the cursor plane on every movement and each
+`CURSOR_SET` costs the client a map, a copy and a handle close.
+
+`CURSOR_SET` carries a GEM handle minted in the *client's* file, which libevdi maps, copies out and
+closes — so a fresh handle is needed per change, and a pre-minted or reused one does not work.
+Minting allocates and takes mutexes, so it cannot run under `event_lock` where the channel's only
+reference to the connected file lives, and DRM files are not refcounted so the reference cannot be
+held across the sleep either. `EventChannel::with_connected_file` resolves that: it confirms the file
+is still on `drm_device::filelist` while holding `filelist_mutex`, which `drm_close_helper()` holds
+across the `list_del()` and releases only before `drm_file_free()`. The C EVDI driver instead stashes
+a `drm_file` pointer at connect time and uses it later, racing fd close.
+
+⚠ The event payload has three bytes of ABI padding between `enabled` and `buffer_handle`. They are
+named explicitly and zeroed, so the payload stays provably padding-free rather than leaking stack to
+userspace.
+
+### Dock cursor protocol
+
+Chimera drives the dock's own cursor from these events. Offset 22 of the control message carries the
+head id **counted from one**, offset 23 is the **visible flag**, and the bitmap starts at **offset
+34**. Hiding the cursor clears offset 23; parking it off-screen instead leaves a ghost pointer at the
+top-left, because the dock wraps an out-of-range origin rather than clipping. The differential prover
+reproduces all twelve cursor messages in the reference DLM capture byte-for-byte, and that capture
+independently shows DLM hiding the cursor the same way.
+
 ## Synchronization
 
 From `revdi/`:

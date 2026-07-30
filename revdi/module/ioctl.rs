@@ -236,13 +236,19 @@ pub(crate) fn ddcci_response(
     Ok(0)
 }
 
-/// `DRM_IOCTL_EVDI_ENABLE_CURSOR_EVENTS`: retained for compatibility with libevdi.
+/// `DRM_IOCTL_EVDI_ENABLE_CURSOR_EVENTS`: opt in to (or out of) cursor reporting.
+///
+/// While disabled, the cursor plane stays silent and the compositor's own composition of the
+/// pointer into the primary framebuffer is what the client grabs. While enabled, the pointer is
+/// reported separately and the client drives its sink's cursor with it.
 pub(crate) fn enable_cursor_events(
-    _dev: &Dev,
+    dev: &Dev,
     _reg: &(),
-    _arg: &mut uapi::DrmEvdiEnableCursorEvents,
+    arg: &mut uapi::DrmEvdiEnableCursorEvents,
     _file: &File,
 ) -> Result<u32> {
-    // EVDI exposes no cursor plane, so compositors blend the cursor into the primary plane.
+    let data: &crate::kms::EvdiDrmData = dev;
+    data.cursor_events
+        .store(arg.enable != 0, core::sync::atomic::Ordering::Relaxed);
     Ok(0)
 }

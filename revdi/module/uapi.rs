@@ -11,8 +11,9 @@ use kernel::{
 pub(crate) use kernel::uapi::{
     drm_evdi_connect as DrmEvdiConnect, drm_evdi_ddcci_response as DrmEvdiDdcciResponse,
     drm_evdi_enable_cursor_events as DrmEvdiEnableCursorEvents, drm_evdi_grabpix as DrmEvdiGrabpix,
-    drm_evdi_request_update as DrmEvdiRequestUpdate, DRM_EVDI_EVENT_DPMS,
-    DRM_EVDI_EVENT_MODE_CHANGED, DRM_EVDI_EVENT_UPDATE_READY,
+    drm_evdi_request_update as DrmEvdiRequestUpdate, DRM_EVDI_EVENT_CURSOR_MOVE,
+    DRM_EVDI_EVENT_CURSOR_SET, DRM_EVDI_EVENT_DPMS, DRM_EVDI_EVENT_MODE_CHANGED,
+    DRM_EVDI_EVENT_UPDATE_READY,
 };
 
 pub(crate) type DrmEvent = kernel::drm::event::EventHeader;
@@ -43,7 +44,42 @@ pub(crate) struct DrmEvdiEventModeChanged {
     pub(crate) pixel_format: u32,
 }
 
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub(crate) struct DrmEvdiEventCursorSet {
+    pub(crate) base: DrmEvent,
+    pub(crate) hot_x: i32,
+    pub(crate) hot_y: i32,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) enabled: u8,
+    /// Explicit ABI padding. `enabled` is a `__u8` followed by a `__u32` in the C struct, so three
+    /// bytes sit between them and are copied to userspace with the rest; naming them keeps the
+    /// payload provably padding-free and forces callers to zero them rather than leaking stack.
+    pub(crate) _pad: [u8; 3],
+    pub(crate) buffer_handle: u32,
+    pub(crate) buffer_length: u32,
+    pub(crate) pixel_format: u32,
+    pub(crate) stride: u32,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub(crate) struct DrmEvdiEventCursorMove {
+    pub(crate) base: DrmEvent,
+    pub(crate) x: i32,
+    pub(crate) y: i32,
+}
+
 const _: () = {
+    assert!(
+        core::mem::size_of::<DrmEvdiEventCursorSet>()
+            == core::mem::size_of::<kernel::uapi::drm_evdi_event_cursor_set>()
+    );
+    assert!(
+        core::mem::size_of::<DrmEvdiEventCursorMove>()
+            == core::mem::size_of::<kernel::uapi::drm_evdi_event_cursor_move>()
+    );
     assert!(
         core::mem::size_of::<DrmEvdiEventUpdateReady>()
             == core::mem::size_of::<kernel::uapi::drm_evdi_event_update_ready>()
