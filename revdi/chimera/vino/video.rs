@@ -141,20 +141,29 @@ pub(crate) mod wht {
         haar2d_2(&ll2, &mut ll3, &mut hl3, &mut lh3, &mut hh3);
         // Every 4x4 level-one band uses 2x2 Morton scan order.
         const SCAN4_MORTON: [usize; 16] = [0, 2, 8, 10, 1, 3, 9, 11, 4, 6, 12, 14, 5, 7, 13, 15];
-        // Assembled with `from_fn` so each coefficient is written exactly once: declaring
-        // `[0i32; COEFFS]` and filling it afterwards leaves a `memset` LLVM does not remove.
-        core::array::from_fn(|i| match i {
-            0 => sh(ll3[0]),
-            1 => sh(hl3[0]),
-            2 => sh(lh3[0]),
-            3 => sh(hh3[0]),
-            4..8 => sh(hl2[i - 4]),
-            8..12 => sh(lh2[i - 8]),
-            12..16 => sh(hh2[i - 12]),
-            16..32 => sh(hl1[SCAN4_MORTON[i - 16]]),
-            32..48 => sh(lh1[SCAN4_MORTON[i - 32]]),
-            _ => sh(hh1[SCAN4_MORTON[i - 48]]),
-        })
+        // Assemble band by band, not coefficient by coefficient. Selecting the source with a
+        // `from_fn(|i| match i { .. })` reads well but compiles to a range test per coefficient in a
+        // rolled 64-iteration loop: profiling this function showed the `cmp`/`and`/`jne` dispatch
+        // dominating it, against only ~66 add/sub for the transform itself. These fixed-length
+        // loops unroll into straight-line stores, and every element is written so the initialiser
+        // costs nothing.
+        let mut out = [0i32; COEFFS];
+        out[0] = sh(ll3[0]);
+        out[1] = sh(hl3[0]);
+        out[2] = sh(lh3[0]);
+        out[3] = sh(hh3[0]);
+        for i in 0..4 {
+            out[4 + i] = sh(hl2[i]);
+            out[8 + i] = sh(lh2[i]);
+            out[12 + i] = sh(hh2[i]);
+        }
+        for i in 0..16 {
+            let m = SCAN4_MORTON[i];
+            out[16 + i] = sh(hl1[m]);
+            out[32 + i] = sh(lh1[m]);
+            out[48 + i] = sh(hh1[m]);
+        }
+        out
     }
 
     /// Vino entropy VLC, indexed by symbol as `(code, nbits)` and emitted least-significant bit
