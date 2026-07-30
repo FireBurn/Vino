@@ -335,7 +335,8 @@ impl KmsDriver for EvdiDrmDriver {
             None,
             true,
         )?;
-        let crtc_obj = crtc::UnregisteredCrtc::<EvdiCrtc>::new(dev, primary, Some(&cursor), None, ())?;
+        let crtc_obj =
+            crtc::UnregisteredCrtc::<EvdiCrtc>::new(dev, primary, Some(&cursor), None, ())?;
         let enc = encoder::UnregisteredEncoder::<EvdiEncoder>::new(
             dev,
             encoder::Type::Virtual,

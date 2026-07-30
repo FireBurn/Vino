@@ -174,7 +174,8 @@ pub(crate) mod wht {
         // Every 4x4 level-one band uses 2x2 Morton scan order.
         const SCAN4_MORTON: [usize; 16] = [0, 2, 8, 10, 1, 3, 9, 11, 4, 6, 12, 14, 5, 7, 13, 15];
         // Assemble band by band, not coefficient by coefficient. Selecting the source with a
-        // `from_fn(|i| match i { .. })` reads well but compiles to a range test per coefficient in a
+        // `from_fn(|i| match i { .. })` reads well but compiles to a range test per coefficient
+        // in a
         // rolled 64-iteration loop: profiling this function showed the `cmp`/`and`/`jne` dispatch
         // dominating it, against only ~66 add/sub for the transform itself. These fixed-length
         // loops unroll into straight-line stores, and every element is written so the initialiser

@@ -194,10 +194,11 @@ pub(super) struct Timing {
 /// both of those modes inside 4-lane HBR.
 ///
 /// Measured: 1920x1080 at 60 and 120 Hz -> `0x0400`; 2560x1440 at 60 and 120 Hz -> `0x0600`.
-/// The 1280x720p60 and 3840x2160p60 values predate the decrypted corpus but fall on the same ladder.
+/// The 1280x720p60 and 3840x2160p60 values predate the decrypted corpus but fall on the same
+/// ladder.
 ///
-/// ⚠ `vdisplay` tracks `hdisplay` in every sample, so nothing distinguishes a width ladder from an
-/// area one; width is chosen because the steps land on standard widths.
+/// ⚠ `vdisplay` tracks `hdisplay` in every sample, so nothing distinguishes a width ladder from
+/// an area one; width is chosen because the steps land on standard widths.
 fn link_word_42(hdisplay: u16) -> u16 {
     match hdisplay {
         0..=1920 => 0x0400,
@@ -578,7 +579,14 @@ const CURSOR_HEAD_IDS: [u8; 2] = [0x01, 0x02];
 const CURSOR_OFF23_VISIBLE: u8 = 0x01;
 const CURSOR_OFF23_HIDDEN: u8 = 0x00;
 
-fn cursor_header(b: &mut KVec<u8>, id: u16, sub: u16, counter: u16, off22: u8, off23: u8) -> Result {
+fn cursor_header(
+    b: &mut KVec<u8>,
+    id: u16,
+    sub: u16,
+    counter: u16,
+    off22: u8,
+    off23: u8,
+) -> Result {
     header(b, id, sub, counter)?;
     pad_to(b, 22)?;
     b.push(off22, GFP_KERNEL)?;
