@@ -263,19 +263,25 @@ pub fn run() -> Report {
         // Cursor create/move/image. Layout recovered byte-exact by the cp-seal
         // differential; create/move leak uninitialised padding at off28..31.
         if matches!(sub, 0x41 | 0x42 | 0x43) {
-            let head = content[23];
+            // off22 carries the dock's head id, counted from ONE; off23 is the cursor's visible
+            // flag, set on move and clear on the bitmap-bearing messages. Reading off23 as the head
+            // (as this did) happened to round-trip only because the flag and head id share values.
+            let head = content[22].saturating_sub(1);
+            let visible = content[23] != 0;
             let f1 = le16(content, 24);
             let f2 = le16(content, 26);
             let mine = match sub {
                 0x42 => kvino::cursor_create(ctr, head, f1, f2),
-                0x43 => kvino::cursor_move(ctr, head, f1, f2),
+                0x43 => kvino::cursor_move(ctr, head, f1, f2, visible),
                 _ => {
-                    // image: the bitmap is everything past off32; w*h*4 must equal
-                    // its length, so feed any matching (w,h) (the builder only uses
-                    // them to validate; the inner carries no w/h here).
-                    let bgra = &content[32..];
+                    // image: off32..33 are zero and the bitmap starts at off34, with the final
+                    // pixel truncated by two bytes so the message stays 32 + w*h*4. Rebuild the
+                    // builder's input by restoring those two bytes; feeding from off32 shifts the
+                    // whole bitmap and only diverges at the first non-transparent pixel.
+                    let mut bgra = content[34..].to_vec();
+                    bgra.extend_from_slice(&[0, 0]);
                     let w = (bgra.len() / 4) as u16;
-                    kvino::cursor_image(ctr, head, w, 1, bgra)
+                    kvino::cursor_image(ctr, head, w, 1, &bgra)
                 }
             }
             .expect("cursor");

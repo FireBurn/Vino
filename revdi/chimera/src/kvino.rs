@@ -207,9 +207,10 @@ pub fn cursor_create(counter: u16, head: u8, w: u16, h: u16) -> Result<Vec<u8>> 
     Ok(cp::cursor_create(counter, head, w, h)?.into_vec())
 }
 
-/// `cp::cursor_move` inner plaintext.
-pub fn cursor_move(counter: u16, head: u8, x: u16, y: u16) -> Result<Vec<u8>> {
-    Ok(cp::cursor_move(counter, head, x, y)?.into_vec())
+/// `cp::cursor_move` inner plaintext. `visible` drives the dock's own visible flag; clearing it is
+/// how the cursor is hidden, because the dock wraps an out-of-range origin instead of clipping.
+pub fn cursor_move(counter: u16, head: u8, x: u16, y: u16, visible: bool) -> Result<Vec<u8>> {
+    Ok(cp::cursor_move(counter, head, x, y, visible)?.into_vec())
 }
 
 /// `cp::cursor_image` inner plaintext (32-byte header + `w*h*4` BGRA bitmap).

@@ -233,8 +233,18 @@ impl ControlSession {
             .map_err(|_| "cursor x position exceeds the wire format")?;
         let y = u16::try_from(y.clamp(0, i32::from(u16::MAX)))
             .map_err(|_| "cursor y position exceeds the wire format")?;
-        let message = kvino::cursor_move(self.inner_counter, head, x, y)
+        let message = kvino::cursor_move(self.inner_counter, head, x, y, true)
             .map_err(build_error("cursor move"))?;
+        self.send_control(0x1a, &message).map(|_| ())
+    }
+
+    /// Hide a head's cursor by clearing the dock's visible flag.
+    ///
+    /// Parking it off-screen instead leaves a ghost pointer at the top-left of the panel: the dock
+    /// wraps an out-of-range origin rather than clipping the cursor away.
+    pub fn hide_cursor(&mut self, head: u8) -> Result<(), String> {
+        let message = kvino::cursor_move(self.inner_counter, head, 0, 0, false)
+            .map_err(build_error("cursor hide"))?;
         self.send_control(0x1a, &message).map(|_| ())
     }
 

@@ -130,33 +130,31 @@ pub(crate) mod wht {
     #[inline(never)]
     pub(crate) fn transform(block: &[i32; PIXELS]) -> [i32; COEFFS] {
         let sh = |x: i32| x >> 6; // arithmetic shift: wire fixed-point floor division by 64
-        let mut c = [0i32; COEFFS];
         // Level 1: 8x8 -> three 4x4 detail bands.
         let (mut ll1, mut hl1, mut lh1, mut hh1) = ([0i32; 16], [0i32; 16], [0i32; 16], [0i32; 16]);
         haar2d_8(block, &mut ll1, &mut hl1, &mut lh1, &mut hh1);
-        // Every 4x4 level-one band uses 2x2 Morton scan order.
-        const SCAN4_MORTON: [usize; 16] = [0, 2, 8, 10, 1, 3, 9, 11, 4, 6, 12, 14, 5, 7, 13, 15];
-        for p in 0..16 {
-            c[16 + p] = sh(hl1[SCAN4_MORTON[p]]);
-            c[32 + p] = sh(lh1[SCAN4_MORTON[p]]);
-            c[48 + p] = sh(hh1[SCAN4_MORTON[p]]);
-        }
-        // Level 2: LL1 (4x4) -> 2x2 subbands; c[4..8]/[8..12]/[12..16].
+        // Level 2: LL1 (4x4) -> 2x2 subbands.
         let (mut ll2, mut hl2, mut lh2, mut hh2) = ([0i32; 4], [0i32; 4], [0i32; 4], [0i32; 4]);
         haar2d_4(&ll1, &mut ll2, &mut hl2, &mut lh2, &mut hh2);
-        for i in 0..4 {
-            c[4 + i] = sh(hl2[i]);
-            c[8 + i] = sh(lh2[i]);
-            c[12 + i] = sh(hh2[i]);
-        }
-        // Level 3: LL2 (2x2) -> 1x1 subbands; the DC c[0] and coarse c[1..4].
+        // Level 3: LL2 (2x2) -> the DC and coarse coefficients.
         let (mut ll3, mut hl3, mut lh3, mut hh3) = ([0i32; 1], [0i32; 1], [0i32; 1], [0i32; 1]);
         haar2d_2(&ll2, &mut ll3, &mut hl3, &mut lh3, &mut hh3);
-        c[0] = sh(ll3[0]);
-        c[1] = sh(hl3[0]);
-        c[2] = sh(lh3[0]);
-        c[3] = sh(hh3[0]);
-        c
+        // Every 4x4 level-one band uses 2x2 Morton scan order.
+        const SCAN4_MORTON: [usize; 16] = [0, 2, 8, 10, 1, 3, 9, 11, 4, 6, 12, 14, 5, 7, 13, 15];
+        // Assembled with `from_fn` so each coefficient is written exactly once: declaring
+        // `[0i32; COEFFS]` and filling it afterwards leaves a `memset` LLVM does not remove.
+        core::array::from_fn(|i| match i {
+            0 => sh(ll3[0]),
+            1 => sh(hl3[0]),
+            2 => sh(lh3[0]),
+            3 => sh(hh3[0]),
+            4..8 => sh(hl2[i - 4]),
+            8..12 => sh(lh2[i - 8]),
+            12..16 => sh(hh2[i - 12]),
+            16..32 => sh(hl1[SCAN4_MORTON[i - 16]]),
+            32..48 => sh(lh1[SCAN4_MORTON[i - 32]]),
+            _ => sh(hh1[SCAN4_MORTON[i - 48]]),
+        })
     }
 
     /// Vino entropy VLC, indexed by symbol as `(code, nbits)` and emitted least-significant bit
@@ -313,16 +311,31 @@ pub(crate) mod wht {
             }
         }
 
+        /// Append one bit.
+        ///
+        /// `#[inline(always)]` because this is the codec's innermost operation -- `esc` calls it
+        /// once per unary, offset and sign bit. Out of line it costs a call, a return and a
+        /// reload/store of `acc`/`nacc` *per bit*; inlined, the accumulator stays in registers
+        /// across a run of bits. The eight-byte spill is deliberately left out of line so that
+        /// inlining stays cheap.
+        #[inline(always)]
         fn bit(&mut self, b: u32) -> Result {
             self.acc |= ((b & 1) as u64) << self.nacc;
             self.nacc += 1;
             if self.nacc == 64 {
-                for k in 0..8 {
-                    self.out.push((self.acc >> (8 * k)) as u8, GFP_KERNEL)?;
-                }
-                self.acc = 0;
-                self.nacc = 0;
+                self.spill()?;
             }
+            Ok(())
+        }
+
+        /// Write the full accumulator out and reset it. Cold: once per 64 bits.
+        #[inline(never)]
+        fn spill(&mut self) -> Result {
+            for k in 0..8 {
+                self.out.push((self.acc >> (8 * k)) as u8, GFP_KERNEL)?;
+            }
+            self.acc = 0;
+            self.nacc = 0;
             Ok(())
         }
 
@@ -550,17 +563,21 @@ pub(crate) mod wht {
         let tcr = transform(cr);
         let tcb = transform(cb);
         let ty = transform(y);
-        let mut qcr = [0i32; COEFFS];
-        let mut qcb = [0i32; COEFFS];
-        let mut qy = [0i32; COEFFS];
-        qcr[0] = quantize_dc_round(2, tcr[0]);
-        qcb[0] = quantize_dc_round(1, tcb[0]);
-        qy[0] = quantize_dc_round(0, ty[0]);
-        for i in 1..COEFFS {
-            qcr[i] = quantize_chroma_ac(tcr[i], i);
-            qcb[i] = quantize_chroma_ac(tcb[i], i);
-            qy[i] = quantize(ty[i], i);
-        }
+        // `from_fn` writes each element exactly once. Declaring `[0i32; COEFFS]` and filling it
+        // afterwards leaves a `memset` that LLVM does not eliminate here -- profiling put the
+        // encoder's per-block zeroing at ~7% of the whole machine.
+        let qcr: [i32; COEFFS] = core::array::from_fn(|i| match i {
+            0 => quantize_dc_round(2, tcr[0]),
+            _ => quantize_chroma_ac(tcr[i], i),
+        });
+        let qcb: [i32; COEFFS] = core::array::from_fn(|i| match i {
+            0 => quantize_dc_round(1, tcb[0]),
+            _ => quantize_chroma_ac(tcb[i], i),
+        });
+        let qy: [i32; COEFFS] = core::array::from_fn(|i| match i {
+            0 => quantize_dc_round(0, ty[0]),
+            _ => quantize(ty[i], i),
+        });
         let last = |q: &[i32; COEFFS]| (1..COEFFS).rev().find(|&i| q[i] != 0).unwrap_or(0);
         let (lcr, lcb, ly) = (chroma_last(&qcr), chroma_last(&qcb), last(&qy));
         ColourBlock {
@@ -657,6 +674,14 @@ pub(crate) mod wht {
         let mut blocks = KVec::with_capacity(STRIP_BLOCKS, GFP_KERNEL)?;
         for k in 0..STRIP_BLOCKS {
             let (bx, by) = (k % STRIP_BLOCKS_X, k / STRIP_BLOCKS_X);
+            // One `px` call per pixel, in the same row-major order as before -- it is the
+            // expensive accessor, so the converted values are gathered once and then split into
+            // the three planes. `from_fn` avoids the zeroing that filling `[0i32; PIXELS]`
+            // afterwards would leave behind.
+            // Left as a zero-initialised fill on purpose. Gathering into an interleaved
+            // array and splitting it (as `colour_block`/`transform` now do) removes the `memset`
+            // but costs ~736 bytes of stack here, and this path already runs ~8 KB deep inside a
+            // 16 KB kernel stack -- the same budget the `#[inline(never)]` markers protect.
             let (mut cr, mut cb, mut y) = ([0i32; PIXELS], [0i32; PIXELS], [0i32; PIXELS]);
             // Monotonic indexing lets LLVM prove that every element is initialized before use.
             let mut i = 0usize;

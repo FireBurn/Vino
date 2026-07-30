@@ -203,7 +203,7 @@ fn handle_event(
                 let bgra = cursor_bgra(&cursor)?;
                 session.set_cursor(output.head, cursor.width, cursor.height, &bgra)?;
             } else {
-                session.move_cursor(output.head, i32::from(u16::MAX), i32::from(u16::MAX))?;
+                session.hide_cursor(output.head)?;
             }
         }
         DeviceEvent::CursorMove(position) if output.active => {
