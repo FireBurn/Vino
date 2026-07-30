@@ -105,8 +105,29 @@ An early reading of this — that `43xx` parts are pre-DL3 and the timeout was t
 So this is DL3 hardware DLM itself supports, and the `EPIPE` on vino's vendor preamble is an optional
 request this firmware does not implement — a side issue, not the cause.
 
-⚠ Only `0x4300` is covered by the archived transcript. `0x4301` and any single-bulk-endpoint device are
-**unverified** and may genuinely be pre-DL3 (see the `udl` note in §3(a)).
+### `0x4301` is confirmed DL3 too
+
+A `17e9:4301` (Plugable USB3-HDMI-DVI) reporting through vino's identity logging:
+
+```
+USB 17e9:4301 firmware (bcdDevice) 2.57 bcdUSB 3.00 speed super (5 Gbps)
+DisplayLink Plugable USB3-HDMI-DVI
+  ep 0x02 bulk-out maxp 1024        <- DL3 control OUT
+  ep 0x84 bulk-in  maxp 1024        <- DL3 control IN
+  ep 0x08 bulk-out maxp 1024        <- video
+  ep 0x85 int-in   maxp 8
+device identity = [10, 40, 08, 07, 0d, 06, 03, 03] "EllaDock"
+```
+
+That is **the D6000's control shape** — bulk `0x02` OUT + bulk `0x84` IN + video `0x08` — with one
+video endpoint rather than four, matching a single head. It is a **USB 3.0 SuperSpeed** part, not an
+old full-speed one, and its identity blob is byte-identical to the `0x4300`'s. So `4300` and `4301`
+are the same platform, both DL3, and both vino's problem rather than `udl`'s.
+
+It still fails identically (`ETIMEDOUT` ×3), which is exactly what §2 predicts.
+
+⚠ Still unverified: any device with **only** a bulk endpoint and no `0x84`. That one may genuinely be
+pre-DL3 — the `udl` check in §3(a) settles it.
 
 ---
 
