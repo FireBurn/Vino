@@ -327,8 +327,10 @@ impl ControlSession {
             content,
         )
         .map_err(|e| format!("seal control message {id:#06x}: {e}"))?;
+        // Keep pumping libusb while EP84's persistent reads are in flight. This matters when
+        // control and video share EP02, as they do on the ThinkPad USB 3.0 Pro Dock.
         self.dock
-            .write_ctrl_raw(&frame)
+            .write_ctrl_dlm(&frame)
             .map_err(|e| format!("send control message {id:#06x}: {e}"))?;
         self.wire_seq = self
             .wire_seq

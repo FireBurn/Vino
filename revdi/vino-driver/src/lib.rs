@@ -15,9 +15,12 @@ pub mod usb;
 pub use frame::{build_frame, Frame};
 pub use usb::{Dock, Error};
 
-/// USB vendor / product IDs for the Dell D6000 (DL3 family).
+/// USB vendor / product IDs for supported DL3-family docks.
 pub const VID: u16 = 0x17e9;
-pub const PID: u16 = 0x6006;
+pub const PID_D6000: u16 = 0x6006;
+pub const PID_THINKPAD_USB3_PRO: u16 = 0x433f;
+/// Backwards-compatible name for the first supported product.
+pub const PID: u16 = PID_D6000;
 
 /// Bulk endpoints we use.
 pub const EP_OUT_CTRL: u8 = 0x02;
