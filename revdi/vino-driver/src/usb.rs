@@ -551,8 +551,7 @@ impl Dock {
                 // The stack-owned callback state must remain valid until the
                 // cancellation completion has been drained.
                 unsafe { libusb_cancel_transfer(t) };
-                let cancel_deadline = Instant::now() + Duration::from_millis(500);
-                while !shared.done.load(Ordering::Acquire) && Instant::now() < cancel_deadline {
+                while !shared.done.load(Ordering::Acquire) {
                     pump_events(self.ctx.as_raw(), Duration::from_millis(20));
                 }
                 unsafe { libusb_free_transfer(t) };
@@ -563,8 +562,10 @@ impl Dock {
         let status = shared.status.load(Ordering::Acquire);
         let actual = shared.actual_length.load(Ordering::Acquire) as usize;
         unsafe { libusb_free_transfer(t) };
-        if status == LIBUSB_TRANSFER_COMPLETED {
+        if status == LIBUSB_TRANSFER_COMPLETED && actual == bytes.len() {
             Ok(actual)
+        } else if status == LIBUSB_TRANSFER_COMPLETED {
+            Err(Error::Usb(rusb::Error::Io))
         } else {
             Err(status_to_err(status))
         }
@@ -709,6 +710,11 @@ impl Dock {
                 }
                 continue;
             }
+            let expected = unsafe { (*t).length.max(0) as usize };
+            if actual.max(0) as usize != expected {
+                err = err.or(Some(Error::Usb(rusb::Error::Io)));
+                continue;
+            }
             total += actual.max(0) as usize;
             // Submit-ahead: reuse the just-completed transfer for the next chunk.
             if err.is_none() && next < chunks.len() {
@@ -726,9 +732,8 @@ impl Dock {
         for &t in &transfers {
             unsafe { libusb_cancel_transfer(t) };
         }
-        let drain_deadline = Instant::now() + Duration::from_millis(500);
-        while reaped < submitted && Instant::now() < drain_deadline {
-            if let Some(_) = completions.lock().unwrap().pop_front() {
+        while reaped < submitted {
+            if completions.lock().unwrap().pop_front().is_some() {
                 reaped += 1;
             } else {
                 pump_events(ctx, Duration::from_millis(20));
