@@ -68,6 +68,9 @@ impl ControlSession {
 
     /// Fetch one downstream head's EDID without losing the session counters.
     pub fn fetch_edid(&mut self, head: u8) -> Result<Vec<u8>, crate::edid_fetch::FetchError> {
+        if usize::from(head) >= self.head_count() {
+            return Err(crate::edid_fetch::FetchError::InvalidHead { head });
+        }
         crate::edid_fetch::fetch_edid(
             &self.dock,
             &self.keys.control_key,
@@ -80,6 +83,7 @@ impl ControlSession {
 
     /// Probe whether one downstream head currently routes to a display-capability handler.
     pub fn probe_head_present(&mut self, head: u8) -> Result<Option<bool>, String> {
+        self.validate_head(head)?;
         let message = kvino::get_edid_req_sub(self.inner_counter, 0x20, head)
             .map_err(build_error("monitor presence probe"))?;
         let Some(reply) = self.send_control(0x15, &message)? else {
@@ -110,8 +114,15 @@ impl ControlSession {
         &self.dock
     }
 
+    pub fn head_count(&self) -> usize {
+        self.dock.head_count()
+    }
+
     /// Return the content key and nonce for `head`.
     pub fn video_key(&self, head: usize) -> Option<([u8; 16], [u8; 8])> {
+        if head >= self.head_count() {
+            return None;
+        }
         let material = self.video_keys.get(head)?;
         let mut key = [0; 16];
         let mut nonce = [0; 8];
@@ -213,7 +224,7 @@ impl ControlSession {
         height: usize,
         rgb: &[u8],
     ) -> Result<(), String> {
-        let head_index = usize::from(head);
+        let head_index = self.validate_head(head)?;
         let sequence = *self
             .frame_seq
             .get(head_index)
@@ -235,6 +246,7 @@ impl ControlSession {
         height: u32,
         bgra: &[u8],
     ) -> Result<(), String> {
+        self.validate_head(head)?;
         let width = u16::try_from(width).map_err(|_| "cursor width exceeds the wire format")?;
         let height = u16::try_from(height).map_err(|_| "cursor height exceeds the wire format")?;
         let create = kvino::cursor_create(self.inner_counter, head, width, height)
@@ -247,6 +259,7 @@ impl ControlSession {
 
     /// Move a previously uploaded cursor.
     pub fn move_cursor(&mut self, head: u8, x: i32, y: i32) -> Result<(), String> {
+        self.validate_head(head)?;
         let x = u16::try_from(x.clamp(0, i32::from(u16::MAX)))
             .map_err(|_| "cursor x position exceeds the wire format")?;
         let y = u16::try_from(y.clamp(0, i32::from(u16::MAX)))
@@ -261,6 +274,7 @@ impl ControlSession {
     /// Parking it off-screen instead leaves a ghost pointer at the top-left of the panel: the dock
     /// wraps an out-of-range origin rather than clipping the cursor away.
     pub fn hide_cursor(&mut self, head: u8) -> Result<(), String> {
+        self.validate_head(head)?;
         let message = kvino::cursor_move(self.inner_counter, head, 0, 0, false)
             .map_err(build_error("cursor hide"))?;
         self.send_control(0x1a, &message).map(|_| ())
@@ -268,6 +282,7 @@ impl ControlSession {
 
     /// Blank and close a head's active stream.
     pub fn deactivate_mode(&mut self, head: u8, width: usize, height: usize) -> Result<(), String> {
+        self.validate_head(head)?;
         let padded_width = width.div_ceil(64) * 64;
         let padded_height = height.div_ceil(16) * 16;
         let black = kvino::black_frame_ep08(padded_width, padded_height, head)
@@ -299,6 +314,7 @@ impl ControlSession {
     ) -> Result<Vec<u8>, String> {
         const I2C_M_RD: u16 = 0x0001;
 
+        self.validate_head(head)?;
         if address != crate::ddcci::I2C_ADDR {
             return Err(format!("unsupported DDC/CI address {address:#04x}"));
         }
@@ -356,6 +372,7 @@ impl ControlSession {
     }
 
     fn submit_video(&self, head: u8, frames: &[Vec<u8>]) -> Result<(), String> {
+        self.validate_head(head)?;
         let result = match head {
             0 => self.dock.write_video_frame(&frames),
             1 => self.dock.write_video2_frame(&frames),
@@ -364,6 +381,15 @@ impl ControlSession {
         result
             .map(|_| ())
             .map_err(|e| format!("submit head {head} video: {e}"))
+    }
+
+    fn validate_head(&self, head: u8) -> Result<usize, String> {
+        let head_index = usize::from(head);
+        if head_index < self.head_count() {
+            Ok(head_index)
+        } else {
+            Err(format!("invalid Vino head {head}"))
+        }
     }
 }
 
@@ -594,7 +620,7 @@ fn configure_control(
     }
 
     let mut video_keys = [[0u8; 24]; HEADS];
-    for head in 0..HEADS {
+    for head in 0..dock.head_count() {
         configure_head(
             dock,
             keys,
@@ -606,6 +632,8 @@ fn configure_control(
         )?;
     }
 
+    // These selectors are fixed control-protocol slots, not the number of active display heads.
+    // Captures and coldstart validation require both selectors on D6000 and 433f alike.
     for (id, sub, selector) in kvino::CP_SETUP_FINALIZE {
         let mut content = [0; 32];
         content[..2].copy_from_slice(&id.to_le_bytes());
@@ -662,7 +690,8 @@ fn configure_head(
     let mut v_ack = None;
     for (index, (id, sub, content_len)) in kvino::CP_SETUP_PER_HEAD.into_iter().enumerate() {
         if index >= 3 && encrypted_session_key.is_none() {
-            let rrx = receiver_random.ok_or("downstream receiver did not provide Rrx")?;
+            let rrx = receiver_random
+                .ok_or_else(|| format!("head {head} downstream receiver did not provide Rrx"))?;
             let kd = kvino::derive_kd(&km, &rtx, &rrx).map_err(build_error("derive head kd"))?;
             encrypted_session_key = Some(
                 kvino::compute_eks(&km, &rtx, &rrx, &rn, &raw_video_key)

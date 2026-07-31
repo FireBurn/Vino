@@ -67,6 +67,14 @@ fn video_endpoints(product_id: u16) -> [u8; 2] {
     }
 }
 
+fn head_count(product_id: u16) -> usize {
+    match product_id {
+        PID_THINKPAD_USB3_PRO => 1,
+        PID_D6000 => 2,
+        _ => unreachable!("unsupported product passed device filter"),
+    }
+}
+
 fn coalesce_video_chunks(chunks: &[Vec<u8>]) -> Vec<Vec<u8>> {
     let total = chunks.iter().map(Vec::len).sum::<usize>();
     let mut transfers = Vec::with_capacity(total.div_ceil(VIDEO_URB_LEN));
@@ -116,6 +124,8 @@ pub struct Dock {
     /// but we keep frame ordering deterministic.
     out_lock: Mutex<()>,
     video_endpoints: [u8; 2],
+    available_video: [bool; 2],
+    head_count: usize,
     has_intr: bool,
 }
 
@@ -370,11 +380,19 @@ impl Dock {
         let _ = handle.set_alternate_setting(0, 0);
 
         let video_endpoints = video_endpoints(product_id);
-        for (head, endpoint) in video_endpoints.iter().copied().enumerate() {
-            if !has_endpoint(&handle, endpoint) {
+        let head_count = head_count(product_id);
+        let mut available_video = video_endpoints.map(|endpoint| has_endpoint(&handle, endpoint));
+        for head in head_count..available_video.len() {
+            available_video[head] = false;
+        }
+        for head in 0..head_count {
+            if !available_video[head] {
+                let endpoint = video_endpoints[head];
                 eprintln!("[usb] head {head} video endpoint 0x{endpoint:02x} unavailable");
-                return Err(Error::Usb(rusb::Error::NotFound));
             }
+        }
+        if product_id == PID_THINKPAD_USB3_PRO && !available_video[0] {
+            return Err(Error::Usb(rusb::Error::NotFound));
         }
 
         // EP 0x83 lives on interface 2. It is auxiliary status input, so a
@@ -407,8 +425,15 @@ impl Dock {
             ep84: Mutex::new(ep84),
             out_lock: Mutex::new(()),
             video_endpoints,
+            available_video,
+            head_count,
             has_intr,
         })
+    }
+
+    /// Number of downstream display heads enabled by this product profile.
+    pub fn head_count(&self) -> usize {
+        self.head_count
     }
 
     /// Issue a vendor-specific IN control transfer (bmRequestType=0xc1).
@@ -620,20 +645,43 @@ impl Dock {
 
     /// Write a video frame on the product's head-0 endpoint. Returns bytes written.
     pub fn write_video(&self, bytes: &[u8]) -> Result<usize, Error> {
-        self.handle
+        if !self.available_video[0] {
+            return Err(Error::Disconnected);
+        }
+        let _g = self.out_lock.lock().unwrap();
+        let written = self
+            .handle
             .write_bulk(self.video_endpoints[0], bytes, self.timeout)
-            .map_err(map_err)
+            .map_err(map_err)?;
+        if written == bytes.len() {
+            Ok(written)
+        } else {
+            Err(Error::Usb(rusb::Error::Io))
+        }
     }
 
     /// Write one video frame to the product's head-1 endpoint. Mirrors [`write_video`].
     pub fn write_video2(&self, bytes: &[u8]) -> Result<usize, Error> {
-        self.handle
+        if !self.available_video[1] {
+            return Err(Error::Disconnected);
+        }
+        let _g = self.out_lock.lock().unwrap();
+        let written = self
+            .handle
             .write_bulk(self.video_endpoints[1], bytes, self.timeout)
-            .map_err(map_err)
+            .map_err(map_err)?;
+        if written == bytes.len() {
+            Ok(written)
+        } else {
+            Err(Error::Usb(rusb::Error::Io))
+        }
     }
 
     /// Pipeline a whole frame's chunks on the product's head-0 video endpoint.
     pub fn write_video_frame(&self, chunks: &[Vec<u8>]) -> Result<usize, Error> {
+        if !self.available_video[0] {
+            return Err(Error::Disconnected);
+        }
         let endpoint = self.video_endpoints[0];
         if endpoint == EP_OUT_CTRL {
             let transfers = coalesce_video_chunks(chunks);
@@ -645,6 +693,9 @@ impl Dock {
 
     /// [`write_video_frame`] for head 1.
     pub fn write_video2_frame(&self, chunks: &[Vec<u8>]) -> Result<usize, Error> {
+        if !self.available_video[1] {
+            return Err(Error::Disconnected);
+        }
         let endpoint = self.video_endpoints[1];
         if endpoint == EP_OUT_CTRL {
             let transfers = coalesce_video_chunks(chunks);
@@ -782,6 +833,9 @@ impl Dock {
 
     /// Clear the halt/stall condition on the product's head-1 video endpoint.
     pub fn clear_video2_halt(&self) -> Result<(), Error> {
+        if !self.available_video[1] {
+            return Err(Error::Disconnected);
+        }
         self.handle
             .clear_halt(self.video_endpoints[1])
             .map_err(map_err)
@@ -789,6 +843,9 @@ impl Dock {
 
     /// Clear the halt/stall condition on the product's head-0 video endpoint.
     pub fn clear_video_halt(&self) -> Result<(), Error> {
+        if !self.available_video[0] {
+            return Err(Error::Disconnected);
+        }
         self.handle
             .clear_halt(self.video_endpoints[0])
             .map_err(map_err)
@@ -866,6 +923,8 @@ mod tests {
             video_endpoints(PID_THINKPAD_USB3_PRO),
             [EP_OUT_CTRL, EP_OUT_CTRL]
         );
+        assert_eq!(head_count(PID_D6000), 2);
+        assert_eq!(head_count(PID_THINKPAD_USB3_PRO), 1);
     }
 
     #[test]

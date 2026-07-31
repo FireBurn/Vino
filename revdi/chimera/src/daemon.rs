@@ -40,7 +40,7 @@ pub fn run() -> Result<(), String> {
 fn run_session() -> Result<(), String> {
     let mut session = ControlSession::engage()?;
     let mut outputs: [Option<Output>; HEADS] = core::array::from_fn(|_| None);
-    for head in 0..HEADS {
+    for head in 0..session.head_count() {
         if session.probe_head_present(head as u8)? == Some(true) {
             connect_output(&mut session, &mut outputs[head], head as u8);
         }
@@ -125,7 +125,7 @@ fn refresh_topology(
     session: &mut ControlSession,
     outputs: &mut [Option<Output>; HEADS],
 ) -> Result<(), String> {
-    for (head, slot) in outputs.iter_mut().enumerate() {
+    for (head, slot) in outputs.iter_mut().enumerate().take(session.head_count()) {
         // A deliberate DPMS-off closes the downstream stream and can look like removal.
         if slot
             .as_ref()
