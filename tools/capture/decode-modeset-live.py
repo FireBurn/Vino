@@ -34,6 +34,11 @@ JS = r"""
 const dlm = Process.findModuleByName("DisplayLinkManager");
 const base = dlm.base;
 const AES_FUNC = 0x269dd0, PLT_SUBMIT = 0x83c20;
+// Substituted from Python. The CP-shape test drops every AES call whose counter does not
+// look like the control stream -- which is exactly where a video key hides, so --all-keys
+// turns it off. 0x08 is a video endpoint on DL-7000 parts and was missing from this list.
+const CP_SHAPE_ONLY = __CP_SHAPE_ONLY__;
+const VIDEO_EPS = __VIDEO_EPS__;
 function hx(b){const u=new Uint8Array(b);let s="";for(let i=0;i<u.length;i++)s+=u[i].toString(16).padStart(2,"0");return s;}
 
 const seenKR = new Set();
@@ -51,7 +56,7 @@ Interceptor.attach(base.add(AES_FUNC), {
   }catch(e){} },
   onLeave(){ try{
     if(!this.input) return;
-    if(this.input.slice(16,24) !== "00000000") return;   // CP-stream counter shape
+    if(CP_SHAPE_ONLY && this.input.slice(16,24) !== "00000000") return;   // CP-stream counter shape
     const riv = this.input.slice(0,16);
     for(const k of this.keys){
       if(!k || k.length !== 32) continue;
@@ -67,7 +72,7 @@ Interceptor.attach(base.add(PLT_SUBMIT), {
     const t = args[0];
     const ep = t.add(0x9).readU8();
     // control-plane + per-head bulk OUT endpoints (0x02, 0x0a/0x0b/0x0c)
-    if(ep !== 0x02 && ep !== 0x0a && ep !== 0x0b && ep !== 0x0c) return;
+    if(VIDEO_EPS.indexOf(ep) < 0) return;
     const len = t.add(0x14).readU32();
     if(len < 16 || len > 8192) return;
     const buf = t.add(0x30).readPointer();
@@ -81,8 +86,24 @@ Interceptor.attach(base.add(PLT_SUBMIT), {
 send({s:"ready"});
 """
 
-ap = argparse.ArgumentParser(); ap.add_argument("--secs", type=float, default=25.0)
+def _js(args):
+    """Fill the JS template's compile-time switches from the command line."""
+    eps = "[" + ",".join(args.video_eps.split(",")) + "]"
+    return (JS.replace("__CP_SHAPE_ONLY__", "false" if args.all_keys else "true")
+              .replace("__VIDEO_EPS__", eps))
+
+
+ap = argparse.ArgumentParser()
+ap.add_argument("--secs", type=float, default=25.0)
 ap.add_argument("--spawn", metavar="PATH", help="spawn this DLM binary under Frida (hook live from t=0, catches connect-time VideoTimingBlock + fresh session keys)")
+ap.add_argument("--all-keys", action="store_true",
+                help="capture EVERY AES key the process schedules, not only control-stream-shaped "
+                     "ones. The video path uses a different key with a different counter shape, so "
+                     "the default filter hides it -- which is why a video frame captured under the "
+                     "default settings cannot be decrypted afterwards.")
+ap.add_argument("--video-eps", default="0x02,0x08,0x0a,0x0b,0x0c",
+                help="bulk-OUT endpoints to record frames from. 0x08 is a video endpoint on "
+                     "DL-7000 parts and is not in the DL-6xxx set.")
 ap.add_argument("--out", metavar="JSON", help="dump the raw captured (ks,riv) pairs and type=4 frames here BEFORE decrypting, so a decrypt bug cannot discard a hardware run")
 args = ap.parse_args()
 dev = frida.get_local_device()
@@ -91,13 +112,13 @@ if args.spawn:
     import os
     print(f"[*] spawning {args.spawn} under Frida for {args.secs}s (connect capture)")
     spawned_pid = dev.spawn([args.spawn], cwd=os.path.dirname(args.spawn) or "/opt/displaylink")
-    session = dev.attach(spawned_pid); script = session.create_script(JS)
+    session = dev.attach(spawned_pid); script = session.create_script(_js(args))
 else:
     procs = [p for p in dev.enumerate_processes() if "DisplayLinkManager" in p.name]
     if not procs: sys.exit("DLM not running")
     pid = procs[0].pid
     print(f"[*] attaching to DLM pid={pid} for {args.secs}s — trigger a mode change now")
-    session = dev.attach(pid); script = session.create_script(JS)
+    session = dev.attach(pid); script = session.create_script(_js(args))
 
 krs = []      # (key,riv) candidates
 frames = []   # (len, hexstr)
