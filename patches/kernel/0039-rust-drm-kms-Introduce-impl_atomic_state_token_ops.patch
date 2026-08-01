@@ -1,7 +1,7 @@
 From aec87481c7f6e72210e40c5e279c006ceac17a34 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Tue, 10 Jun 2025 17:07:25 -0400
-Subject: [PATCH 039/106] rust: drm/kms: Introduce impl_atomic_state_token_ops!
+Subject: [PATCH 039/109] rust: drm/kms: Introduce impl_atomic_state_token_ops!
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

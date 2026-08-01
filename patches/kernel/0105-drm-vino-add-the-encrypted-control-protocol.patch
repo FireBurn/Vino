@@ -1,7 +1,7 @@
-From 8b55d2c08045c5cc155236e3de5a35e346165a67 Mon Sep 17 00:00:00 2001
+From 997229b91f77af51c64e2b0b975c3c25418524e4 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 21:20:52 +0100
-Subject: [PATCH 102/106] drm/vino: add the encrypted control protocol
+Subject: [PATCH 105/109] drm/vino: add the encrypted control protocol
 
 Add typed control-message encoding, AKE session handling, HDCP 2.2
 transcript processing, and DisplayLink DL3 protocol constants.
@@ -20,14 +20,14 @@ Assisted-by: Claude:claude-opus-5-0
 Assisted-by: Codex:gpt-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- MAINTAINERS                    |   7 +
- drivers/gpu/drm/vino/ake.rs    | 175 +++++++
- drivers/gpu/drm/vino/cp.rs     | 909 +++++++++++++++++++++++++++++++++
- drivers/gpu/drm/vino/crypto.rs |  35 ++
- drivers/gpu/drm/vino/hdcp.rs   | 115 +++++
- drivers/gpu/drm/vino/proto.rs  |  71 +++
- drivers/gpu/drm/vino/rng.rs    |   9 +
- 7 files changed, 1321 insertions(+)
+ MAINTAINERS                    |    7 +
+ drivers/gpu/drm/vino/ake.rs    |  175 ++++++
+ drivers/gpu/drm/vino/cp.rs     | 1022 ++++++++++++++++++++++++++++++++
+ drivers/gpu/drm/vino/crypto.rs |   35 ++
+ drivers/gpu/drm/vino/hdcp.rs   |  115 ++++
+ drivers/gpu/drm/vino/proto.rs  |   71 +++
+ drivers/gpu/drm/vino/rng.rs    |    9 +
+ 7 files changed, 1434 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/ake.rs
  create mode 100644 drivers/gpu/drm/vino/cp.rs
  create mode 100644 drivers/gpu/drm/vino/crypto.rs
@@ -236,10 +236,10 @@ index 000000000000..54d24ca2d096
 +}
 diff --git a/drivers/gpu/drm/vino/cp.rs b/drivers/gpu/drm/vino/cp.rs
 new file mode 100644
-index 000000000000..da6488dfd1c3
+index 000000000000..bf8b558a1530
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/cp.rs
-@@ -0,0 +1,909 @@
+@@ -0,0 +1,1022 @@
 +// SPDX-License-Identifier: GPL-2.0
 +//! Encrypted-control-plane message builders (the inner plaintext of the type=4
 +//! sub=0x24 AES-CTR frames) plus the AES-CTR `seal` that encrypts and frames them.
@@ -422,49 +422,113 @@ index 000000000000..da6488dfd1c3
 +    pub refresh_hz: u16,
 +    /// Pixel clock in 10 kHz units, serialized at offset 70.
 +    pub pixel_clock_10khz: u16,
-+    /// Link configuration word at offset 42, selected by [`mode_words`].
++    /// Link configuration word at offset 42, selected by [`mode_profile`].
 +    pub field42: u16,
-+    /// Undecoded mode-dependent word at offset 66, selected by [`mode_words`].
++    /// Mode-dependent word at offset 66, selected by [`mode_profile`].
 +    pub off66: u16,
++}
++
++/// Select the offset-42 downstream link word from the mode's width.
++///
++/// The field is resolution-keyed, not bandwidth-keyed: 2560x1440p60 runs at 241.50 MHz and carries
++/// `0x0600`, while 1920x1080p120 runs *faster* at 297.00 MHz and carries `0x0400`. That rules out
++/// reading it as a DP link-bandwidth tier, which `docs/VIDEO.md` had suggested and which would put
++/// both of those modes inside 4-lane HBR.
++///
++/// Measured: 1920x1080 at 60 and 120 Hz -> `0x0400`; 2560x1440 at 60 and 120 Hz -> `0x0600`.
++/// The 1280x720p60 and 3840x2160p60 values predate the decrypted corpus but fall on the same
++/// ladder.
++///
++/// ⚠ `vdisplay` tracks `hdisplay` in every sample, so nothing distinguishes a width ladder from
++/// an area one; width is chosen because the steps land on standard widths.
++fn link_word_42(hdisplay: u16) -> u16 {
++    match hdisplay {
++        0..=1920 => 0x0400,
++        1921..=2560 => 0x0600,
++        _ => 0x0604,
++    }
++}
++
++/// Select the offset-66 mode word: a base in the high byte, the mode's CTA VIC in the low byte.
++///
++/// The low byte is the VIC, or zero for a timing that has none. Measured: `0x10` for 1920x1080p60
++/// (VIC 16), `0x3f` for 1920x1080p120 (VIC 63), `0x00` for the VIC-less 2560x1440p60 and p120
++/// CVT-RB timings.
++///
++/// The base is `0x2800` only for a mode that both has a VIC *and* runs at 60 Hz or below; every
++/// other measured message uses `0x0800`. That is what separates 1920x1080p60 (`0x2810`) from
++/// 2560x1440p60 (`0x0800`) -- same refresh, but the 1440p timing is CVT-RB and carries no VIC, so
++/// refresh alone does not select the base.
++///
++/// ⚠ `0x2800` is observed in exactly one message and its meaning is undecoded, so treat any mode
++/// that lands on it without a measurement as suspect first if a panel stays dark.
++fn mode_word_66(mode: &kernel::drm::kms::modes::DisplayMode, refresh: u16) -> u16 {
++    let vic = u16::from(mode.cea_vic()) & 0x00ff;
++    let base: u16 = if vic != 0 && refresh <= 60 {
++        0x2800
++    } else {
++        0x0800
++    };
++    base | vic
++}
++
++/// A mode's offset-42 and offset-66 set-mode words, and how they were obtained.
++pub(super) struct ModeProfile {
++    pub off42: u16,
++    pub off66: u16,
++    /// True when these bytes are reproduced from a decrypted DLM set-mode message.
++    pub measured: bool,
 +}
 +
 +/// Return the two mode-dependent set-mode words at offsets 42 and 66.
 +///
-+/// These values are part of the dock's mode profile rather than ordinary display timing fields.
-+/// Accept only byte-exact vendor vectors. The CTA modes use DRM's canonical VIC matcher; the
-+/// remaining CVT-RB timings are matched in full.
-+fn mode_words(mode: &kernel::drm::kms::modes::DisplayMode) -> Option<(u16, u16)> {
-+    match mode.cea_vic() {
-+        4 => return Some((0x0400, 0x2804)),  // 1280x720p60
-+        16 => return Some((0x0400, 0x2810)), // 1920x1080p60
-+        63 => return Some((0x0400, 0x083f)), // 1920x1080p120
-+        _ => {}
++/// Modes that appear in a decrypted DLM message are reproduced byte-exactly. Everything else is
++/// derived by [`link_word_42`] and [`mode_word_66`], which between them reproduce every measured
++/// message, so the dock's vocabulary is no longer limited to the handful of timings that happen to
++/// have been captured. The envelope DLM itself stays inside -- refresh ceiling, per-head clock and
++/// the shared pixel budget -- is enforced by `drm_sink`'s `mode_valid`, not here.
++pub(super) fn mode_profile(mode: &kernel::drm::kms::modes::DisplayMode) -> Option<ModeProfile> {
++    let clock = mode.clock();
++    if clock <= 0 {
++        return None;
 +    }
++    let refresh = mode.vrefresh();
++    if refresh <= 0 {
++        return None;
++    }
++    let refresh = refresh as u16;
 +
-+    let timing = (
-+        mode.clock(),
-+        mode.hdisplay(),
-+        mode.hsync_start(),
-+        mode.hsync_end(),
-+        mode.htotal(),
-+        mode.vdisplay(),
-+        mode.vsync_start(),
-+        mode.vsync_end(),
-+        mode.vtotal(),
++    let measured = matches!(
++        (
++            clock,
++            mode.hdisplay(),
++            mode.hsync_start(),
++            mode.hsync_end(),
++            mode.htotal(),
++            mode.vdisplay(),
++            mode.vsync_start(),
++            mode.vsync_end(),
++            mode.vtotal(),
++        ),
++        // The whole decrypted DLM corpus: 1920x1080p60 and p120 (CTA), 2560x1440p60 and p120
++        // (CVT-RB). The derivation reproduces all four byte-exactly, so these need no override --
++        // the match only records that the bytes are backed by a capture.
++        (148_500, 1920, 2008, 2052, 2200, 1080, 1084, 1089, 1125)
++            | (297_000, 1920, 2008, 2052, 2200, 1080, 1084, 1089, 1125)
++            | (241_500, 2560, 2608, 2640, 2720, 1440, 1443, 1448, 1481)
++            | (497_750, 2560, 2608, 2640, 2720, 1440, 1443, 1448, 1525)
 +    );
-+    match timing {
-+        // Validated 2560x1440@60 and @120 CVT-RB profiles.
-+        (241_500, 2560, 2608, 2640, 2720, 1440, 1443, 1448, 1481)
-+        | (497_750, 2560, 2608, 2640, 2720, 1440, 1443, 1448, 1525) => Some((0x0600, 0x0800)),
-+        // 3840x2160@60 CVT-RB vendor vector.
-+        (533_120, 3840, 3888, 3920, 4000, 2160, 2163, 2168, 2222) => Some((0x0604, 0x0800)),
-+        _ => None,
-+    }
++
++    Some(ModeProfile {
++        off42: link_word_42(mode.hdisplay()),
++        off66: mode_word_66(mode, refresh),
++        measured,
++    })
 +}
 +
-+/// Whether the dock has a validated mode profile for `mode`.
++/// Whether the dock can be given a mode profile for `mode`.
 +pub(super) fn mode_supported(mode: &kernel::drm::kms::modes::DisplayMode) -> bool {
-+    mode_words(mode).is_some()
++    mode_profile(mode).is_some()
 +}
 +
 +/// Set-mode (`id=0x48 sub=0x22`): an 80-byte inner message carrying the target head and a
@@ -498,7 +562,7 @@ index 000000000000..da6488dfd1c3
 +    b.extend_from_slice(&0x0080u16.to_le_bytes(), GFP_KERNEL)?; // off58: profile constant
 +    b.extend_from_slice(&0x00ffu16.to_le_bytes(), GFP_KERNEL)?; // off60: profile constant
 +    pad_to(&mut b, 66)?;
-+    b.extend_from_slice(&t.off66.to_le_bytes(), GFP_KERNEL)?; // off66: see `mode_words`
++    b.extend_from_slice(&t.off66.to_le_bytes(), GFP_KERNEL)?; // off66: see `mode_profile`
 +    b.extend_from_slice(&0x0200u16.to_le_bytes(), GFP_KERNEL)?; // off68: profile constant
 +    b.extend_from_slice(&t.pixel_clock_10khz.to_le_bytes(), GFP_KERNEL)?; // off70: 10 kHz units
 +    pad_to(&mut b, 74)?;
@@ -511,10 +575,22 @@ index 000000000000..da6488dfd1c3
 +pub(super) fn timing_from_drm_mode(mode: &kernel::drm::kms::modes::DisplayMode) -> Result<Timing> {
 +    let refresh = mode.vrefresh() as u16;
 +    let sub = |a: u16, b: u16| a.saturating_sub(b);
-+    let (field42, off66) = mode_words(mode).ok_or(EINVAL)?;
++    let profile = mode_profile(mode).ok_or(EINVAL)?;
 +    let clock = mode.clock();
 +    if clock <= 0 {
 +        return Err(EINVAL);
++    }
++    // A dark panel on a mode with no decrypted message is far more likely to be these two words
++    // than anything else in the pipeline, so name them in the log.
++    if !profile.measured {
++        pr_info!(
++            "vino: {}x{}@{} has no decrypted DLM profile; inferring off42={:#06x} off66={:#06x}\n",
++            mode.hdisplay(),
++            mode.vdisplay(),
++            refresh,
++            profile.off42,
++            profile.off66
++        );
 +    }
 +    let pixel_clock_10khz = u16::try_from((clock as u32) / 10).map_err(|_| EINVAL)?;
 +    Ok(Timing {
@@ -528,8 +604,8 @@ index 000000000000..da6488dfd1c3
 +        vsync_width: sub(mode.vsync_end(), mode.vsync_start()),
 +        refresh_hz: refresh,
 +        pixel_clock_10khz,
-+        field42,
-+        off66,
++        field42: profile.off42,
++        off66: profile.off66,
 +    })
 +}
 +/// Known CP `sub` identifiers used to validate a decrypted header.
@@ -732,35 +808,70 @@ index 000000000000..da6488dfd1c3
 +// off26..27 field2 LE u16 (create: height / move: Y / image: 0)
 +// off28..31 zero
 +// Cursor images append their w*h*4 BGRA bitmap at off32 and set the high-byte flag in id 0x401c.
-+fn cursor_header(b: &mut KVec<u8>, id: u16, sub: u16, counter: u16, head: u8) -> Result {
++/// The dock's head id at off22 of every cursor message, indexed by vino's head number.
++///
++/// Cursor wire layout (sec 8.6.1). All three messages share the 32-byte inner header built by
++/// [`cursor_header`], with the head selector at off22 and a flag at off23.
++///
++/// The dock numbers its heads from **one**; `0` is not a valid selector.
++const CURSOR_HEAD_IDS: [u8; 2] = [0x01, 0x02];
++
++/// off23 is the cursor's **visible** flag, not a message-kind tag: set to show the cursor, clear to
++/// hide it. The bitmap-bearing messages carry it clear because an upload is not itself a show.
++const CURSOR_OFF23_VISIBLE: u8 = 0x01;
++const CURSOR_OFF23_HIDDEN: u8 = 0x00;
++
++fn cursor_header(
++    b: &mut KVec<u8>,
++    id: u16,
++    sub: u16,
++    counter: u16,
++    off22: u8,
++    off23: u8,
++) -> Result {
 +    header(b, id, sub, counter)?;
 +    pad_to(b, 22)?;
-+    b.push(0x02, GFP_KERNEL)?; // off22 marker
-+    b.push(head, GFP_KERNEL)?; // off23 head id
++    b.push(off22, GFP_KERNEL)?;
++    b.push(off23, GFP_KERNEL)?;
 +    Ok(())
 +}
-+/// cursor create (sec 8.6.1): `id=0x1b sub=0x42`, advertises `w x h` for `head`.
++
++/// cursor create: `id=0x1b sub=0x42`, advertises `w x h`. Sent once per bitmap geometry.
 +pub(super) fn cursor_create(counter: u16, head: u8, w: u16, h: u16) -> Result<KVec<u8>> {
 +    let mut b = KVec::with_capacity(32, GFP_KERNEL)?;
-+    cursor_header(&mut b, 0x1b, 0x42, counter, head)?;
++    let dock_head = CURSOR_HEAD_IDS.get(head as usize).copied().ok_or(EINVAL)?;
++    cursor_header(&mut b, 0x1b, 0x42, counter, dock_head, CURSOR_OFF23_HIDDEN)?;
 +    b.extend_from_slice(&w.to_le_bytes(), GFP_KERNEL)?; // off24..25
 +    b.extend_from_slice(&h.to_le_bytes(), GFP_KERNEL)?; // off26..27
 +    pad_to(&mut b, 32)?; // off28..31 reserved
 +    Ok(b)
 +}
-+/// cursor move (sec 8.6.1): `id=0x1a sub=0x43`, head id @23, X @24, Y @26 (LE).
-+pub(super) fn cursor_move(counter: u16, head: u8, x: u16, y: u16) -> Result<KVec<u8>> {
++/// cursor move: `id=0x1a sub=0x43`, X at off24 and Y at off26 (LE), for one head.
++pub(super) fn cursor_move(
++    counter: u16,
++    head: u8,
++    x: u16,
++    y: u16,
++    visible: bool,
++) -> Result<KVec<u8>> {
 +    let mut b = KVec::with_capacity(32, GFP_KERNEL)?;
-+    cursor_header(&mut b, 0x1a, 0x43, counter, head)?;
++    let dock_head = CURSOR_HEAD_IDS.get(head as usize).copied().ok_or(EINVAL)?;
++    let off23 = if visible {
++        CURSOR_OFF23_VISIBLE
++    } else {
++        CURSOR_OFF23_HIDDEN
++    };
++    cursor_header(&mut b, 0x1a, 0x43, counter, dock_head, off23)?;
 +    b.extend_from_slice(&x.to_le_bytes(), GFP_KERNEL)?; // off24..25
 +    b.extend_from_slice(&y.to_le_bytes(), GFP_KERNEL)?; // off26..27
 +    pad_to(&mut b, 32)?; // off28..31 reserved
 +    Ok(b)
 +}
-+/// cursor image (sec 8.6.1): inner `id=0x401c sub=0x41` (the 0x40 high-byte flag marks the
-+/// bitmap-bearing message). A 32-byte header (shared marker + head, no w/h -- those come from
-+/// [`cursor_create`]) followed by the `w*h*4` BGRA bitmap at off32. `bgra` must be `w*h*4` bytes
-+/// -- DRM hands the driver a 64x64 ARGB8888 cursor buffer and the caller swaps it to BGRA.
++/// cursor image: inner `id=0x401c sub=0x41` (the `0x40` high-byte flag marks the bitmap-bearing
++/// message), a 32-byte header then the bitmap. `w`/`h` come from [`cursor_create`].
++///
++/// Pixels are DRM `ARGB8888` (`[B, G, R, A]`, premultiplied) and **start at off34**: off32..33 are
++/// zero and the final pixel is truncated, so the message stays `32 + w*h*4` bytes.
 +pub(super) fn cursor_image(
 +    counter: u16,
 +    head: u8,
@@ -778,9 +889,11 @@ index 000000000000..da6488dfd1c3
 +        return Err(EINVAL);
 +    }
 +    let mut b = KVec::with_capacity(32 + bgra.len(), GFP_KERNEL)?;
-+    cursor_header(&mut b, 0x401c, 0x41, counter, head)?;
++    let dock_head = CURSOR_HEAD_IDS.get(head as usize).copied().ok_or(EINVAL)?;
++    cursor_header(&mut b, 0x401c, 0x41, counter, dock_head, CURSOR_OFF23_HIDDEN)?;
 +    pad_to(&mut b, 32)?; // off24..31 zero (no w/h here)
-+    b.extend_from_slice(bgra, GFP_KERNEL)?; // bitmap @ off32
++    b.extend_from_slice(&[0, 0], GFP_KERNEL)?; // off32..33
++    b.extend_from_slice(&bgra[..bgra.len() - 2], GFP_KERNEL)?; // pixels @ off34
 +    Ok(b)
 +}
 +/// Compute the 16-byte DisplayLink Dl3Cmac control-message integrity tag:

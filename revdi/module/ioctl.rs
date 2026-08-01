@@ -194,6 +194,10 @@ pub(crate) fn grabpix(
     // The IOWR arg is copied back to userspace, so the count reaches DLM.
     arg.num_rects = count as i32;
 
+    // The CRTC's colour transform, snapshotted once so the per-row loop holds no lock. `None`
+    // (no CTM and no gamma ramp programmed) leaves the copy exactly as it was.
+    let color = *data.color.lock();
+
     // Copy each changed rectangle into the client's (persistent, full-frame) buffer at the same
     // position, so the userspace frame accumulates the per-grab deltas.
     for &(x1, y1, x2, y2) in &rects[..count] {
@@ -209,6 +213,16 @@ pub(crate) fn grabpix(
             }
             let src = kernel::io_project!(map.view(), [try: so..end]);
             src.copy_to_slice(&mut row);
+            if let Some(pipeline) = &color {
+                // XRGB8888 little-endian: B, G, R, X. The X byte is left alone -- the format
+                // carries no alpha, and the client may rely on what it holds.
+                for px in row.chunks_exact_mut(BPP) {
+                    let (r, g, b) = pipeline.apply(px[2], px[1], px[0]);
+                    px[2] = r;
+                    px[1] = g;
+                    px[0] = b;
+                }
+            }
             // Fully checked: on 32-bit `usize` the row product can overflow even after the
             // sign validation above.
             let dst = y

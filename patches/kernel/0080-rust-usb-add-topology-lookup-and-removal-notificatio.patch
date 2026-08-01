@@ -1,7 +1,7 @@
-From 727b7e6be593f8ab1c5c38a585b4a5174985ec85 Mon Sep 17 00:00:00 2001
+From 72fb8c6b8409da9a0771b855c9c9fd52c923c85b Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 23:40:48 +0100
-Subject: [PATCH 080/106] rust: usb: add topology lookup and removal
+Subject: [PATCH 080/109] rust: usb: add topology lookup and removal
  notification
 
 Expose an owned root-first bus/port path for a USB device and a safe

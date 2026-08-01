@@ -1,7 +1,7 @@
 From 3dd79b73b35e6f9638627760a77aff93a86d7b60 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 23 May 2024 17:00:29 -0400
-Subject: [PATCH 047/106] rust: drm/kms: Add drm_framebuffer bindings
+Subject: [PATCH 047/109] rust: drm/kms: Add drm_framebuffer bindings
 
 This adds some very simple bindings for drm_framebuffer. We don't use them
 much yet, but we'll eventually be using them when rvkms eventually gets CRC

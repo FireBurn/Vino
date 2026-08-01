@@ -1,7 +1,7 @@
-From ef9d133e44e6c13b1c8e2a030c8e0440ea1bfb0a Mon Sep 17 00:00:00 2001
+From a13775e0cdc561347fa8de5cb48472b4ef59bdb9 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 21:21:23 +0100
-Subject: [PATCH 106/106] docs: gpu: document the Vino driver
+Subject: [PATCH 109/109] docs: gpu: document the Vino driver
 
 Document supported hardware, configuration and diagnostics, KMS
 behaviour, validated timing profiles, coherent snapshots and damage

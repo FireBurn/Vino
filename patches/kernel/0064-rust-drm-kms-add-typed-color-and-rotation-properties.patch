@@ -1,26 +1,36 @@
-From 693fc269c1b6bbdcad638dbea826401d2163f70d Mon Sep 17 00:00:00 2001
+From 682b98c54dde5e0ed709b2c4a505b915e223bbea Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 13:23:01 +0100
-Subject: [PATCH 064/106] rust: drm: kms: add typed color and rotation
+Subject: [PATCH 064/109] rust: drm: kms: add typed color and rotation
  properties
 
-Add typed KMS property support for CRTC gamma lookup tables and
-plane rotation.
+Add typed KMS property support for CRTC colour management and plane
+rotation.
 
 ColorLut exposes validated drm_color_lut entries without generated
-bindings. Rotation represents only combinations accepted by the DRM
-rotation property, while the plane state accessors expose placement
-and cursor-hotspot coordinates needed by software and transport
-scanout drivers.
+bindings, and ColorCtm exposes a colour transformation matrix.
+enable_color_mgmt() creates the DEGAMMA_LUT, CTM and GAMMA_LUT
+properties, with enable_gamma() as the gamma-only shorthand, and the
+CRTC state accessors read back what userspace programmed.
+
+Decode the CTM here rather than in each driver: its UAPI entries are
+S31.32 sign-magnitude rather than two's complement, so reading them as
+signed integers turns every negative coefficient into a large positive
+one and a darkening correction saturates instead.
+
+Rotation represents only combinations accepted by the DRM rotation
+property, while the plane state accessors expose placement and
+cursor-hotspot coordinates needed by software and transport scanout
+drivers.
 
 Assisted-by: Claude:claude-opus-5-0
 Assisted-by: Codex:gpt-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- rust/bindings/bindings_helper.h |  1 +
- rust/kernel/drm/kms/crtc.rs     | 53 ++++++++++++++++++
- rust/kernel/drm/kms/plane.rs    | 95 +++++++++++++++++++++++++++++++++
- 3 files changed, 149 insertions(+)
+ rust/bindings/bindings_helper.h |   1 +
+ rust/kernel/drm/kms/crtc.rs     | 184 ++++++++++++++++++++++++++++++++
+ rust/kernel/drm/kms/plane.rs    |  95 +++++++++++++++++
+ 3 files changed, 280 insertions(+)
 
 diff --git a/rust/bindings/bindings_helper.h b/rust/bindings/bindings_helper.h
 index 621f76332a99..28be05b46fdc 100644
@@ -35,10 +45,10 @@ index 621f76332a99..28be05b46fdc 100644
  #include <drm/drm_connector.h>
  #include <drm/drm_crtc.h>
 diff --git a/rust/kernel/drm/kms/crtc.rs b/rust/kernel/drm/kms/crtc.rs
-index a3217f8c55e8..a7024d8921ca 100644
+index a3217f8c55e8..b67f1b5d0e9f 100644
 --- a/rust/kernel/drm/kms/crtc.rs
 +++ b/rust/kernel/drm/kms/crtc.rs
-@@ -25,6 +25,27 @@
+@@ -25,6 +25,97 @@
  };
  use macros::vtable;
  
@@ -47,6 +57,17 @@ index a3217f8c55e8..a7024d8921ca 100644
 +pub struct ColorLut(bindings::drm_color_lut);
 +
 +impl ColorLut {
++    /// Build an entry. Mainly useful for tests and for drivers synthesising a ramp.
++    #[inline]
++    pub const fn new(red: u16, green: u16, blue: u16) -> Self {
++        Self(bindings::drm_color_lut {
++            red,
++            green,
++            blue,
++            reserved: 0,
++        })
++    }
++
 +    /// Red channel value.
 +    pub fn red(&self) -> u16 {
 +        self.0.red
@@ -63,10 +84,69 @@ index a3217f8c55e8..a7024d8921ca 100644
 +    }
 +}
 +
++/// A colour transformation matrix, as programmed through the CRTC's `CTM` property.
++///
++/// The matrix is applied to the pixel values that the degamma LUT produced, before the gamma LUT:
++///
++/// ```text
++/// out   matrix    in
++/// |R|   |0 1 2|   |R|
++/// |G| = |3 4 5| x |G|
++/// |B|   |6 7 8|   |B|
++/// ```
++#[repr(transparent)]
++pub struct ColorCtm(bindings::drm_color_ctm);
++
++impl ColorCtm {
++    /// Build a matrix from raw S31.32 **sign-magnitude** entries. Mainly useful for tests.
++    #[inline]
++    pub const fn from_raw(matrix: [u64; 9]) -> Self {
++        Self(bindings::drm_color_ctm { matrix })
++    }
++
++    /// The raw matrix, in the UAPI's S31.32 **sign-magnitude** encoding.
++    ///
++    /// Prefer [`Self::coefficient`], which decodes an entry into an ordinary signed value.
++    #[inline]
++    pub fn raw(&self) -> &[u64; 9] {
++        &self.0.matrix
++    }
++
++    /// Return matrix entry `i` as a two's-complement S31.32 fixed-point value, or [`None`] if `i`
++    /// is out of range.
++    ///
++    /// The UAPI encodes these in **sign-magnitude, not two's complement** (bit 63 is the sign and
++    /// the remaining 63 bits are the magnitude), so reading the `u64` as an `i64` silently turns
++    /// every negative coefficient into a huge positive one. Decoding here means no driver has to
++    /// remember that.
++    #[inline]
++    pub fn coefficient(&self, i: usize) -> Option<i64> {
++        let raw = *self.0.matrix.get(i)?;
++        // The magnitude is capped so it always fits a positive i64.
++        let magnitude = (raw & !(1u64 << 63)) as i64;
++        Some(if raw & (1u64 << 63) != 0 {
++            -magnitude
++        } else {
++            magnitude
++        })
++    }
++
++    /// Return all nine coefficients decoded by [`Self::coefficient`].
++    #[inline]
++    pub fn coefficients(&self) -> [i64; 9] {
++        let mut out = [0i64; 9];
++        for (i, o) in out.iter_mut().enumerate() {
++            // The index is in range by construction, so the fallback is unreachable.
++            *o = self.coefficient(i).unwrap_or(0);
++        }
++        out
++    }
++}
++
  /// The main trait for implementing the [`struct drm_crtc`] API for [`Crtc`].
  ///
  /// Any KMS driver should have at least one implementation of this type, which allows them to create
-@@ -357,6 +378,17 @@ pub fn new<'a, PrimaryData, CursorData>(
+@@ -357,6 +448,37 @@ pub fn new<'a, PrimaryData, CursorData>(
          // SAFETY: We just allocated the crtc above, so this pointer must be valid
          Ok(unsafe { &*this })
      }
@@ -78,13 +158,33 @@ index a3217f8c55e8..a7024d8921ca 100644
 +    /// Call this during [`KmsDriver::probe`](crate::drm::kms::KmsDriver::probe), before the device
 +    /// is registered.
 +    pub fn enable_gamma(&self, gamma_size: u32) {
++        self.enable_color_mgmt(0, false, gamma_size)
++    }
++
++    /// Enable colour management on this CRTC, creating the `DEGAMMA_LUT`, `CTM` and `GAMMA_LUT`
++    /// properties that userspace can program.
++    ///
++    /// A size of zero suppresses the corresponding LUT property, and `has_ctm` selects whether the
++    /// `CTM` property is created. The programmed values are then readable from the CRTC state via
++    /// [`RawCrtcState::degamma_lut`], [`RawCrtcState::ctm`] and [`RawCrtcState::gamma_lut`].
++    ///
++    /// A driver with no colour hardware can still advertise these and apply them in software while
++    /// it has the pixels; compositors that colour-correct through the CRTC properties (rather than
++    /// by rewriting the framebuffer) otherwise have nowhere to put the correction on such an
++    /// output.
++    ///
++    /// Call this during [`KmsDriver::probe`](crate::drm::kms::KmsDriver::probe), before the device
++    /// is registered.
++    pub fn enable_color_mgmt(&self, degamma_size: u32, has_ctm: bool, gamma_size: u32) {
 +        // SAFETY: `as_raw()` is a valid, not-yet-registered CRTC.
-+        unsafe { bindings::drm_crtc_enable_color_mgmt(self.as_raw(), 0, false, gamma_size) };
++        unsafe {
++            bindings::drm_crtc_enable_color_mgmt(self.as_raw(), degamma_size, has_ctm, gamma_size)
++        };
 +    }
  }
  
  // SAFETY: We inherit all relevant invariants of `Crtc`
-@@ -686,6 +718,27 @@ fn mode(&self) -> &DisplayMode {
+@@ -686,6 +808,68 @@ fn mode(&self) -> &DisplayMode {
          // atomic-state API serializes access while the mode can be changed.
          unsafe { DisplayMode::as_ref(core::ptr::addr_of!((*self.as_raw()).mode)) }
      }
@@ -108,6 +208,47 @@ index a3217f8c55e8..a7024d8921ca 100644
 +        // SAFETY: `ColorLut` is transparent over `drm_color_lut`; the blob holds `n` contiguous
 +        // entries valid for the state's lifetime.
 +        Some(unsafe { core::slice::from_raw_parts(data.cast::<ColorLut>(), n) })
++    }
++
++    /// Returns the CRTC's degamma LUT for this state as an array of [`ColorLut`] entries, or
++    /// [`None`] if none is programmed. Requires a non-zero `degamma_size` to have been passed to
++    /// [`UnregisteredCrtc::enable_color_mgmt`].
++    fn degamma_lut(&self) -> Option<&[ColorLut]> {
++        // SAFETY: `as_raw()` is a valid `drm_crtc_state`.
++        let blob = unsafe { (*self.as_raw()).degamma_lut };
++        if blob.is_null() {
++            return None;
++        }
++        // SAFETY: a non-null degamma_lut blob is valid for the state's lifetime.
++        let (data, length) = unsafe { ((*blob).data, (*blob).length) };
++        let n = length / core::mem::size_of::<ColorLut>();
++        if data.is_null() || n == 0 {
++            return None;
++        }
++        // SAFETY: `ColorLut` is transparent over `drm_color_lut`; the blob holds `n` contiguous
++        // entries valid for the state's lifetime.
++        Some(unsafe { core::slice::from_raw_parts(data.cast::<ColorLut>(), n) })
++    }
++
++    /// Returns the CRTC's colour transformation matrix for this state, or [`None`] if none is
++    /// programmed. Requires `has_ctm` to have been passed to
++    /// [`UnregisteredCrtc::enable_color_mgmt`].
++    fn ctm(&self) -> Option<&ColorCtm> {
++        // SAFETY: `as_raw()` is a valid `drm_crtc_state`.
++        let blob = unsafe { (*self.as_raw()).ctm };
++        if blob.is_null() {
++            return None;
++        }
++        // SAFETY: a non-null ctm blob is valid for the state's lifetime.
++        let (data, length) = unsafe { ((*blob).data, (*blob).length) };
++        // DRM validates the blob length when the property is set, but this is the boundary where
++        // a short blob would become an out-of-bounds read of nine u64s.
++        if data.is_null() || length < core::mem::size_of::<ColorCtm>() {
++            return None;
++        }
++        // SAFETY: `ColorCtm` is transparent over `drm_color_ctm`, and the blob is at least that
++        // long and valid for the state's lifetime.
++        Some(unsafe { &*data.cast::<ColorCtm>() })
 +    }
  }
  impl<T: AsRawCrtcState> RawCrtcState for T {}

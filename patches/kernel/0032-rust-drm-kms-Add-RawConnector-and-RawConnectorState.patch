@@ -1,7 +1,7 @@
 From 82e4dd7d2a4e39d0317793dd7d466eb72f9c102d Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 23 May 2024 16:00:07 -0400
-Subject: [PATCH 032/106] rust: drm/kms: Add RawConnector and RawConnectorState
+Subject: [PATCH 032/109] rust: drm/kms: Add RawConnector and RawConnectorState
 
 Now that we have more then one way to refer to connectors, we also want to
 ensure that any methods which are common to any kind of connector type can

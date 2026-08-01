@@ -1,7 +1,7 @@
-From 271a8c6d9343f65024d18e964e4d634e21ad7b7d Mon Sep 17 00:00:00 2001
+From b7d1ac03d2da4f1734b8c1f145fe9d0d3905c32d Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 16:27:50 +0100
-Subject: [PATCH 066/106] rust: drm: kms: add plane damage-clip accessors
+Subject: [PATCH 066/109] rust: drm: kms: add plane damage-clip accessors
 
 Add safe access to the FB_DAMAGE_CLIPS rectangles intersected with
 the visible source area.

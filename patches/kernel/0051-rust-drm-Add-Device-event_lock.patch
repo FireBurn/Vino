@@ -1,7 +1,7 @@
 From 504a2fe926b21ab035378866db0902616b76d06b Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Wed, 31 Jul 2024 17:43:33 -0400
-Subject: [PATCH 051/106] rust: drm: Add Device::event_lock()
+Subject: [PATCH 051/109] rust: drm: Add Device::event_lock()
 
 This is just a crate-private helper to use Lock::from_raw() to provide an
 immutable reference to the DRM event_lock, so that it can be used like a

@@ -1,7 +1,7 @@
-From 9a8e87cae29c96458f9ce989d66982b96bf47f95 Mon Sep 17 00:00:00 2001
+From 917897084a91d459b40c9fc8442209a7f5ecb541 Mon Sep 17 00:00:00 2001
 From: Colin Braun <colinbrauncl@gmail.com>
 Date: Sun, 12 Jul 2026 16:08:00 -0500
-Subject: [PATCH 076/106] rust: usb: add urb abstraction with control and
+Subject: [PATCH 076/109] rust: usb: add urb abstraction with control and
  isochronous support
 
 Add abstractions for the USB Request Block (URB).

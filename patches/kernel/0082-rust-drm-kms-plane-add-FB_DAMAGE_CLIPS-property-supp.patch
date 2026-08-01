@@ -1,7 +1,7 @@
-From cad5ed940e9debbcad1fceec572a8edf792d43ac Mon Sep 17 00:00:00 2001
+From 056a0813173ff5c0d6b7290f5bb4ebc18544625f Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 21:52:01 +0100
-Subject: [PATCH 082/106] rust: drm: kms: plane: add FB_DAMAGE_CLIPS property
+Subject: [PATCH 082/109] rust: drm: kms: plane: add FB_DAMAGE_CLIPS property
  support
 
 Userspace can only hand a driver the rectangles that actually changed

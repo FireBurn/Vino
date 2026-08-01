@@ -1,7 +1,7 @@
-From eac7b6d3571f40305cc670803d3911be91f250e6 Mon Sep 17 00:00:00 2001
+From d4376a33289677fa40ac807518f5ab7817968ba2 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 21:20:58 +0100
-Subject: [PATCH 103/106] drm/vino: add the DL3 video codec and stream setup
+Subject: [PATCH 106/109] drm/vino: add the DL3 video codec and stream setup
 
 Add the strip-based DL3 video encoder and decoder-configuration
 generator used to arm and feed a display stream. Implement the integer
@@ -20,10 +20,10 @@ Assisted-by: Claude:claude-opus-5-0
 Assisted-by: Codex:gpt-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- drivers/gpu/drm/vino/proto.rs     |   2 +-
- drivers/gpu/drm/vino/video.rs     | 995 ++++++++++++++++++++++++++++++
- drivers/gpu/drm/vino/video_arm.rs |  82 +++
- 3 files changed, 1078 insertions(+), 1 deletion(-)
+ drivers/gpu/drm/vino/proto.rs     |    2 +-
+ drivers/gpu/drm/vino/video.rs     | 1077 +++++++++++++++++++++++++++++
+ drivers/gpu/drm/vino/video_arm.rs |   82 +++
+ 3 files changed, 1160 insertions(+), 1 deletion(-)
  create mode 100644 drivers/gpu/drm/vino/video.rs
  create mode 100644 drivers/gpu/drm/vino/video_arm.rs
 
@@ -42,10 +42,10 @@ index c21774476458..f9a70b605135 100644
      out: &mut KVec<u8>,
 diff --git a/drivers/gpu/drm/vino/video.rs b/drivers/gpu/drm/vino/video.rs
 new file mode 100644
-index 000000000000..4b58bdea2937
+index 000000000000..4617bf1f3590
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/video.rs
-@@ -0,0 +1,995 @@
+@@ -0,0 +1,1077 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! DisplayLink full-colour video encoder and framing.
@@ -87,7 +87,7 @@ index 000000000000..4b58bdea2937
 +    ///
 +    /// All steps are powers of two. Arithmetic right shift therefore implements the required floor
 +    /// division for both positive and negative coefficients without an integer division.
-+    fn step_bias(i: usize) -> (u32, i32) {
++    const fn step_bias(i: usize) -> (u32, i32) {
 +        match i {
 +            0 => (4, 8),
 +            1 | 2 => (4, 8),
@@ -99,10 +99,42 @@ index 000000000000..4b58bdea2937
 +        }
 +    }
 +
++    /// [`step_bias`] and the chroma-AC shift, resolved for every coefficient at compile time.
++    ///
++    /// Both are pure functions of the coefficient index over only 64 inputs, but they were being
++    /// evaluated per coefficient -- 64 times per plane, three planes per block, sixteen blocks per
++    /// strip. Profiling `colour_block` found the resulting range-test chains dominating it: 190
++    /// compare and branch instructions against 61 arithmetic ones. A table turns each into a load.
++    static STEP_BIAS: [(u32, i32); COEFFS] = {
++        let mut t = [(0u32, 0i32); COEFFS];
++        let mut i = 0;
++        while i < COEFFS {
++            t[i] = step_bias(i);
++            i += 1;
++        }
++        t
++    };
++
++    static CHROMA_AC_SHIFT: [u32; COEFFS] = {
++        let mut t = [0u32; COEFFS];
++        let mut i = 0;
++        while i < COEFFS {
++            t[i] = if matches!(i, 1 | 2 | 4..=11) {
++                4
++            } else if i >= 48 {
++                6
++            } else {
++                5
++            };
++            i += 1;
++        }
++        t
++    };
++
 +    /// Quantize coefficient `coeff` at position `i`: `sign(coeff) * floor((|coeff| + bias) / step)`
 +    /// and clamp it to the 12-bit signed long-token range.
 +    pub(crate) fn quantize(coeff: i32, i: usize) -> i32 {
-+        let (shift, bias) = step_bias(i);
++        let (shift, bias) = STEP_BIAS[i];
 +        // Coarse bands round half-up on the signed value; the finest bands truncate towards zero.
 +        let q = if bias == 0 {
 +            let q = coeff.abs() >> shift;
@@ -178,33 +210,41 @@ index 000000000000..4b58bdea2937
 +    #[inline(never)]
 +    pub(crate) fn transform(block: &[i32; PIXELS]) -> [i32; COEFFS] {
 +        let sh = |x: i32| x >> 6; // arithmetic shift: wire fixed-point floor division by 64
-+        let mut c = [0i32; COEFFS];
 +        // Level 1: 8x8 -> three 4x4 detail bands.
 +        let (mut ll1, mut hl1, mut lh1, mut hh1) = ([0i32; 16], [0i32; 16], [0i32; 16], [0i32; 16]);
 +        haar2d_8(block, &mut ll1, &mut hl1, &mut lh1, &mut hh1);
-+        // Every 4x4 level-one band uses 2x2 Morton scan order.
-+        const SCAN4_MORTON: [usize; 16] = [0, 2, 8, 10, 1, 3, 9, 11, 4, 6, 12, 14, 5, 7, 13, 15];
-+        for p in 0..16 {
-+            c[16 + p] = sh(hl1[SCAN4_MORTON[p]]);
-+            c[32 + p] = sh(lh1[SCAN4_MORTON[p]]);
-+            c[48 + p] = sh(hh1[SCAN4_MORTON[p]]);
-+        }
-+        // Level 2: LL1 (4x4) -> 2x2 subbands; c[4..8]/[8..12]/[12..16].
++        // Level 2: LL1 (4x4) -> 2x2 subbands.
 +        let (mut ll2, mut hl2, mut lh2, mut hh2) = ([0i32; 4], [0i32; 4], [0i32; 4], [0i32; 4]);
 +        haar2d_4(&ll1, &mut ll2, &mut hl2, &mut lh2, &mut hh2);
-+        for i in 0..4 {
-+            c[4 + i] = sh(hl2[i]);
-+            c[8 + i] = sh(lh2[i]);
-+            c[12 + i] = sh(hh2[i]);
-+        }
-+        // Level 3: LL2 (2x2) -> 1x1 subbands; the DC c[0] and coarse c[1..4].
++        // Level 3: LL2 (2x2) -> the DC and coarse coefficients.
 +        let (mut ll3, mut hl3, mut lh3, mut hh3) = ([0i32; 1], [0i32; 1], [0i32; 1], [0i32; 1]);
 +        haar2d_2(&ll2, &mut ll3, &mut hl3, &mut lh3, &mut hh3);
-+        c[0] = sh(ll3[0]);
-+        c[1] = sh(hl3[0]);
-+        c[2] = sh(lh3[0]);
-+        c[3] = sh(hh3[0]);
-+        c
++        // Every 4x4 level-one band uses 2x2 Morton scan order.
++        const SCAN4_MORTON: [usize; 16] = [0, 2, 8, 10, 1, 3, 9, 11, 4, 6, 12, 14, 5, 7, 13, 15];
++        // Assemble band by band, not coefficient by coefficient. Selecting the source with a
++        // `from_fn(|i| match i { .. })` reads well but compiles to a range test per coefficient
++        // in a
++        // rolled 64-iteration loop: profiling this function showed the `cmp`/`and`/`jne` dispatch
++        // dominating it, against only ~66 add/sub for the transform itself. These fixed-length
++        // loops unroll into straight-line stores, and every element is written so the initialiser
++        // costs nothing.
++        let mut out = [0i32; COEFFS];
++        out[0] = sh(ll3[0]);
++        out[1] = sh(hl3[0]);
++        out[2] = sh(lh3[0]);
++        out[3] = sh(hh3[0]);
++        for i in 0..4 {
++            out[4 + i] = sh(hl2[i]);
++            out[8 + i] = sh(lh2[i]);
++            out[12 + i] = sh(hh2[i]);
++        }
++        for i in 0..16 {
++            let m = SCAN4_MORTON[i];
++            out[16 + i] = sh(hl1[m]);
++            out[32 + i] = sh(lh1[m]);
++            out[48 + i] = sh(hh1[m]);
++        }
++        out
 +    }
 +
 +    /// Vino entropy VLC, indexed by symbol as `(code, nbits)` and emitted least-significant bit
@@ -361,16 +401,31 @@ index 000000000000..4b58bdea2937
 +            }
 +        }
 +
++        /// Append one bit.
++        ///
++        /// `#[inline(always)]` because this is the codec's innermost operation -- `esc` calls it
++        /// once per unary, offset and sign bit. Out of line it costs a call, a return and a
++        /// reload/store of `acc`/`nacc` *per bit*; inlined, the accumulator stays in registers
++        /// across a run of bits. The eight-byte spill is deliberately left out of line so that
++        /// inlining stays cheap.
++        #[inline(always)]
 +        fn bit(&mut self, b: u32) -> Result {
 +            self.acc |= ((b & 1) as u64) << self.nacc;
 +            self.nacc += 1;
 +            if self.nacc == 64 {
-+                for k in 0..8 {
-+                    self.out.push((self.acc >> (8 * k)) as u8, GFP_KERNEL)?;
-+                }
-+                self.acc = 0;
-+                self.nacc = 0;
++                self.spill()?;
 +            }
++            Ok(())
++        }
++
++        /// Write the full accumulator out and reset it. Cold: once per 64 bits.
++        #[inline(never)]
++        fn spill(&mut self) -> Result {
++            for k in 0..8 {
++                self.out.push((self.acc >> (8 * k)) as u8, GFP_KERNEL)?;
++            }
++            self.acc = 0;
++            self.nacc = 0;
 +            Ok(())
 +        }
 +
@@ -480,13 +535,7 @@ index 000000000000..4b58bdea2937
 +    /// Shifts rather than divisions, for the reason given on [`step_bias`]; steps 16/32/64 are
 +    /// shifts 4/5/6 and `step / 2` is `1 << (shift - 1)`.
 +    fn quantize_chroma_ac(coeff: i32, i: usize) -> i32 {
-+        let shift: u32 = if matches!(i, 1 | 2 | 4..=11) {
-+            4
-+        } else if i >= 48 {
-+            6
-+        } else {
-+            5
-+        };
++        let shift = CHROMA_AC_SHIFT[i];
 +        (coeff + (1 << (shift - 1))) >> shift
 +    }
 +
@@ -579,6 +628,9 @@ index 000000000000..4b58bdea2937
 +    }
 +
 +    /// Return the exact chroma AC extent.
++    /// Only the KUnit tests call this now: `colour_block` folds the same search into the pass that
++    /// writes the coefficients, so the production path never scans them a second time.
++    #[cfg(CONFIG_DRM_VINO_KUNIT_TEST)]
 +    pub(crate) fn chroma_last(q: &[i32; COEFFS]) -> usize {
 +        (1..COEFFS).rev().find(|&i| q[i] != 0).unwrap_or(0)
 +    }
@@ -598,19 +650,41 @@ index 000000000000..4b58bdea2937
 +        let tcr = transform(cr);
 +        let tcb = transform(cb);
 +        let ty = transform(y);
++        // Quantise all three planes and find each one's last significant coefficient in a single
++        // pass. These were separate steps, so every block ran three further 63-element reverse
++        // scans ([`chroma_last`]) across arrays it had only just written. Folding the search into
++        // the write removes those passes and keeps the three planes in cache together.
++        //
++        // An explicit ascending loop rather than `core::array::from_fn`: the fold depends on the
++        // index order, and `from_fn` does not document one. Every element is written, so the zero
++        // initialiser costs nothing.
 +        let mut qcr = [0i32; COEFFS];
 +        let mut qcb = [0i32; COEFFS];
 +        let mut qy = [0i32; COEFFS];
++        let (mut lcr, mut lcb, mut ly) = (0usize, 0usize, 0usize);
 +        qcr[0] = quantize_dc_round(2, tcr[0]);
 +        qcb[0] = quantize_dc_round(1, tcb[0]);
 +        qy[0] = quantize_dc_round(0, ty[0]);
++        // Coefficient 0 is deliberately excluded: the last-significant index is over 1..COEFFS.
 +        for i in 1..COEFFS {
-+            qcr[i] = quantize_chroma_ac(tcr[i], i);
-+            qcb[i] = quantize_chroma_ac(tcb[i], i);
-+            qy[i] = quantize(ty[i], i);
++            let (vcr, vcb, vy) = (
++                quantize_chroma_ac(tcr[i], i),
++                quantize_chroma_ac(tcb[i], i),
++                quantize(ty[i], i),
++            );
++            if vcr != 0 {
++                lcr = i;
++            }
++            if vcb != 0 {
++                lcb = i;
++            }
++            if vy != 0 {
++                ly = i;
++            }
++            qcr[i] = vcr;
++            qcb[i] = vcb;
++            qy[i] = vy;
 +        }
-+        let last = |q: &[i32; COEFFS]| (1..COEFFS).rev().find(|&i| q[i] != 0).unwrap_or(0);
-+        let (lcr, lcb, ly) = (chroma_last(&qcr), chroma_last(&qcb), last(&qy));
 +        ColourBlock {
 +            qcr,
 +            qcb,
@@ -705,6 +779,14 @@ index 000000000000..4b58bdea2937
 +        let mut blocks = KVec::with_capacity(STRIP_BLOCKS, GFP_KERNEL)?;
 +        for k in 0..STRIP_BLOCKS {
 +            let (bx, by) = (k % STRIP_BLOCKS_X, k / STRIP_BLOCKS_X);
++            // One `px` call per pixel, in the same row-major order as before -- it is the
++            // expensive accessor, so the converted values are gathered once and then split into
++            // the three planes. `from_fn` avoids the zeroing that filling `[0i32; PIXELS]`
++            // afterwards would leave behind.
++            // Left as a zero-initialised fill on purpose. Gathering into an interleaved
++            // array and splitting it (as `colour_block`/`transform` now do) removes the `memset`
++            // but costs ~736 bytes of stack here, and this path already runs ~8 KB deep inside a
++            // 16 KB kernel stack -- the same budget the `#[inline(never)]` markers protect.
 +            let (mut cr, mut cb, mut y) = ([0i32; PIXELS], [0i32; PIXELS], [0i32; PIXELS]);
 +            // Monotonic indexing lets LLVM prove that every element is initialized before use.
 +            let mut i = 0usize;

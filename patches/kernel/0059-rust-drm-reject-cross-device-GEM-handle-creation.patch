@@ -1,7 +1,7 @@
 From d48c2391ae275bdc27bcefcb1f26ec70a60cfbd4 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:39:04 +0100
-Subject: [PATCH 059/106] rust: drm: reject cross-device GEM handle creation
+Subject: [PATCH 059/109] rust: drm: reject cross-device GEM handle creation
 
 The Rust type bounds prove that a GEM object and file use the same
 driver implementation, but one driver can own multiple DRM device

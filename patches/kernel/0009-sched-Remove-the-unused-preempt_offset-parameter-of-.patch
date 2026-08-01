@@ -1,7 +1,7 @@
 From 124f5f1e56f14268120e168eaa1b3d190cf3212d Mon Sep 17 00:00:00 2001
 From: Boqun Feng <boqun@kernel.org>
 Date: Tue, 26 May 2026 08:21:44 -0700
-Subject: [PATCH 009/106] sched: Remove the unused preempt_offset parameter of
+Subject: [PATCH 009/109] sched: Remove the unused preempt_offset parameter of
  __cant_sleep()
 
 The preempt_offset is always 0 in all the callsites of __cant_sleep(),

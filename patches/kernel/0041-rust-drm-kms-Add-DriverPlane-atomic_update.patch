@@ -1,7 +1,7 @@
 From e8df2f6dfa518878310337a2d3b10925a9ab4aeb Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 23 May 2024 16:57:42 -0400
-Subject: [PATCH 041/106] rust: drm/kms: Add DriverPlane::atomic_update()
+Subject: [PATCH 041/109] rust: drm/kms: Add DriverPlane::atomic_update()
 
 A mandatory trait method used for implementing DRM's atomic plane update
 callback.

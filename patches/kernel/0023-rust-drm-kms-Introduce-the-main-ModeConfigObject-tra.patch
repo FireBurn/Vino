@@ -1,7 +1,7 @@
 From db3fc87b34278e3db314a37d6e589ca8dd50ab2c Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 16 May 2024 15:34:48 -0400
-Subject: [PATCH 023/106] rust: drm/kms: Introduce the main ModeConfigObject
+Subject: [PATCH 023/109] rust: drm/kms: Introduce the main ModeConfigObject
  traits
 
 The KMS API has a very consistent idea of a "mode config object", which

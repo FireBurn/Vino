@@ -1,0 +1,101 @@
+From 7ea01e96a457619ca8c24676a50564febaf9f053 Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Thu, 30 Jul 2026 00:01:55 +0100
+Subject: [PATCH 104/109] rust: usb: expose the device descriptor identity
+
+A driver can name its own device from the match table, but it cannot
+report what it actually bound to: the product, the revision, or the bus
+speed. That matters as soon as one driver covers a family.
+
+DisplayLink is the case in hand. The DL3 protocol does not apply to a
+DL-1x5 part, the USB IDs do not say which generation a device is, and
+the first symptom is a control session timing out long after bind
+succeeded.
+
+Add read-only accessors for idVendor, idProduct, bcdDevice, bcdUSB, the
+enumerated speed, and the manufacturer/product/serial strings the USB
+core caches. bcdDevice is the only version a driver can read without
+speaking the device's own protocol.
+
+Assisted-by: Claude:claude-opus-4-8 [Claude-Code]
+---
+ rust/kernel/usb.rs | 66 ++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 66 insertions(+)
+
+diff --git a/rust/kernel/usb.rs b/rust/kernel/usb.rs
+index 18ae16d41e14..9ccec3d557ce 100644
+--- a/rust/kernel/usb.rs
++++ b/rust/kernel/usb.rs
+@@ -2610,6 +2610,72 @@ fn inner(&self) -> &bindings::usb_device {
+     fn devnum(&self) -> u32 {
+         self.inner().devnum as u32
+     }
++
++    /// Returns the `idVendor` of the device descriptor.
++    pub fn vendor_id(&self) -> u16 {
++        self.inner().descriptor.idVendor
++    }
++
++    /// Returns the `idProduct` of the device descriptor.
++    pub fn product_id(&self) -> u16 {
++        self.inner().descriptor.idProduct
++    }
++
++    /// Returns the `bcdDevice` of the device descriptor.
++    ///
++    /// Vendors conventionally use this as the device revision, and it is the only version a driver
++    /// can read without speaking the device's own protocol.
++    pub fn bcd_device(&self) -> u16 {
++        self.inner().descriptor.bcdDevice
++    }
++
++    /// Returns the `bcdUSB` of the device descriptor.
++    pub fn bcd_usb(&self) -> u16 {
++        self.inner().descriptor.bcdUSB
++    }
++
++    /// Returns the enumerated bus speed as a human-readable string.
++    pub fn speed_str(&self) -> &'static str {
++        match self.inner().speed {
++            bindings::usb_device_speed_USB_SPEED_LOW => "low (1.5 Mbps)",
++            bindings::usb_device_speed_USB_SPEED_FULL => "full (12 Mbps)",
++            bindings::usb_device_speed_USB_SPEED_HIGH => "high (480 Mbps)",
++            bindings::usb_device_speed_USB_SPEED_WIRELESS => "wireless",
++            bindings::usb_device_speed_USB_SPEED_SUPER => "super (5 Gbps)",
++            bindings::usb_device_speed_USB_SPEED_SUPER_PLUS => "super-plus (10+ Gbps)",
++            _ => "unknown",
++        }
++    }
++
++    /// Returns the device's `iManufacturer` string, if the core cached one.
++    pub fn manufacturer(&self) -> Option<&CStr> {
++        // SAFETY: `manufacturer` is either null or a NUL-terminated string owned by the USB core
++        // for as long as the device exists, which outlives the borrow of `self`.
++        unsafe { Self::opt_cstr(self.inner().manufacturer) }
++    }
++
++    /// Returns the device's `iProduct` string, if the core cached one.
++    pub fn product(&self) -> Option<&CStr> {
++        // SAFETY: As for `manufacturer`.
++        unsafe { Self::opt_cstr(self.inner().product) }
++    }
++
++    /// Returns the device's `iSerialNumber` string, if the core cached one.
++    pub fn serial(&self) -> Option<&CStr> {
++        // SAFETY: As for `manufacturer`.
++        unsafe { Self::opt_cstr(self.inner().serial) }
++    }
++
++    /// # Safety
++    ///
++    /// `p` must be null or point to a NUL-terminated string that outlives `'a`.
++    unsafe fn opt_cstr<'a>(p: *mut crate::ffi::c_char) -> Option<&'a CStr> {
++        if p.is_null() {
++            return None;
++        }
++        // SAFETY: The caller guarantees `p` is a NUL-terminated string valid for `'a`.
++        Some(unsafe { CStr::from_char_ptr(p) })
++    }
+ }
+ 
+ impl Device<device::Bound> {

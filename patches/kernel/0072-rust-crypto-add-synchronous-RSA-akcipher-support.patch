@@ -1,7 +1,7 @@
-From 62d89c4891df87d0c8b250e205d50bb64ac643e8 Mon Sep 17 00:00:00 2001
+From 53012ccc85116bfe90d153dc66bd6a9461d12e0e Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 18 Jun 2026 14:59:24 +0100
-Subject: [PATCH 072/106] rust: crypto: add synchronous RSA akcipher support
+Subject: [PATCH 072/109] rust: crypto: add synchronous RSA akcipher support
 
 Add an RAII Rust wrapper for RSA public keys backed by the kernel
 crypto_akcipher implementation. Encode modulus and exponent components

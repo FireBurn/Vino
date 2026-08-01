@@ -22,6 +22,9 @@ use kernel::{
     usb, ThisModule,
 };
 
+// Shared verbatim with drm/vino; `tag()` is used only by vino's encoded-strip cache.
+#[allow(dead_code)]
+mod color;
 mod ioctl;
 mod kms;
 mod painter;

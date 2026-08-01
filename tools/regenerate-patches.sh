@@ -61,19 +61,47 @@ write_group() {
     sed -n "${first},${last}p" "$output/series" >"$output/groups/$name.series"
 }
 
-# These are independently reviewable, contiguous dependency groups. Keep the
-# bounds in step with the documented series shape when commits are reorganised.
-if [ "$(wc -l <"$output/series")" -ne 106 ]; then
-    echo "error: expected the documented 106-patch series; update review-group bounds" >&2
-    exit 1
-fi
-write_group interrupt-prerequisites 1 18
-write_group kms-lyude 19 55
-write_group drm-crypto-platform 56 73
-write_group usb 74 80
-write_group rust-runtime-drm 81 100
-write_group evdi 101 101
-write_group vino 102 106
+# These are independently reviewable, contiguous dependency groups, given as the
+# first patch of each. The final group runs to the end of the series, so appending
+# a commit to the tip needs no edit here; anything else does.
+#
+# Only the starts are pinned because a hardcoded total goes stale silently -- the
+# previous "expected 106" guard was three commits behind the branch, so the export
+# had been failing rather than being regenerated. The tiling check below turns any
+# mismatch into an error that names the group instead.
+group_starts=(
+    "interrupt-prerequisites 1"
+    "kms-lyude 19"
+    "drm-crypto-platform 56"
+    "usb 74"
+    "rust-runtime-drm 81"
+    "evdi 103"
+    "vino 104"
+)
+total="$(wc -l <"$output/series")"
+prev_end=0
+for i in "${!group_starts[@]}"; do
+    set -- ${group_starts[$i]}
+    name="$1"
+    first="$2"
+    if [ "$first" -ne $((prev_end + 1)) ]; then
+        echo "error: group '$name' starts at $first, leaving a gap or overlap after $prev_end" >&2
+        echo "       the series is now $total patches; update the starts above" >&2
+        exit 1
+    fi
+    if [ $((i + 1)) -lt ${#group_starts[@]} ]; then
+        set -- ${group_starts[$((i + 1))]}
+        last=$(( $2 - 1 ))
+    else
+        last="$total"
+    fi
+    if [ "$last" -lt "$first" ]; then
+        echo "error: group '$name' is empty ($first..$last)" >&2
+        exit 1
+    fi
+    write_group "$name" "$first" "$last"
+    prev_end="$last"
+done
 
 printf 'kernel: %s patches (%s..%s)\n' \
     "$(wc -l <"$output/series")" \

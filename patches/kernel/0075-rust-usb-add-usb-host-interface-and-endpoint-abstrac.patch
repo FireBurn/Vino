@@ -1,7 +1,7 @@
-From 15d7a44b9d89b9aafbdc1d2b06bee107e6615c1b Mon Sep 17 00:00:00 2001
+From 01fbe5148e9b02b5d86135d0cdaff8d32165c009 Mon Sep 17 00:00:00 2001
 From: Colin Braun <colinbrauncl@gmail.com>
 Date: Sun, 12 Jul 2026 16:07:59 -0500
-Subject: [PATCH 075/106] rust: usb: add usb host interface and endpoint
+Subject: [PATCH 075/109] rust: usb: add usb host interface and endpoint
  abstractions
 
 The goal of this patch is to create safe USB host interface and endpoint

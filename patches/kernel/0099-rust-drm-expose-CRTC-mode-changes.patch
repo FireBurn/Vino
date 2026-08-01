@@ -1,7 +1,7 @@
-From b1cc1e0177614b2fbe4d7891a7cc0e997648ded2 Mon Sep 17 00:00:00 2001
+From de4eb325e3044bc109d20ea8f10c29ff9ff5601e Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 21:38:46 +0100
-Subject: [PATCH 099/106] rust: drm: expose CRTC mode changes
+Subject: [PATCH 099/109] rust: drm: expose CRTC mode changes
 
 Allow Rust DRM drivers to distinguish a modeset or enable transition
 from an ordinary atomic page flip. This avoids repeating mode-specific
@@ -15,10 +15,10 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  1 file changed, 6 insertions(+)
 
 diff --git a/rust/kernel/drm/kms/crtc.rs b/rust/kernel/drm/kms/crtc.rs
-index 892f04f04e22..9989bf073599 100644
+index d6a3b43ba353..9e888c4e2f68 100644
 --- a/rust/kernel/drm/kms/crtc.rs
 +++ b/rust/kernel/drm/kms/crtc.rs
-@@ -766,6 +766,12 @@ fn active(&self) -> bool {
+@@ -856,6 +856,12 @@ fn active(&self) -> bool {
          unsafe { (*self.as_raw()).active }
      }
  

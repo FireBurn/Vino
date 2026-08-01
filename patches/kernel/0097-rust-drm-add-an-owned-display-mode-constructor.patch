@@ -1,7 +1,7 @@
-From 03fdc4408182be4a881c3dbbcde5ef817ff368e7 Mon Sep 17 00:00:00 2001
+From 38c000ff4baefbc81a43151dbb96564c1d03b6be Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 22:52:04 +0100
-Subject: [PATCH 097/106] rust: drm: add an owned display mode constructor
+Subject: [PATCH 097/109] rust: drm: add an owned display mode constructor
 
 Add a safe constructor for standalone display modes used by drivers
 and tests.

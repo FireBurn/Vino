@@ -1,7 +1,7 @@
 From 6735eb94c4426f27b517127fad1601b35e45487f Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 1 Jul 2026 22:40:29 +0100
-Subject: [PATCH 008/106] sched/fair: stop reading cfsb_guard.flags after the
+Subject: [PATCH 008/109] sched/fair: stop reading cfsb_guard.flags after the
  guard drops it
 
 "locking: Switch to _irq_{disable,enable}() variants in cleanup guards"

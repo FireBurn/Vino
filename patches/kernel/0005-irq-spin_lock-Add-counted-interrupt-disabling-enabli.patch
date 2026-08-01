@@ -1,7 +1,7 @@
 From 840bfb35c63e30842448245271218bd23293e182 Mon Sep 17 00:00:00 2001
 From: Boqun Feng <boqun.feng@gmail.com>
 Date: Tue, 26 May 2026 08:21:41 -0700
-Subject: [PATCH 005/106] irq & spin_lock: Add counted interrupt
+Subject: [PATCH 005/109] irq & spin_lock: Add counted interrupt
  disabling/enabling
 
 Currently the nested interrupt disabling and enabling is present by

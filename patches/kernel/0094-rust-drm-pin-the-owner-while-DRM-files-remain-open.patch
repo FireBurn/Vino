@@ -1,7 +1,7 @@
-From 117de0182e850cf9d4389a01040a8ac950ee47f6 Mon Sep 17 00:00:00 2001
+From bc93eeddacc0e59dc8e35fc4dc125e50f105b1ba Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 22:51:17 +0100
-Subject: [PATCH 094/106] rust: drm: pin the owner while DRM files remain open
+Subject: [PATCH 094/109] rust: drm: pin the owner while DRM files remain open
 
 Give each Rust DRM device its own driver and file-operations tables
 so file_operations::owner can identify the module that owns the

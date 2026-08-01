@@ -1,7 +1,7 @@
 From 6de7d4172aa5ccd47db3a8baa804e755358da977 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 23 May 2024 17:01:41 -0400
-Subject: [PATCH 048/106] rust: drm/kms: Add RawPlane::framebuffer()
+Subject: [PATCH 048/109] rust: drm/kms: Add RawPlane::framebuffer()
 
 Returns the Framebuffer currently assigned in an atomic plane state.
 

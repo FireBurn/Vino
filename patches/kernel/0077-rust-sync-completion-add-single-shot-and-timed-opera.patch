@@ -1,7 +1,7 @@
-From 4a42719e0ab7fc75529e5add0532e4e93a58cf68 Mon Sep 17 00:00:00 2001
+From 4cf10f91f90bf1f296d5a2ea8a1964f8bd97ba45 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 21:49:17 +0100
-Subject: [PATCH 077/106] rust: sync: completion: add single-shot and timed
+Subject: [PATCH 077/109] rust: sync: completion: add single-shot and timed
  operations
 
 Expose complete() and wait_for_completion_timeout() so Rust drivers

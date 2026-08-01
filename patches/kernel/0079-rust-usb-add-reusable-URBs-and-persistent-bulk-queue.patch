@@ -1,7 +1,7 @@
-From 29e3eacc60733ad0f3e51658dfadd97f644f1a5a Mon Sep 17 00:00:00 2001
+From c42f2d445039ffc4b6e6826f2cb2bc73a07253fe Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 23:40:36 +0100
-Subject: [PATCH 079/106] rust: usb: add reusable URBs and persistent bulk
+Subject: [PATCH 079/109] rust: usb: add reusable URBs and persistent bulk
  queues
 
 Allow an idle URB to retain its full transfer allocation, vary the

@@ -1,7 +1,7 @@
 From bb7024bc2b41f8f3947542c964fd850344d4b4a7 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 23 May 2024 16:22:44 -0400
-Subject: [PATCH 038/106] rust: drm/kms: Add drm_atomic_state bindings
+Subject: [PATCH 038/109] rust: drm/kms: Add drm_atomic_state bindings
 
 Next up is introducing bindings that we can use to represent the global DRM
 atomic state, along with all of the various object states contained within.

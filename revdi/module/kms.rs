@@ -148,6 +148,12 @@ pub(crate) struct EvdiDrmData {
     /// Active software-vblank timer and its cancellation handle.
     #[pin]
     vblank: SpinLock<Option<(Arc<VblankTimer>, ArcHrTimerHandle<VblankTimer>)>>,
+    /// The CRTC's colour transform (`CTM` and `GAMMA_LUT`), applied in software during GRABPIX.
+    ///
+    /// evdi has no colour hardware, so a compositor correcting through these properties has
+    /// nowhere else to put the correction.
+    #[pin]
+    pub(crate) color: Mutex<Option<crate::color::ColorPipeline>>,
     /// Whether the client asked for cursor events (`EVDI_ENABLE_CURSOR_EVENTS`).
     ///
     /// Cleared by default: a client that has not opted in composites the pointer into the primary
@@ -165,6 +171,7 @@ impl EvdiDrmData {
             pixel_area_limit: AtomicU32::new(0),
             pixel_per_second_limit: AtomicU32::new(0),
             vblank <- new_spinlock!(None),
+            color <- new_mutex!(None),
             cursor_events: AtomicBool::new(false),
         })
     }
@@ -341,6 +348,11 @@ impl KmsDriver for EvdiDrmDriver {
         cursor.create_blend_mode_property(plane::BlendModes::PREMULTIPLIED)?;
         let crtc_obj =
             crtc::UnregisteredCrtc::<EvdiCrtc>::new(dev, primary, Some(&cursor), None, ())?;
+        // Advertise CTM and a 256-entry GAMMA_LUT. evdi has no colour hardware to program, so
+        // GRABPIX applies both in software on the way to the client; without these properties a
+        // compositor's colour correction silently does nothing on an evdi output while native
+        // outputs are corrected normally.
+        crtc_obj.enable_color_mgmt(0, true, crate::color::LUT_LEN as u32);
         let enc = encoder::UnregisteredEncoder::<EvdiEncoder>::new(
             dev,
             encoder::Type::Virtual,
@@ -492,6 +504,7 @@ impl crtc::DriverCrtc for EvdiCrtc {
         let dev = crtc.drm_dev();
         let data: &EvdiDrmData = dev;
         let _ = data.set_scanout(None);
+        *data.color.lock() = None;
         crate::painter::notify_dpms(data, dev, crate::painter::DPMS_OFF);
     }
 
@@ -500,6 +513,16 @@ impl crtc::DriverCrtc for EvdiCrtc {
     fn atomic_flush(commit: CrtcAtomicCommit<'_, Self>) {
         let crtc = commit.crtc();
         let mut new = commit.take_new_state();
+        // Re-cache on every commit rather than only at enable: a night-light corrector ramps its
+        // CTM continuously on an already-enabled CRTC, which never re-runs atomic_enable.
+        {
+            let data: &EvdiDrmData = crtc.drm_dev();
+            let built = crate::color::ColorPipeline::build(new.gamma_lut(), new.ctm());
+            let mut slot = data.color.lock();
+            if *slot != built {
+                *slot = built;
+            }
+        }
         if let Some(pending) = new.get_pending_vblank_event() {
             match crtc.vblank_get() {
                 Ok(vbl_ref) => pending.arm(vbl_ref),

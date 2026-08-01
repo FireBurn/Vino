@@ -1,7 +1,7 @@
-From 33e889e0fc4bebfa1d16b289229f1644ac49d791 Mon Sep 17 00:00:00 2001
+From 5dec668d5eea63ff044049070eaf2e86a9ef4042 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 16:54:31 +0100
-Subject: [PATCH 092/106] rust: hrtimer: expose interrupt state in hard
+Subject: [PATCH 092/109] rust: hrtimer: expose interrupt state in hard
  callbacks
 
 Hard hrtimer modes guarantee that their callbacks run with local

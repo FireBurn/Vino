@@ -1,7 +1,7 @@
-From cf0e6e2bade7f4fd62029d1eb68557e294942a96 Mon Sep 17 00:00:00 2001
+From f9df17bd7bb83d813c91b1a8f7d12bbdc3ee3da7 Mon Sep 17 00:00:00 2001
 From: Colin Braun <colinbrauncl@gmail.com>
 Date: Sun, 12 Jul 2026 16:07:58 -0500
-Subject: [PATCH 074/106] rust: usb: add USB ch9 standard descriptors and
+Subject: [PATCH 074/109] rust: usb: add USB ch9 standard descriptors and
  constants
 
 Add a new module for USB chapter 9 structs and constants.

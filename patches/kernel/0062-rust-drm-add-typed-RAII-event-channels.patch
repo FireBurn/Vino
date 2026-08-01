@@ -1,7 +1,7 @@
 From 562108c77729b7c4e4c9ce6cacd31d3522fc6429 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:54:08 +0100
-Subject: [PATCH 062/106] rust: drm: add typed RAII event channels
+Subject: [PATCH 062/109] rust: drm: add typed RAII event channels
 
 Add event delivery for a concrete DRM driver and file pair. A connection
 token owns the logical receiver and disconnects automatically on drop.

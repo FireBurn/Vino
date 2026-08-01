@@ -1,7 +1,7 @@
-From 597f177b59fd1555415631b549ca89a111dc7de6 Mon Sep 17 00:00:00 2001
+From 9238fa166e4160817d0f437a2513110d0a05b9a5 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 22:01:31 +0100
-Subject: [PATCH 101/106] drm/evdi: add the Rust virtual display driver
+Subject: [PATCH 103/109] drm/evdi: add the Rust virtual display driver
 
 Add a Rust implementation of EVDI while preserving the established
 libevdi and DisplayLinkManager display ABI. Install that ABI as
@@ -17,6 +17,12 @@ compositor swapchain buffers are mapped before notifying the client and
 reused for later flips and GRABPIX calls. Enforce the bandwidth limits
 supplied by userspace without applying a driver-invented multiplier.
 
+Advertise the CRTC's CTM and gamma ramp and apply them to each row of
+the GRABPIX copy. The driver has no display hardware, so a compositor
+that colour-corrects through the KMS properties otherwise has nowhere
+to place the correction while native outputs are corrected normally.
+The colour module is shared verbatim with the Vino driver.
+
 DDC/CI and cursor-control ioctls remain ABI-compatible no-ops. The
 driver advertises no cursor plane and does not register a virtual
 I2C adapter.
@@ -30,16 +36,18 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  drivers/gpu/drm/Makefile        |   1 +
  drivers/gpu/drm/evdi/Kconfig    |  20 +
  drivers/gpu/drm/evdi/Makefile   |   2 +
- drivers/gpu/drm/evdi/evdi.rs    | 324 ++++++++++++++
- drivers/gpu/drm/evdi/ioctl.rs   | 248 +++++++++++
- drivers/gpu/drm/evdi/kms.rs     | 727 ++++++++++++++++++++++++++++++++
- drivers/gpu/drm/evdi/painter.rs | 138 ++++++
- drivers/gpu/drm/evdi/uapi.rs    | 155 +++++++
- include/uapi/drm/evdi_drm.h     | 133 ++++++
+ drivers/gpu/drm/evdi/color.rs   | 280 +++++++++++
+ drivers/gpu/drm/evdi/evdi.rs    | 327 +++++++++++++
+ drivers/gpu/drm/evdi/ioctl.rs   | 268 ++++++++++
+ drivers/gpu/drm/evdi/kms.rs     | 831 ++++++++++++++++++++++++++++++++
+ drivers/gpu/drm/evdi/painter.rs | 220 +++++++++
+ drivers/gpu/drm/evdi/uapi.rs    | 191 ++++++++
+ include/uapi/drm/evdi_drm.h     | 133 +++++
  rust/uapi/uapi_helper.h         |   1 +
- 12 files changed, 1756 insertions(+)
+ 13 files changed, 2281 insertions(+)
  create mode 100644 drivers/gpu/drm/evdi/Kconfig
  create mode 100644 drivers/gpu/drm/evdi/Makefile
+ create mode 100644 drivers/gpu/drm/evdi/color.rs
  create mode 100644 drivers/gpu/drm/evdi/evdi.rs
  create mode 100644 drivers/gpu/drm/evdi/ioctl.rs
  create mode 100644 drivers/gpu/drm/evdi/kms.rs
@@ -122,12 +130,298 @@ index 000000000000..9c5e1a66337c
 @@ -0,0 +1,2 @@
 +# SPDX-License-Identifier: GPL-2.0
 +obj-$(CONFIG_DRM_EVDI) += evdi.o
+diff --git a/drivers/gpu/drm/evdi/color.rs b/drivers/gpu/drm/evdi/color.rs
+new file mode 100644
+index 000000000000..3949113a61a9
+--- /dev/null
++++ b/drivers/gpu/drm/evdi/color.rs
+@@ -0,0 +1,280 @@
++// SPDX-License-Identifier: GPL-2.0
++//! Software colour management for the CRTC's `CTM` and `GAMMA_LUT` properties.
++//!
++//! Neither driver that uses this has colour hardware to program: vino sends already-encoded
++//! pixels to a dock, and evdi hands framebuffer pixels to a userspace client. A compositor that
++//! colour-corrects through the KMS properties -- GNOME's Night Light and KDE's Night Colour both
++//! do, rather than rewriting the framebuffer -- therefore has nowhere to put the correction on
++//! such an output unless the driver applies it while it still has the pixels. This module is that
++//! application.
++//!
++//! ⚠ **This file is shared verbatim between `drm/vino` and `drm/evdi`.** They are separate
++//! modules and cannot share a crate, so the copies are kept byte-identical and
++//! `tools/color-selftest.sh` fails if they drift.
++//!
++//! Pipeline order follows DRM's: degamma, then CTM, then gamma. No degamma LUT is advertised, so
++//! what runs here is **CTM then gamma**.
++//!
++//! ⚠ The transform is applied to the framebuffer's encoded (typically sRGB) values, not to linear
++//! light, because there is no degamma stage to linearise them first. That is the same
++//! simplification every software implementation of this makes, and it is what compositors expect
++//! when they compute a correction for a CRTC that advertises no degamma LUT.
++//!
++//! # Why the representation is an enum
++//!
++//! This runs on every pixel of every changed region -- vino's `PixelSource::px` is the
++//! third-hottest symbol in the kernel under fullscreen video (13.8% of the machine on a 4K clip),
++//! and evdi's GRABPIX copies every damaged pixel of every frame -- so the per-pixel cost matters
++//! more than generality. A CTM that only scales each channel, which is the shape *every*
++//! colour-temperature corrector produces, collapses into per-channel lookup tables exactly as a
++//! gamma ramp does; [`ColorPipeline::Fused`] keeps that case at one table lookup per channel, the
++//! same cost as before CTM existed. Only a matrix that genuinely mixes channels pays for
++//! arithmetic.
++
++use kernel::drm::kms::crtc::{ColorCtm, ColorLut};
++
++/// Fixed-point scale for pixel values and matrix coefficients: 1.0 is `1 << 16`.
++///
++/// Q16 rather than the UAPI's S31.32 so that a coefficient-by-channel multiply is `i32 * i32` into
++/// an `i64`. S31.32 would need 128-bit intermediates, which are not available on every
++/// architecture the kernel builds for.
++const Q: i32 = 1 << 16;
++
++/// Largest Q16 pixel value, i.e. 1.0 in the pixel range.
++const MAX: i32 = 0xffff;
++
++/// Added before a `>> 16` so a fixed-point product rounds to nearest instead of truncating.
++///
++/// Truncation biases every multiply downwards by up to half a level, and the bias is systematic
++/// across the whole image rather than random -- a half-gain of 255 would come out at 127 instead
++/// of 128, and a corrected desktop would sit measurably darker than the correction asked for.
++const HALF_Q: i64 = 1 << 15;
++
++/// Entries in each channel's lookup table. Matches the `GAMMA_LUT_SIZE` advertised to userspace.
++pub(crate) const LUT_LEN: usize = 256;
++
++/// Expand an 8-bit channel to Q16 so that 0 -> 0 and 255 -> 65535 exactly.
++#[inline]
++fn expand(v: u8) -> i32 {
++    v as i32 * 257
++}
++
++/// Round a Q16 channel back to 8 bits.
++///
++/// The divisor is 257, not 256, because that is what [`expand`] multiplied by. Rounding by 256
++/// instead makes `narrow(expand(v))` drift above `v` -- 200 comes back as 201 -- so even an
++/// identity transform would shift the whole image.
++#[inline]
++fn narrow(v: i32) -> u8 {
++    ((v.clamp(0, MAX) + 128) / 257).min(255) as u8
++}
++
++/// Sample a 256-entry Q16 table at a Q16 input, interpolating between neighbours.
++///
++/// Straight indexing by the top 8 bits would quantise the CTM's output back to 8 bits before the
++/// gamma ramp ever saw it, which shows up as banding on the smooth gradients this is most often
++/// used on.
++#[inline]
++fn sample(table: &[u16], v: i32) -> i32 {
++    let v = v.clamp(0, MAX);
++    // Entry `i` of the table describes input `i * 257`, so the step is 257 -- the same divisor
++    // [`narrow`] uses, and for the same reason.
++    let idx = (v / 257) as usize;
++    let frac = v - idx as i32 * 257;
++    let a = table[idx.min(LUT_LEN - 1)] as i32;
++    let b = table[(idx + 1).min(LUT_LEN - 1)] as i32;
++    (a * (257 - frac) + b * frac + 128) / 257
++}
++
++/// A CRTC's colour transform, precomputed into whichever form is cheapest to apply per pixel.
++#[derive(Clone, Copy)]
++pub(crate) enum ColorPipeline {
++    /// Per-channel 8-bit tables, red then green then blue. Covers a gamma ramp alone and a gamma
++    /// ramp after a channel-independent CTM.
++    Fused([u8; 3 * LUT_LEN]),
++    /// A CTM that mixes channels, so it cannot collapse into per-channel tables. `ctm` is Q16,
++    /// row-major, and `gamma` is applied after it.
++    Mixed {
++        ctm: [i32; 9],
++        gamma: Option<[u16; 3 * LUT_LEN]>,
++    },
++}
++
++/// Read a DRM gamma blob into three Q16 channel tables, extending an under-length LUT with
++/// identity rather than with zeroes (which would render the output black).
++fn read_lut(lut: &[ColorLut]) -> [u16; 3 * LUT_LEN] {
++    let mut t = [0u16; 3 * LUT_LEN];
++    for i in 0..LUT_LEN {
++        let identity = (i * 257) as u16;
++        match lut.get(i) {
++            Some(e) => {
++                t[i] = e.red();
++                t[LUT_LEN + i] = e.green();
++                t[2 * LUT_LEN + i] = e.blue();
++            }
++            None => {
++                t[i] = identity;
++                t[LUT_LEN + i] = identity;
++                t[2 * LUT_LEN + i] = identity;
++            }
++        }
++    }
++    t
++}
++
++/// Convert a decoded S31.32 coefficient to Q16, saturating rather than wrapping.
++fn to_q16(v: i64) -> i32 {
++    (v >> 16).clamp(i32::MIN as i64, i32::MAX as i64) as i32
++}
++
++impl ColorPipeline {
++    /// Build the pipeline for a CRTC state's `CTM` and `GAMMA_LUT`, or [`None`] when neither is
++    /// programmed or both are the identity.
++    ///
++    /// [`None`] is not merely an optimisation: it is what keeps vino's direct-scanout path and
++    /// evdi's plain copy-to-userspace path available, so an uncorrected desktop pays nothing at
++    /// all for this feature existing.
++    pub(crate) fn build(lut: Option<&[ColorLut]>, ctm: Option<&ColorCtm>) -> Option<Self> {
++        let gamma = lut.map(read_lut);
++        let matrix = ctm.map(|c| {
++            let raw = c.coefficients();
++            let mut m = [0i32; 9];
++            for (o, r) in m.iter_mut().zip(raw.iter()) {
++                *o = to_q16(*r);
++            }
++            m
++        });
++
++        // An identity matrix is what a compositor programs when it turns a corrector *off*, and it
++        // arrives as a real blob rather than as a removal. Treating it as "no CTM" is what lets
++        // the fast path come back afterwards.
++        let mixes = |m: &[i32; 9]| {
++            m[1] != 0 || m[2] != 0 || m[3] != 0 || m[5] != 0 || m[6] != 0 || m[7] != 0
++        };
++        let matrix = match matrix {
++            Some(m) if mixes(&m) => return Some(Self::mixed(m, gamma)),
++            Some(m) if m[0] == Q && m[4] == Q && m[8] == Q => None,
++            other => other,
++        };
++
++        if matrix.is_none() && gamma.is_none() {
++            return None;
++        }
++        Some(Self::fuse(matrix, gamma))
++    }
++
++    fn mixed(ctm: [i32; 9], gamma: Option<[u16; 3 * LUT_LEN]>) -> Self {
++        Self::Mixed { ctm, gamma }
++    }
++
++    /// Collapse a channel-independent CTM and a gamma ramp into one 8-bit table per channel.
++    ///
++    /// Done once per property change over 768 entries, so the per-pixel path never sees the
++    /// arithmetic.
++    fn fuse(diag: Option<[i32; 9]>, gamma: Option<[u16; 3 * LUT_LEN]>) -> Self {
++        let mut fused = [0u8; 3 * LUT_LEN];
++        // Diagonal entries of a row-major 3x3.
++        let gains = diag.map(|m| [m[0], m[4], m[8]]);
++        for c in 0..3 {
++            for i in 0..LUT_LEN {
++                let mut v = expand(i as u8);
++                if let Some(g) = gains {
++                    v = (((g[c] as i64 * v as i64 + HALF_Q) >> 16)).clamp(0, MAX as i64) as i32;
++                }
++                if let Some(t) = &gamma {
++                    v = sample(&t[c * LUT_LEN..(c + 1) * LUT_LEN], v);
++                }
++                fused[c * LUT_LEN + i] = narrow(v.clamp(0, MAX));
++            }
++        }
++        Self::Fused(fused)
++    }
++
++    /// Apply the transform to one pixel.
++    #[inline]
++    pub(crate) fn apply(&self, r: u8, g: u8, b: u8) -> (u8, u8, u8) {
++        match self {
++            Self::Fused(t) => (
++                t[r as usize],
++                t[LUT_LEN + g as usize],
++                t[2 * LUT_LEN + b as usize],
++            ),
++            Self::Mixed { ctm, gamma } => {
++                let (r, g, b) = (expand(r) as i64, expand(g) as i64, expand(b) as i64);
++                let mul = |row: usize| {
++                    let acc = ctm[row * 3] as i64 * r
++                        + ctm[row * 3 + 1] as i64 * g
++                        + ctm[row * 3 + 2] as i64 * b;
++                    // Clamping here, before the gamma ramp, is what keeps an out-of-gamut
++                    // intermediate from wrapping into the opposite corner of the colour cube.
++                    (((acc + HALF_Q) >> 16).clamp(0, MAX as i64)) as i32
++                };
++                let mut out = [mul(0), mul(1), mul(2)];
++                if let Some(t) = gamma {
++                    for (c, o) in out.iter_mut().enumerate() {
++                        *o = sample(&t[c * LUT_LEN..(c + 1) * LUT_LEN], *o);
++                    }
++                }
++                (
++                    narrow(out[0].clamp(0, MAX)),
++                    narrow(out[1].clamp(0, MAX)),
++                    narrow(out[2].clamp(0, MAX)),
++                )
++            }
++        }
++    }
++
++    /// A value that changes whenever the transform does.
++    ///
++    /// The encoded-strip cache keys on the pixels a strip contained, so a transform change that
++    /// leaves the source pixels alone would otherwise serve a stale body.
++    pub(crate) fn tag(&self) -> u64 {
++        const SEED: u64 = 0x9e37_79b1_85eb_ca87;
++        match self {
++            Self::Fused(t) => kernel::xxhash::xxh64(&t[..], SEED),
++            Self::Mixed { ctm, gamma } => {
++                let mut bytes = [0u8; 9 * 4];
++                for (i, c) in ctm.iter().enumerate() {
++                    bytes[i * 4..i * 4 + 4].copy_from_slice(&c.to_le_bytes());
++                }
++                let h = kernel::xxhash::xxh64(&bytes, SEED);
++                match gamma {
++                    Some(t) => {
++                        let mut g = [0u8; 2 * 3 * LUT_LEN];
++                        for (i, v) in t.iter().enumerate() {
++                            g[i * 2..i * 2 + 2].copy_from_slice(&v.to_le_bytes());
++                        }
++                        kernel::xxhash::xxh64(&g, h)
++                    }
++                    None => h,
++                }
++            }
++        }
++    }
++}
++
++impl PartialEq for ColorPipeline {
++    fn eq(&self, other: &Self) -> bool {
++        match (self, other) {
++            (Self::Fused(a), Self::Fused(b)) => a[..] == b[..],
++            (
++                Self::Mixed {
++                    ctm: a,
++                    gamma: ga,
++                },
++                Self::Mixed {
++                    ctm: b,
++                    gamma: gb,
++                },
++            ) => {
++                a == b
++                    && match (ga, gb) {
++                        (Some(x), Some(y)) => x[..] == y[..],
++                        (None, None) => true,
++                        _ => false,
++                    }
++            }
++            _ => false,
++        }
++    }
++}
 diff --git a/drivers/gpu/drm/evdi/evdi.rs b/drivers/gpu/drm/evdi/evdi.rs
 new file mode 100644
-index 000000000000..d8abe921affd
+index 000000000000..cfd13f057676
 --- /dev/null
 +++ b/drivers/gpu/drm/evdi/evdi.rs
-@@ -0,0 +1,324 @@
+@@ -0,0 +1,327 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! EVDI — Extensible Virtual Display Interface, Rust implementation.
@@ -152,6 +446,9 @@ index 000000000000..d8abe921affd
 +    usb, ThisModule,
 +};
 +
++// Shared verbatim with drm/vino; `tag()` is used only by vino's encoded-strip cache.
++#[allow(dead_code)]
++mod color;
 +mod ioctl;
 +mod kms;
 +mod painter;
@@ -454,10 +751,10 @@ index 000000000000..d8abe921affd
 +}
 diff --git a/drivers/gpu/drm/evdi/ioctl.rs b/drivers/gpu/drm/evdi/ioctl.rs
 new file mode 100644
-index 000000000000..cd1d93386c98
+index 000000000000..b0100980045b
 --- /dev/null
 +++ b/drivers/gpu/drm/evdi/ioctl.rs
-@@ -0,0 +1,248 @@
+@@ -0,0 +1,268 @@
 +// SPDX-License-Identifier: GPL-2.0
 +//
 +// EVDI driver-private ioctls (libevdi / DisplayLinkManager entry points), declared via
@@ -654,6 +951,10 @@ index 000000000000..cd1d93386c98
 +    // The IOWR arg is copied back to userspace, so the count reaches DLM.
 +    arg.num_rects = count as i32;
 +
++    // The CRTC's colour transform, snapshotted once so the per-row loop holds no lock. `None`
++    // (no CTM and no gamma ramp programmed) leaves the copy exactly as it was.
++    let color = *data.color.lock();
++
 +    // Copy each changed rectangle into the client's (persistent, full-frame) buffer at the same
 +    // position, so the userspace frame accumulates the per-grab deltas.
 +    for &(x1, y1, x2, y2) in &rects[..count] {
@@ -669,6 +970,16 @@ index 000000000000..cd1d93386c98
 +            }
 +            let src = kernel::io_project!(map.view(), [try: so..end]);
 +            src.copy_to_slice(&mut row);
++            if let Some(pipeline) = &color {
++                // XRGB8888 little-endian: B, G, R, X. The X byte is left alone -- the format
++                // carries no alpha, and the client may rely on what it holds.
++                for px in row.chunks_exact_mut(BPP) {
++                    let (r, g, b) = pipeline.apply(px[2], px[1], px[0]);
++                    px[2] = r;
++                    px[1] = g;
++                    px[0] = b;
++                }
++            }
 +            // Fully checked: on 32-bit `usize` the row product can overflow even after the
 +            // sign validation above.
 +            let dst = y
@@ -696,22 +1007,28 @@ index 000000000000..cd1d93386c98
 +    Ok(0)
 +}
 +
-+/// `DRM_IOCTL_EVDI_ENABLE_CURSOR_EVENTS`: retained for compatibility with libevdi.
++/// `DRM_IOCTL_EVDI_ENABLE_CURSOR_EVENTS`: opt in to (or out of) cursor reporting.
++///
++/// While disabled, the cursor plane stays silent and the compositor's own composition of the
++/// pointer into the primary framebuffer is what the client grabs. While enabled, the pointer is
++/// reported separately and the client drives its sink's cursor with it.
 +pub(crate) fn enable_cursor_events(
-+    _dev: &Dev,
++    dev: &Dev,
 +    _reg: &(),
-+    _arg: &mut uapi::DrmEvdiEnableCursorEvents,
++    arg: &mut uapi::DrmEvdiEnableCursorEvents,
 +    _file: &File,
 +) -> Result<u32> {
-+    // EVDI exposes no cursor plane, so compositors blend the cursor into the primary plane.
++    let data: &crate::kms::EvdiDrmData = dev;
++    data.cursor_events
++        .store(arg.enable != 0, core::sync::atomic::Ordering::Relaxed);
 +    Ok(0)
 +}
 diff --git a/drivers/gpu/drm/evdi/kms.rs b/drivers/gpu/drm/evdi/kms.rs
 new file mode 100644
-index 000000000000..1166018fba66
+index 000000000000..a4ec9cb70b31
 --- /dev/null
 +++ b/drivers/gpu/drm/evdi/kms.rs
-@@ -0,0 +1,727 @@
+@@ -0,0 +1,831 @@
 +// SPDX-License-Identifier: GPL-2.0
 +//
 +// The EVDI DRM/KMS device: registers a `struct drm_device` presenting one virtual
@@ -757,6 +1074,9 @@ index 000000000000..1166018fba66
 +};
 +
 +use crate::painter::PainterState;
++
++/// Cursor-plane format list. libevdi reports the format to the client, which expects ARGB.
++static CURSOR_FORMATS: [u32; 1] = [drm::fourcc::ARGB8888];
 +
 +static PRIMARY_FORMATS: [u32; 1] = [drm::fourcc::XRGB8888];
 +
@@ -859,6 +1179,17 @@ index 000000000000..1166018fba66
 +    /// Active software-vblank timer and its cancellation handle.
 +    #[pin]
 +    vblank: SpinLock<Option<(Arc<VblankTimer>, ArcHrTimerHandle<VblankTimer>)>>,
++    /// The CRTC's colour transform (`CTM` and `GAMMA_LUT`), applied in software during GRABPIX.
++    ///
++    /// evdi has no colour hardware, so a compositor correcting through these properties has
++    /// nowhere else to put the correction.
++    #[pin]
++    pub(crate) color: Mutex<Option<crate::color::ColorPipeline>>,
++    /// Whether the client asked for cursor events (`EVDI_ENABLE_CURSOR_EVENTS`).
++    ///
++    /// Cleared by default: a client that has not opted in composites the pointer into the primary
++    /// framebuffer itself and must not also receive it out of band.
++    pub(crate) cursor_events: AtomicBool,
 +}
 +
 +impl EvdiDrmData {
@@ -871,6 +1202,8 @@ index 000000000000..1166018fba66
 +            pixel_area_limit: AtomicU32::new(0),
 +            pixel_per_second_limit: AtomicU32::new(0),
 +            vblank <- new_spinlock!(None),
++            color <- new_mutex!(None),
++            cursor_events: AtomicBool::new(false),
 +        })
 +    }
 +
@@ -1023,20 +1356,34 @@ index 000000000000..1166018fba66
 +            None,
 +            plane::Type::Primary,
 +            None,
-+            (),
++            false,
 +        )?;
 +        // Advertise FB_DAMAGE_CLIPS so the compositor reports which region
 +        // changed. Without it, GRABPIX must return the full plane.
 +        primary.enable_fb_damage_clips();
-+        // Keep cursor composition in the primary framebuffer. The driver does not advertise a
-+        // separate hardware cursor plane.
-+        let crtc_obj = crtc::UnregisteredCrtc::<EvdiCrtc>::new(
++        // A real cursor plane, so the compositor keeps the pointer out of the primary framebuffer
++        // and the client can drive its sink's own cursor. Without one, every pointer movement
++        // dirties the desktop and costs a full frame.
++        let cursor = plane::UnregisteredPlane::<EvdiPlane>::new(
 +            dev,
-+            primary,
-+            None::<&plane::UnregisteredPlane<EvdiPlane>>,
++            1,
++            &CURSOR_FORMATS,
 +            None,
-+            (),
++            plane::Type::Cursor,
++            None,
++            true,
 +        )?;
++        // ARGB8888 exposes alpha, and DRM core requires a blend mode alongside it -- without this
++        // drm_mode_config_validate() warns "pixel format with alpha exposed but blend mode not
++        // setup" at registration. The bitmap the client receives is premultiplied.
++        cursor.create_blend_mode_property(plane::BlendModes::PREMULTIPLIED)?;
++        let crtc_obj =
++            crtc::UnregisteredCrtc::<EvdiCrtc>::new(dev, primary, Some(&cursor), None, ())?;
++        // Advertise CTM and a 256-entry GAMMA_LUT. evdi has no colour hardware to program, so
++        // GRABPIX applies both in software on the way to the client; without these properties a
++        // compositor's colour correction silently does nothing on an evdi output while native
++        // outputs are corrected normally.
++        crtc_obj.enable_color_mgmt(0, true, crate::color::LUT_LEN as u32);
 +        let enc = encoder::UnregisteredEncoder::<EvdiEncoder>::new(
 +            dev,
 +            encoder::Type::Virtual,
@@ -1188,6 +1535,7 @@ index 000000000000..1166018fba66
 +        let dev = crtc.drm_dev();
 +        let data: &EvdiDrmData = dev;
 +        let _ = data.set_scanout(None);
++        *data.color.lock() = None;
 +        crate::painter::notify_dpms(data, dev, crate::painter::DPMS_OFF);
 +    }
 +
@@ -1196,6 +1544,16 @@ index 000000000000..1166018fba66
 +    fn atomic_flush(commit: CrtcAtomicCommit<'_, Self>) {
 +        let crtc = commit.crtc();
 +        let mut new = commit.take_new_state();
++        // Re-cache on every commit rather than only at enable: a night-light corrector ramps its
++        // CTM continuously on an already-enabled CRTC, which never re-runs atomic_enable.
++        {
++            let data: &EvdiDrmData = crtc.drm_dev();
++            let built = crate::color::ColorPipeline::build(new.gamma_lut(), new.ctm());
++            let mut slot = data.color.lock();
++            if *slot != built {
++                *slot = built;
++            }
++        }
 +        if let Some(pending) = new.get_pending_vblank_event() {
 +            match crtc.vblank_get() {
 +                Ok(vbl_ref) => pending.arm(vbl_ref),
@@ -1265,7 +1623,10 @@ index 000000000000..1166018fba66
 +// ---- Primary plane -----------------------------------------------------------
 +
 +#[pin_data]
-+pub(crate) struct EvdiPlane;
++pub(crate) struct EvdiPlane {
++    /// Cursor planes report their contents to the client instead of being composited here.
++    is_cursor: bool,
++}
 +
 +#[derive(Clone, Default)]
 +pub(crate) struct EvdiPlaneState;
@@ -1276,12 +1637,12 @@ index 000000000000..1166018fba66
 +
 +#[vtable]
 +impl plane::DriverPlane for EvdiPlane {
-+    type Args = ();
++    type Args = bool;
 +    type Driver = EvdiDrmDriver;
 +    type State = EvdiPlaneState;
 +
-+    fn new(_device: &drm::Device<Self::Driver>, _args: ()) -> impl PinInit<Self, Error> {
-+        try_pin_init!(EvdiPlane {})
++    fn new(_device: &drm::Device<Self::Driver>, is_cursor: bool) -> impl PinInit<Self, Error> {
++        try_pin_init!(EvdiPlane { is_cursor })
 +    }
 +
 +    /// A new framebuffer was flipped in.
@@ -1291,6 +1652,11 @@ index 000000000000..1166018fba66
 +        let plane = commit.plane();
 +        let dev = plane.drm_dev();
 +        let data: &EvdiDrmData = dev;
++
++        if plane.is_cursor {
++            update_cursor(commit, data, dev);
++            return;
++        }
 +
 +        // Record the framebuffer plus each region the compositor changed, accumulate them for
 +        // GRABPIX, and signal the client. UPDATE_READY fires on every real flip; REQUEST_UPDATE
@@ -1439,12 +1805,67 @@ index 000000000000..1166018fba66
 +            && candidate.vrefresh() < vrefresh
 +    })
 +}
++
++/// Report a cursor-plane commit to the client.
++///
++/// Shape changes carry a fresh GEM handle for the bitmap; movements carry only coordinates, and are
++/// far more frequent. Both are dropped unless the client asked for cursor events, because a client
++/// that composites the pointer itself must not also receive it out of band.
++fn update_cursor(
++    commit: PlaneAtomicCommit<'_, EvdiPlane>,
++    data: &EvdiDrmData,
++    dev: &EvdiDrmDevice,
++) {
++    if !data.cursor_events.load(Ordering::Relaxed) {
++        return;
++    }
++    let (old, new) = commit.take_old_new_state();
++    let Some(fb) = new.framebuffer::<EvdiDrmDriver>() else {
++        crate::painter::notify_cursor_disabled(data, dev);
++        return;
++    };
++
++    // Re-send the bitmap only when it actually changed: the compositor commits the cursor plane on
++    // every movement, and each CURSOR_SET costs the client a map, a copy and a handle close.
++    let shape_changed = old
++        .framebuffer::<EvdiDrmDriver>()
++        .is_none_or(|previous| !core::ptr::eq(previous, fb));
++    if shape_changed {
++        if let (Ok(object), Ok(stride)) = (fb.object::<EvdiObject>(), fb.pitch(0)) {
++            let shape = crate::painter::CursorShape {
++                // Report no hotspot. The compositor has already applied it when it placed the
++                // plane, so the destination rect below IS where the bitmap goes; reporting one as
++                // well would have the client subtract it a second time and shift the pointer. This
++                // matches vino, which drives the same sinks and positions by the bitmap corner.
++                hot_x: 0,
++                hot_y: 0,
++                width: fb.width(),
++                height: fb.height(),
++                pixel_format: fb.format(),
++                stride,
++                buffer_length: stride.saturating_mul(fb.height()),
++            };
++            crate::painter::notify_cursor_set(data, dev, object, &shape);
++        }
++    }
++
++    // Send the UNCLIPPED origin. When the cursor straddles an edge the helper clips the destination
++    // and advances the source by the same amount, so the difference recovers where the bitmap's
++    // corner actually is -- including off-screen. `destination` alone would pin the pointer to the
++    // edge and make it drift as it left the screen.
++    if let (Ok(Some(source)), Some(destination)) = (new.visible_source(), new.visible_destination())
++    {
++        let x = destination.x1 - source.x1;
++        let y = destination.y1 - source.y1;
++        crate::painter::notify_cursor_move(data, dev, x, y);
++    }
++}
 diff --git a/drivers/gpu/drm/evdi/painter.rs b/drivers/gpu/drm/evdi/painter.rs
 new file mode 100644
-index 000000000000..ef08c10182e8
+index 000000000000..cda3a92fb973
 --- /dev/null
 +++ b/drivers/gpu/drm/evdi/painter.rs
-@@ -0,0 +1,138 @@
+@@ -0,0 +1,220 @@
 +// SPDX-License-Identifier: GPL-2.0
 +//
 +// The EVDI "painter": the per-device connection + event-delivery bookkeeping that
@@ -1454,6 +1875,8 @@ index 000000000000..ef08c10182e8
 +// `kernel::drm::event::EventChannel` binding), which serializes delivery against file
 +// close under `event_lock` — so an event can never be sent to a client that has just
 +// disconnected.
++
++use kernel::drm::gem::BaseObject;
 +
 +use crate::kms::{EvdiDrmData, EvdiDrmDevice};
 +use crate::uapi;
@@ -1543,6 +1966,16 @@ index 000000000000..ef08c10182e8
 +    uapi::DRM_EVDI_EVENT_MODE_CHANGED,
 +    [i32, i32, i32, i32, u32]
 +);
++kernel::declare_drm_event_payload!(
++    uapi::DrmEvdiEventCursorSet,
++    uapi::DRM_EVDI_EVENT_CURSOR_SET,
++    [i32, i32, u32, u32, u8, [u8; 3], u32, u32, u32, u32]
++);
++kernel::declare_drm_event_payload!(
++    uapi::DrmEvdiEventCursorMove,
++    uapi::DRM_EVDI_EVENT_CURSOR_MOVE,
++    [i32, i32]
++);
 +/// Zeroed `drm_event` header; [`EventChannel::send`] overwrites `type`/`length`.
 +const fn hdr() -> uapi::DrmEvent {
 +    uapi::DrmEvent {
@@ -1583,12 +2016,82 @@ index 000000000000..ef08c10182e8
 +    };
 +    let _ = data.events.send(ev);
 +}
++
++/// Cursor geometry and pixel layout accompanying a bitmap change.
++pub(crate) struct CursorShape {
++    pub(crate) hot_x: i32,
++    pub(crate) hot_y: i32,
++    pub(crate) width: u32,
++    pub(crate) height: u32,
++    pub(crate) pixel_format: u32,
++    pub(crate) stride: u32,
++    pub(crate) buffer_length: u32,
++}
++
++/// Hand the client a fresh GEM handle for the cursor buffer and tell it the new shape.
++///
++/// The handle must be minted in the *client's* file, which is why this goes through
++/// [`EventChannel::with_connected_file`] rather than [`EventChannel::send`]: creating a handle
++/// allocates and takes mutexes, so it cannot run under `event_lock`. libevdi maps the handle,
++/// copies the bitmap out and closes it, so a fresh handle is minted per change.
++pub(crate) fn notify_cursor_set(
++    data: &EvdiDrmData,
++    dev: &EvdiDrmDevice,
++    object: &kernel::drm::gem::shmem::Object<crate::kms::EvdiObject>,
++    shape: &CursorShape,
++) {
++    let handle = data
++        .events
++        .with_connected_file(dev, |file| object.create_handle(file));
++    let Ok(Some(buffer_handle)) = handle else {
++        return;
++    };
++    let ev = uapi::DrmEvdiEventCursorSet {
++        base: hdr(),
++        hot_x: shape.hot_x,
++        hot_y: shape.hot_y,
++        width: shape.width,
++        height: shape.height,
++        enabled: 1,
++        _pad: [0; 3],
++        buffer_handle,
++        buffer_length: shape.buffer_length,
++        pixel_format: shape.pixel_format,
++        stride: shape.stride,
++    };
++    let _ = data.events.send(ev);
++}
++
++/// Tell the client the cursor is no longer visible. No buffer accompanies this.
++pub(crate) fn notify_cursor_disabled(data: &EvdiDrmData, _dev: &EvdiDrmDevice) {
++    let ev = uapi::DrmEvdiEventCursorSet {
++        base: hdr(),
++        hot_x: 0,
++        hot_y: 0,
++        width: 0,
++        height: 0,
++        enabled: 0,
++        _pad: [0; 3],
++        buffer_handle: 0,
++        buffer_length: 0,
++        pixel_format: 0,
++        stride: 0,
++    };
++    let _ = data.events.send(ev);
++}
++
++/// Tell the client the cursor moved. Position changes are far more frequent than shape changes and
++/// carry no buffer, so they never need the client's file.
++pub(crate) fn notify_cursor_move(data: &EvdiDrmData, _dev: &EvdiDrmDevice, x: i32, y: i32) {
++    let ev = uapi::DrmEvdiEventCursorMove { base: hdr(), x, y };
++    let _ = data.events.send(ev);
++}
 diff --git a/drivers/gpu/drm/evdi/uapi.rs b/drivers/gpu/drm/evdi/uapi.rs
 new file mode 100644
-index 000000000000..00f4b1da5cc4
+index 000000000000..33e066923476
 --- /dev/null
 +++ b/drivers/gpu/drm/evdi/uapi.rs
-@@ -0,0 +1,155 @@
+@@ -0,0 +1,191 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! Rust names for the EVDI UAPI generated from `include/uapi/drm/evdi_drm.h`.
@@ -1602,8 +2105,9 @@ index 000000000000..00f4b1da5cc4
 +pub(crate) use kernel::uapi::{
 +    drm_evdi_connect as DrmEvdiConnect, drm_evdi_ddcci_response as DrmEvdiDdcciResponse,
 +    drm_evdi_enable_cursor_events as DrmEvdiEnableCursorEvents, drm_evdi_grabpix as DrmEvdiGrabpix,
-+    drm_evdi_request_update as DrmEvdiRequestUpdate, DRM_EVDI_EVENT_DPMS,
-+    DRM_EVDI_EVENT_MODE_CHANGED, DRM_EVDI_EVENT_UPDATE_READY,
++    drm_evdi_request_update as DrmEvdiRequestUpdate, DRM_EVDI_EVENT_CURSOR_MOVE,
++    DRM_EVDI_EVENT_CURSOR_SET, DRM_EVDI_EVENT_DPMS, DRM_EVDI_EVENT_MODE_CHANGED,
++    DRM_EVDI_EVENT_UPDATE_READY,
 +};
 +
 +pub(crate) type DrmEvent = kernel::drm::event::EventHeader;
@@ -1634,7 +2138,42 @@ index 000000000000..00f4b1da5cc4
 +    pub(crate) pixel_format: u32,
 +}
 +
++#[repr(C)]
++#[derive(Copy, Clone)]
++pub(crate) struct DrmEvdiEventCursorSet {
++    pub(crate) base: DrmEvent,
++    pub(crate) hot_x: i32,
++    pub(crate) hot_y: i32,
++    pub(crate) width: u32,
++    pub(crate) height: u32,
++    pub(crate) enabled: u8,
++    /// Explicit ABI padding. `enabled` is a `__u8` followed by a `__u32` in the C struct, so three
++    /// bytes sit between them and are copied to userspace with the rest; naming them keeps the
++    /// payload provably padding-free and forces callers to zero them rather than leaking stack.
++    pub(crate) _pad: [u8; 3],
++    pub(crate) buffer_handle: u32,
++    pub(crate) buffer_length: u32,
++    pub(crate) pixel_format: u32,
++    pub(crate) stride: u32,
++}
++
++#[repr(C)]
++#[derive(Copy, Clone)]
++pub(crate) struct DrmEvdiEventCursorMove {
++    pub(crate) base: DrmEvent,
++    pub(crate) x: i32,
++    pub(crate) y: i32,
++}
++
 +const _: () = {
++    assert!(
++        core::mem::size_of::<DrmEvdiEventCursorSet>()
++            == core::mem::size_of::<kernel::uapi::drm_evdi_event_cursor_set>()
++    );
++    assert!(
++        core::mem::size_of::<DrmEvdiEventCursorMove>()
++            == core::mem::size_of::<kernel::uapi::drm_evdi_event_cursor_move>()
++    );
 +    assert!(
 +        core::mem::size_of::<DrmEvdiEventUpdateReady>()
 +            == core::mem::size_of::<kernel::uapi::drm_evdi_event_update_ready>()

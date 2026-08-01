@@ -1,7 +1,7 @@
 From 3f8336b357c6f400ecf8b902329d4ab2208b203e Mon Sep 17 00:00:00 2001
 From: Boqun Feng <boqun@kernel.org>
 Date: Tue, 26 May 2026 08:21:47 -0700
-Subject: [PATCH 012/106] arm64: sched/preempt: Enable
+Subject: [PATCH 012/109] arm64: sched/preempt: Enable
  HAS_SEPARATE_PREEMPT_RESCHED_BITS
 
 ARM64 already uses 64bit preempt count and the need reschedule bit is

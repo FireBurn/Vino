@@ -1,7 +1,7 @@
-From 9f6655f38c7e1addd8114ae7b14cb835a709bb28 Mon Sep 17 00:00:00 2001
+From 29c9e3414071e66804274d8416786699db08115e Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 21:21:15 +0100
-Subject: [PATCH 105/106] drm/vino: add the Dell D6000 USB display driver
+Subject: [PATCH 108/109] drm/vino: add the Dell D6000 USB display driver
 
 Add the USB-facing Vino driver for the Dell D6000 DisplayLink
 function. Connect the encrypted control protocol, KMS engine, and
@@ -29,8 +29,8 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  drivers/gpu/drm/Makefile      |    1 +
  drivers/gpu/drm/vino/Kconfig  |   36 +
  drivers/gpu/drm/vino/Makefile |    2 +
- drivers/gpu/drm/vino/vino.rs  | 3309 +++++++++++++++++++++++++++++++++
- 5 files changed, 3349 insertions(+)
+ drivers/gpu/drm/vino/vino.rs  | 3576 +++++++++++++++++++++++++++++++++
+ 5 files changed, 3616 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/Kconfig
  create mode 100644 drivers/gpu/drm/vino/Makefile
  create mode 100644 drivers/gpu/drm/vino/vino.rs
@@ -111,10 +111,10 @@ index 000000000000..6e39668040f3
 +obj-$(CONFIG_DRM_VINO) += vino.o
 diff --git a/drivers/gpu/drm/vino/vino.rs b/drivers/gpu/drm/vino/vino.rs
 new file mode 100644
-index 000000000000..9d78899e733f
+index 000000000000..b68de90947da
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/vino.rs
-@@ -0,0 +1,3309 @@
+@@ -0,0 +1,3576 @@
 +// SPDX-License-Identifier: GPL-2.0
 +// SPDX-FileCopyrightText: Copyright (C) 2026 Mike Lothian
 +
@@ -352,6 +352,7 @@ index 000000000000..9d78899e733f
 +}
 +
 +mod ake;
++mod color;
 +mod cp;
 +mod crypto;
 +mod hdcp;
@@ -403,6 +404,65 @@ index 000000000000..9d78899e733f
 +mod drm_sink;
 +
 +/// The USB driver itself. Stateless: everything per-binding lives in [`VinoBoundData`].
++/// Log what this device is, and what it exposes, before any protocol runs.
++///
++/// A DisplayLink generation is not identifiable from the USB IDs alone -- the DL3 protocol vino
++/// speaks does not apply to a DL-1x5 part, and the first sign of that is a control session timing
++/// out long after bind succeeded. Printing the descriptor and the endpoint inventory up front means
++/// a report from unfamiliar hardware carries what is needed to place it, without a debug build:
++/// `bcdDevice` is the vendor's revision, and the endpoint list distinguishes a full DL3 control
++/// device (bulk OUT 0x02 + bulk IN 0x84 + video 0x08) from a part that only has one bulk pipe.
++fn log_device_identity(
++    cdev: &device::Device<Core<'_>>,
++    intf: &usb::Interface<Core<'_>>,
++    ifnum: u8,
++) {
++    // The descriptor describes the whole device, so print it once rather than per interface.
++    if ifnum == 0 {
++        let dev: &usb::Device<Core<'_>> = intf.as_ref();
++        let vid = dev.vendor_id();
++        let pid = dev.product_id();
++        let bcd = dev.bcd_device();
++        let usb_bcd = dev.bcd_usb();
++        dev_info!(
++            cdev,
++            "vino: USB {vid:04x}:{pid:04x} firmware (bcdDevice) {:x}.{:02x} \
++             bcdUSB {:x}.{:02x} speed {}\n",
++            bcd >> 8,
++            bcd & 0xff,
++            usb_bcd >> 8,
++            usb_bcd & 0xff,
++            dev.speed_str()
++        );
++        // The USB core only caches these when the device answered the string requests.
++        match (dev.manufacturer(), dev.product()) {
++            (Some(m), Some(p)) => dev_info!(cdev, "vino: {m} {p}\n"),
++            (None, Some(p)) => dev_info!(cdev, "vino: {p}\n"),
++            (Some(m), None) => dev_info!(cdev, "vino: {m} (no product string)\n"),
++            (None, None) => dev_info!(cdev, "vino: no manufacturer/product strings\n"),
++        }
++    }
++    for ep in intf.cur_altsetting().endpoints() {
++        let dir = match ep.endpoint_dir() {
++            kernel::usb::ch9::Direction::In => "in",
++            kernel::usb::ch9::Direction::Out => "out",
++        };
++        let kind = match ep.endpoint_type() {
++            usb::EndpointType::Control => "control",
++            usb::EndpointType::Isoc => "isoc",
++            usb::EndpointType::Bulk => "bulk",
++            usb::EndpointType::Int => "int",
++        };
++        // bEndpointAddress as the descriptor carries it: number plus the direction bit.
++        let addr = ep.endpoint_number()
++            | match ep.endpoint_dir() {
++                kernel::usb::ch9::Direction::In => 0x80,
++                kernel::usb::ch9::Direction::Out => 0,
++            };
++        dev_info!(cdev, "vino:   ep {addr:#04x} {kind}-{dir} maxp {}\n", ep.maxp());
++    }
++}
++
 +struct VinoDriver;
 +
 +/// Per-bound-interface driver state.
@@ -786,8 +846,23 @@ index 000000000000..9d78899e733f
 +            timeout(),
 +            GFP_KERNEL,
 +        ) {
-+            Ok(()) => vino_debug!("vino: device identity = {dock_id:02x?}\n"),
-+            Err(e) => vino_debug!("vino: device identity unavailable ({e:?})\n"),
++            // Info, not debug: on unfamiliar hardware this blob and the descriptor logged at probe
++            // are what place the device, and needing a debug build to see them costs a whole test
++            // round trip. The tail is ASCII on every device seen so far: the D6000 reads
++            // "RidgeDoc", matching ridge-dock-release.spkg, and a Plugable USB3-HDMI-DVI reads
++            // "EllaDock", matching ella-dock-release.spkg.
++            Ok(()) => {
++                let mut ascii = [b'.'; 16];
++                for (dst, &b) in ascii.iter_mut().zip(dock_id.iter()) {
++                    if (0x20..0x7f).contains(&b) {
++                        *dst = b;
++                    }
++                }
++                // Every byte is printable ASCII by construction, so this cannot fail.
++                let text = core::str::from_utf8(&ascii).unwrap_or("");
++                pr_info!("device identity = {dock_id:02x?} \"{text}\"\n");
++            }
++            Err(e) => pr_info!("device identity unavailable ({e:?})\n"),
 +        }
 +        // A composite driver may only change its own interface.
 +        match dev.set_alternate_setting(0) {
@@ -2298,6 +2373,7 @@ index 000000000000..9d78899e733f
 +        // bind (so usbcore doesn't hand them to another driver) but stay idle.
 +        // An interface with no active alternate setting has no endpoints to drive.
 +        let ifnum = intf.number().ok_or(ENODEV)?;
++        log_device_identity(cdev, intf, ifnum);
 +        if ifnum != 0 {
 +            // Keep the app-specific interface paired with the display function. Let the audio
 +            // (2-4) and Ethernet (5-6) interfaces fall through to their class drivers. Returning
@@ -2305,13 +2381,13 @@ index 000000000000..9d78899e733f
 +            if ifnum != 1 {
 +                dev_info!(
 +                    cdev,
-+                    "vino: declining D6000 interface {ifnum} (left to its class driver)\n"
++                    "vino: declining interface {ifnum} (left to its class driver)\n"
 +                );
 +                return Err(ENODEV);
 +            }
 +            dev_info!(
 +                cdev,
-+                "vino: bound D6000 interface {ifnum} (idle -- control is iface 0)\n"
++                "vino: bound interface {ifnum} (idle -- control is iface 0)\n"
 +            );
 +            return Ok(VinoBoundData {
 +                _intf: intf.into(),
@@ -2319,7 +2395,7 @@ index 000000000000..9d78899e733f
 +                bringup: KBox::pin_init(new_mutex!(None), GFP_KERNEL)?,
 +            });
 +        }
-+        dev_info!(cdev, "vino: bound DisplayLink D6000 control interface\n");
++        dev_info!(cdev, "vino: bound DisplayLink control interface\n");
 +        // Register the DRM/KMS device on the control interface. Keep a refcounted interface handle
 +        // in the bound data while the DRM device retains the I/O window used by its workers.
 +        let intf_ref: ARef<usb::Interface> = intf.into();
@@ -2401,7 +2477,7 @@ index 000000000000..9d78899e733f
 +            let drm_data: &drm_sink::VinoDrmData = reg.device();
 +            drm_data.shutdown();
 +        }
-+        dev_info!(dev, "vino: D6000 disconnected\n");
++        dev_info!(dev, "vino: disconnected\n");
 +    }
 +}
 +
@@ -2429,6 +2505,161 @@ index 000000000000..9d78899e733f
 +    use super::*;
 +    use kernel::drm::kms::modes::{DisplayMode, ModeFlags, ModeTimings};
 +    use kernel::error::code::EINVAL;
++
++    /// S31.32 sign-magnitude constants: 1.0, +0.5, and -0.5 as sign bit + magnitude.
++    const CTM_ONE: u64 = 1 << 32;
++    const CTM_HALF: u64 = 1 << 31;
++    const CTM_NEG_HALF: u64 = (1u64 << 63) | (1u64 << 31);
++
++    fn ctm_diag(r: u64, g: u64, b: u64) -> kernel::drm::kms::crtc::ColorCtm {
++        kernel::drm::kms::crtc::ColorCtm::from_raw([r, 0, 0, 0, g, 0, 0, 0, b])
++    }
++
++    /// A ramp that halves every channel, at the LUT's full 16-bit precision. The `+ 1` rounds:
++    /// entry 255 is 65535/2 = 32767.5, and truncating it would make the fixture itself ask for
++    /// 127 rather than 128.
++    fn half_lut() -> KVec<kernel::drm::kms::crtc::ColorLut> {
++        let mut v = KVec::new();
++        for i in 0..color::LUT_LEN {
++            let h = ((i * 257 + 1) / 2) as u16;
++            let _ = v.push(kernel::drm::kms::crtc::ColorLut::new(h, h, h), GFP_KERNEL);
++        }
++        v
++    }
++
++    #[test]
++    fn ctm_decodes_sign_magnitude_not_twos_complement() -> Result {
++        // The UAPI encodes CTM entries in sign-magnitude. Reading the u64 as an i64 would make
++        // -0.5 come back as a huge positive number and saturate instead of darkening.
++        let m = ctm_diag(CTM_ONE, CTM_NEG_HALF, CTM_ONE);
++        assert_eq!(m.coefficient(0), Some(1i64 << 32));
++        assert_eq!(m.coefficient(4), Some(-(1i64 << 31)));
++        assert_eq!(m.coefficient(9), None);
++        Ok(())
++    }
++
++    #[test]
++    fn identity_transform_builds_nothing() -> Result {
++        // Turning a corrector off programs an identity matrix rather than removing the blob. If
++        // that did not collapse to None the encoder would never regain its direct-scanout path.
++        assert!(color::ColorPipeline::build(None, None).is_none());
++        let ident = ctm_diag(CTM_ONE, CTM_ONE, CTM_ONE);
++        assert!(color::ColorPipeline::build(None, Some(&ident)).is_none());
++        Ok(())
++    }
++
++    #[test]
++    fn identity_gamma_ramp_is_a_no_op() -> Result {
++        // The reason `narrow` divides by 257 and not 256. With the wrong divisor every value above
++        // about 128 came back one level high, so merely *enabling* colour management shifted the
++        // whole image even when the ramp asked for nothing.
++        let mut lut = KVec::new();
++        for i in 0..color::LUT_LEN {
++            let v = (i * 257) as u16;
++            let _ = lut.push(kernel::drm::kms::crtc::ColorLut::new(v, v, v), GFP_KERNEL);
++        }
++        let p = color::ColorPipeline::build(Some(&lut), None).ok_or(EINVAL)?;
++        for v in 0..=255u8 {
++            assert_eq!(p.apply(v, v, v), (v, v, v));
++        }
++        Ok(())
++    }
++
++    #[test]
++    fn gamma_only_applies_the_ramp() -> Result {
++        let lut = half_lut();
++        let p = color::ColorPipeline::build(Some(&lut), None).ok_or(EINVAL)?;
++        assert_eq!(p.apply(0, 0, 0), (0, 0, 0));
++        assert_eq!(p.apply(255, 255, 255), (128, 128, 128));
++        Ok(())
++    }
++
++    #[test]
++    fn diagonal_ctm_matches_the_general_matrix() -> Result {
++        // The diagonal fast path exists for speed; if it ever disagreed with the general path the
++        // colour would silently change with the optimisation rather than with the CTM.
++        let fast =
++            color::ColorPipeline::build(None, Some(&ctm_diag(CTM_ONE, CTM_HALF, CTM_ONE)))
++                .ok_or(EINVAL)?;
++        // The same transform with a real off-diagonal zero-effect term, so it must take the
++        // mixing path. A sub-Q16 term would be truncated to zero and stay on the fast path.
++        let mixed = kernel::drm::kms::crtc::ColorCtm::from_raw([
++            CTM_ONE,
++            0,
++            CTM_ONE / 65536,
++            0,
++            CTM_HALF,
++            0,
++            0,
++            0,
++            CTM_ONE,
++        ]);
++        let slow = color::ColorPipeline::build(None, Some(&mixed)).ok_or(EINVAL)?;
++        for v in [0u8, 1, 63, 127, 128, 200, 254, 255] {
++            assert_eq!(fast.apply(v, v, v), slow.apply(v, v, v));
++        }
++        assert_eq!(fast.apply(255, 255, 255), (255, 128, 255));
++        Ok(())
++    }
++
++    #[test]
++    fn mixing_ctm_moves_channels() -> Result {
++        // Swap red and blue: proves the matrix is row-major and applied the way the UAPI documents.
++        let swap = kernel::drm::kms::crtc::ColorCtm::from_raw([
++            0, 0, CTM_ONE, 0, CTM_ONE, 0, CTM_ONE, 0, 0,
++        ]);
++        let p = color::ColorPipeline::build(None, Some(&swap)).ok_or(EINVAL)?;
++        assert_eq!(p.apply(200, 100, 50), (50, 100, 200));
++        Ok(())
++    }
++
++    #[test]
++    fn negative_coefficient_clamps_to_black() -> Result {
++        let p = color::ColorPipeline::build(None, Some(&ctm_diag(CTM_ONE, CTM_NEG_HALF, CTM_ONE)))
++            .ok_or(EINVAL)?;
++        assert_eq!(p.apply(255, 255, 255), (255, 0, 255));
++        Ok(())
++    }
++
++    #[test]
++    fn out_of_gamut_saturates_instead_of_wrapping() -> Result {
++        // An intermediate above 1.0 must clamp. Wrapping would put the brightest pixels at the
++        // opposite corner of the colour cube -- the failure looks like inverted highlights.
++        let gain4 = ctm_diag(4 * CTM_ONE, 4 * CTM_ONE, 4 * CTM_ONE);
++        let p = color::ColorPipeline::build(None, Some(&gain4)).ok_or(EINVAL)?;
++        assert_eq!(p.apply(200, 100, 255), (255, 255, 255));
++        assert_eq!(p.apply(0, 0, 0), (0, 0, 0));
++        Ok(())
++    }
++
++    #[test]
++    fn short_lut_extends_with_identity_not_black() -> Result {
++        // A LUT blob shorter than the advertised size must not leave the tail at zero, which would
++        // render everything above the truncation point black.
++        let mut lut = KVec::new();
++        for i in 0..4usize {
++            let v = (i * 257) as u16;
++            let _ = lut.push(kernel::drm::kms::crtc::ColorLut::new(v, v, v), GFP_KERNEL);
++        }
++        let p = color::ColorPipeline::build(Some(&lut), None).ok_or(EINVAL)?;
++        assert_eq!(p.apply(255, 255, 255), (255, 255, 255));
++        Ok(())
++    }
++
++    #[test]
++    fn transform_change_changes_the_strip_cache_tag() -> Result {
++        // The encoded-strip cache keys on source pixels, so a transform change that leaves the
++        // pixels alone must still invalidate it or the whole screen keeps its old colours.
++        let a = color::ColorPipeline::build(None, Some(&ctm_diag(CTM_ONE, CTM_HALF, CTM_ONE)))
++            .ok_or(EINVAL)?;
++        let b = color::ColorPipeline::build(None, Some(&ctm_diag(CTM_HALF, CTM_ONE, CTM_ONE)))
++            .ok_or(EINVAL)?;
++        assert_ne!(a.tag(), b.tag());
++        // `assert!` rather than `assert_ne!`: the latter needs `Debug`, and deriving it on a type
++        // holding 768-entry tables is code the driver would carry purely for one test message.
++        assert!(a != b);
++        Ok(())
++    }
 +
 +    #[test]
 +    fn aes128_ecb_fips197_kat() -> Result {
@@ -2874,7 +3105,7 @@ index 000000000000..9d78899e733f
 +        assert_eq!(u16::from_le_bytes([c[26], c[27]]), 64); // height
 +
 +        // Move (head 1): id=0x1a sub=0x43, marker@22, head@23, X@24, Y@26 (LE).
-+        let m = cp::cursor_move(9, 1, 0x0140, 0x00f0)?;
++        let m = cp::cursor_move(9, 1, 0x0140, 0x00f0, true)?;
 +        assert_eq!(m.len(), 32);
 +        assert_eq!(&m[0..4], &[0x1a, 0x00, 0x43, 0x00]); // id, sub
 +        assert_eq!(m[22], 0x02); // marker
@@ -2959,10 +3190,14 @@ index 000000000000..9d78899e733f
 +        assert_eq!(rate(2560, 1440, -1), 0);
 +    }
 +
-+    /// Verify set-mode geometry and profile words against independently decoded vendor messages.
-+    /// The vectors also pin offset 44 as the refresh and offset 66 as timing-dependent.
++    /// Verify set-mode geometry and profile words against the decrypted DLM corpus.
++    ///
++    /// The first four cases are byte-exact DLM messages (1920x1080p60/p120, 2560x1440p60/p120); the
++    /// 1280x720p60 and 3840x2160p60 cases predate the corpus and no capture backs them. All six are
++    /// reproduced by `cp::mode_profile`'s derivation apart from the 4K mode's off42 low bit, which
++    /// it carries as an explicit override.
 +    #[test]
-+    fn set_mode_matches_vendor_vectors() -> Result {
++    fn set_mode_matches_dlm_corpus() -> Result {
 +        // (hact, htotal, hsync_start, hsync_end, vact, vtotal, vsync_start, vsync_end, clock kHz,
 +        //  refresh, off42, off66)
 +        let cases: [(u16, u16, u16, u16, u16, u16, u16, u16, i32, u16, u16, u16); 6] = [
@@ -3026,7 +3261,10 @@ index 000000000000..9d78899e733f
 +    }
 +
 +    #[test]
-+    fn unmeasured_mode_profile_is_rejected() -> Result {
++    fn unmeasured_mode_is_accepted_with_a_derived_profile() -> Result {
++        // 2560x1440@165: no decrypted message exists for it, but the profile is now derived rather
++        // than refused. `drm_sink::mode_valid` is what prunes it -- its 699.5 MHz clock is past
++        // `MAX_HEAD_CLOCK_KHZ`, and 165 Hz is past `DOCK_MAX_REFRESH_HZ`.
 +        let mode = DisplayMode::from_timings(ModeTimings {
 +            clock_khz: 699_500,
 +            hdisplay: 2560,
@@ -3039,8 +3277,37 @@ index 000000000000..9d78899e733f
 +            vtotal: 1559,
 +            flags: ModeFlags::PHSYNC | ModeFlags::NVSYNC,
 +        })?;
-+        assert!(!cp::mode_supported(&mode));
++        assert!(cp::mode_supported(&mode));
++        // Still out of the dock's envelope, so userspace never sees it.
++        assert!(mode.clock() > 655_350 || !drm_sink::refresh_within_limit(mode.vrefresh()));
++        // The 10 kHz clock field cannot carry it either, so a forced mode-set fails loudly.
 +        assert!(cp::timing_from_drm_mode(&mode).is_err());
++        Ok(())
++    }
++
++    /// A resolution with no capture at all must still produce a usable profile, so a monitor whose
++    /// native mode was never sampled is driven rather than refused.
++    #[test]
++    fn derived_profile_covers_an_unsampled_resolution() -> Result {
++        // 1680x1050@60 CVT-RB: 119.00 MHz, no CTA VIC.
++        let mode = DisplayMode::from_timings(ModeTimings {
++            clock_khz: 119_000,
++            hdisplay: 1680,
++            hsync_start: 1728,
++            hsync_end: 1760,
++            htotal: 1840,
++            vdisplay: 1050,
++            vsync_start: 1053,
++            vsync_end: 1059,
++            vtotal: 1080,
++            flags: ModeFlags::PHSYNC | ModeFlags::NVSYNC,
++        })?;
++        let t = cp::timing_from_drm_mode(&mode)?;
++        // 1680 wide, so the bottom step of the off42 ladder.
++        assert_eq!(t.field42, 0x0400);
++        // No VIC, so the low byte is zero and the base is the common 0x0800.
++        assert_eq!(t.off66, 0x0800);
++        assert_eq!(t.pixel_clock_10khz, 11_900);
 +        Ok(())
 +    }
 +

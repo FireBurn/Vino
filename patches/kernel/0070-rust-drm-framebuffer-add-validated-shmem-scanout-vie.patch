@@ -1,7 +1,7 @@
-From 28b2131fc052a8455afa5fb0db98ce4520f63d88 Mon Sep 17 00:00:00 2001
+From 6f656d3c5035413ac2166858a02a8b4e18881da7 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 19:15:31 +0100
-Subject: [PATCH 070/106] rust: drm: framebuffer: add validated shmem scanout
+Subject: [PATCH 070/109] rust: drm: framebuffer: add validated shmem scanout
  views
 
 Add framebuffer geometry and reference-counting operations for drivers

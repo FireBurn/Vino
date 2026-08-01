@@ -1,7 +1,7 @@
 From 0971dd6ce1e957315798a3b58582e7248e594231 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 23 May 2024 15:54:17 -0400
-Subject: [PATCH 035/106] rust: drm/kms: Add OpaqueCrtc and OpaqueCrtcState
+Subject: [PATCH 035/109] rust: drm/kms: Add OpaqueCrtc and OpaqueCrtcState
 
 This is the same thing as OpaqueConnector and OpaqueConnectorState, but for
 CRTCs now.

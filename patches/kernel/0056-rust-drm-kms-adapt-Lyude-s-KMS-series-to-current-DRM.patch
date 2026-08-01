@@ -1,7 +1,7 @@
 From c8b88740b0d8a63ee8fe154731cf11f9300a0e63 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:34:28 +0100
-Subject: [PATCH 056/106] rust: drm: kms: adapt Lyude's KMS series to current
+Subject: [PATCH 056/109] rust: drm: kms: adapt Lyude's KMS series to current
  DRM APIs
 
 Adapt the Rust KMS bindings to the current DRM APIs while preserving

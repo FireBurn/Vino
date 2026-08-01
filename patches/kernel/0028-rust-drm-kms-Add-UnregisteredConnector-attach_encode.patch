@@ -1,7 +1,7 @@
 From 6e65a67994a7d130c415d863ea7a58b99767469a Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 19 Jun 2025 15:44:02 -0400
-Subject: [PATCH 028/106] rust: drm/kms: Add
+Subject: [PATCH 028/109] rust: drm/kms: Add
  UnregisteredConnector::attach_encoder()
 
 This adds a simple binding for completing the last step of creating a DRM

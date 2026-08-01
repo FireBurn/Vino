@@ -1,7 +1,7 @@
 From 448b744207bfea6054bd767fe4e434bf536ec16e Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 23 May 2024 15:57:41 -0400
-Subject: [PATCH 036/106] rust: drm/kms: Add OpaquePlane and OpaquePlaneState
+Subject: [PATCH 036/109] rust: drm/kms: Add OpaquePlane and OpaquePlaneState
 
 Same thing as OpaqueCrtc and OpaqueCrtcState, but for plane states now.
 
