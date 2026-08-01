@@ -4,9 +4,20 @@ Everything needed to record an unfamiliar DisplayLink device driving under DLM, 
 recorded. The procedure, prerequisites and the accumulated gotchas are in
 [`docs/new-device-capture.md`](../../docs/new-device-capture.md); this is just the inventory.
 
+For a device arriving imminently, the phase-by-phase runbook is
+[`docs/new-device-day.md`](../../docs/new-device-day.md) — run `preflight-newdevice.sh` the night
+before, then work down it.
+
 | Script | Purpose |
 |---|---|
-| `capture-newdevice.sh` | One command: usbmon wire capture **and** frida key extraction over the same session, with before/after device state so a firmware flash is provable. **Guided by default** — prompts through a choreography and timestamps each step into `journal.tsv`. Start here. |
+| `preflight-newdevice.sh` | **Run the night before.** Verifies (and with `--fix` repairs) every precondition a lost capture has ever come down to: usbmon loaded *and* autoloading, `dumpcap` proven able to open a usbmon interface right now, DLM masked and hash-matched to the build the key hook was derived for, `udl`/`udlfb` blacklisted, `evdi` present, disk headroom, frida importable under root. |
+| `capture-firstcontact.sh` | **The one-shot firmware capture.** Prescans the device with DLM masked to learn its bus, starts five independent recorders and proves they are writing, starts DLM and attaches frida while no device is present, and only then has you plug it in. Refuses to stop mid-transfer. |
+| `fw-watch.py` | Live flash meter and independent `mon_bin` recorder. Decodes USB DFU class requests as they happen and fingerprints payloads against the shipped `*-release.spkg` images, so you learn whether the flash was caught **while the device is still on the desk**. |
+| `fw-scan.py` | Offline: decodes the whole DFU transaction (block numbers, `GETSTATUS` results, manifestation) and reports image coverage. Needs no tshark. |
+| `selftest.py` | Synthesises a complete USB DFU flash of a real shipped `.spkg` in `fw-watch.py`'s own record format and asserts `fw-scan.py` recovers it — including a failing flash, an interrupted one, and the S/C URB pairing. Run by `preflight-newdevice.sh`. The capture is one-shot, so the decoder cannot be debugged against real input afterwards. |
+| `dl-identity.py` | Places an unfamiliar device in ten seconds with no driver and no DLM: interfaces, endpoints, the DFU functional descriptor, and DisplayLink's identity blob (descriptor type `0x40`) which names the platform and therefore the firmware package that targets it. |
+| `capture-modematrix.sh` | Drives DLM through a mode matrix by replugging (never restarting — that would kill the key session), to settle the set-mode words `off42`/`off66`/`off72`. |
+| `capture-newdevice.sh` | One command: usbmon wire capture **and** frida key extraction over the same session, with before/after device state so a firmware flash is provable. **Guided by default** — prompts through a choreography and timestamps each step into `journal.tsv`. |
 | `decode-modeset-live.py` | Attaches frida to a live DLM and recovers the `(ks, riv)` session keys. Called by the above; usable standalone. |
 | `decrypt-dlm-cp.py` | Offline: decrypts the sealed CP frames in a usbmon pcapng using those keys. |
 | `usb-session-stats.py` | usbmon pcapng reader, imported by `decrypt-dlm-cp.py`. Also useful alone for endpoint/byte accounting. |

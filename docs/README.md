@@ -12,6 +12,8 @@ become mixed with kernel API design or build instructions.
 | [`protocol/hdcp.md`](protocol/hdcp.md) | HDCP 2.2 message flow and verified key derivations |
 | [`protocol/video.md`](protocol/video.md) | Video arm, codec, records, damage, and submission |
 | [`new-device-capture.md`](new-device-capture.md) | Onboarding DisplayLink hardware vino cannot yet drive: descriptor triage, the gen-1 `init_4` divergence, and a capture procedure built to record a firmware update |
+| [`new-device-day.md`](new-device-day.md) | **★ Runbook for the WAVLINK DL7400 (Navarro / DL-7000)**: the DFU shape predicted from descriptors, phase-by-phase commands, and what each capture closes |
+| [`hdr.md`](hdr.md) | HDR/deep colour: the shared `NM30`/`YU10`/`FP16` format enum found in all three host binaries, the BT.2020 conversion path, and what vino would need |
 | [`reverse-engineering.md`](reverse-engineering.md) | Evidence policy, capture method, independent oracles, and adding findings |
 | [`revdi-chimera.md`](revdi-chimera.md) | Revdi ABI compatibility and Chimera data flow |
 | [`upstream.md`](upstream.md) | Current bases, v1/v2 feedback disposition, authorship, and subsystem ownership |
