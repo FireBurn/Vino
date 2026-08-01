@@ -16,6 +16,7 @@ become mixed with kernel API design or build instructions.
 | [`hdr.md`](hdr.md) | HDR/deep colour: the shared `NM30`/`YU10`/`FP16` format enum found in all three host binaries, the BT.2020 conversion path, and what vino would need |
 | [`reverse-engineering.md`](reverse-engineering.md) | Evidence policy, capture method, independent oracles, and adding findings |
 | [`navarro.md`](navarro.md) | **★ DL-7000 / DL7400 vs Ridge**: two video endpoints, no per-head HDCP auth, plaintext AKE framing, and the video stream-open sequence that Ridge's arm replaces |
+| [`simd.md`](simd.md) | AVX2 in the encoder: the kernel's global SIMD disable, the FPU guard the bindings still need, and why the prototype belongs in chimera first |
 | [`color-management.md`](color-management.md) | Software `CTM`/`GAMMA_LUT` on the CRTC, shared by vino and evdi: pipeline order, the fused fast path, and the sign-magnitude trap |
 | [`revdi-chimera.md`](revdi-chimera.md) | Revdi ABI compatibility and Chimera data flow |
 | [`upstream.md`](upstream.md) | Current bases, v1/v2 feedback disposition, authorship, and subsystem ownership |
