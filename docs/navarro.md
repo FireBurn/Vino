@@ -89,12 +89,55 @@ So:
 ⚠ vino currently submits a **205696-byte** Ridge ARM+black frame as its opening write. That is the
 message the dock rejects.
 
+### ⭐ The pixel payload is plaintext — only the stream-open is sealed
+
+Measured 2026-08-02 over `captures/navarro-dlm-modeset-20260802-005453` (628 DLM video frames).
+Shannon entropy of the first 4 KiB of payload, past the 16-byte transport header:
+
+| frame | entropy | reading |
+|---|---|---|
+| `ep 0x0a`, `id=0x02` record stream | **5.71** bits/byte | structured |
+| `ep 0x0a`, continuation | **3.43** bits/byte | structured |
+
+Encrypted data sits at 8.00. The payload is visibly regular in hex as well
+(`… 01 fc 00 7e 00 3f 80 1f c0 0f e0 07 f0 03 f8 01 …`), and the inner records carry the same
+`00 00 1c 00 02 00 00 00` header shape as the outer frame. **So video pixels are never encrypted on
+this platform**, exactly as on Ridge.
+
+⇒ The video key question in §2 collapses to a single message: the **48-byte stream-open** is the
+only sealed thing on the video endpoints. Once it can be built, nothing else on `0x08`/`0x0a` needs
+a key.
+
+Inner records observed on `ep 0x0a` use sub `0x0f` and `0x1f`; head 0 uses `0x07` and `0x17`. The
+per-head offset is **8** throughout, consistent with `DockProfile::head_sub_shift = 3`.
+
+### ⛔ The stream-open is not reproducible in software
+
+The 48-byte opens appear **only in a capture spanning a cold connect**. Attempts that produced
+video traffic but no stream-open:
+
+| attempt | result |
+|---|---|
+| restart `displaylink-driver.service` | frames resume, no open |
+| `kscreen-doctor output.…enable`/`disable` | no open |
+| resolution change (forces `0x48/0x22`) | no open |
+| `echo 0 > …/authorized` then `1` (twice) | full re-enumeration, 628 frames, **no open** |
+
+The last of these was run with vino unbound and blacklisted so DLM certainly owned the device
+(`DLM reclaimed after 4s`, 540 distinct keys captured) — the dock still reused its existing video
+stream. ⇒ **capturing the stream-open needs a physical replug or dock power-cycle with frida
+attached.** Everything else for video is built and gated behind `video_supported`.
+
+⭐ Also measured: DLM drives this dock at **2560x1440@164.96** on both heads. It does **not** clamp
+to 120 Hz the way it does on Ridge ([[project_dlm_clamps_to_120_cp_decrypted_20260726]]), so this is
+the platform that can finally answer the `off72` mode word.
+
 ### Implementing it
 
 1. Build the 48-byte per-head stream-open (`id=0x17`/`0x1f`, `sub=0x02`) and send it on the head's
-   video endpoint before any pixels.
+   video endpoint before any pixels. **Needs one physical replug capture** — see above.
 2. Frame the first payload with `sub=0x02`/`id=0x07`, then steady state with `sub=0x04` and the
    per-head id.
-3. Establish where the video key comes from without a per-head SKE (§2).
+3. ~~Establish where the video key comes from~~ — moot: the payload is plaintext.
 
 Only then lift `video_supported` for the profile.
