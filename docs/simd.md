@@ -39,6 +39,33 @@ scalar one kept as the oracle, and a differential test that runs both over the s
 compares output bytes. `revdi/chimera` already compiles vino's codec verbatim in userspace, which
 is where that comparison should live — no dock required, and userspace has AVX2 unconditionally.
 
+## Measured: 1.29x, and the batch is only three blocks
+
+`tools/simd/haar-bench.rs` vectorises **across blocks**, one per lane, and checks byte-exactness
+before timing (the codec is byte-exact against DisplayLink's encoder, so a speedup without that is
+worthless).
+
+| build | scalar | avx2 | speedup |
+|---|---|---|---|
+| `-C target-cpu=native` | 30.8 M blocks/s | 37.0 | **1.20x** |
+| kernel flags (`-sse…-avx2`) | 29.2 M blocks/s | 37.6 | **1.29x** |
+
+32768 blocks, output **identical** in both builds. The native figure is lower because the scalar
+baseline is auto-vectorised there; the kernel-flag figure is the representative one.
+
+⛔ **But the encoder cannot feed eight lanes.** `colour_block` transforms exactly **three** blocks
+together -- `cr`, `cb`, `y`. Five of eight lanes would sit idle, which gives back more than the
+1.29x buys. Reaching eight means batching across strips, i.e. restructuring the encode loop, not
+adding an intrinsic.
+
+⇒ **Recommendation: do not vectorise the transform.** The measured ceiling is small, the natural
+batch is 3, and the cost is an FPU section plus an unsafe path that has to stay byte-exact forever.
+Re-profile before revisiting: the last real win came from removing per-coefficient branch dispatch,
+not from the arithmetic.
+
+`FpuGuard` (`rust/kernel/fpu.rs`) is implemented and builds regardless -- it is the piece any future
+in-kernel SIMD needs, and it is useful on its own.
+
 ## Suggested order
 
 1. Add the `FpuGuard` binding in `patches/`, with the safety contract documented.
