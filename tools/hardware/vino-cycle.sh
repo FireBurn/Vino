@@ -67,8 +67,10 @@ fi
 
 [ "$UNLOAD_ONLY" = 1 ] && { say "left unloaded"; exit 0; }
 
-say "loading module"
-modprobe vino || die "modprobe vino failed"
+say "loading module${*:+ ($*)}"
+# Any remaining arguments are module parameters, so an experiment behind a param can be cycled
+# without editing this script.
+modprobe vino "$@" || die "modprobe vino failed"
 
 # The interfaces were unbound, so nothing re-probes them by itself. Re-attach by asking the driver
 # core to reconsider the device.

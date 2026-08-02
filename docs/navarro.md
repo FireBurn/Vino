@@ -48,10 +48,13 @@ The dock's `AKE_Send_Rrx` push (`id=0x10 sub=0x84`, HDCP msg-id `0x06`) arrives 
 **`0x25`** — the plaintext framing, inner payload at offset 16, msg-id at 25, `rrx` at 26..34.
 Ridge seals the same message (`wsub=0x45`). `cp::perhead_rrx` now accepts both.
 
-## 4. ⭐ Video: the Ridge arm sequence hard-resets this dock
+## 4. ⭐ Video: the dock accepts the bytes, then resets on a watchdog
 
-vino's first EP08 write killed the device within a millisecond, taking the control session, EDID
-and connectors with it — which presented as a spontaneous reset loop every few seconds:
+⚠ **Corrected 2026-08-02.** This section previously said vino's first EP08 write "killed the device
+within a millisecond". That is not what happens, and the distinction matters: the dock **accepts
+every video byte without error** and resets several seconds later. See §4a for the measurement.
+
+The original symptom — a spontaneous reset loop every few seconds:
 
 ```
 KMS CRTC enable -- head 0 display ON, mode 2560x1440@120
@@ -62,6 +65,35 @@ head 1 sink re-engagement failed (ENODEV)
 
 Video is therefore gated by `DockProfile::video_supported`, checked at `run_pending_scanout()` —
 which every scanout write funnels through — and at the prompt-training submission.
+
+### 4a. ⭐ Measured: the stream-open is genuinely required
+
+The gate can be lifted at runtime with the `force_video=1` module parameter, which exists to answer
+exactly one question: does this platform need its sealed stream-open, or is correct record framing
+enough? It is off by default because the answer is that the dock resets.
+
+Two runs, same module (`86059d8c9ed3f34d`), same 80 s capture window
+(`captures/navarro-forcevideo-20260802`):
+
+| run | dock instances in 80 s | video writes | video URB errors |
+|---|---|---|---|
+| `force_video=0` (control) | **1** — 80.3 s continuous | 0 | – |
+| `force_video=1` | **9** — ~9.0 s each | 9 per instance, 474368 B | **0** |
+
+The cycle is highly regular, and within each instance:
+
+* every video URB completes with **status 0** — the dock does not reject the framing;
+* the control plane keeps working for **~6.2 s** after the last video write, with normal `0x02`/
+  `0x84` request/reply traffic;
+* only then does the device re-enumerate.
+
+⇒ This is a **watchdog expiring, not a malformed write being refused.** The dock takes the pixels,
+has no stream context to put them in because the 48-byte stream-open never arrived, and gives up.
+Correct record framing alone is therefore *not* sufficient, and there is no way around building the
+stream-open.
+
+⛔ Do not re-run this expecting a different result with framing tweaks: the bytes are already being
+accepted, so framing is not what the dock is complaining about.
 
 ### What DLM actually sends
 
