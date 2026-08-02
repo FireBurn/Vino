@@ -1,8 +1,10 @@
 # HDR on DisplayLink — what the shipped binaries actually show
 
-Status: **binary survey, no wire evidence yet.** Everything below is either measured out of a
-shipped binary (marked ✅) or inferred (marked ⊙). Nothing here has been seen on a wire, because no
-DL-7000 hardware has been available until now.
+Status: **binary survey plus DL7400 wire evidence.** The binary results below are marked ✅ or ⊙ as
+before.  The 2026-08-02 Windows DL7400 captures add a measured *negative* result: toggling HDR does
+not identify an HDR-specific DisplayLink control, stream tag, or bulk-video profile.  This proves
+neither that the host preserves HDR pixels nor how it tone-maps them; it does establish that Vino
+must not invent a dock-side HDR transport from the binary strings alone.
 
 Sources on disk:
 
@@ -11,6 +13,7 @@ Sources on disk:
 | `re-binaries/windows/driver/dlidusb3.dll` | **DisplayLink Core Software v12.2.2204.0** | the Windows UMDF **IddCx** driver — current generation, the one that carries DL-7000 HDR |
 | `re-binaries/macos/app/DisplayLink Manager.app/…/DisplayLinkUserAgent` | 16.x | universal x86_64 + arm64 |
 | `/opt/displaylink/DisplayLinkManager` | package 6.8.1.0 | Linux |
+| `captures/navarro-wincap-20260802/out/cap{3,6,7}-*.pcap` | Windows 11 / DL7400 (`17e9:7000`) | per-connector HDR toggle and matched full-payload HDR/SDR traffic |
 
 ---
 
@@ -330,22 +333,27 @@ The Rust EVDI path now has the safe DRM plumbing needed to expose packed 10-bit 
 property. That lets a compositor negotiate the standard KMS state without an unsafe binding or a
 silently ignored property failure.
 
-This is deliberately **not** HDR transport in Vino. No capture identifies a DL7400 profile-switch
-command, an HDR metadata control message, or the `NM30`/`YU10` video bitstream. The earlier claims
-that `set_color_profile(0x02)`, a CTA InfoFrame payload, a BT.2020 matrix, altered WHT limits, or
-kernel AVX2/NEON would implement those pieces were design guesses, not reverse-engineered facts.
+This is deliberately **not** HDR transport in Vino. The DL7400 evidence is now stronger than an
+absence of decoding: `cap3` toggles HDR one connector at a time on a live link, while `cap6` and
+`cap7` repeat the same shared-endpoint animation with HDR on and off. They retain the normal
+`connector << 3` record tags and differ by only 0.4% in bytes per frame record (40,278 versus
+40,133). No HDR-specific control exchange, metadata payload, or bulk-video framing occurs in those
+captures. The most supportable conclusion is that any HDR conversion/composition is upstream of the
+captured DisplayLink transport, not a Vino-to-dock feature.
 
-The next evidence-driven step is a differential Windows HDR capture on the same DL7400: isolate
-the control sequence at profile transition, the metadata update, and the changed bulk-video
-records. Only then should Vino accept 10-bit primary-plane formats or transmit HDR metadata.
+Consequently Vino must keep its video transport SDR-like and must not accept 10-bit primary-plane
+formats as a claim of end-to-end HDR support. The earlier suggestions of `set_color_profile(0x02)`,
+a CTA InfoFrame payload, a BT.2020 matrix, altered WHT limits, or kernel AVX2/NEON were design
+guesses, not reverse-engineered facts. The EVDI KMS properties remain useful capability plumbing,
+but they do not authorize HDR advertisement by Vino.
 
 ## 6. Verification roadmap
 
 1. Verify all four SDR connectors and recover the sealed Navarro stream-open/key schedule.
-2. Capture a controlled SDR-to-HDR transition on Windows, with metadata and EDID recorded.
-3. Decode the changed control and video records, then implement the smallest confirmed profile and
-   codec changes behind an explicit HDR capability gate.
-4. Test end-to-end with a known HDR monitor before advertising HDR from Vino.
+2. Preserve the completed Windows HDR/SDR A/B as negative transport evidence; repeat it only if a
+   new dock firmware or Windows driver changes the observed control or bulk traffic.
+3. Do not add an HDR Vino wire profile or advertise HDR until a future differential capture shows a
+   distinct, decodable transport change and an end-to-end HDR monitor test corroborates it.
 
 ## Provenance
 
