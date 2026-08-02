@@ -47,7 +47,16 @@ use crate::painter::PainterState;
 /// Cursor-plane format list. libevdi reports the format to the client, which expects ARGB.
 static CURSOR_FORMATS: [u32; 1] = [drm::fourcc::ARGB8888];
 
-static PRIMARY_FORMATS: [u32; 1] = [drm::fourcc::XRGB8888];
+static PRIMARY_FORMATS: [u32; 8] = [
+    drm::fourcc::XRGB8888,
+    drm::fourcc::ARGB8888,
+    drm::fourcc::XBGR8888,
+    drm::fourcc::ABGR8888,
+    drm::fourcc::XRGB2101010,
+    drm::fourcc::ARGB2101010,
+    drm::fourcc::XBGR2101010,
+    drm::fourcc::ABGR2101010,
+];
 
 /// Fallback mode advertised before the DLM client delivers an EDID via CONNECT.
 const FALLBACK_W: u32 = 1024;
@@ -361,13 +370,22 @@ impl KmsDriver for EvdiDrmDriver {
             None,
             (),
         )?;
-        // Use DVI-I (matching the C evdi) rather than Virtual: `__drm_connector_init` skips
+        // Use DisplayPort rather than Virtual: `__drm_connector_init` skips
         // `drm_connector_attach_edid_property()` for VIRTUAL/WRITEBACK connectors, and without that
         // property `drm_edid_connector_update()` can't populate `edid_blob_ptr`, so
         // `drm_edid_connector_add_modes()` would return 0 modes for a perfectly valid EDID.
-        let conn =
-            connector::UnregisteredConnector::<EvdiConnector>::new(dev, connector::Type::DviI, ())?;
+        let conn = connector::UnregisteredConnector::<EvdiConnector>::new(
+            dev,
+            connector::Type::DisplayPort,
+            (),
+        )?;
         conn.attach_encoder(&*enc)?;
+        // Do not merely advertise 10-bit framebuffer formats: compositors select them through
+        // this standard range property. EVDI's GRABPIX path transports the packed 32-bit pixels
+        // unchanged; actual HDR signalling remains conditional on the client/sink path.
+        conn.attach_max_bpc_property(8, 10)?;
+        conn.attach_hdr_output_metadata_property();
+        conn.attach_colorspace_property()?;
         Ok(())
     }
 }
