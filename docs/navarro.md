@@ -75,6 +75,46 @@ therefore already holds all the input material; what is missing is only the deri
 means reading DLM's key schedule in the binary — a wire capture cannot show a local computation, so
 **a cold-plug capture would not answer this**.
 
+## 2b. ⭐ The key schedule: one sealing key per wire sub
+
+Traced 2026-08-02 with `tools/capture/keysched-backtrace.py`, which attaches to a live DLM and
+records the callers the first time each distinct key appears. ⚠ The key schedule is **dormant on a
+warm dock** — the setter fires zero times until a fresh session, which a
+`echo 0 > .../authorized; echo 1` re-enumeration is enough to force.
+
+A cold session creates **exactly five** sealing keys, all through one call site, and the factory
+takes a selector:
+
+| selector (`ecx`) | as hex | stream |
+|---|---|---|
+| 4 | `0x04` | control plane |
+| 7 | `0x07` | head 0 video frames |
+| 15 | `0x0f` | head 1 video frames |
+| 23 | `0x17` | head 0 **stream-open** |
+| 31 | `0x1f` | head 1 **stream-open** |
+
+⭐ **The selector is the wire `sub`.** Every value matches the subs already measured in §4 and §4b,
+including the eight-apart head spacing — so a sealing key is chosen per message type per head, and
+the stream-open has its own key distinct from the frame key.
+
+Offsets in DLM 3.4.26 (module-relative), from `objdump`:
+
+| offset | role |
+|---|---|
+| `0x86cca0` | sealer factory `(out, cfg, keysrc, sub)` — copies key and riv out of `keysrc`, allocates a `0x90`-byte sealer, constructs it with the sub |
+| `0x85c830` | key copy-in, key at `keysrc+0x18`, 16 bytes |
+| `0x85c850` | riv copy-in, riv at `keysrc+0x30`, 8 bytes |
+| `0x85c5f0` | the wrapper that calls the factory; selector arrives in `ecx` |
+
+⇒ **key-source object layout: key at `+0x18` (16 B), riv at `+0x30` (8 B).**
+
+⊙ **Next step:** the factory only *copies* an already-derived key, so the derivation is whatever
+fills `keysrc+0x18`. Hook `0x85c5f0`, take the `rdx` pointer, and find what writes that object.
+
+⚠ Backtraces past frame #0 here come from the fuzzy unwinder and are **not reliable** — chasing
+frame #6 of one led straight into iostream formatting code. Trust `this.returnAddress` and the
+accurate frame #0 only.
+
 ## 3. The main AKE is plaintext-framed
 
 The dock's `AKE_Send_Rrx` push (`id=0x10 sub=0x84`, HDCP msg-id `0x06`) arrives with wire-sub
