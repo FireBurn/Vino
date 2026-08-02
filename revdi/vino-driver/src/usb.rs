@@ -1,4 +1,4 @@
-//! USB I/O for the D6000 dock.
+//! USB I/O for supported DL3-family docks.
 //!
 //! Backed by **rusb** (safe Rust bindings over the libusb-1.0 C library) so the
 //! userspace tools (Chimera and the focused sniff utility) drive the dock through the same
@@ -15,10 +15,11 @@
 //! `libusb_transfer`s reaped via `libusb_handle_events`, so a read URB is always
 //! waiting in the kernel the instant the dock produces a reply (the "host wasn't
 //! ready" window a sync `read_bulk`-per-call model could open never exists).
-//! Video OUT frames use a bounded async submit/reap window (depth 8) matching
-//! DLM's measured submit-ahead.
+//! The ThinkPad dock's shared EP02 coalesces video into 64 KiB URBs and uses a
+//! depth-3 async window matching stock DLM. Dedicated video endpoints retain
+//! their existing chunks and measured depth-8 window.
 
-use crate::{EP_IN_CTRL, EP_OUT_CTRL, PID, VID};
+use crate::{EP_IN_CTRL, EP_OUT_CTRL, PID_D6000, PID_THINKPAD_USB3_PRO, VID};
 use rusb::constants::{LIBUSB_TRANSFER_COMPLETED, LIBUSB_TRANSFER_TYPE_BULK};
 use rusb::ffi::{
     libusb_alloc_transfer, libusb_cancel_transfer, libusb_context, libusb_device_handle,
@@ -51,8 +52,59 @@ const RT_STD_OUT_IFACE: u8 = 0x01; //   OUT | Standard | Interface
 const RT_STD_OUT_DEV: u8 = 0x00; //     OUT | Standard | Device
 const RT_CLASS_OUT_DEV: u8 = 0x20; //   OUT | Class    | Device
 
-/// Depth of the video OUT submit-ahead window (DLM keeps ~8 outstanding).
-const PIPELINE_DEPTH: usize = 8;
+/// Stock DLM coalesces its command stream into 64 KiB bulk OUT URBs.
+const VIDEO_URB_LEN: usize = 64 * 1024;
+/// Stock DLM keeps at most three EP02 video URBs outstanding on the ThinkPad dock.
+const SHARED_EP_PIPELINE_DEPTH: usize = 3;
+/// Dedicated video endpoints retain the previously measured DLM submit-ahead window.
+const DEDICATED_EP_PIPELINE_DEPTH: usize = 8;
+
+fn video_endpoints(product_id: u16) -> [u8; 2] {
+    match product_id {
+        PID_THINKPAD_USB3_PRO => [EP_OUT_CTRL, EP_OUT_CTRL],
+        PID_D6000 => [crate::EP_OUT_VIDEO, EP_OUT_VIDEO2],
+        _ => unreachable!("unsupported product passed device filter"),
+    }
+}
+
+fn head_count(product_id: u16) -> usize {
+    match product_id {
+        PID_THINKPAD_USB3_PRO => 1,
+        PID_D6000 => 2,
+        _ => unreachable!("unsupported product passed device filter"),
+    }
+}
+
+fn coalesce_video_chunks(chunks: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    let total = chunks.iter().map(Vec::len).sum::<usize>();
+    let mut transfers = Vec::with_capacity(total.div_ceil(VIDEO_URB_LEN));
+    let mut current = Vec::with_capacity(VIDEO_URB_LEN);
+
+    for chunk in chunks {
+        let mut remaining = chunk.as_slice();
+        while !remaining.is_empty() {
+            let take = remaining.len().min(VIDEO_URB_LEN - current.len());
+            current.extend_from_slice(&remaining[..take]);
+            remaining = &remaining[take..];
+            if current.len() == VIDEO_URB_LEN {
+                transfers.push(current);
+                current = Vec::with_capacity(VIDEO_URB_LEN);
+            }
+        }
+    }
+    if !current.is_empty() {
+        transfers.push(current);
+    }
+    transfers
+}
+
+fn pipeline_depth(ep: u8) -> usize {
+    if ep == EP_OUT_CTRL {
+        SHARED_EP_PIPELINE_DEPTH
+    } else {
+        DEDICATED_EP_PIPELINE_DEPTH
+    }
+}
 
 pub struct Dock {
     /// EP 0x84 bulk IN — dock → host responses (persistently queued async).
@@ -71,8 +123,9 @@ pub struct Dock {
     /// Serialises host→dock bulk OUT (EP 0x02) — libusb sync bulk is thread-safe
     /// but we keep frame ordering deterministic.
     out_lock: Mutex<()>,
-    has_video: bool,
-    has_video2: bool,
+    video_endpoints: [u8; 2],
+    available_video: [bool; 2],
+    head_count: usize,
     has_intr: bool,
 }
 
@@ -111,7 +164,7 @@ fn map_err(e: rusb::Error) -> Error {
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Error::DeviceNotFound => write!(f, "DisplayLink D6000 (17e9:6006) not found"),
+            Error::DeviceNotFound => write!(f, "supported DisplayLink DL3 dock not found"),
             Error::Timeout => write!(f, "USB transfer timed out"),
             Error::Stall => write!(f, "endpoint stalled (Pipe)"),
             // Keep the "NoDevice" token so existing string-based disconnect
@@ -290,23 +343,27 @@ fn status_to_err(status: c_int) -> Error {
 }
 
 impl Dock {
-    /// Open the first D6000 found. Detaches any existing kernel driver and
-    /// claims the bulk interface.
+    /// Open the first supported DL3-family dock and claim its bulk interface.
     pub fn open() -> Result<Self, Error> {
         let ctx = Context::new().map_err(map_err)?;
 
-        let find_open = |ctx: &Context| -> Result<DeviceHandle<Context>, Error> {
+        let find_open = |ctx: &Context| -> Result<(DeviceHandle<Context>, u16), Error> {
             for dev in ctx.devices().map_err(map_err)?.iter() {
                 if let Ok(desc) = dev.device_descriptor() {
-                    if desc.vendor_id() == VID && desc.product_id() == PID {
-                        return dev.open().map_err(map_err);
+                    if desc.vendor_id() == VID
+                        && matches!(desc.product_id(), PID_D6000 | PID_THINKPAD_USB3_PRO)
+                    {
+                        return dev
+                            .open()
+                            .map(|handle| (handle, desc.product_id()))
+                            .map_err(map_err);
                     }
                 }
             }
             Err(Error::DeviceNotFound)
         };
 
-        let handle = find_open(&ctx)?;
+        let (handle, product_id) = find_open(&ctx)?;
 
         // Chimera owns the complete display function for the lifetime of this
         // handle. Detach stale interface drivers before selecting the known
@@ -322,19 +379,20 @@ impl Dock {
         handle.claim_interface(0).map_err(map_err)?;
         let _ = handle.set_alternate_setting(0, 0);
 
-        // Both display heads are optional at the transport layer so an error
-        // identifies the unavailable head rather than dereferencing a guessed
-        // endpoint.
-        let has_video = has_endpoint(&handle, crate::EP_OUT_VIDEO);
-        let has_video2 = has_endpoint(&handle, EP_OUT_VIDEO2);
-        if !has_video {
-            eprintln!(
-                "[usb] EP_OUT_VIDEO (0x{:02x}) unavailable",
-                crate::EP_OUT_VIDEO
-            );
+        let video_endpoints = video_endpoints(product_id);
+        let head_count = head_count(product_id);
+        let mut available_video = video_endpoints.map(|endpoint| has_endpoint(&handle, endpoint));
+        for head in head_count..available_video.len() {
+            available_video[head] = false;
         }
-        if !has_video2 {
-            eprintln!("[usb] EP 0x{EP_OUT_VIDEO2:02x} (head 1 video) unavailable");
+        for head in 0..head_count {
+            if !available_video[head] {
+                let endpoint = video_endpoints[head];
+                eprintln!("[usb] head {head} video endpoint 0x{endpoint:02x} unavailable");
+            }
+        }
+        if product_id == PID_THINKPAD_USB3_PRO && !available_video[0] {
+            return Err(Error::Usb(rusb::Error::NotFound));
         }
 
         // EP 0x83 lives on interface 2. It is auxiliary status input, so a
@@ -351,14 +409,9 @@ impl Dock {
         // Clear endpoint state left by a previous userspace owner.
         let _ = handle.clear_halt(EP_OUT_CTRL);
         let _ = handle.clear_halt(EP_IN_CTRL);
-        if has_video {
-            if let Err(e) = handle.clear_halt(crate::EP_OUT_VIDEO) {
-                eprintln!("[usb] clear head 0 video halt failed: {e}");
-            }
-        }
-        if has_video2 {
-            if let Err(e) = handle.clear_halt(EP_OUT_VIDEO2) {
-                eprintln!("[usb] clear head 1 video halt failed: {e}");
+        for endpoint in video_endpoints {
+            if endpoint != EP_OUT_CTRL {
+                let _ = handle.clear_halt(endpoint);
             }
         }
 
@@ -371,10 +424,16 @@ impl Dock {
             timeout: Duration::from_millis(2000),
             ep84: Mutex::new(ep84),
             out_lock: Mutex::new(()),
-            has_video,
-            has_video2,
+            video_endpoints,
+            available_video,
+            head_count,
             has_intr,
         })
+    }
+
+    /// Number of downstream display heads enabled by this product profile.
+    pub fn head_count(&self) -> usize {
+        self.head_count
     }
 
     /// Issue a vendor-specific IN control transfer (bmRequestType=0xc1).
@@ -551,8 +610,7 @@ impl Dock {
                 // The stack-owned callback state must remain valid until the
                 // cancellation completion has been drained.
                 unsafe { libusb_cancel_transfer(t) };
-                let cancel_deadline = Instant::now() + Duration::from_millis(500);
-                while !shared.done.load(Ordering::Acquire) && Instant::now() < cancel_deadline {
+                while !shared.done.load(Ordering::Acquire) {
                     pump_events(self.ctx.as_raw(), Duration::from_millis(20));
                 }
                 unsafe { libusb_free_transfer(t) };
@@ -563,8 +621,10 @@ impl Dock {
         let status = shared.status.load(Ordering::Acquire);
         let actual = shared.actual_length.load(Ordering::Acquire) as usize;
         unsafe { libusb_free_transfer(t) };
-        if status == LIBUSB_TRANSFER_COMPLETED {
+        if status == LIBUSB_TRANSFER_COMPLETED && actual == bytes.len() {
             Ok(actual)
+        } else if status == LIBUSB_TRANSFER_COMPLETED {
+            Err(Error::Usb(rusb::Error::Io))
         } else {
             Err(status_to_err(status))
         }
@@ -583,47 +643,70 @@ impl Dock {
             .map_err(map_err)
     }
 
-    /// Write a video frame on EP 0x08. Returns bytes written.
+    /// Write a video frame on the product's head-0 endpoint. Returns bytes written.
     pub fn write_video(&self, bytes: &[u8]) -> Result<usize, Error> {
-        if !self.has_video {
+        if !self.available_video[0] {
             return Err(Error::Disconnected);
         }
-        self.handle
-            .write_bulk(crate::EP_OUT_VIDEO, bytes, self.timeout)
-            .map_err(map_err)
+        let _g = self.out_lock.lock().unwrap();
+        let written = self
+            .handle
+            .write_bulk(self.video_endpoints[0], bytes, self.timeout)
+            .map_err(map_err)?;
+        if written == bytes.len() {
+            Ok(written)
+        } else {
+            Err(Error::Usb(rusb::Error::Io))
+        }
     }
 
-    /// Write one video frame to EP 0x0b (head 1). Mirrors [`write_video`].
+    /// Write one video frame to the product's head-1 endpoint. Mirrors [`write_video`].
     pub fn write_video2(&self, bytes: &[u8]) -> Result<usize, Error> {
-        if !self.has_video2 {
+        if !self.available_video[1] {
             return Err(Error::Disconnected);
         }
-        self.handle
-            .write_bulk(EP_OUT_VIDEO2, bytes, self.timeout)
-            .map_err(map_err)
+        let _g = self.out_lock.lock().unwrap();
+        let written = self
+            .handle
+            .write_bulk(self.video_endpoints[1], bytes, self.timeout)
+            .map_err(map_err)?;
+        if written == bytes.len() {
+            Ok(written)
+        } else {
+            Err(Error::Usb(rusb::Error::Io))
+        }
     }
 
-    /// Pipeline a whole frame's chunks on the head-0 video EP (0x08): submit up
-    /// to [`PIPELINE_DEPTH`] transfers to the URB ring, reap completions, and
-    /// submit-ahead — matching DLM's async libusb submission so the dock's frame
-    /// assembler never sees a host-side stall mid-frame. Returns total bytes.
+    /// Pipeline a whole frame's chunks on the product's head-0 video endpoint.
     pub fn write_video_frame(&self, chunks: &[Vec<u8>]) -> Result<usize, Error> {
-        if !self.has_video {
+        if !self.available_video[0] {
             return Err(Error::Disconnected);
         }
-        self.pipeline_out(crate::EP_OUT_VIDEO, chunks)
+        let endpoint = self.video_endpoints[0];
+        if endpoint == EP_OUT_CTRL {
+            let transfers = coalesce_video_chunks(chunks);
+            self.pipeline_out(endpoint, &transfers)
+        } else {
+            self.pipeline_out(endpoint, chunks)
+        }
     }
 
-    /// [`write_video_frame`] for head 1 (EP 0x0b).
+    /// [`write_video_frame`] for head 1.
     pub fn write_video2_frame(&self, chunks: &[Vec<u8>]) -> Result<usize, Error> {
-        if !self.has_video2 {
+        if !self.available_video[1] {
             return Err(Error::Disconnected);
         }
-        self.pipeline_out(EP_OUT_VIDEO2, chunks)
+        let endpoint = self.video_endpoints[1];
+        if endpoint == EP_OUT_CTRL {
+            let transfers = coalesce_video_chunks(chunks);
+            self.pipeline_out(endpoint, &transfers)
+        } else {
+            self.pipeline_out(endpoint, chunks)
+        }
     }
 
-    /// Bounded async submit/reap of `chunks` on a bulk OUT endpoint. Keeps at
-    /// most [`PIPELINE_DEPTH`] transfers outstanding (DLM's measured depth),
+    /// Bounded async submit/reap of coalesced URBs on a bulk OUT endpoint. Keeps
+    /// at most the endpoint's measured DLM depth outstanding,
     /// submitting the next chunk the instant one completes.
     fn pipeline_out(&self, ep: u8, chunks: &[Vec<u8>]) -> Result<usize, Error> {
         if chunks.is_empty() {
@@ -632,7 +715,7 @@ impl Dock {
         let _g = self.out_lock.lock().unwrap();
         let handle = self.handle.as_raw();
         let ctx = self.ctx.as_raw();
-        let depth = PIPELINE_DEPTH.min(chunks.len());
+        let depth = pipeline_depth(ep).min(chunks.len());
         // Completions land here (transfer ptr, status, actual_length). Callbacks
         // fire on this thread inside `pump_events`, so no cross-thread hazard.
         let completions: Box<Mutex<VecDeque<(*mut libusb_transfer, c_int, c_int)>>> =
@@ -709,6 +792,11 @@ impl Dock {
                 }
                 continue;
             }
+            let expected = unsafe { (*t).length.max(0) as usize };
+            if actual.max(0) as usize != expected {
+                err = err.or(Some(Error::Usb(rusb::Error::Io)));
+                continue;
+            }
             total += actual.max(0) as usize;
             // Submit-ahead: reuse the just-completed transfer for the next chunk.
             if err.is_none() && next < chunks.len() {
@@ -726,9 +814,8 @@ impl Dock {
         for &t in &transfers {
             unsafe { libusb_cancel_transfer(t) };
         }
-        let drain_deadline = Instant::now() + Duration::from_millis(500);
-        while reaped < submitted && Instant::now() < drain_deadline {
-            if let Some(_) = completions.lock().unwrap().pop_front() {
+        while reaped < submitted {
+            if completions.lock().unwrap().pop_front().is_some() {
                 reaped += 1;
             } else {
                 pump_events(ctx, Duration::from_millis(20));
@@ -744,20 +831,24 @@ impl Dock {
         }
     }
 
-    /// Clear the halt/stall condition on the head-1 video endpoint (EP 0x0b).
+    /// Clear the halt/stall condition on the product's head-1 video endpoint.
     pub fn clear_video2_halt(&self) -> Result<(), Error> {
-        if !self.has_video2 {
+        if !self.available_video[1] {
             return Err(Error::Disconnected);
         }
-        self.handle.clear_halt(EP_OUT_VIDEO2).map_err(map_err)
+        self.handle
+            .clear_halt(self.video_endpoints[1])
+            .map_err(map_err)
     }
 
-    /// Clear the halt/stall condition on the video endpoint (EP 0x08).
+    /// Clear the halt/stall condition on the product's head-0 video endpoint.
     pub fn clear_video_halt(&self) -> Result<(), Error> {
-        if !self.has_video {
+        if !self.available_video[0] {
             return Err(Error::Disconnected);
         }
-        self.handle.clear_halt(crate::EP_OUT_VIDEO).map_err(map_err)
+        self.handle
+            .clear_halt(self.video_endpoints[0])
+            .map_err(map_err)
     }
 
     /// Read one EP 0x83 interrupt event into `buf`. Returns the byte count
@@ -816,4 +907,59 @@ fn has_endpoint(handle: &DeviceHandle<Context>, addr: u8) -> bool {
         .flat_map(|i| i.descriptors())
         .flat_map(|d| d.endpoint_descriptors())
         .any(|e| e.address() == addr)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selects_video_endpoints_by_product() {
+        assert_eq!(
+            video_endpoints(PID_D6000),
+            [crate::EP_OUT_VIDEO, EP_OUT_VIDEO2]
+        );
+        assert_eq!(
+            video_endpoints(PID_THINKPAD_USB3_PRO),
+            [EP_OUT_CTRL, EP_OUT_CTRL]
+        );
+        assert_eq!(head_count(PID_D6000), 2);
+        assert_eq!(head_count(PID_THINKPAD_USB3_PRO), 1);
+    }
+
+    #[test]
+    fn coalesces_video_stream_into_64k_urbs_without_changing_bytes() {
+        let chunks = vec![
+            vec![0x11; 1000],
+            vec![0x22; 65_000],
+            Vec::new(),
+            vec![0x33; 100],
+        ];
+        let expected = chunks.concat();
+        let transfers = coalesce_video_chunks(&chunks);
+
+        assert_eq!(
+            transfers.iter().map(Vec::len).collect::<Vec<_>>(),
+            [65_536, 564]
+        );
+        assert_eq!(transfers.concat(), expected);
+    }
+
+    #[test]
+    fn preserves_exact_64k_transfer_boundary() {
+        let chunks = vec![vec![0xaa; VIDEO_URB_LEN], vec![0xbb]];
+        let transfers = coalesce_video_chunks(&chunks);
+
+        assert_eq!(
+            transfers.iter().map(Vec::len).collect::<Vec<_>>(),
+            [65_536, 1]
+        );
+    }
+
+    #[test]
+    fn selects_pipeline_depth_by_endpoint_role() {
+        assert_eq!(pipeline_depth(EP_OUT_CTRL), 3);
+        assert_eq!(pipeline_depth(crate::EP_OUT_VIDEO), 8);
+        assert_eq!(pipeline_depth(EP_OUT_VIDEO2), 8);
+    }
 }

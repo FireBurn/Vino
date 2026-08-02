@@ -18,6 +18,7 @@ const FINAL_FETCH_ROUNDS: usize = 24;
 pub enum FetchError {
     Build(crate::kshim::Error),
     Transport(UsbError),
+    InvalidHead { head: u8 },
     NoEdid { head: u8 },
 }
 
@@ -26,6 +27,7 @@ impl core::fmt::Display for FetchError {
         match self {
             Self::Build(e) => write!(f, "control message construction failed: {e}"),
             Self::Transport(e) => write!(f, "USB transport failed: {e:?}"),
+            Self::InvalidHead { head } => write!(f, "invalid Vino head {head}"),
             Self::NoEdid { head } => write!(f, "head {head} did not return an EDID"),
         }
     }
