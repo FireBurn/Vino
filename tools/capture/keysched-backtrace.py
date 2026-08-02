@@ -108,7 +108,11 @@ def main() -> int:
     js = (JS.replace("__HOOK__", args.hook)
             .replace("__KEY_AT__", args.key_at)
             .replace("__KEY_REG__", args.key_reg))
-    session = frida.attach(args.process)
+    # Linux truncates task `comm` names to 15 bytes, so this binary often appears as
+    # `DisplayLinkMana` rather than `DisplayLinkManager`.  A numeric PID is unambiguous and
+    # lets the caller attach to the manually-started DLM instance used for a cold session.
+    target: int | str = int(args.process) if args.process.isdecimal() else args.process
+    session = frida.attach(target)
     script = session.create_script(js)
     script.on("message", on_message)
     script.load()

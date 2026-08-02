@@ -93,7 +93,10 @@ def main() -> int:
         elif p.get("s") == "err":
             print(f"   [err] {p['m']}", flush=True)
 
-    session = frida.attach(args.process)
+    # See keysched-backtrace.py: Linux truncates the DLM task name.  Accepting its numeric PID
+    # avoids accidentally attaching to no process (or to a stale instance) during a cold session.
+    target: int | str = int(args.process) if args.process.isdecimal() else args.process
+    session = frida.attach(target)
     js = JS.replace("__CTOR__", args.ctor).replace("__KEY_AT__", args.key_at)
     script = session.create_script(js)
     script.on("message", on_message)
