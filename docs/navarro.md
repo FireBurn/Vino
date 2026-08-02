@@ -39,8 +39,41 @@ plainly there.
 
 Carried as `DockProfile::per_head_auth`.
 
-⊙ Open: where the video keys come from on this platform, given there is no per-head SKE. Most
-likely the main-link SKE, but unverified.
+⊙ Open: where the video keys come from on this platform, given there is no per-head SKE. **Not**
+the main-link key — see §2a.
+
+## 2a. ⭐ There are three keys, and the video keys are per-head
+
+Measured 2026-08-02 from `captures/navarro-dlm-session-20260801-190654`, using the Dl3Cmac tag as
+the oracle. That is the right tool here: it verifies a candidate `(key, nonce)` against the captured
+frame with **no assumption about the plaintext**, where a plaintext-shape guess silently fails when
+the guess is wrong — which is exactly what happened on the first attempt at this.
+
+| stream | key | nonce |
+|---|---|---|
+| control (`0x02`/`0x84`) | `44514ae4ad1ea7f1cf272d8dfabea994` | `09d8c99a45b38dc8` |
+| video head 0 (`0x08`) | `989f349c3c8edfb07fe9196921d1868f` | `566c8be978e96150` |
+| video head 1 (`0x0a`) | `67e0309ac4c19bdf23b147a2e0662298` | `367ef5b61c3d66ac` |
+
+Frida records each twice, the second being the same key with `nonce[0] ^ 0x80` — the Dl3Cmac nonce.
+
+⛔ The video keys are **not** the control key and **not** derived from it by any simple relation:
+`ctrl^H0`, `ctrl^H1`, `H0^H1`, `ks^H0`, `ks^H1` show no structure, and neither AES nor CMAC of the
+link key or `ks = ctrl ^ B` under small counters, `B`, or any of the three nonces reproduces them.
+
+⛔ They are **not transmitted**. Decrypting all 1100 sealed control frames with the control key and
+searching for each video key, each key `^ B`, and each nonce yields nothing; the nonces do not
+appear in the clear anywhere in 5546 frames either.
+
+⭐ And they cannot come from extra handshakes, because **vino and DLM run the identical HDCP
+message set, exactly once each**: `AKE_Send_Cert`, `AKE_Send_rrx`, `AKE_Send_H_prime`,
+`AKE_Send_Pairing_Info`, `LC_Send_L_prime`, `RepeaterAuth_Send_ReceiverID_List`. One session, three
+keys.
+
+⇒ **The per-head video keys are derived locally, by both ends, from the single link session.** vino
+therefore already holds all the input material; what is missing is only the derivation. Finding it
+means reading DLM's key schedule in the binary — a wire capture cannot show a local computation, so
+**a cold-plug capture would not answer this**.
 
 ## 3. The main AKE is plaintext-framed
 
@@ -164,12 +197,31 @@ attached.** Everything else for video is built and gated behind `video_supported
 to 120 Hz the way it does on Ridge ([[project_dlm_clamps_to_120_cp_decrypted_20260726]]), so this is
 the platform that can finally answer the `off72` mode word.
 
+### 4b. ⭐ The stream-open plaintext, decrypted
+
+With the keys from §2a, both heads' stream-opens decrypt:
+
+```
+head 0 (ep 0x08, wire sub 0x17):  04 00 08 04 05 00 06 00 07 01 08 02 07 00 | d9 33
+head 1 (ep 0x0a, wire sub 0x1f):  04 00 08 04 05 00 06 00 07 01 08 02 07 00 | c6 6c
+```
+
+⭐ The two are **byte-identical except the final `u16`**, so the head is carried entirely by the
+wire `sub` (`0x17`/`0x1f`) and not by the content. The trailing word differs per head and per
+session (`0x33d9`, `0x6cc6`) with no relation to the head index — most likely a token, in the same
+family as the msg0 token that the dock provably cannot validate.
+
+⚠ `cp::navarro_stream_open()` currently builds something else entirely — the wire sub, `0x0002`,
+then a counter, then zeros. That is a guess made before this decrypt and it is **wrong**; the
+constant 14-byte prefix above is what the dock is actually sent.
+
 ### Implementing it
 
-1. Build the 48-byte per-head stream-open (`id=0x17`/`0x1f`, `sub=0x02`) and send it on the head's
-   video endpoint before any pixels. **Needs one physical replug capture** — see above.
-2. Frame the first payload with `sub=0x02`/`id=0x07`, then steady state with `sub=0x04` and the
-   per-head id.
-3. ~~Establish where the video key comes from~~ — moot: the payload is plaintext.
+1. Rewrite `cp::navarro_stream_open()` to emit the measured 14-byte prefix (§4b).
+2. Derive the per-head video key (§2a) — **the one remaining unknown**, and the only thing standing
+   between here and a picture. It is a local key schedule, so it has to come out of the DLM binary.
+3. Seal the stream-open with that key and send it on the head's video endpoint before any pixels.
+4. Frame the first payload with `sub=0x02`/`id=0x07`, then steady state with `sub=0x04`.
+5. ~~Establish where the bulk video key comes from~~ — moot: the payload is plaintext (§4a).
 
 Only then lift `video_supported` for the profile.
