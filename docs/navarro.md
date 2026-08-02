@@ -108,8 +108,27 @@ Offsets in DLM 3.4.26 (module-relative), from `objdump`:
 
 ⇒ **key-source object layout: key at `+0x18` (16 B), riv at `+0x30` (8 B).**
 
+The full key-source object, captured for all five subs in one session:
+
+```
++0x00 vtable   +0x08 flag(1)   +0x10 ptr
++0x18 KEY (16 bytes, inline -- not a std::string)
++0x28 ptr      +0x30 RIV (8 bytes, inline)
++0x38 u32: 0x45, 0x25, 0x25, 0x35, 0x45 for subs 04/07/0f/17/1f
+```
+
+⛔ **The five keys are mutually independent.** Tested every pairwise XOR and, against the control
+key, `AES(k4, sub)`, `AES(k4, riv|sub)`, `AES(k4, own_riv|0)`, `AES(k4, own_riv|sub)`,
+`CMAC(k4, sub)`, `CMAC(k4, riv|sub)` and `CMAC(k4, own_riv)`. Nothing matches, so there is no cheap
+per-sub tweak of one master key — each is separately derived from session material.
+
 ⊙ **Next step:** the factory only *copies* an already-derived key, so the derivation is whatever
-fills `keysrc+0x18`. Hook `0x85c5f0`, take the `rdx` pointer, and find what writes that object.
+fills `keysrc+0x18`. `tools/capture/keysrc-writer.py` arms a hardware watchpoint there and is
+mechanically working (frida 17.9.1 has `Thread.setHardwareWatchpoint`), but it still needs the
+right site to arm from: ⛔ **`0x85c560` is not the constructor** — it is never called in a live
+session, so reading it as one from nearby disassembly was wrong. Find where the object is actually
+allocated (e.g. hook `0x86cca0`, keep the `rdx` pointer, and arm on that address before the *next*
+session builds into it).
 
 ⚠ Backtraces past frame #0 here come from the fuzzy unwinder and are **not reliable** — chasing
 frame #6 of one led straight into iostream formatting code. Trust `this.returnAddress` and the

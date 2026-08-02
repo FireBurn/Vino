@@ -47,6 +47,10 @@ Interceptor.attach(base.add(AES_FUNC), {
       const key = rd(this.context[KEY_REG].add(KEY_AT), 16);
       if(!key || key.length !== 32 || seenKey.has(key)) return;
       seenKey.add(key);
+      // The whole key-source object: the riv lives at +0x30 and the surrounding words are worth
+      // having, since relating the five per-sub keys to each other is cheaper than finding the
+      // code that writes them.
+      const blob = rd(this.context[KEY_REG], 0x50);
       const input = rd(this.context.rdx, 16);
       // The sealer factory takes the per-stream selector in ecx; capturing it maps each key to
       // the stream it seals.
@@ -71,7 +75,7 @@ Interceptor.attach(base.add(AES_FUNC), {
       // frames above -- it is the caller that actually matters here.
       let ret = null;
       try{ ret = "0x" + this.returnAddress.sub(base).toString(16); }catch(e){}
-      send({ s: "sched", ts: Date.now()/1000, key: key, input: input, ret: ret, idx: idx, bt: bt });
+      send({ s: "sched", ts: Date.now()/1000, key: key, input: input, ret: ret, idx: idx, blob: blob, bt: bt });
     }catch(e){}
   }
 });
