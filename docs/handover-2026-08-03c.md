@@ -104,6 +104,33 @@ this project has lost weeks to before.
 `off46=0x0a80`, `off48=0x66db`, `off66=0x0800`, pixel clock 49775 at 2560x1440p120, against
 hardware running at that moment rather than against the previous day's capture.
 
+## ⭐ The top remaining lead: DLM brackets the video start with a marker burst, vino does not
+
+From the same-day capture, DLM's `id=0x0016 sub=0x2f` / `sub=0x2e` messages around the first video
+byte. The payload is `[connector][value]` at offset 22:
+
+```
+-0.1155  2f 00 01     -0.0874  2e 00 00     +0.0087  2f 00 01     +0.1059  2f 00 00
+-0.1095  2e 00 03     -0.0462  2e 01 03     +0.0140  2e 00 00     +0.1081  2e 00 00
+-0.1021  2f 01 01     -0.0178  2f 01 01     +0.0463  2f 01 01     +0.1807  2f 01 00
+-0.1009  2f 00 01     +0.0060  2e 01 03     +0.0588  2e 01 00     +0.1817  2e 01 00
+```
+
+**Sixteen markers in 300 ms**, per connector, opening `(2f=1, 2e=3)` and closing `(2f=0, 2e=0)`
+*after* the video is already flowing.
+
+vino, in the same window, sends **four** control frames — its 100 ms status metronome — and one
+mode set at +0.70 s. Its cadence is a flat 100 ms; DLM's is a burst.
+
+⚠ This is not the same as "vino is blocked". It is not: its control plane keeps running the whole
+time the video pipe is jammed, with the dock answering on EP84 throughout. That rules out the
+obvious deadlock (dock waits for closing markers, vino waits for the dock to drain) — **tested and
+refuted this session**.
+
+But it is a concrete, measured cadence difference at exactly the moment the dock decides whether to
+start draining, and the user flagged cadence and timing from the outset. It is the best remaining
+lead.
+
 ## ⛔ Killed by measurement this session
 
 ### 1. The per-strip parameter map (`kind=0x200f`)
@@ -131,7 +158,19 @@ neither on the frame carrying the prologue: its first frame goes straight from t
 image records, and the map appears about 45 image records in. Both are now suppressed there
 (`302f0d983046`). No change.
 
-### 4. Everything in `docs/protocol/navarro-decoded.md` §4
+### 4. The CP-blocked-behind-video deadlock
+
+The theory: the dock waits for the closing markers, vino waits for the dock to drain, and vino
+cannot send the markers because it is blocked in `submit_prompt_training`. **Refuted.** vino's
+control plane runs throughout — 64-byte frames every 100 ms with EP84 replies, from before the
+first video byte to well past the `-ESHUTDOWN`. `PROMPT_TRAINING_OPEN_MS` is 0, so the submit
+returns after one frame without waiting.
+
+### 5. The pipe descriptor's layout and the mode-set operation code
+
+Both were genuinely wrong (see above) and both are now fixed. Neither changed the jam.
+
+### 6. Everything in `docs/protocol/navarro-decoded.md` §4
 
 The control plane is **complete** — vino and DLM agree exactly on every outbound frame size carrying
 an HDCP, mode-set or stream record before the first video byte. `RepeaterAuth_Stream_Manage` names
