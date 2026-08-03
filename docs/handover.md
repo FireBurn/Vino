@@ -17,6 +17,7 @@ Last updated 2026-08-03, end of the two-dock session.
 | DL7400 codec correctness | ✅ **proven**, twice, independently |
 | DL7400 DRM connector, both docks bound | ⛔ reads `disconnected`; **no output** |
 | D6000 (Ridge, `17e9:6006`) reset loop | ✅ fixed and root-caused |
+| D6000 regression bisected | ✅ **first bad commit = `498a10040294`** |
 | D6000 DRM connector | ✅ `connected`, enabled as an output |
 | **D6000 picture** | ⛔ **nothing on the panel** |
 | Two docks bound at once | ⛔ **only one displays at a time** |
@@ -77,34 +78,48 @@ of this state.
   connector state is not pixels.
   ⚠ The presence log fires **only when the reply changes**. An absence of lines for a dock means
   its answers are steady, NOT that it is unprobed. That inference was made and was wrong.
-* ⭐⭐ **Known-good anchor for the D6000: `a13775e0cdc5`** (user-confirmed working there).
-  **40 commits** touch `drivers/gpu/drm/vino` between it and HEAD, +4576/-595 lines. That is ~6
-  build-and-boot cycles with `git bisect`, and it is the cheapest remaining route to the Ridge
-  regression -- cheaper than more instrumenting, which has now eliminated four candidate
-  mechanisms without finding the cause.
+* ⭐⭐⭐ **BISECTED (user, 2026-08-03): the first BAD commit is `498a10040294`**, "drm/vino: the
+  DL7400 draws a picture". Earlier commits had the D6000 pushing pixels *while restarting a lot*;
+  that commit is where the pixels stop entirely. It is also the first commit at which the DL7400
+  showed a picture, so it is the moment Navarro support landed and Ridge broke.
 
-  ⚠ Bisect on the **D6000 alone, unbound from the DL7400**, or the shared-state bug will
-  contaminate every verdict. Mark good/bad on "does the D6000 put a picture on its panel", not on
-  any log line -- `encrypted control session ready` and a `connected` connector have both been
-  observed on a dock showing nothing.
+  ⚠ This retires the `a13775e0cdc5` anchor and the 40-commit bisect plan — the range is now one
+  commit of ~1900 lines. It also invalidates the premise of `40f8da12fa5c` ("give Ridge back its
+  EP84 queue depth"), which was reasoned from treating that baseline as good for Ridge.
 
-  **Started, not finished.** `tools/hardware/vino-at.sh <rev>` checks out ONLY
-  `drivers/gpu/drm/vino` at a revision and rebuilds, so the bindings, DRM core and the 10-bit/HDR
-  work stay at HEAD and no reboot is needed. ⭐ **Proven viable**: the module at `1a1d4bef6d3c`
-  (midpoint of the 40) builds warning-clean against today's bindings and installs.
+  **The method that converges** — guessing at mechanisms has not: five candidates have been
+  eliminated by instrumentation without finding the cause.
 
-  First data point, midpoint `1a1d4bef6d3c`, D6000 alone: **0 re-enumerations but ZERO EP08/EP0b
-  bytes under a forced full-screen repaint** -- so it is not resetting and not streaming either.
-  Leaning BAD, but treat it as inconclusive: the D6000 was left bound across the DL7400's unbind
-  rather than being brought up fresh, so it may simply never have re-armed. **Re-run with a full
-  `modprobe` cycle before recording a verdict.**
+  1. Gate **every** ungated change in `498a10040294` behind `profile.navarro_mode_words`, so Ridge
+     is byte-identical to that commit's parent.
+  2. **Confirm the D6000 pushes pixels again.** This validates the premise instead of assuming it,
+     and it is the step that has been skipped every time so far.
+  3. Un-gate one change at a time until it breaks. Four steps.
 
-  ⚠ Two operational traps hit while starting this. The docks **change bus paths** when they
+  Ungated changes still to gate, after `cde9a2c9e430`:
+
+  | change | where |
+  |---|---|
+  | EP84 queue depth 4 → 1 | already a profile field (`40f8da12fa5c`) |
+  | `open_in` verifies a trailing Dl3Cmac | `cp.rs`; was a plain decrypt taking `ct` |
+  | `decode_in_lenient` decodes `wire[16..]` | was `wire[16..32]`, the inner header only |
+  | `send_cp_reply` loops until a reply's counter echoes the request | `drm_sink.rs`; was one reap per write |
+
+  ✅ Done: **`cde9a2c9e430`** gates the `send_init!` sequence. `498a10040294` introduced
+  `0x14/0x30`, `0x15/0x0b` and a `0x16/0x2a` per connector; **its parent sends none of them** — the
+  macro does not exist there — so Ridge inherited three messages it had never sent, at a point
+  where every later inner counter and AES block sequence depends on how many messages preceded it.
+  ⚠ **Not sufficient**: with it gated the D6000 still reports
+  `control session failed after 3 attempts (ETIMEDOUT)`.
+
+  ⚠ Operational traps for any hardware loop here. The docks **change bus paths** when they
   re-enumerate (the D6000 appeared as `usb 1-2.4` mid-run), so resolve them at runtime from
-  `idProduct` (`7000`/`6006`) under `/sys/bus/usb/devices/` instead of hardcoding `2-1.3`/`2-2.1`
-  as every script here currently does. And repeated module cycling wedged the USB stack until
-  `lsusb` itself stopped responding -- the `usb_hub_wq` deadlock shape from 2026-07-27. Check USB
-  is healthy between bisect steps.
+  `idProduct` (`7000`/`6006`) under `/sys/bus/usb/devices/` rather than hardcoding `2-1.3`/`2-2.1`
+  as every script in `tools/hardware/` currently does. Repeated module cycling also wedged the USB
+  stack until `lsusb` stopped responding — the `usb_hub_wq` deadlock shape from 2026-07-27 — so
+  check USB health between steps. `tools/hardware/vino-at.sh <rev>` builds and installs **only**
+  `drivers/gpu/drm/vino` at a revision, leaving bindings, DRM core and the 10-bit/HDR work at HEAD;
+  proven to build warning-clean at older revisions against today's bindings.
 
 ⚠ The presence log was untagged (`pr_info!`, no device prefix) for most of the session, so lines
 like `head 0 presence reply … present=true` **could not be attributed to a dock** and were read as
