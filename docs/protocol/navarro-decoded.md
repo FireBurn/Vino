@@ -197,22 +197,36 @@ producer/lane index from DLM's parallel encoder.
 ⇒ **vino emitting `aux = 0` from a single producer is exactly what DLM does when it has one.** This
 is not the video blocker.
 
-### 3.4 ⚠ `kind=0x200f` — the one record vino does not send
+### 3.4 ⭐ `kind=0x200f` is a per-strip parameter map — and vino sent none
 
-Two to six per frame, always in pairs of a 3980-byte and a ~1996-byte record:
+Emitted in pairs, a 3980-byte record (`aux=0x0008`) and a 1996-byte one (`aux=0x0000`), two to five
+times per frame. Each is a chain of sub-records:
 
 ```
-[u16 len=0x0106][u16 kind=0x200f][u16 x][u16 0x0008] ...
+[u16 len][u16 kind=0x200f][u16 first_band][u16 band_count][band_count x 32 bytes]
 ```
 
-The 3980-byte member always has `x = 0`; its partner has `x` = 0x60/0x70/0x78. The payload is
-bytes valued 0, 1, 2 and scales with picture content — 89 non-zero bytes on a quiescent startup
-frame, 1646 on a busy one. It is a second plane, not a constant: the same record kind appears in
-Windows' capture with the same header.
+A full sub-record carries eight bands and 256 payload bytes, so **a band is 32 bytes**. The pair
+always covers the frame exactly: 15 sub-records of 8 bands (0..119) then 7 of 8 plus one of 4
+(120..179).
 
-**Not identified.** It is the only record kind in DLM's video stream that vino never emits, and it
-accounts for most of the ~4.4 KB per frame by which vino's frames are smaller than DLM's
-(204,208 vs 208,640 bytes for the same quiescent 1440p frame).
+**180 bands, and only the first 20 bytes of each band are ever non-zero.** At 2560x1440 with the
+DL7400's 128x8 strips that is `1440 / 8 = 180` bands of `2560 / 128 = 20` strips — **one byte per
+strip, for every strip in the frame.** Values are 0..3 and track picture content: a quiescent frame's
+map is all zero, a busy one is a mix. Bytes 20..31 of every band are zero in all 5760 bytes of
+every map.
+
+⚠ **What the values mean is not established.** vino sends the all-zero map, which is byte-for-byte
+what DLM sends on the quiescent startup frames that do light this dock. Do not invent values.
+
+⚠ Band **ordering** within the second record varies in DLM's own output (`120, 136, 128, 144…`) —
+its parallel encoder finishing out of order, like the `aux` lane tag in §3.3. Coverage is always
+complete. vino emits them in order, which reproduces DLM's in-order instances byte-for-byte.
+
+This was the only record kind in DLM's video stream that vino never emitted, and it is most of the
+~4.4 KB per frame by which vino's frames were smaller than DLM's (204,208 vs 208,640 bytes for the
+same quiescent 1440p frame). Implemented as `video::wht::navarro_strip_params()`, sent ahead of the
+image records — it is what tells the dock how to read them.
 
 ## 4. What is eliminated for the video jam
 
@@ -234,6 +248,12 @@ Eliminated by measurement, in addition to the four in the previous handover:
 * **Fixed frame size.** DLM's frames run 208,608 to 7,617,776 bytes on one connector, so the dock
   is not waiting for a fixed byte count.
 
-Remaining, in order: the `kind=0x200f` records (§3.4), the mode-set words that were wrong until
-2026-08-03 (§2.4), and the startup pacing — DLM ramps from 6.3 MB/s over a second with **at most
-two URBs in flight**, where vino queues four to eight from a standing start.
+Remaining, in order:
+
+1. **The per-strip parameter map** (§3.4) — implemented 2026-08-03, **not yet hardware-tested**.
+   This is the strongest candidate: without it the dock has no per-strip parameters for any strip
+   it is being sent, which is a coherent reason to accept one FIFO's worth of image records and
+   then stop.
+2. **The mode-set words** (§2.4), wrong until 2026-08-03 and also untested.
+3. **Startup pacing** — DLM ramps from 6.3 MB/s over a second with **at most two URBs in flight**;
+   vino queues four to eight from a standing start.
