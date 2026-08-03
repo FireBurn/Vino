@@ -46,9 +46,24 @@ XOR-encrypted and discarded."* An uninitialised tail of a buffer rounded up to t
   CSPRNG and both panels light — so for that record "arbitrary" is backed by a working link, not
   by an argument.
 
-⚠ Still open: the pipe descriptor, the stream report and the mode set are Navarro-only records
-whose tails have no equivalent hardware proof. The TLV boundary is measured; the *irrelevance* of
-what goes past it is inferred from the D6000 and from the Windows RE.
+⛔ **RETRACTED FOR THE PIPE DESCRIPTOR (2026-08-03 pm).** Decrypting it from a **same-day capture
+taken while DLM was driving both panels on this dock** gives a different layout:
+
+```
+working capture:   [marker 14][marker 14][6 x 46-byte slot record]  = 304, no tail
+2026-08-02 capture:[marker 14]           [6 x 46-byte slot record]  = 290, + 14 unexplained
+```
+
+Both are 304 bytes. **In the working capture those fourteen bytes are consumed by a second marker
+at the front** — they are not padding. vino emitted one marker and fourteen CSPRNG bytes, which
+also came to 304, which is exactly how a wrong layout survives a length check. Fixed in
+`0db19e6bb3e4`; the marker count is still not a settled constant and the code says so.
+
+⇒ The general rule in this section still holds — the TLV chain says where a message ends — but
+"whatever is left is padding" does **not** follow from it. Check the leftover against a capture
+that was known to be working, per record.
+
+⚠ Still open on the same terms: the stream report's 12 bytes and the mode set's 6.
 
 ## 2. Control plane
 
