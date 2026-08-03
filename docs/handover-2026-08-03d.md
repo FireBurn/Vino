@@ -290,7 +290,43 @@ ETIMEDOUT**. Both were reverted rather than shipped unproven. ⚠ An earlier att
 was a **no-op** and must not be counted as a test — it passed a 16-byte slice into the *new*
 `open_in`, which leaves zero ciphertext after splitting off the tag.
 
-**Next step, and it is now the only one left:** `trace_crypto=1` is implemented and a capture was
+### ⭐⭐⭐ ROOT-CAUSED AND PARTLY FIXED (`dbe004a2d6be`)
+
+`send_cp_reply` reads EP84 until it sees the reply whose inner counter echoes its request, and it
+identifies that reply through `decode_in_lenient` -- the very function the series made
+tag-verifying. **Every Ridge reply became invisible to the matcher.** That is why the dock sends 50
+sealed replies while vino reports ETIMEDOUT.
+
+Restoring the plain decode as a per-frame fallback brings the D6000 up:
+
+```
+vino 2-2.1:1.0: vino: encrypted control session ready     <- with the DL7400 UNBOUND
+```
+
+after four sessions of nothing but ETIMEDOUT. The DL7400 is unaffected: 4/4 heads authenticated,
+session ready, monitor connected.
+
+⚠ **Necessary but not sufficient.** With BOTH docks bound the D6000 fails again, using the
+identical decode that just worked for it alone. A second piece of shared state is implicated.
+
+⛔ **Do not make this a global flag.** That was tried first and is the wrong shape: the DL7400
+overwrote Ridge's setting, and forcing it the other way cost the DL7400 its own per-head HDCP
+(`0/4 head(s) authenticated`). Per frame works because the strict pass can only succeed on a
+genuine authenticated frame.
+
+### The remaining blocker for "both docks at once"
+
+Two candidates for the second interaction, neither tested:
+
+1. **Codec geometry is module-global**: `STRIP_W_SHIFT`, `STRIP_H_SHIFT`, `INTERLACED_BANDS`,
+   `BAND_PARITY_BIT`, `AUX_IS_PAD_COUNT`, `DOCK_BUFFERS` are all set from whichever profile probed
+   last. Ridge needs 64x16 strips and 2 buffers; Navarro needs 128x8 and 3. These must move onto
+   `VinoDrmData`.
+2. **Bring-up serialisation**: both docks enqueue onto `session_queue()`. If Navarro's ~20 s
+   bring-up holds it, Ridge's can time out waiting rather than on the wire. Cheap to check --
+   compare the timestamps of the two bring-ups in one dmesg.
+
+**Historical, superseded:** `trace_crypto=1` is implemented and a capture was
 taken (`ridge-trace-205751.pcapng` plus the keys in `trace-dmesg.txt`), but the decrypt was **not**
 achieved this session — neither logged key produced sensible plaintext for the device filtered as
 the Ridge. Two things to get right that were not: which of the two logged control keys belongs to
