@@ -145,15 +145,30 @@ So head 0's video submit starves the rest of the timeline by roughly 1.2 s, and 
 closing markers, which DLM sends 106 ms *into* the stream. vino cannot send them because it is
 still working through head 0's submit against an endpoint that has stopped accepting bytes.
 
-⇒ **The next experiment is to make the first video submit unable to delay the timeline** — submit
-and move on, so the post-video markers go out on DLM's schedule whether or not the pipe is
-draining. If the markers are what starts the drain, that breaks the deadlock; if they go out on
-time and the dock still stops at 65,536 bytes, the marker theory dies cleanly and the answer is
-inside DLM rather than on the wire.
+**Instrumented rather than guessed** (`bc1c744b989c`):
 
-⚠ Find where the 1.2 s goes first. `PROMPT_TRAINING_OPEN_MS` is 0 and the queue is 8 slots deep
-against a 4-transfer frame, so the submit itself should not block — `send_stream_open`,
-`clear_video_halt` and the per-head `cp_until!` are the candidates. Do not guess; instrument it.
+```
+head 0 video submit took 0 ms (timeline offset 122 ms, 122 ms since anchor)
+head 1 video submit took 0 ms (timeline offset 272 ms, 1343 ms since anchor)
+```
+
+⇒ The submits are **free**. Head 0 lands exactly on schedule. The 1.2 s is not
+`submit_prompt_training`, and it is not the jammed endpoint back-pressuring the submit — it is in
+the timeline machinery between the two heads: `cp_until!`, `wait_mode_offset`, or the anchor.
+
+⛔ **That also retires the theory this section was chasing.** If the closing markers are late for a
+reason unrelated to the video pipe, their lateness cannot be what stops the pipe draining. The
+marker-deadlock idea is dead; so is the earlier CP-blocked-behind-video version of it.
+
+**So the next step is two separate things, in this order:**
+
+1. Find the 1.2 s. It is a scheduling defect in `activate_dual_wake` regardless of the video jam:
+   head 1 is being driven a second late on every cold bring-up.
+2. For the jam itself, the wire is exhausted. Ten hardware experiments and a byte-exact
+   record-level match against a same-day working capture have not moved it, and the dock accepts
+   every byte it is given without processing any. **The remaining question — what makes the dock's
+   decoder start — has to be answered inside DLM**, with a frida hook on its video submit path
+   rather than another capture.
 
 ## ⭐ The marker burst: measured, implemented via the timeline above
 
