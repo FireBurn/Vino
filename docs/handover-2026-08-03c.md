@@ -77,6 +77,33 @@ t=+1.0548  C ep0a len=0      status -2     <- timed out having moved nothing
 not backpressure from a slow consumer, and it is not a queueing artefact: a strictly serial writer
 gets the same wall.
 
+## ⭐⭐ Offset 23 of the mode set is an operation code — a wrong field assumption, found and fixed
+
+A same-day keyed DLM capture (`captures/navarro-dlm-today-124144/keys-raw.json`, wire at
+`~/dlm-today-124144/wire.pcapng`, 322 MB with **every byte accepted and both panels driven**)
+contains **six** `id=0x48 sub=0x22` messages, not two:
+
+```
+-3.100 s  conn 0   off23=0x00   all timings zero, off42=0x8000
+-3.098 s  conn 1   off23=0x00
+-1.278 s  conn 0   off23=0x00
+-1.170 s  conn 1   off23=0x00
+-0.122 s  conn 0   off23=0x02   2560x1440@120
+-0.112 s  conn 1   off23=0x02   2560x1440@120
+```
+
+vino called offset 23 a *"fixed generation/type value"* and always wrote 2. It is an **operation
+code**: `0` tears a connector's pipe down, `2` sets its mode. DLM tears down before it configures.
+`cp::clear_mode` (`058268aef460`) now does the same.
+
+⚠ It does **not** lift the jam. It is committed because the field is decoded correctly now either
+way, and because it is precisely the class of bug — a constant that was never a constant — that
+this project has lost weeks to before.
+
+⭐ The same capture **independently confirms the measured mode words** from `5eb36090793c`:
+`off46=0x0a80`, `off48=0x66db`, `off66=0x0800`, pixel clock 49775 at 2560x1440p120, against
+hardware running at that moment rather than against the previous day's capture.
+
 ## ⛔ Killed by measurement this session
 
 ### 1. The per-strip parameter map (`kind=0x200f`)
@@ -127,6 +154,11 @@ is not required. Frames are not a fixed size.
 * **`aux` is a producer lane**, not a record kind.
 
 ## Where to go next
+
+0. **The DLM reference now exists.** `captures/navarro-dlm-today-124144/` holds the keys and
+   journal; the 308 MB wire is at `~/dlm-today-124144/wire.pcapng` (kept out of the repo for size).
+   DLM drove both panels on this dock minutes before the last vino run, so any future "is it the
+   hardware?" question is already answered: it is not.
 
 1. **⭐⭐ Verify the D6000 fix.** It is the only regression, it is fixed, and the dock has not been
    plugged in. Do this before anything else.

@@ -1,0 +1,26 @@
+
+== 2-1.3  17e9:7000  bcdDevice 3922 (firmware revision)  bcdUSB 3.20  speed 10000 Mbps
+   DisplayLink Universal  DP  Quad  Display Docking 16G  serial 754D3380000000209
+   iface 2-1.3:1.0 class=ff sub=00 proto=03 driver=-   <- DL3 control interface (vino's problem)
+      ep 02 Bulk      maxp 0400 out  <- DL3 control OUT
+      ep 08 Bulk      maxp 0400 out  <- video
+      ep 0a Bulk      maxp 0400 out  <- video
+      ep 84 Bulk      maxp 0400 in  <- DL3 control IN
+   iface 2-1.3:1.1 class=fe sub=01 proto=01 driver=-
+   iface 2-1.3:1.2 class=01 sub=01 proto=20 driver=snd-usb-audio
+      ep 83 Interrupt maxp 0006 in
+   iface 2-1.3:1.3 class=01 sub=02 proto=20 driver=snd-usb-audio
+   iface 2-1.3:1.4 class=01 sub=02 proto=20 driver=snd-usb-audio
+   ★ DFU functional descriptor: version 1.01, wTransferSize 16384 B, detach timeout 200 ms
+     attributes 0x01: Download Supported
+     interface protocol 01 => RUNTIME (normal operation; DFU_DETACH switches it)
+     a flash will therefore be CLASS control transfers on that interface:
+       bmRequestType 0x21  bRequest 1 (DNLOAD)  wValue = block number
+       up to 16384 B per block, polled with GETSTATUS (0xa1/3)
+     bitWillDetach is CLEAR: the host issues a USB RESET after DFU_DETACH,
+     so the device RE-ENUMERATES, possibly under a different product id.
+     => capture the whole bus. A device-filtered capture loses the flash.
+   device identity = [10 40 0c 02 1a 0b 03 22 4e 61 76 61 44 6f 63 6b] ".@....."NavaDock"   [config descriptor type 0x40]
+   platform: NavaDock  ->  DLM would flash it from navarro-dock-release.spkg   (DL-7400 class, DL-7000 generation)
+   ** compare bcdDevice before/after: that is the proof a flash happened **
+   => DL3-family. vino territory; udl is not the answer for this part.

@@ -1,0 +1,5 @@
+1785757320.791303139	begin:cold-connect
+1785757320.829497351	state	card0-DP-1=disconnected/disabled card0-Writeback-1=unknown/disabled card1-eDP-1=connected/enabled card1-HDMI-A-1=disconnected/disabled usb:2-1.3=7000@5 
+1785757324.823801776	state	card0-DP-1=disconnected/disabled card0-Writeback-1=unknown/disabled card1-eDP-1=connected/enabled card1-HDMI-A-1=disconnected/disabled card2-DP-2=connected/disabled card3-DP-3=connected/disabled usb:2-1.3=7000@5 
+1785757326.249766592	state	card0-DP-1=disconnected/disabled card0-Writeback-1=unknown/disabled card1-eDP-1=connected/enabled card1-HDMI-A-1=disconnected/disabled card2-DP-2=connected/enabled card3-DP-3=connected/enabled usb:2-1.3=7000@5 
+1785757471.238645401	end:capture
