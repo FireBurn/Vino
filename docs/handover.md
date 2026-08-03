@@ -105,7 +105,32 @@ Ridge); the only other edit is a doc comment.
 
 ## Open, in priority order
 
-### 0. The D6000 takes exactly one video frame, then the endpoint stops
+### 0. ⭐ ROOT-CAUSED: Ridge frames were reordered by the DL7400's permutation
+
+`139bf929a013`. **Fix committed, HW-verification blocked on the power cycle above.**
+
+`NAVARRO_PROLOGUE_ROWS` / `NAVARRO_ORDINARY_ROWS` are DLM's measured producer completion order for
+a 2560x1440 *Navarro* surface -- 20 strips across x 180 bands, because Navarro strips are 128x8.
+`frame_records_with_boundary` selected them on `strips.len() == 3600` alone.
+
+⭐ **Ridge at 2560x1440 also has exactly 3600 strips**: 40 across x 90 bands, its strips being
+64x16. So every D6000 frame at its usual mode was reordered by the other dock's permutation,
+indexed `y * STRIPS_ACROSS + x` with `STRIPS_ACROSS` hardcoded to **20** against a **40**-wide
+grid. Identical byte count, thoroughly scrambled coordinates -- which is why no length or record
+check ever caught it.
+
+Both black training carriers reach that code on **every** dock: `black_frame_ep08` passes
+`Some(false)` and `black_frame_ep08_ordinary` passes `Some(true)`, unconditionally. The strip count
+was the only guard and Ridge's most common mode walks straight through it. The guard is now the
+Navarro layout itself (interlaced bands + a 128-px strip).
+
+This is the "no pixels at all" half of the bisected regression, and `498a10040294` is exactly the
+commit that introduced these tables -- consistent with the bisect and with the parent still
+resetting for the unrelated phantom-head-1 reason.
+
+**How it presented** (D6000 alone, `debug=1`):
+
+
 
 Measured at HEAD with all four gates off, D6000 alone, `debug=1`:
 
@@ -126,11 +151,14 @@ Only 70 us separate "queue opened" from "startup frame submitted", so those URBs
 completed. 36 ms later the next presentation cannot fit a whole frame -- `can_send_n()` false -- and
 the dock re-enumerates. `halt=0`: the endpoint is not stalled, the dock simply stops consuming.
 
-⭐ **207,072 bytes.** `docs/` records the proven Ridge ARM+all-black size as **205,696**. A 1,376-byte
-difference is the first thing to check: dump the wire parts (arm / opener / report / params / image
-/ trailer) for that first frame and account for every byte against the DLM capture. This is the same
-shape as Navarro's "accepts exactly 65,536 bytes then NAKs", which was an *opening-sequence* fault,
-not a pixel fault.
+Only 70 us separate "queue opened" from "startup frame submitted", so those URBs were *queued*, not
+completed; 36 ms later `can_send_n(4)` is false against an eight-deep queue, so **none of the first
+frame's four URBs had completed**. The dock took the first transfer and then stopped, exactly as it
+would for a frame whose records name coordinates it cannot place.
+
+⚠ Ridge's 3600-strip coincidence is only at 2560x1440. Any other Ridge mode has a different strip
+count, misses the guard and is framed correctly -- which is why this looked mode-specific and why
+a dock driven at a fallback mode behaved differently.
 
 ⚠ Do **not** re-chase codec geometry (now a value, corruption impossible), the `send_init!` burst
 (gated), `open_in`'s Dl3Cmac (gated), `send_cp_reply`'s counter loop (gated), or Ridge's EP84 queue
