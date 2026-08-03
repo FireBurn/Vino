@@ -290,62 +290,43 @@ ETIMEDOUT**. Both were reverted rather than shipped unproven. ⚠ An earlier att
 was a **no-op** and must not be counted as a test — it passed a 16-byte slice into the *new*
 `open_in`, which leaves zero ciphertext after splitting off the tag.
 
-### ⭐⭐⭐ ROOT-CAUSED AND PARTLY FIXED (`dbe004a2d6be`)
+### ⛔ RETRACTED: "root-caused as the reply matcher". It is not.
 
-`send_cp_reply` reads EP84 until it sees the reply whose inner counter echoes its request, and it
-identifies that reply through `decode_in_lenient` -- the very function the series made
-tag-verifying. **Every Ridge reply became invisible to the matcher.** That is why the dock sends 50
-sealed replies while vino reports ETIMEDOUT.
+`dbe004a2d6be` was committed on a false positive and has been reverted (`341286156648`). The
+"success" was a run where the D6000 reached `encrypted control session ready` with the plain decode
+forced -- but the same run logged **`0/2 head(s) authenticated`** for Ridge and **`0/4`** for
+Navarro. Both docks declared a ready session with *zero* authenticated heads: the forced decode was
+making the per-head HDCP exchange fail silently so bring-up skipped it, not fixing anything. Four
+variants were built and run against that false positive (fallback in `decode_in_lenient` only;
+fallback inside `open_in` over the whole body; treating an uncomputable tag as unverified;
+truncating the fallback to the inner header). None helped, which is what a wrong premise looks
+like.
 
-Restoring the plain decode as a per-frame fallback brings the D6000 up:
+### ⭐⭐⭐ Where ETIMEDOUT actually comes from
 
+`send_cp_reply` now logs any request whose match loop expires (`56e4da9b92c2`). **It never fires**,
+on either dock. Reply matching is not the problem and the entire decode line of enquiry is dead.
+
+`ETIMEDOUT` originates in `send_cp_setup`'s **send** path, `vino.rs:1849`:
+
+```rust
+let mut last_err = ETIMEDOUT;
+for _ in 0..TRIES {            // TRIES = 40
+    match dev.ctrl_send(&frame, Delta::from_millis(5), GFP_KERNEL) {
 ```
-vino 2-2.1:1.0: vino: encrypted control session ready     <- with the DL7400 UNBOUND
-```
 
-after four sessions of nothing but ETIMEDOUT. The DL7400 is unaffected: 4/4 heads authenticated,
-session ready, monitor connected.
+⇒ **The dock is refusing to accept EP02 writes**, not failing to answer them. 40 NAKed 5 ms
+submissions and vino gives up. That is a completely different failure from the one four commits
+chased, and it fits the capture: 42 outbound frames succeed and then sending stops.
 
-⚠ **Necessary but not sufficient, and NOT for the reason first recorded.** `dbe004a2d6be` changed
-only `decode_in_lenient`. Ridge then fails **even alone**. The run that succeeded had the plain
-decode forced *inside `open_in` itself*, so all **eight** of its call sites got it —
-`verify_in_ack`, `perhead_hdcp_push`, the EDID parsers and the rest. Ridge sends no tag on any of
-them, so fixing only the matcher leaves the other seven rejecting every frame:
-`1/2 head(s) authenticated` then ETIMEDOUT.
+⚠ The comment a few lines above in the same function warns against exactly this retry shape for
+Navarro -- a USB bulk timeout does not prove no bytes reached the device, and resubmitting a sealed
+frame put duplicate inner counters on the wire. Whatever the fix is, it should not be "retry
+harder".
 
-⇒ **The fix must be at `open_in`, and it must be per device.** Forcing it globally is not an
-option: it costs Navarro its per-head HDCP (`0/4 head(s) authenticated`), measured. `open_in` is a
-free function with no device context, so this needs a `verified: bool` (or equivalent) threaded
-through it and through the cp.rs helpers that call it — the call sites are cp.rs lines 589, 637,
-679, 731, 808, 1380, 1432 and 1473, all reachable from callers that do have the profile.
-
-**That is the next piece of work, and it is mechanical rather than exploratory.**
-
-⛔ **Do not make this a global flag.** That was tried first and is the wrong shape: the DL7400
-overwrote Ridge's setting, and forcing it the other way cost the DL7400 its own per-head HDCP
-(`0/4 head(s) authenticated`). Per frame works because the strict pass can only succeed on a
-genuine authenticated frame.
-
-### The remaining blocker for "both docks at once"
-
-Two candidates for the second interaction, neither tested:
-
-1. **Codec geometry is module-global**: `STRIP_W_SHIFT`, `STRIP_H_SHIFT`, `INTERLACED_BANDS`,
-   `BAND_PARITY_BIT`, `AUX_IS_PAD_COUNT`, `DOCK_BUFFERS` are all set from whichever profile probed
-   last. Ridge needs 64x16 strips and 2 buffers; Navarro needs 128x8 and 3. These must move onto
-   `VinoDrmData`.
-2. **Bring-up contention** -- and the timestamps say the two bring-ups **overlap** rather than
-   queue, so this is contention, not serialisation:
-
-   ```
-   79957.306  2-2.1 bound          79957.306  2-1.3 bound      <- together
-   79960.733  2-2.1 attempt 1 FAILED (ETIMEDOUT)
-   79960.855  2-1.3 encrypted control session ready            <- 0.12 s later
-   ```
-
-   Ridge gives up ~0.12 s before Navarro finishes. Both docks *have* reached
-   `encrypted control session ready` in the same boot (79864.3 and 79868.5), just never at the
-   same time. Look for what a bring-up holds across its long blocking USB waits.
+**Next:** find what makes Ridge's EP02 start NAKing. The instrumentation to add is on the send
+side, not the reply side: log which message index and inner counter is in flight when the 40
+retries begin, and correlate with the wire.
 
 **Historical, superseded:** `trace_crypto=1` is implemented and a capture was
 taken (`ridge-trace-205751.pcapng` plus the keys in `trace-dmesg.txt`), but the decrypt was **not**
