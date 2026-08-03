@@ -126,6 +126,35 @@ Replaced (`01f2c49347bd`); the head order is now right on the wire. The jam is u
 must come from `navarro-dlm-today-124144` or another cold capture. Check what a capture actually
 recorded before replaying its cadence.
 
+## ⭐⭐⭐ The precise next step: the timeline collapses right after head 0's video
+
+Measured from `captures/navarro-vino-timeline` (the run with the corrected timeline):
+
+* vino follows the new timeline **exactly** up to +40 ms past its first video byte — 24 EP02
+  frames in the window against DLM's 23, with the teardown/set mode-set pairs visible as the
+  112-byte frames at -122 ms and -112 ms.
+* After +40 ms it **falls back to the flat 100 ms keepalive** (+115, +215, +326 ms). The nine
+  markers DLM sends between +6 and +108 ms past video — including the closing
+  `(2f=0, 2e=0)` pair at +106 ms — **never reach the wire**.
+* Head 1's video, scheduled for +150 ms after head 0's, actually goes out at **+1321 ms**.
+
+So head 0's video submit starves the rest of the timeline by roughly 1.2 s, and everything after it
+— including the closing markers — is either late or skipped.
+
+**This closes a loop that has to be broken from one side.** DLM's dock starts draining after the
+closing markers, which DLM sends 106 ms *into* the stream. vino cannot send them because it is
+still working through head 0's submit against an endpoint that has stopped accepting bytes.
+
+⇒ **The next experiment is to make the first video submit unable to delay the timeline** — submit
+and move on, so the post-video markers go out on DLM's schedule whether or not the pipe is
+draining. If the markers are what starts the drain, that breaks the deadlock; if they go out on
+time and the dock still stops at 65,536 bytes, the marker theory dies cleanly and the answer is
+inside DLM rather than on the wire.
+
+⚠ Find where the 1.2 s goes first. `PROMPT_TRAINING_OPEN_MS` is 0 and the queue is 8 slots deep
+against a 4-transfer frame, so the submit itself should not block — `send_stream_open`,
+`clear_video_halt` and the per-head `cp_until!` are the candidates. Do not guess; instrument it.
+
 ## ⭐ The marker burst: measured, implemented via the timeline above
 
 From the same-day capture, DLM's `id=0x0016 sub=0x2f` / `sub=0x2e` messages around the first video
