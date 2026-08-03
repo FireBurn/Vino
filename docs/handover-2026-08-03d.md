@@ -18,8 +18,16 @@ DLM's video submit path) is not needed.
 
 ## ⭐⭐⭐ The encoder is exonerated. Stop looking there.
 
-`tools/codec/navarro-render.py` reconstructs the dock's whole framebuffer from vino's own captured
-EP08 bytes. Against the source image, with a purpose-built pattern on screen:
+Two independent proofs, because a round trip through our own decoder proves nothing on its own:
+
+**The decoder is a true inverse of DLM's encoder.** Reconstructing `~/dlm-today-124144/wire.pcapng`
+renders the user's boats wallpaper with rigging, ropes and hull trim intact -- 3600/3600 positions,
+**0 decode failures**. Coherent fine detail out of DLM's real bytes is what makes the model
+trustworthy; merely parsing without overrun is not.
+
+**vino's bytes round-trip through that decoder exactly.** `tools/codec/navarro-render.py`
+reconstructs the dock's whole framebuffer from vino's own captured EP08 bytes. Against the source
+image, with a purpose-built pattern on screen:
 
 | region | mean abs error |
 |---|---|
@@ -33,6 +41,35 @@ A 1-pixel checkerboard is the worst input this codec can be given. The transform
 entropy coder, strip geometry and record framing are all correct on full frames. Any remaining
 visual defect is in *which* strips get sent and *when*, or on the dock side — not in how a strip is
 encoded.
+
+## ⭐⭐⭐ The delta path is correct too, and the panel runs at 59% amplitude
+
+Reproduced without a human: cycle the frames of a generated animation as wallpapers
+(`plasma-apply-wallpaperimage`). vino hashes per strip, so only the moving sprite's strips change
+and the *delta* path is what gets exercised. mpv cannot be used — a Wayland client cannot choose
+its output, and `--fs-screen-name=DP-2` silently lands on the laptop panel.
+
+Reconstructing the 1088 strips the delta path actually sent, against the frame that was on screen:
+
+```
+mean abs error raw            39.46
+best-fit gain 0.5893  offset +0.37
+mean abs error after affine    0.47
+```
+
+The sprite is in the right place with its edges, label boxes and per-pixel noise all exact. The
+whole image is simply scaled to **59% amplitude**. ⇒ **the damage/delta path is pixel-accurate**;
+what is wrong is a uniform gain applied to the pixels *before vino sees them*.
+
+⭐ 0.589 is the same figure Ridge produced in
+`project_wire_correct_and_59pct_brightness_20260727` (0.609 / 0.589 / 0.565), where it was traced
+to KWin's pipeline and not to vino. `kscreen-doctor` reports brightness "set to 100% and dimming to
+100%" while this is happening, and no `GAMMA_LUT` is programmed. A washed-out low-amplitude image
+is exactly what makes flat fills look banded and detail look poor, so this is a strong candidate
+for what the artifact *looks* like even though the wire is exact.
+
+⇒ **Neither the encoder nor the damage path is the defect.** Look at the reset loop and at the
+compositor-side gain.
 
 ## ⭐⭐ `kind=0x200f` decoded: it is a per-strip size class
 
