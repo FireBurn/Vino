@@ -322,9 +322,18 @@ Two candidates for the second interaction, neither tested:
    `BAND_PARITY_BIT`, `AUX_IS_PAD_COUNT`, `DOCK_BUFFERS` are all set from whichever profile probed
    last. Ridge needs 64x16 strips and 2 buffers; Navarro needs 128x8 and 3. These must move onto
    `VinoDrmData`.
-2. **Bring-up serialisation**: both docks enqueue onto `session_queue()`. If Navarro's ~20 s
-   bring-up holds it, Ridge's can time out waiting rather than on the wire. Cheap to check --
-   compare the timestamps of the two bring-ups in one dmesg.
+2. **Bring-up contention** -- and the timestamps say the two bring-ups **overlap** rather than
+   queue, so this is contention, not serialisation:
+
+   ```
+   79957.306  2-2.1 bound          79957.306  2-1.3 bound      <- together
+   79960.733  2-2.1 attempt 1 FAILED (ETIMEDOUT)
+   79960.855  2-1.3 encrypted control session ready            <- 0.12 s later
+   ```
+
+   Ridge gives up ~0.12 s before Navarro finishes. Both docks *have* reached
+   `encrypted control session ready` in the same boot (79864.3 and 79868.5), just never at the
+   same time. Look for what a bring-up holds across its long blocking USB waits.
 
 **Historical, superseded:** `trace_crypto=1` is implemented and a capture was
 taken (`ridge-trace-205751.pcapng` plus the keys in `trace-dmesg.txt`), but the decrypt was **not**
