@@ -119,6 +119,39 @@ static desktop is correct behaviour.
 ⚠ Still confounding: a genuinely jammed head is *silent*, not *wrong*, so a visual defect and a
 stalled pipe look the same on the panel. Run the flow check before judging any artifact.
 
+## ⭐⭐⭐ THE ARTIFACT IS REAL, AND IT IS A RING-SLOT SHORTFALL
+
+`VID20260803200730.mp4` shows it plainly: on the DL7400 panel a Dolphin window's **icons are
+clean while the filename text is garbled**, and the garbling reads as *ghosting* -- two versions of
+the glyphs overlaid -- not as noise. A generated test pattern behind the window is perfect.
+
+⚠ **Wire analysis cannot see this**, which is why three separate "the wire is correct" results are
+all true and all beside the point. Reconstruction models **one** framebuffer. The dock has
+**three** ring slots (`ring_phase` = `seq0 % 3`), and a strip whose bytes are perfect still ghosts
+if it only lands in two of them.
+
+Measured on `wall-200012.pcapng`, counting how many times each position's **final** payload was
+transmitted:
+
+```
+1x :   4 positions
+2x :  76 positions      <- at least one ring slot left stale
+3x : 301 positions      <- correct: DAMAGE_REPEATS = 3 == the ring depth
+```
+
+Of the 80 short positions, 56 are the capture ending mid-debt; **24 are a permanent shortfall** --
+last transmitted at frame 780/1198/1203/1204 of 4569 and never again. About 2% of touched strips,
+which is exactly the density of "a few ghosted labels" rather than a broken screen.
+
+⛔ **Do not re-measure this by decoding the wire.** The bytes are right. Count *transmissions per
+distinct payload per position* and require >= 3.
+
+`DAMAGE_REPEATS` is 3 and the ledger wipes are all paired with `owe_keyframe()`, so the mechanism
+is correct in outline -- the leak is in how the debt is decremented or cancelled. Note the
+decrement at the end of `encode_and_send_wht` runs over **every** strip with debt, not only the
+strips the frame carried, and a full keyframe does `debt.fill(0)` while being presented **twice**
+against a **three**-slot ring. Both are candidates; neither is proven.
+
 ## ⚠ Two measurement traps that cost real time this session
 
 ### 1. The Windows corpus is a different strip profile — it is NOT codec ground truth
@@ -159,8 +192,15 @@ handing the AKE parser the wrong frame. The suspects are all in `498a10040294`: 
 verifies the Dl3Cmac instead of requiring inner bytes 6..7 to be zero, and `decode_in_lenient` was
 widened for Navarro's session-varying reply ids. Both are shared with Ridge.
 
+⭐ A third suspect was found and **tested negative**: `498a10040294` changed `decode_in_lenient`
+from decoding `wire[16..32]` to decoding `wire[16..]`, and `open_in` now *verifies* the Dl3Cmac
+over it -- so any Ridge reply not carrying the tag in that layout is silently dropped. Making the
+strict full-body decode fall back to the historical header-only one **does not fix the D6000**
+(still ETIMEDOUT), so the change was reverted rather than shipped unproven. The semantic change is
+real and worth knowing; it is just not the cause.
+
 **Next step:** load with `trace_crypto=1`, capture bus 2, and decrypt vino's own control dialogue to
-see which message it is waiting on. Guessing has now failed twice.
+see which message it is waiting on. Guessing has now failed three times.
 
 ⚠ `de9521207d12` (presence silence measured in time, not probes) is **still unverified** — the D6000
 has never got far enough to exercise it.
