@@ -263,8 +263,42 @@ strict full-body decode fall back to the historical header-only one **does not f
 (still ETIMEDOUT), so the change was reverted rather than shipped unproven. The semantic change is
 real and worth knowing; it is just not the cause.
 
-**Next step:** load with `trace_crypto=1`, capture bus 2, and decrypt vino's own control dialogue to
-see which message it is waiting on. Guessing has now failed three times.
+### What the wire says (measured 2026-08-03, `ridge-205339.pcapng`)
+
+⭐ **The D6000 fails ALONE.** With the DL7400 unbound from vino it still reports
+`control session failed after 3 attempts (ETIMEDOUT)`. So this is a genuine Ridge regression, not
+contention with the DL7400 — the two halves of the "both docks at once" goal are independent.
+
+The plaintext bring-up is **clean**: the whole AKE runs to completion (events 0..28 of the capture),
+the sealed session opens, and the dock answers. Across the attempt:
+
+```
+H->D  wsub=0x24 x42   wsub=0x04 x21
+D->H  wsub=0x45 x50   wsub=0x25 x40
+```
+
+⇒ **the dock replies throughout — 50 sealed replies — while vino times out.** vino is failing to
+*match* replies, not being starved of them. `AKE: bad AKE_Send_Cert (id=0x7, 32 B)` only appears on
+the *second* attempt, i.e. it is the dock left in a bad state by the first failure, not the cause.
+
+⛔ **Tested and NOT the cause:** the `open_in` change. `498a10040294` turned it from a plain decrypt
+taking `ct` into a decrypt that splits a trailing 16-byte Dl3Cmac and *verifies* it, and
+`decode_in_lenient` went from `wire[16..32]` to `wire[16..]`. That is a real semantic change and a
+plausible way to drop every Ridge reply. Both a strict-then-lenient fallback and a profile-gated
+`INBOUND_REQUIRES_MAC=false` for Ridge were implemented, built and run on hardware: **still
+ETIMEDOUT**. Both were reverted rather than shipped unproven. ⚠ An earlier attempt at the fallback
+was a **no-op** and must not be counted as a test — it passed a 16-byte slice into the *new*
+`open_in`, which leaves zero ciphertext after splitting off the tag.
+
+**Next step, and it is now the only one left:** `trace_crypto=1` is implemented and a capture was
+taken (`ridge-trace-205751.pcapng` plus the keys in `trace-dmesg.txt`), but the decrypt was **not**
+achieved this session — neither logged key produced sensible plaintext for the device filtered as
+the Ridge. Two things to get right that were not: which of the two logged control keys belongs to
+which dock (both docks load together, so both are logged), and the exact inbound nonce
+(`byte7 ^= 0x04` for OUT then `^= 0x01` for IN, per the proven CP contract — a sweep of
+0x00/0x04/0x05 did not land, so the device mapping is the more likely error). With that decrypt,
+the stalling message is read off directly instead of guessed. **Guessing has now failed four
+times; do not add a fifth.**
 
 ⚠ `de9521207d12` (presence silence measured in time, not probes) is **still unverified** — the D6000
 has never got far enough to exercise it.
