@@ -168,9 +168,25 @@ not an HDR trait -- only `cap2` uses it. `0x9249` is bits 0,3,6,9,12,15, every t
 strip 58 B, so the mode may be selected by content complexity -- which would make it directly
 relevant to the finest-detail rendering on the panel.
 
-⚠ An earlier section of this handover called the Windows corpus "a different profile, not ground
-truth". That is too strong and is corrected here: it is an undecoded **mode**, and it remains a
-live suspect for the artifact.
+### ⛔ TESTED AND REFUTED: the second encoding is not content-selected
+
+The obvious worry was that DLM switches to the `0x9249` encoding on high-frequency content and
+vino never does, which would put it exactly where the finest-detail artifact lives. **Tested
+directly**: Linux DLM was run by hand against the DL7400 with the same 8-px and 1-px checkerboard
+pattern up (`dlm-pattern-202144.pcapng`, 292 MB on ep08 from device 57):
+
+```
+strips           1,486,800
+offset-14 word   0 on EVERY one
+decode failures  0
+max strip        2,322 bytes   (larger than Windows cap2's 2,062)
+```
+
+⇒ **Linux DLM encodes worst-case high-frequency content with exactly the encoding vino uses, and
+never sets `0x9249`.** The mode is not selected by content complexity; it is a Windows-driver
+trait. Nothing for vino to copy, and the finest-detail artifact is **not** a missing encoding.
+
+⇒ That leaves the ring-slot shortfall above as the standing explanation for the ghosting.
 
 ⭐⭐ **HDR does not change the strip encoding.** `cap6` decodes with the existing model at zero
 failures, identical in shape to SDR. ⇒ HDR/10-bit work is in the **mode-set and format fields**,
