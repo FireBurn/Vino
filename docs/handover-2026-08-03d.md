@@ -152,6 +152,34 @@ decrement at the end of `encode_and_send_wht` runs over **every** strip with deb
 strips the frame carried, and a full keyframe does `debt.fill(0)` while being presented **twice**
 against a **three**-slot ring. Both are candidates; neither is proven.
 
+## ⭐⭐ There is a SECOND strip encoding, and HDR is not it
+
+| capture | strip header word at **offset 14** | decodes with our model |
+|---|---|---|
+| `cap2-full-usbpcap1.pcap` (SDR 60, **test pattern**) | `0x9249` on 3821/4001 | **1636 fail** |
+| `cap6-hdr-fullpayload-usbpcap1.pcap` (**HDR**) | `0` on all 4001 | **0 fail** |
+| `cap7-sdr-fullpayload-usbpcap1.pcap` (SDR) | `0` on all 4001 | **0 fail** |
+| `~/dlm-today-124144/wire.pcapng` (Linux DLM) | `0` always | 0 fail |
+
+⭐ `0x9249` marks a **second strip encoding we have not decoded**. It is not a Windows trait and
+not an HDR trait -- only `cap2` uses it. `0x9249` is bits 0,3,6,9,12,15, every third bit of a
+16-bit word, which looks like a per-plane (Y/Cb/Cr) flag replicated across blocks. `cap2` is the
+**test pattern** capture (8-px and 1-px checkerboards) while cap6/cap7 are an animation with median
+strip 58 B, so the mode may be selected by content complexity -- which would make it directly
+relevant to the finest-detail rendering on the panel.
+
+⚠ An earlier section of this handover called the Windows corpus "a different profile, not ground
+truth". That is too strong and is corrected here: it is an undecoded **mode**, and it remains a
+live suspect for the artifact.
+
+⭐⭐ **HDR does not change the strip encoding.** `cap6` decodes with the existing model at zero
+failures, identical in shape to SDR. ⇒ HDR/10-bit work is in the **mode-set and format fields**,
+not in the codec. That is far cheaper than it looked.
+
+⚠ The reasoning trap that produced the wrong call: matching *Linux DLM* is not the same as matching
+*the dock's full capability*. vino's codec agreeing with Linux DLM byte-for-byte says nothing about
+modes Linux DLM never uses.
+
 ## ⚠ Two measurement traps that cost real time this session
 
 ### 1. The Windows corpus is a different strip profile — it is NOT codec ground truth
