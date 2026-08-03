@@ -58,9 +58,19 @@ def is_dfu(setup):
     bm, br = setup[0], setup[1]
     if (bm & 0x60) != 0x20 or (bm & 0x1f) != 0x01 or br not in DFU_REQ:
         return None
+    windex = int.from_bytes(setup[4:6], "little")
+    # USB Audio Class SET_CUR is also 0x21/0x01 -- byte-for-byte a DFU_DNLOAD except that audio
+    # puts (entity << 8) | interface in wIndex while DFU puts a bare interface number. A dock with
+    # UAC interfaces generates a stream of these, and without this test they read as a firmware
+    # download with nonsense block numbers.
+    if windex >> 8 or windex > 8:
+        return None
+    # DETACH/DNLOAD/CLRSTATUS/ABORT are OUT; UPLOAD/GETSTATUS/GETSTATE are IN.
+    if bool(bm & 0x80) != (br in (2, 3, 5)):
+        return None
     return {"dir": "IN" if bm & 0x80 else "OUT", "req": DFU_REQ[br], "num": br,
             "wValue": int.from_bytes(setup[2:4], "little"),
-            "wIndex": int.from_bytes(setup[4:6], "little"),
+            "wIndex": windex,
             "wLength": int.from_bytes(setup[6:8], "little")}
 
 

@@ -169,7 +169,13 @@ def main():
             # unattributable.
             if r["xfer"] == 2 and r["type"] == "S" and r["setup"]:
                 s = parse_setup(r["setup"])
-                if s and s["class_iface"] and s["br"] in DFU_REQ:
+                # USB Audio Class SET_CUR is also 0x21/0x01, identical to DFU_DNLOAD; audio puts
+                # (entity << 8) | interface in wIndex where DFU puts a bare interface number, and
+                # the request directions are fixed. Without both tests a dock with UAC interfaces
+                # reports a firmware download with nonsense block numbers.
+                if s and s["class_iface"] and s["br"] in DFU_REQ \
+                        and not (s["wIndex"] >> 8) and s["wIndex"] <= 8 \
+                        and s["dir_in"] == (s["br"] in (2, 3, 5)):
                     rec = [r["ts"], DFU_REQ[s["br"]], s["wValue"], s["wIndex"],
                            s["wLength"], s["dir_in"], r["data"]]
                     dfu.append(rec)

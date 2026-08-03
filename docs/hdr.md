@@ -223,10 +223,16 @@ The complete set of extracted `.dxbc` binaries and disassembled `.asm` assembly 
 
 | Shader | Offset | Size | Thread Group | Primary Function |
 | :--- | :---: | :---: | :---: | :--- |
-| **`shader_00`–`02`** | `0x5ef5b0`–`0x5f3ae0` | 8.8–9.2 KB | `16 × 4 × 1` | RGBA $\to$ YUV conversion, dynamic `cb0[2177]` quantization, tile difference |
-| **`shader_03`–`08`** | `0x5f5ee0`–`0x5ffa90` | 7.7–8.6 KB | `16 × 4 × 1` | Hardware bilinear scaling & chroma subsampling (`lineSampler`) |
-| **`shader_09`–`14`** | `0x601c30`–`0x644560` | 53.8–55.3 KB | `16 × 1 × 1` | Bitstream packing via hardware bitfield instructions (`bfi`, `ubfx`, `bfrev`) |
-| **`shader_15`–`18`** | `0x6517f0`–`0x6cd440` | 140.6–146.4 KB | `8 × 2 × 3` | Core GPU tile compression, 10-bit / uncompacted profiles, 48-thread motion estimation |
+| **`shader_00`–`02`** | `0x5ef5b0`–`0x5f3ae0` | 8.8–9.2 KB | `16 × 4 × 1` | Texture input to 1040-word structured records; direct conversion/transform family |
+| **`shader_03`–`08`** | `0x5f5ee0`–`0x5ffa90` | 7.7–8.6 KB | `16 × 4 × 1` | Sampled texture input to 528-word structured records; scaling/subsample family |
+| **`shader_09`–`14`** | `0x601c30`–`0x644560` | 53.8–55.3 KB | `16 × 1 × 1` | Structured-input bitstream/record packing (`ubfe`, `bfi`, many structured stores) |
+| **`shader_15`–`18`** | `0x6517f0`–`0x6cd440` | 140.6–146.4 KB | `8 × 2 × 3` | Fused texture-to-packed-output encoder family; 48 threads, bit reversal and atomic packing |
+
+These labels deliberately stop at what the declarations and instructions establish. In
+particular shaders 09–14 contain **no `bfrev` instruction**, while shaders 15–18 contain 128–131;
+and nothing in the bytecode alone establishes that the latter perform motion estimation. Run
+`scripts/codec-re/dxbc-shader-inventory.py gpu-shaders` from the repository root for reproducible
+declaration/opcode counts.
 
 ## 2b. ✅ How DLM actually does HDR
 

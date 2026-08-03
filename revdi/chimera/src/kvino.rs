@@ -296,6 +296,15 @@ pub fn colour_frame_ep08_head(
     ))
 }
 
+/// `video::wht::frame_trailer` — the 96-byte per-frame trailer the dock expects after each image.
+///
+/// The kernel driver appends this itself rather than folding it into the codec output, so any
+/// caller building an EP08 stream must do the same. Its phase is derived from the sequence number
+/// (`seq % 3`), which is how the dock rotates its buffers: repeating one sequence pins the phase.
+pub fn frame_trailer(head: u8, seq: u32) -> Vec<u8> {
+    video::wht::frame_trailer(head, seq).to_vec()
+}
+
 pub fn black_frame_ep08(width: usize, height: usize, head: u8) -> Result<Vec<Vec<u8>>> {
     Ok(
         video::wht::black_frame_ep08(width, height, head, true, false)?

@@ -182,7 +182,8 @@ impl ControlSession {
                 late.as_millis()
             ));
         }
-        let opening = prefix_frame(&arm, &prompt);
+        let mut carrier_seq: u32 = 0;
+        let opening = prefix_frame(&arm, &prompt, head, carrier_seq);
         self.submit_video(head, &opening)?;
         for _ in 0..2 {
             let commit = kvino::stream_commit(self.inner_counter, head)
@@ -196,7 +197,9 @@ impl ControlSession {
 
         let mut next_status = Instant::now();
         while anchor.elapsed() < Duration::from_millis(700) {
-            self.submit_video(head, &prompt)?;
+            carrier_seq = carrier_seq.wrapping_add(1);
+            let repeat = prefix_frame(&[], &prompt, head, carrier_seq);
+            self.submit_video(head, &repeat)?;
             if Instant::now() >= next_status {
                 self.poll_status()?;
                 next_status = Instant::now() + Duration::from_millis(16);
@@ -221,7 +224,8 @@ impl ControlSession {
         let (frames, next_sequence) =
             kvino::colour_frame_ep08_head(width, height, rgb, sequence, head)
                 .map_err(build_error("video frame"))?;
-        self.submit_video(head, &frames)?;
+        let stream = prefix_frame(&[], &frames, head, sequence);
+        self.submit_video(head, &stream)?;
         self.frame_seq[head_index] = next_sequence;
         self.poll_status()?;
         Ok(())
@@ -901,13 +905,20 @@ fn build_error(label: &'static str) -> impl FnOnce(crate::kshim::Error) -> Strin
     move |error| format!("build {label}: {error}")
 }
 
-fn prefix_frame(prefix: &[u8], frames: &[Vec<u8>]) -> Vec<Vec<u8>> {
+/// Assemble one EP08 transfer stream: optional ARM prefix, the image, then the frame trailer.
+///
+/// The trailer is not part of the codec output -- the kernel driver appends it per frame, and its
+/// phase comes from `seq % 3`, which is how the dock rotates buffers. Omitting it, or repeating one
+/// sequence, leaves the phase pinned.
+fn prefix_frame(prefix: &[u8], frames: &[Vec<u8>], head: u8, seq: u32) -> Vec<Vec<u8>> {
     const TRANSFER_SIZE: usize = 65_536;
+    let trailer = kvino::frame_trailer(head, seq);
     let payload_len = frames.iter().map(Vec::len).sum::<usize>();
-    let mut stream = Vec::with_capacity(prefix.len() + payload_len);
+    let mut stream = Vec::with_capacity(prefix.len() + payload_len + trailer.len());
     stream.extend_from_slice(prefix);
     for frame in frames {
         stream.extend_from_slice(frame);
     }
+    stream.extend_from_slice(&trailer);
     stream.chunks(TRANSFER_SIZE).map(<[u8]>::to_vec).collect()
 }

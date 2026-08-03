@@ -23,7 +23,7 @@ standalone DLM. On a machine actively using the dock this WEDGES the dock firmwa
 (blank screen; needs a USB replug/reboot to clear). Only run --spawn on an idle or
 spare host, or during a maintenance window — never on a dock you're using.
 """
-import frida, sys, time, struct, argparse, json
+import frida, sys, os, time, struct, argparse, json
 try:
     from Crypto.Cipher import AES
 except ImportError:
@@ -39,9 +39,17 @@ const AES_FUNC = 0x269dd0, PLT_SUBMIT = 0x83c20;
 // turns it off. 0x08 is a video endpoint on DL-7000 parts and was missing from this list.
 const CP_SHAPE_ONLY = __CP_SHAPE_ONLY__;
 const VIDEO_EPS = __VIDEO_EPS__;
+// A session has ONE riv per sealing key, so a key that turns up with hundreds of different
+// counters is not a session key at all -- it is the @@base64@@ string store, which decrypts
+// thousands of strings under one fixed key and buries the five real keys in ~90k messages.
+// That flood also stalls DLM (the same failure as hooking the hot AES fns directly), so cap the
+// counters reported per key rather than filtering by counter SHAPE, which is what hid the video
+// keys in the first place.
+const MAX_PER_KEY = __MAX_PER_KEY__;
 function hx(b){const u=new Uint8Array(b);let s="";for(let i=0;i<u.length;i++)s+=u[i].toString(16).padStart(2,"0");return s;}
 
 const seenKR = new Set();
+const perKey  = new Map();
 function rd(p,n){ try{ const b=p.readByteArray(n); return b?hx(b):""; }catch(e){ return ""; } }
 Interceptor.attach(base.add(AES_FUNC), {
   onEnter(args){ try{
@@ -61,7 +69,10 @@ Interceptor.attach(base.add(AES_FUNC), {
     for(const k of this.keys){
       if(!k || k.length !== 32) continue;
       const kr = k+":"+riv;
-      if(seenKR.has(kr)) continue; seenKR.add(kr);
+      if(seenKR.has(kr)) continue;
+      const n = perKey.get(k) || 0;
+      if(n >= MAX_PER_KEY) continue;
+      seenKR.add(kr); perKey.set(k, n+1);
       send({s:"kr", ts:Date.now()/1000, key:k, riv:riv});
     }
   }catch(e){} }
@@ -90,12 +101,16 @@ def _js(args):
     """Fill the JS template's compile-time switches from the command line."""
     eps = "[" + ",".join(args.video_eps.split(",")) + "]"
     return (JS.replace("__CP_SHAPE_ONLY__", "false" if args.all_keys else "true")
+              .replace("__MAX_PER_KEY__", str(args.max_per_key))
               .replace("__VIDEO_EPS__", eps))
 
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--secs", type=float, default=25.0)
 ap.add_argument("--spawn", metavar="PATH", help="spawn this DLM binary under Frida (hook live from t=0, catches connect-time VideoTimingBlock + fresh session keys)")
+ap.add_argument("--process", metavar="PID_OR_NAME",
+                help="attach to this live DLM PID or name; a PID avoids Linux's 15-character "
+                     "task-name truncation (DisplayLinkMana)")
 ap.add_argument("--all-keys", action="store_true",
                 help="capture EVERY AES key the process schedules, not only control-stream-shaped "
                      "ones. The video path uses a different key with a different counter shape, so "
@@ -104,34 +119,117 @@ ap.add_argument("--all-keys", action="store_true",
 ap.add_argument("--video-eps", default="0x02,0x08,0x0a,0x0b,0x0c",
                 help="bulk-OUT endpoints to record frames from. 0x08 is a video endpoint on "
                      "DL-7000 parts and is not in the DL-6xxx set.")
+ap.add_argument("--max-per-key", type=int, default=64,
+                help="stop reporting a key once this many distinct counters have been seen for "
+                     "it. The string store uses one key for thousands of strings; without a cap "
+                     "it produces ~90k candidates, a 200 MB key file and enough Frida traffic to "
+                     "stall DLM.")
 ap.add_argument("--out", metavar="JSON", help="dump the raw captured (ks,riv) pairs and type=4 frames here BEFORE decrypting, so a decrypt bug cannot discard a hardware run")
+ap.add_argument("--stop-file", metavar="PATH",
+                help="finish early once this path exists. Without it the only way to end a long "
+                     "run is a signal, and a signal used to kill the process BEFORE --out was "
+                     "written -- losing every key in a capture that cannot be repeated.")
+ap.add_argument("--flush-secs", type=float, default=10.0,
+                help="rewrite --out this often while running, so the keys survive a kill -9.")
+ap.add_argument("--reattach", action="store_true",
+                help="re-hook DLM whenever it restarts. udev restarts displaylink-driver.service "
+                     "every time the dock re-enumerates -- which is exactly the cold session worth "
+                     "capturing -- and a hook bound to the old pid then records NOTHING for the "
+                     "new session while still looking healthy. Measured: a dock power-cycle mid-run "
+                     "left the whole lit session undecryptable.")
 args = ap.parse_args()
 dev = frida.get_local_device()
 spawned_pid = None
+
+def is_dlm_process(proc):
+    # Linux stores only 15 bytes in task `comm`, so the vendor binary normally appears in Frida
+    # as `DisplayLinkMana`.  The former exact-name match made a live capture silently conclude
+    # that DLM was absent on the systems where this tool is most needed.
+    return "DisplayLinkManager" in proc.name or proc.name == "DisplayLinkMana"
+
 if args.spawn:
-    import os
     print(f"[*] spawning {args.spawn} under Frida for {args.secs}s (connect capture)")
     spawned_pid = dev.spawn([args.spawn], cwd=os.path.dirname(args.spawn) or "/opt/displaylink")
     session = dev.attach(spawned_pid); script = session.create_script(_js(args))
 else:
-    procs = [p for p in dev.enumerate_processes() if "DisplayLinkManager" in p.name]
-    if not procs: sys.exit("DLM not running")
-    pid = procs[0].pid
+    if args.process:
+        target = int(args.process) if args.process.isdecimal() else args.process
+        session = dev.attach(target)
+        pid = target
+    else:
+        procs = [p for p in dev.enumerate_processes() if is_dlm_process(p)]
+        if not procs: sys.exit("DLM not running")
+        pid = procs[0].pid
+        session = dev.attach(pid)
     print(f"[*] attaching to DLM pid={pid} for {args.secs}s — trigger a mode change now")
-    session = dev.attach(pid); script = session.create_script(_js(args))
+    script = session.create_script(_js(args))
 
 krs = []      # (key,riv) candidates
 frames = []   # (len, hexstr)
+attached_pids = set()
 def on_msg(m, data):
     if m.get("type")=="error": print("  [js]", m.get("description")); return
     p = m.get("payload") or {}
     if p.get("s")=="ready": print("  [*] hooks active")
     elif p.get("s")=="kr": krs.append((p["key"], p["riv"]));
     elif p.get("s")=="cp": frames.append((p["ep"], p["sub"], p["len"], p["full"], p.get("ts", 0.0)))
+def persist():
+    """Write the raw capture out. Called repeatedly while running and once at the end.
+
+    A hardware run toggles the user's monitors and cannot be repeated on demand, so the keys must
+    never live only in this process's memory: they are rewritten on a timer and on the way out of
+    every exit path, signal included."""
+    if not args.out:
+        return
+    tmp = args.out + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump({"krs": [{"key": k, "riv": r} for k, r in krs],
+                   "frames": [{"ep": e, "sub": s, "len": l, "full": f, "ts": t}
+                              for e, s, l, f, t in frames]},
+                  fh, indent=1)
+    os.replace(tmp, args.out)   # atomic: a reader never sees a half-written key file
+
 script.on("message", on_msg); script.load()
 if spawned_pid is not None:
     dev.resume(spawned_pid)
-time.sleep(args.secs)
+
+def dlm_pids():
+    return {p.pid for p in dev.enumerate_processes() if is_dlm_process(p)}
+
+def attach_new():
+    """Hook any DLM process we are not already on. Sessions are kept alive in a list because a
+    dropped reference lets Frida tear the hook down again."""
+    for p in sorted(dlm_pids() - attached_pids):
+        try:
+            s2 = dev.attach(p)
+            sc = s2.create_script(_js(args))
+            sc.on("message", on_msg)
+            sc.load()
+            sessions.append((s2, sc))
+            attached_pids.add(p)
+            print(f"[*] re-attached to restarted DLM pid={p}")
+        except Exception as e:
+            print(f"[!] could not attach to pid {p}: {e}")
+
+sessions = []
+if spawned_pid is None and not args.spawn:
+    attached_pids.add(pid)
+
+deadline = time.time() + args.secs
+try:
+    while time.time() < deadline:
+        if args.stop_file and os.path.exists(args.stop_file):
+            print("[*] stop-file seen, finishing early")
+            break
+        time.sleep(min(args.flush_secs, max(0.1, deadline - time.time())))
+        if args.reattach:
+            attach_new()
+        persist()
+except KeyboardInterrupt:
+    print("\n[*] interrupted, finishing early")
+finally:
+    persist()
+
 try: session.detach()
 except Exception: pass
 if spawned_pid is not None:

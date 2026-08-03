@@ -35,12 +35,18 @@ from typing import Iterator
 
 
 PCAPNG_EPB = 0x00000006
+PCAPNG_SHB = 0x0A0D0D0A
 USBMON_HEADER = 64
 USB_BULK = 3
 SUBMIT = ord("S")
 COMPLETE = ord("C")
 ERROR = ord("E")
-VIDEO_EPS = (0x08, 0x0B)
+VIDEO_EPS = (0x08, 0x0A, 0x0B)
+VFW_MAGIC = b"VFW2"
+VFW_REC = "<QBBBBHBBqiiII8s"
+VFW_REC_SIZE = struct.calcsize(VFW_REC)
+LEGACY_REC = "<BBBBHqiiII"
+LEGACY_REC_SIZE = struct.calcsize(LEGACY_REC)
 
 
 @dataclass
@@ -104,7 +110,17 @@ def _u32(buf: mmap.mmap, off: int) -> int:
 
 
 def iter_events(path: str) -> Iterator[Event]:
-    """Yield usbmon events from little-endian pcapng Enhanced Packet Blocks."""
+    """Yield usbmon events from pcapng, VFW2, or the older setup-less recorder format."""
+    with open(path, "rb") as probe:
+        magic = probe.read(4)
+        if magic == VFW_MAGIC:
+            yield from iter_vfw_events(probe)
+            return
+        if magic != struct.pack("<I", PCAPNG_SHB):
+            probe.seek(0)
+            yield from iter_legacy_events(probe)
+            return
+
     with open(path, "rb") as fh, mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ) as mm:
         pos = 0
         size = len(mm)
@@ -142,6 +158,81 @@ def iter_events(path: str) -> Iterator[Event]:
                         data=data,
                     )
             pos += block_len
+
+
+def iter_legacy_events(fh) -> Iterator[Event]:
+    """Yield the setup-less records written by ``capture-usbmon-session.py``.
+
+    That recorder predates URB ids and the scheduling fields retained by pcapng/VFW2. Give each
+    record an id of zero and report those unavailable fields as zero. Payload-oriented consumers
+    such as the CP decryptor remain exact; transfer-pairing consumers should use VFW2 or pcapng.
+    """
+    while True:
+        raw_len = fh.read(4)
+        if not raw_len:
+            return
+        if len(raw_len) != 4:
+            raise ValueError("truncated legacy record length")
+        (record_len,) = struct.unpack("<I", raw_len)
+        body = fh.read(record_len)
+        if len(body) != record_len or record_len < LEGACY_REC_SIZE:
+            raise ValueError("truncated legacy record body")
+        (etype, xfer_type, ep, dev, bus, ts_sec, ts_usec, status, length,
+         len_cap) = struct.unpack(LEGACY_REC, body[:LEGACY_REC_SIZE])
+        data = body[LEGACY_REC_SIZE:LEGACY_REC_SIZE + len_cap]
+        yield Event(
+            urb_id=0,
+            kind=chr(etype),
+            xfer_type=xfer_type,
+            ep=ep,
+            dev=dev,
+            bus=bus,
+            ts=ts_sec + ts_usec / 1_000_000.0,
+            status=status,
+            length=length,
+            len_cap=len_cap,
+            interval=0,
+            start_frame=0,
+            xfer_flags=0,
+            data=data,
+        )
+
+
+def iter_vfw_events(fh) -> Iterator[Event]:
+    """Yield events from ``fw-watch.py``'s VFW2 stream.
+
+    VFW2 retains the URB id, status, complete payload and control setup packet. It does not retain
+    the three scheduling fields pcapng exposes, so those are reported as zero rather than guessed.
+    """
+    while True:
+        raw_len = fh.read(4)
+        if not raw_len:
+            return
+        if len(raw_len) != 4:
+            raise ValueError("truncated VFW2 record length")
+        (record_len,) = struct.unpack("<I", raw_len)
+        body = fh.read(record_len)
+        if len(body) != record_len or record_len < VFW_REC_SIZE:
+            raise ValueError("truncated VFW2 record body")
+        (urb_id, etype, xfer_type, ep, dev, bus, _flag_setup, _pad, ts_sec, ts_usec,
+         status, length, len_cap, _setup) = struct.unpack(VFW_REC, body[:VFW_REC_SIZE])
+        data = body[VFW_REC_SIZE:VFW_REC_SIZE + len_cap]
+        yield Event(
+            urb_id=urb_id,
+            kind=chr(etype),
+            xfer_type=xfer_type,
+            ep=ep,
+            dev=dev,
+            bus=bus,
+            ts=ts_sec + ts_usec / 1_000_000.0,
+            status=status,
+            length=length,
+            len_cap=len_cap,
+            interval=0,
+            start_frame=0,
+            xfer_flags=0,
+            data=data,
+        )
 
 
 def looks_like_dl_frame(data: bytes) -> bool:
@@ -336,7 +427,8 @@ def analyse_device(path: str, events: list[Event], bus: int, dev: int,
     transfers = pair_transfers(events, bus, dev)
     eps = sorted({x.ep for x in transfers})
     frames = {ep: assemble_frames(transfers, ep) for ep in VIDEO_EPS}
-    skew = nearest_head_skew(frames[0x08], frames[0x0B])
+    second_ep = 0x0A if frames[0x0A] else 0x0B
+    skew = nearest_head_skew(frames[0x08], frames[second_ep])
     return {
         "path": os.path.abspath(path),
         "epoch": epoch,
@@ -379,7 +471,7 @@ def print_report(s: dict) -> None:
         print(f"  EP{ep:02x}: n={e['transfers']} bytes={e['bytes_requested']} max-inflight={e['max_inflight']}")
         print(f"        lengths={e['lengths']} status={e['statuses']} flags={e['flags']}")
         print(f"        latency-us {fmt_q(e['latency_us'])}; submit-gap-us {fmt_q(e['submit_gap_us'])}")
-    for ep in (0x08, 0x0B):
+    for ep in VIDEO_EPS:
         fs = s["frames"][f"0x{ep:02x}"]
         print(f"  EP{ep:02x} logical frames: {len(fs)}")
         for f in fs[:12]:
@@ -408,7 +500,7 @@ def print_cohort(results: list[dict]) -> None:
     """Cross-session transport distributions, excluding tiny side-band EP08 messages."""
     print("\n================ CROSS-SESSION VIDEO COHORT ================")
     print(f"captures={len(results)}")
-    for ep in (0x08, 0x0B):
+    for ep in VIDEO_EPS:
         key = f"0x{ep:02x}"
         frames = [f for r in results for f in r["frames"][key]
                   if f["complete"] and f["requested_bytes"] >= 10_000]

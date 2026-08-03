@@ -16,6 +16,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DRV=/sys/bus/usb/drivers/vino
 UNLOAD_ONLY=0
 [ "${1:-}" = "--unload" ] && UNLOAD_ONLY=1
+MODULE_ARGS=("$@")
 
 say() { printf '\033[1;36m==\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mABORT:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -67,10 +68,30 @@ fi
 
 [ "$UNLOAD_ONLY" = 1 ] && { say "left unloaded"; exit 0; }
 
-say "loading module${*:+ ($*)}"
+# The DL7400's authenticated RTC message carries local civil time, including the live DST offset.
+# The kernel clock is UTC and intentionally has no timezone database, so derive the current offset
+# at each userspace-assisted load.  An explicit parameter still wins for protocol experiments.
+HAVE_RTC_OFFSET=0
+for arg in "${MODULE_ARGS[@]}"; do
+  case "$arg" in rtc_utc_offset_minutes=*) HAVE_RTC_OFFSET=1;; esac
+done
+if [ "$HAVE_RTC_OFFSET" = 0 ]; then
+  TZ_NUM=$(date +%z)
+  case "$TZ_NUM" in
+    +[0-9][0-9][0-9][0-9]|-[0-9][0-9][0-9][0-9]) ;;
+    *) die "date returned invalid UTC offset '$TZ_NUM'";;
+  esac
+  TZ_SIGN=1
+  [ "${TZ_NUM:0:1}" = "-" ] && TZ_SIGN=-1
+  TZ_HOURS=$((10#${TZ_NUM:1:2}))
+  TZ_MINS=$((10#${TZ_NUM:3:2}))
+  MODULE_ARGS+=("rtc_utc_offset_minutes=$((TZ_SIGN * (TZ_HOURS * 60 + TZ_MINS)))")
+fi
+
+say "loading module${MODULE_ARGS[*]:+ (${MODULE_ARGS[*]})}"
 # Any remaining arguments are module parameters, so an experiment behind a param can be cycled
 # without editing this script.
-modprobe vino "$@" || die "modprobe vino failed"
+modprobe vino "${MODULE_ARGS[@]}" || die "modprobe vino failed"
 
 # The interfaces were unbound, so nothing re-probes them by itself. Re-attach by asking the driver
 # core to reconsider the device.
