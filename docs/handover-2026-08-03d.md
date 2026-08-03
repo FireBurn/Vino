@@ -188,9 +188,29 @@ trait. Nothing for vino to copy, and the finest-detail artifact is **not** a mis
 
 ⇒ That leaves the ring-slot shortfall above as the standing explanation for the ghosting.
 
-⭐⭐ **HDR does not change the strip encoding.** `cap6` decodes with the existing model at zero
-failures, identical in shape to SDR. ⇒ HDR/10-bit work is in the **mode-set and format fields**,
-not in the codec. That is far cheaper than it looked.
+### ⛔ RETRACTED: "HDR does not change the strip encoding"
+
+`cap6` (HDR on) decodes with the existing model at zero failures, identical in shape to `cap7`
+(HDR off) -- but **both ran the same SDR test animation**. `out/NOTES.md` line 582: *"Both: sockets
+1+3, same animation... Only HDR differs."* Windows was in HDR **mode** with nothing of HDR range or
+wide gamut on screen, so an identical wire is exactly what you would see **even if the dock has a
+full 10-bit path**.
+
+⚠ The same flaw invalidates the older *"0.4% apart => HDR is host-side, nothing for vino to
+implement"* conclusion. 0.4% is a **bandwidth** comparison, not a format one, and this codec is
+lossy and content-driven: 10-bit and 8-bit encodings of the same low-dynamic-range picture compress
+to nearly the same size. "It decodes with our 8-bit model" does not rescue it either -- a 10-bit
+variant could share the strip grammar and differ only in quantiser tables, parsing cleanly while
+producing wrong values.
+
+⭐ Counter-evidence that should have been weighed: the DLM binaries carry **`NM30` (10-bit),
+`FP16` and `YU10` format enums on all three platforms**. A driver with no HDR path does not need
+those.
+
+**The capture that would settle it:** genuinely HDR content -- real HDR video, or a specular
+highlight beyond SDR range plus saturated wide-gamut colour -- on screen while in HDR mode, A/B'd
+against the same clip in SDR. Compare *decoded pixel values and any format field*, not byte
+counts.
 
 ⚠ The reasoning trap that produced the wrong call: matching *Linux DLM* is not the same as matching
 *the dock's full capability*. vino's codec agreeing with Linux DLM byte-for-byte says nothing about
