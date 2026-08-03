@@ -88,6 +88,24 @@ of this state.
   any log line -- `encrypted control session ready` and a `connected` connector have both been
   observed on a dock showing nothing.
 
+  **Started, not finished.** `tools/hardware/vino-at.sh <rev>` checks out ONLY
+  `drivers/gpu/drm/vino` at a revision and rebuilds, so the bindings, DRM core and the 10-bit/HDR
+  work stay at HEAD and no reboot is needed. ⭐ **Proven viable**: the module at `1a1d4bef6d3c`
+  (midpoint of the 40) builds warning-clean against today's bindings and installs.
+
+  First data point, midpoint `1a1d4bef6d3c`, D6000 alone: **0 re-enumerations but ZERO EP08/EP0b
+  bytes under a forced full-screen repaint** -- so it is not resetting and not streaming either.
+  Leaning BAD, but treat it as inconclusive: the D6000 was left bound across the DL7400's unbind
+  rather than being brought up fresh, so it may simply never have re-armed. **Re-run with a full
+  `modprobe` cycle before recording a verdict.**
+
+  ⚠ Two operational traps hit while starting this. The docks **change bus paths** when they
+  re-enumerate (the D6000 appeared as `usb 1-2.4` mid-run), so resolve them at runtime from
+  `idProduct` (`7000`/`6006`) under `/sys/bus/usb/devices/` instead of hardcoding `2-1.3`/`2-2.1`
+  as every script here currently does. And repeated module cycling wedged the USB stack until
+  `lsusb` itself stopped responding -- the `usb_hub_wq` deadlock shape from 2026-07-27. Check USB
+  is healthy between bisect steps.
+
 ⚠ The presence log was untagged (`pr_info!`, no device prefix) for most of the session, so lines
 like `head 0 presence reply … present=true` **could not be attributed to a dock** and were read as
 the wrong one. It now carries the dock's connector count (Navarro 4, Ridge 2). Re-read any earlier
