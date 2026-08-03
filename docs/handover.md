@@ -62,14 +62,24 @@ of this state.
 
 ### 1. Neither dock puts correct pixels on a panel with both bound
 
-* DL7400: `card2-DP-2` reads `disconnected` after a forced detect, so no output exists.
+* DL7400: `card2-DP-2` reads `disconnected` after a forced detect, so no output exists. Measured
+  cause: its head 0 presence **genuinely flips**. The dock answers `status=0x00271105` (bit 0x1000
+  set, present) and later `status=0x00200105` (clear), with the monitor physically attached
+  throughout, so `presence_from_status` correctly reports it gone and DRM follows. Find what makes
+  the dock retract presence.
   `detect()` returns Connected on `cached_edids[head].is_some() || heads_present & (1<<head)`, and
   vino *does* log `vino 2-1.3:1.0: ... head 0 monitor connected after sink re-engagement`, whose
   code path calls `set_connected(h)`. So something clears it afterwards — most likely the presence
   watcher calling `set_disconnected`.
 * D6000: `card3-DP-6` reads `connected` and kscreen enables it as `DP-6`, but **the panel shows
-  nothing**. Connector state is not the same as pixels; check EP08/EP0b byte flow before believing
-  any "connected" log.
+  nothing**. Its presence is stable — `runtime_connector()` returns true for Ridge, so it *is*
+  being probed — so this is a **video** problem, not a presence one. Check EP08/EP0b byte flow;
+  connector state is not pixels.
+  ⚠ The presence log fires **only when the reply changes**. An absence of lines for a dock means
+  its answers are steady, NOT that it is unprobed. That inference was made and was wrong.
+* ⭐ Known-good anchor for the D6000: **`a13775e0cdc5`**. Since then vino has taken
+  +4576/-595 lines across cp.rs, drm_sink.rs, video.rs, video_arm.rs and vino.rs, so bisect it
+  rather than reading the diff.
 
 ⚠ The presence log was untagged (`pr_info!`, no device prefix) for most of the session, so lines
 like `head 0 presence reply … present=true` **could not be attributed to a dock** and were read as
