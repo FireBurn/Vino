@@ -324,7 +324,34 @@ Navarro -- a USB bulk timeout does not prove no bytes reached the device, and re
 frame put duplicate inner counters on the wire. Whatever the fix is, it should not be "retry
 harder".
 
-**Next:** find what makes Ridge's EP02 start NAKing. The instrumentation to add is on the send
+### ⭐⭐⭐ The live lead: the D6000 has only ONE monitor on it
+
+A `debug=1` trace of the failing bring-up shows the CP dialogue is **healthy right up to the
+failure** — acks flowing at inner counters 19..23, the per-head `id=0x78 sub=0x30` display-cap
+arriving, `plaintext session initialized` and `HDCP AKE + LC + SKE complete` both logged. Nothing
+is being NAKed and nothing is going unanswered. What immediately precedes the timeout is:
+
+```
+head 1 re-engaged but no EDID came back -- no monitor, or it is not ready yet
+head 1 has no downstream sink (no AKE_Send_Rrx); skipping its authentication
+1/2 head(s) authenticated
+control session failed after 3 attempts (ETIMEDOUT)
+```
+
+⭐ **`1/2` is correct.** In this configuration the D6000 physically has **one** monitor (the other
+is on the DL7400). So the failure is in what happens *after a partial bring-up*, not in the CP
+plumbing — and historically the D6000 was always exercised with **both** its heads populated.
+
+**The one-line experiment that tests this:** move the second monitor onto the D6000 so both its
+heads are populated, and see whether it comes up. If it does, the bug is that a Ridge dock cannot
+complete bring-up with an empty connector, which also explains "it worked before all the Navarro
+stuff" without requiring the Navarro series to have broken it at all.
+
+⛔ Eliminated by measurement before reaching this: reply matching (`send_cp_reply`'s match loop
+never expires), EP02 send refusal (the 40-retry NAK path never fires), and `read_ep84`'s ETIMEDOUT
+(all three callers handle it with `match`, none propagate).
+
+**Superseded:** find what makes Ridge's EP02 start NAKing. The instrumentation to add is on the send
 side, not the reply side: log which message index and inner counter is in flight when the 40
 retries begin, and correlate with the wire.
 
