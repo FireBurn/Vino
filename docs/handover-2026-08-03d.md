@@ -53,23 +53,34 @@ pattern renders correctly with the fix in, but that is consistent with several e
 
 ## ⛔⛔ The real top priority: the DL7400 resets and jams
 
-Observed repeatedly in one session:
+Two things are solidly established:
 
 ```
-vino 2-1.3:1.0: vino: disconnected                      <- mid-drag, unprovoked
+vino 2-1.3:1.0: vino: disconnected                      <- mid-run, unprovoked, t=72978
 vino: vino: head=0 endpoint=0x08 stopped accepting video: GET_STATUS=0x0000 halt=0
 ```
 
-Three consecutive capture attempts produced 49 KB, 37 KB and 967 KB of EP08 traffic where a working
-run produces **270 MB**. In that state the panel freezes with only the hardware cursor moving —
-which is exactly what the user reports as "nothing is updating bar the HW cursor".
+The dock **re-enumerated on its own** during a run, and `stopped accepting video` — the 65,536-byte
+wall from the previous handover — still fires at essentially every bring-up. The user separately
+reported the panel freezing with only the hardware cursor moving, immediately after moving a
+monitor between docks.
 
-⚠ **This confounds every visual measurement.** Before judging any artifact, confirm video is
-actually flowing: take a 4 s `dumpcap -i usbmon2` and check the EP08 byte count for the dock's
-device number. A jammed head is silent, not wrong.
+⚠ **Do not measure this by capture volume alone.** The protocol is damage-driven: a static desktop
+legitimately sends **kilobytes**, and a run that captured 49 KB in 90 s was a static screen, not a
+jam. This handover originally called those runs jammed; they were not. Distinguish the two by
+*forcing damage* and re-measuring:
 
-The `stopped accepting video` message is the 65,536-byte wall from the previous handover. It still
-fires at bring-up, and the dock sometimes recovers by itself and sometimes does not.
+```sh
+dumpcap -i usbmon2 -s 0 -a duration:12 -w flow.pcapng &
+sleep 2; plasma-apply-wallpaperimage blank.png; sleep 3; plasma-apply-wallpaperimage pattern.png
+python3 tools/codec/usbmon_read.py flow.pcapng | grep 0x08
+```
+
+A healthy DL7400 answers that with ~62 MB. Silence under forced damage is a jam; silence on a
+static desktop is correct behaviour.
+
+⚠ Still confounding: a genuinely jammed head is *silent*, not *wrong*, so a visual defect and a
+stalled pipe look the same on the panel. Run the flow check before judging any artifact.
 
 ## ⚠ Two measurement traps that cost real time this session
 
@@ -126,7 +137,7 @@ to tshark, which emits a 244 MB payload as hex.
 
 ## Where to go next, in order
 
-1. **The reset/jam.** Nothing else can be measured reliably until a run reliably streams video.
+1. **The unprovoked re-enumeration, and `stopped accepting video` at every bring-up.** Use the forced-damage flow check above to tell a jam from an idle desktop before chasing anything visual.
    Start from the `stopped accepting video` path and why recovery is intermittent.
 2. **The drag path.** Reproduce without a human: `mpv --fs --fs-screen=0 mf://anim/f*.png` over a
    generated animation gives a repeatable moving-detail workload. Reconstruct and diff against the
