@@ -104,7 +104,29 @@ this project has lost weeks to before.
 `off46=0x0a80`, `off48=0x66db`, `off66=0x0800`, pixel clock 49775 at 2560x1440p120, against
 hardware running at that moment rather than against the previous day's capture.
 
-## ⭐ The top remaining lead: DLM brackets the video start with a marker burst, vino does not
+## ⭐⭐ vino was replaying the wrong capture — fixed, still jammed
+
+`COLD_NAVARRO` was extracted from `navarro-dlm-modeset-20260802-005453`, which is a **mode change
+on an already-running link**, not a cold bring-up. Against the same-day capture recorded while DLM
+was driving both panels, anchored on connector 0's real (`off23 = 2`) mode set:
+
+| | replayed | measured |
+|---|---|---|
+| second mode set | 757 ms | **10 ms** |
+| first head to stream | head 1 | **head 0** |
+| first video | 1116 ms | **122 ms** |
+| second video | 1245 ms | **272 ms** |
+| repeat mode set | 1129 ms | **none** |
+| markers | 18, out to 1345 ms | 16, out to 304 ms |
+
+vino drove the heads in the **opposite order** and stretched a 300 ms activation over 1.3 s.
+Replaced (`01f2c49347bd`); the head order is now right on the wire. The jam is unchanged.
+
+⛔ **Lesson for the corpus**: `navarro-dlm-modeset-*` is a *mode change*. Cold-activation timing
+must come from `navarro-dlm-today-124144` or another cold capture. Check what a capture actually
+recorded before replaying its cadence.
+
+## ⭐ The marker burst: measured, implemented via the timeline above
 
 From the same-day capture, DLM's `id=0x0016 sub=0x2f` / `sub=0x2e` messages around the first video
 byte. The payload is `[connector][value]` at offset 22:
