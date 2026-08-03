@@ -306,8 +306,20 @@ vino 2-2.1:1.0: vino: encrypted control session ready     <- with the DL7400 UNB
 after four sessions of nothing but ETIMEDOUT. The DL7400 is unaffected: 4/4 heads authenticated,
 session ready, monitor connected.
 
-⚠ **Necessary but not sufficient.** With BOTH docks bound the D6000 fails again, using the
-identical decode that just worked for it alone. A second piece of shared state is implicated.
+⚠ **Necessary but not sufficient, and NOT for the reason first recorded.** `dbe004a2d6be` changed
+only `decode_in_lenient`. Ridge then fails **even alone**. The run that succeeded had the plain
+decode forced *inside `open_in` itself*, so all **eight** of its call sites got it —
+`verify_in_ack`, `perhead_hdcp_push`, the EDID parsers and the rest. Ridge sends no tag on any of
+them, so fixing only the matcher leaves the other seven rejecting every frame:
+`1/2 head(s) authenticated` then ETIMEDOUT.
+
+⇒ **The fix must be at `open_in`, and it must be per device.** Forcing it globally is not an
+option: it costs Navarro its per-head HDCP (`0/4 head(s) authenticated`), measured. `open_in` is a
+free function with no device context, so this needs a `verified: bool` (or equivalent) threaded
+through it and through the cp.rs helpers that call it — the call sites are cp.rs lines 589, 637,
+679, 731, 808, 1380, 1432 and 1473, all reachable from callers that do have the profile.
+
+**That is the next piece of work, and it is mechanical rather than exploratory.**
 
 ⛔ **Do not make this a global flag.** That was tried first and is the wrong shape: the DL7400
 overwrote Ridge's setting, and forcing it the other way cost the DL7400 its own per-head HDCP
