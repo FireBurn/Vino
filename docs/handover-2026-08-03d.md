@@ -10,7 +10,7 @@ DLM's video submit path) is not needed.
 |---|---|
 | DL7400 picture | ✅ draws the desktop, hardware cursor correct |
 | DL7400 encoder correctness | ✅ **proven byte-perfect**, see below |
-| DL7400 stability | ⛔ **intermittently re-enumerates and jams at bring-up** — the top problem now |
+| DL7400 stability | ⛔ re-enumerated unprovoked mid-run; `stopped accepting video` at every bring-up |
 | DL7400 drag/damage path | ⛔ user-visible artifacts on moving detailed content |
 | DL7400 bring-up latency | ⛔ ~24 s bind → picture, 16 s of it between session-ready and first EDID |
 | DL7400 socket moves | ⛔ moving a monitor to another socket does not relight it |
@@ -137,8 +137,9 @@ to tshark, which emits a 244 MB payload as hex.
 
 ## Where to go next, in order
 
-1. **The unprovoked re-enumeration, and `stopped accepting video` at every bring-up.** Use the forced-damage flow check above to tell a jam from an idle desktop before chasing anything visual.
-   Start from the `stopped accepting video` path and why recovery is intermittent.
+1. **The unprovoked re-enumeration, and `stopped accepting video` at every bring-up.** Run the
+   forced-damage flow check first, so a jam is told apart from an idle desktop before anything
+   visual is chased.
 2. **The drag path.** Reproduce without a human: `mpv --fs --fs-screen=0 mf://anim/f*.png` over a
    generated animation gives a repeatable moving-detail workload. Reconstruct and diff against the
    frame that was on screen — but only after (1), or the capture is empty.
