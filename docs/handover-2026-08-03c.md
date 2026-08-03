@@ -197,6 +197,30 @@ But it is a concrete, measured cadence difference at exactly the moment the dock
 start draining, and the user flagged cadence and timing from the outset. It is the best remaining
 lead.
 
+## ⭐⭐ Endpoint 0 had never been examined, and it contained a false claim
+
+Every previous session read EP02/EP84/EP08/EP0A and nothing else. Extracting every **setup packet**
+from the same-day keyed capture gives exactly one `CLEAR_FEATURE(ENDPOINT_HALT)`, on endpoint
+**`0x81`** — the audio interrupt. **There is no `CLEAR_FEATURE` for `0x08` or `0x0a` anywhere.**
+
+vino's comment said the opposite:
+
+> *"Clear the endpoint's halt feature before the stream's first byte. DLM does this on every video
+> endpoint ahead of its first frame... Clearing also resets the endpoint's sequence number, which
+> is what the dock is really waiting for."*
+
+It matters because `usb_clear_halt()` calls `usb_reset_endpoint()`, which resets the **host's**
+sequence number for an endpoint the device never halted, leaving the two ends disagreeing — and a
+SuperSpeed bulk endpoint in that state accepts one burst and then NAKs, which is precisely what
+this dock does at 65,536 bytes. Now behind `video_clear_halt`, default **off** (`c57634406a47`).
+
+⚠ Tested: the jam is unchanged with the halt left alone. But the assertion about DLM was false and
+is now corrected.
+
+⭐ **The rest of EP0 is audio-class and string descriptors** (`bmRequestType=0xa1 bRequest=0x01`
+on interface 2, and `GET_DESCRIPTOR STRING`). No `SET_INTERFACE`, no alternate setting, nothing
+video-related. That axis is now genuinely closed.
+
 ## ⛔ Killed by measurement this session
 
 ### 1. The per-strip parameter map (`kind=0x200f`)
