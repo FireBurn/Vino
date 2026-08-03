@@ -77,9 +77,16 @@ of this state.
   connector state is not pixels.
   ⚠ The presence log fires **only when the reply changes**. An absence of lines for a dock means
   its answers are steady, NOT that it is unprobed. That inference was made and was wrong.
-* ⭐ Known-good anchor for the D6000: **`a13775e0cdc5`**. Since then vino has taken
-  +4576/-595 lines across cp.rs, drm_sink.rs, video.rs, video_arm.rs and vino.rs, so bisect it
-  rather than reading the diff.
+* ⭐⭐ **Known-good anchor for the D6000: `a13775e0cdc5`** (user-confirmed working there).
+  **40 commits** touch `drivers/gpu/drm/vino` between it and HEAD, +4576/-595 lines. That is ~6
+  build-and-boot cycles with `git bisect`, and it is the cheapest remaining route to the Ridge
+  regression -- cheaper than more instrumenting, which has now eliminated four candidate
+  mechanisms without finding the cause.
+
+  ⚠ Bisect on the **D6000 alone, unbound from the DL7400**, or the shared-state bug will
+  contaminate every verdict. Mark good/bad on "does the D6000 put a picture on its panel", not on
+  any log line -- `encrypted control session ready` and a `connected` connector have both been
+  observed on a dock showing nothing.
 
 ⚠ The presence log was untagged (`pr_info!`, no device prefix) for most of the session, so lines
 like `head 0 presence reply … present=true` **could not be attributed to a dock** and were read as
