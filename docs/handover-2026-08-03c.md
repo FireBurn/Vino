@@ -20,6 +20,47 @@ against hardware. That is the first thing to do.
 ⚠ **Process**: every DL7400 commit had been validated on the DL7400 only. Ridge shares the keepalive
 loop, the probe and the whole control path.
 
+## ⭐⭐ The dock accepts exactly 65,536 bytes, measured two ways
+
+This is the hardest number in the whole hunt, and it is **a byte count, not a transfer count**.
+`video_sync=1` writes through `usb_bulk_msg` one transfer at a time; `video_xfer` sets the size.
+
+```
+video_xfer=65536:   1 transfer  x 65536 completes, the next times out after 1.05 s
+video_xfer=16384:   4 transfers x 16384 complete,  the 5th times out after 1.06 s
+                    ------------------------------
+                    65,536 bytes accepted either way
+```
+
+⚠ A first 16 KiB run showed only one transfer and looked like "one transfer regardless of size".
+That was a truncated capture, not a result -- vino had stopped, not the dock. Re-running with a
+longer window gave the four completions above. **Do not build on a capture that ends at the
+interesting moment.**
+
+64 KiB is a landing FIFO that never drains, so the dock's video decoder never starts consuming.
+Every record vino sends is *accepted* and none is *processed*, which is why corrupting the sealed
+prologue's MAC changed nothing and why none of the record-level fixes below moved it.
+
+### The pipe descriptor's slot header is a buffer descriptor
+
+`NAVARRO_SLOT_HEADER`, carried in every slot record of the pipe descriptor, read as `u16`:
+
+| off | value | meaning |
+|---|---|---|
+| 0 | `0x1000` = 4096 | image records are a 4048-byte stride |
+| 2 | `0x00b4` = **180** | **bands** = 1440 / 8 |
+| 4 | `0x0014` = **20** | **strips per band** = 2560 / 128 |
+| 6 | `0x4000` = 16384 | the dock stops after 65536 = **4 x** this |
+| 8 | `0x0001` | |
+
+⭐ 180 and 20 are exactly the geometry derived independently from the `kind=0x200f` parameter map
+(§3.4 of `docs/protocol/navarro-decoded.md`). Two unrelated records agreeing on the same numbers is
+a strong cross-check that the strip geometry is right.
+
+⚠ vino ships this leader as a **fixed constant** measured at 2560x1440. It encodes the mode's
+geometry, so it is wrong for any other mode -- `navarro_pipe_descriptor()` says so, and nothing
+enforces it.
+
 ## The failure, restated with the sharpest measurement available
 
 `video_sync=1` writes video through `usb_bulk_msg` one transfer at a time — DLM's own shape, and the
