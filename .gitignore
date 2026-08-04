@@ -31,3 +31,14 @@ target/
 ~        
 __pycache__/
 *.pyc
+
+# Capture payloads. A raw USB wire log is machine-generated, is measured in
+# hundreds of megabytes, and is reproducible from the hardware and the scripts
+# in tools/capture/; the conclusions drawn from one are not. Track the notes,
+# not the bytes. Add a payload deliberately with `git add -f` if a specific one
+# is genuinely the evidence.
+/captures/**
+!/captures/**/
+!/captures/**/*.md
+!/captures/**/*.tsv
+!/captures/**/*.json
