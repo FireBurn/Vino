@@ -12,6 +12,9 @@ use vino_driver::{Dock, Error as UsbError};
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(1);
 const REPLY_TIMEOUT: Duration = Duration::from_millis(8);
 const HDCP_HPRIME_WAIT: Duration = Duration::from_micros(165_000);
+/// How long to keep draining EP84 for the reply that echoes a request's counter. The driver allows
+/// the same 64 ms before calling a probe round unanswered.
+const PROBE_REPLY_DEADLINE: Duration = Duration::from_millis(64);
 /// Frames to drain from EP84 after each control message, matching the kernel driver's
 /// `drain_ep84`. The dock queues unprompted pushes alongside acknowledgements.
 const EP84_DRAIN_READS: usize = 16;
@@ -81,19 +84,25 @@ impl ControlSession {
         )
     }
 
-    /// Probe whether one downstream head currently routes to a display-capability handler.
+    /// Probe whether a monitor is attached to one downstream head.
+    ///
+    /// Presence is bit `0x1000` of the reply's status word (inner byte 23 bit 4): `05 11 27 00` for
+    /// an occupied connector, `05 01 <20|21|60|61> 00` for an empty one. **Which handler answered
+    /// says nothing about it** -- the dock replies `id=0x44` either way, and reading presence from
+    /// the id reports every head as connected.
     pub fn probe_head_present(&mut self, head: u8) -> Result<Option<bool>, String> {
+        let request_counter = self.inner_counter;
         let message = kvino::get_edid_req_sub(self.inner_counter, 0x20, head)
             .map_err(build_error("monitor presence probe"))?;
-        let Some(reply) = self.send_control(0x15, &message)? else {
+        let Some(reply) = self.send_control_echoing(0x15, &message, request_counter)? else {
             return Ok(None);
         };
-        let Some((id, _, _)) =
+        let Some((_, status, _)) =
             kvino::probe_reply_status(&self.keys.control_key, &self.keys.control_nonce, &reply)
         else {
             return Ok(None);
         };
-        Ok(Some(matches!(id, 0x44 | 0x78 | 0x194)))
+        Ok(Some(status & 0x0000_1000 != 0))
     }
 
     /// Send the steady-state heartbeat and reap its paired reply.
@@ -375,6 +384,43 @@ impl ControlSession {
             .wrapping_add(content.len().div_ceil(16) as u32);
         self.inner_counter = self.inner_counter.wrapping_add(1);
         receive_optional(&self.dock, REPLY_TIMEOUT)
+    }
+
+    /// Send a control message and return the reply that answers *this* one.
+    ///
+    /// Taking simply the next frame off EP84 is wrong twice over: the dock interleaves unprompted
+    /// pushes with its answers, and its reply to one message routinely arrives only after the next
+    /// message has gone out -- measured here as every probe reply echoing the *previous* request's
+    /// counter, so back-to-back head probes each read the other head's answer and the wrong
+    /// monitor is reported connected. Drain until a reply echoes this request's counter, as the
+    /// driver's `probe_connector_present` does, and treat never seeing it as "learned nothing"
+    /// rather than as an answer.
+    fn send_control_echoing(
+        &mut self,
+        id: u16,
+        content: &[u8],
+        request_counter: u16,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let mut reply = self.send_control(id, content)?;
+        let deadline = Instant::now() + PROBE_REPLY_DEADLINE;
+        loop {
+            if let Some(frame) = reply {
+                if kvino::decode_in_lenient(
+                    &self.keys.control_key,
+                    &self.keys.control_nonce,
+                    &frame,
+                )
+                .is_some_and(|(_, _, echoed)| echoed == request_counter)
+                {
+                    return Ok(Some(frame));
+                }
+            }
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
+            // An empty read is not the end of the answer: keep draining until the deadline.
+            reply = receive_optional(&self.dock, REPLY_TIMEOUT)?;
+        }
     }
 
     fn send_marker(&mut self, head: u8, sub: u16, state: u8) -> Result<(), String> {

@@ -222,6 +222,15 @@ pub fn edid_poll_ready(ks: &[u8; 16], out_riv: &[u8; 8], wire: &[u8]) -> Option<
     cp::edid_poll_ready(ks, out_riv, wire)
 }
 
+/// `cp::decode_in_lenient` — decode any authenticated reply's `(id, sub, echoed counter)`.
+///
+/// The echoed counter is what pairs a reply with the request that asked for it; the dock
+/// interleaves unprompted pushes with its answers, and its answer to one message routinely
+/// arrives only after the next has gone out.
+pub fn decode_in_lenient(ks: &[u8; 16], out_riv: &[u8; 8], wire: &[u8]) -> Option<(u16, u16, u16)> {
+    cp::decode_in_lenient(ks, out_riv, wire)
+}
+
 /// `cp::probe_reply_status` — decode the handler and status of a presence probe.
 pub fn probe_reply_status(
     ks: &[u8; 16],
