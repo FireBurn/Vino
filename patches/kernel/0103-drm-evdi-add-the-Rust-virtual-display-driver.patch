@@ -1,33 +1,49 @@
-From 9238fa166e4160817d0f437a2513110d0a05b9a5 Mon Sep 17 00:00:00 2001
+From c11f6d382f06daa43f8d1f11a2955c1920f5b6e6 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 22:01:31 +0100
-Subject: [PATCH 103/109] drm/evdi: add the Rust virtual display driver
+Subject: [PATCH 103/108] drm/evdi: add the Rust virtual display driver
 
-Add a Rust implementation of EVDI while preserving the established
-libevdi and DisplayLinkManager display ABI. Install that ABI as
-a normal DRM UAPI header, use generated Rust UAPI bindings, and
-translate its pointer-bearing ioctls for 32-bit clients.
+Add a Rust implementation of EVDI while preserving the established libevdi
+and DisplayLinkManager display ABI. Install that ABI as a normal DRM UAPI
+header, use generated Rust UAPI bindings, and translate its pointer-bearing
+ioctls for 32-bit clients.
 
-Create cards through the established platform sysfs interface and
-expose the expected DRM ioctls and events. Use owned DRM, KMS, event,
-framebuffer, and sysfs abstractions throughout.
+Create cards through the established platform sysfs interface and expose
+the expected DRM ioctls and events. Use owned DRM, KMS, event, framebuffer,
+and sysfs abstractions throughout; the driver contains no `unsafe` block,
+no direct `bindings::` call and no reconstructed object lifetime.
 
 Prepare a bounded four-entry scanout pool with owned shmem mappings so
 compositor swapchain buffers are mapped before notifying the client and
 reused for later flips and GRABPIX calls. Enforce the bandwidth limits
 supplied by userspace without applying a driver-invented multiplier.
 
-Advertise the CRTC's CTM and gamma ramp and apply them to each row of
-the GRABPIX copy. The driver has no display hardware, so a compositor
-that colour-corrects through the KMS properties otherwise has nowhere
-to place the correction while native outputs are corrected normally.
-The colour module is shared verbatim with the Vino driver.
+Advertise a cursor plane, so the compositor keeps the pointer out of the
+primary framebuffer instead of dirtying the desktop on every movement.
+Reporting it to the client is opt-in through EVDI_ENABLE_CURSOR_EVENTS: a
+client that has not asked composites the pointer itself and must not also
+receive it out of band. The bitmap accompanies a shape change as a GEM
+handle minted in the client's own file, which is why it goes through the
+event channel's connected-file borrow rather than being sent under the
+event lock.
 
-DDC/CI and cursor-control ioctls remain ABI-compatible no-ops. The
-driver advertises no cursor plane and does not register a virtual
-I2C adapter.
+Apply the CRTC's CTM and GAMMA_LUT in software on the way to the client.
+EVDI has no colour hardware, so a compositor correcting through those
+properties -- which is what GNOME's Night Light and KDE's Night Colour do
+-- otherwise has nowhere to put the correction. color.rs is shared verbatim
+with drm/vino, which has the same problem and no way to share a crate with
+a separate module.
 
-Assisted-by: Claude:claude-opus-5-0
+Replay the current mode from CONNECT. MODE_CHANGED is an edge, so a client
+attaching to a card the compositor already configured would otherwise wait
+forever for an announcement that has already happened, with its display
+dark.
+
+DDC/CI remains an ABI-compatible no-op: the driver does not register a
+virtual I2C adapter until a Rust I2C provider API can express the adapter
+lifetime safely.
+
+Assisted-by: Claude:claude-opus-5
 Assisted-by: Codex:gpt-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
@@ -36,15 +52,15 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  drivers/gpu/drm/Makefile        |   1 +
  drivers/gpu/drm/evdi/Kconfig    |  20 +
  drivers/gpu/drm/evdi/Makefile   |   2 +
- drivers/gpu/drm/evdi/color.rs   | 280 +++++++++++
- drivers/gpu/drm/evdi/evdi.rs    | 327 +++++++++++++
- drivers/gpu/drm/evdi/ioctl.rs   | 268 ++++++++++
- drivers/gpu/drm/evdi/kms.rs     | 831 ++++++++++++++++++++++++++++++++
- drivers/gpu/drm/evdi/painter.rs | 220 +++++++++
- drivers/gpu/drm/evdi/uapi.rs    | 191 ++++++++
+ drivers/gpu/drm/evdi/color.rs   | 271 ++++++++++
+ drivers/gpu/drm/evdi/evdi.rs    | 327 ++++++++++++
+ drivers/gpu/drm/evdi/ioctl.rs   | 270 ++++++++++
+ drivers/gpu/drm/evdi/kms.rs     | 884 ++++++++++++++++++++++++++++++++
+ drivers/gpu/drm/evdi/painter.rs | 217 ++++++++
+ drivers/gpu/drm/evdi/uapi.rs    | 189 +++++++
  include/uapi/drm/evdi_drm.h     | 133 +++++
  rust/uapi/uapi_helper.h         |   1 +
- 13 files changed, 2281 insertions(+)
+ 13 files changed, 2322 insertions(+)
  create mode 100644 drivers/gpu/drm/evdi/Kconfig
  create mode 100644 drivers/gpu/drm/evdi/Makefile
  create mode 100644 drivers/gpu/drm/evdi/color.rs
@@ -132,10 +148,10 @@ index 000000000000..9c5e1a66337c
 +obj-$(CONFIG_DRM_EVDI) += evdi.o
 diff --git a/drivers/gpu/drm/evdi/color.rs b/drivers/gpu/drm/evdi/color.rs
 new file mode 100644
-index 000000000000..3949113a61a9
+index 000000000000..309a10566069
 --- /dev/null
 +++ b/drivers/gpu/drm/evdi/color.rs
-@@ -0,0 +1,280 @@
+@@ -0,0 +1,271 @@
 +// SPDX-License-Identifier: GPL-2.0
 +//! Software colour management for the CRTC's `CTM` and `GAMMA_LUT` properties.
 +//!
@@ -146,14 +162,14 @@ index 000000000000..3949113a61a9
 +//! such an output unless the driver applies it while it still has the pixels. This module is that
 +//! application.
 +//!
-+//! ⚠ **This file is shared verbatim between `drm/vino` and `drm/evdi`.** They are separate
++//! NOTE: this file is shared verbatim between `drm/vino` and `drm/evdi`. They are separate
 +//! modules and cannot share a crate, so the copies are kept byte-identical and
 +//! `tools/color-selftest.sh` fails if they drift.
 +//!
 +//! Pipeline order follows DRM's: degamma, then CTM, then gamma. No degamma LUT is advertised, so
 +//! what runs here is **CTM then gamma**.
 +//!
-+//! ⚠ The transform is applied to the framebuffer's encoded (typically sRGB) values, not to linear
++//! The transform is applied to the framebuffer's encoded (typically sRGB) values, not to linear
 +//! light, because there is no degamma stage to linearise them first. That is the same
 +//! simplification every software implementation of this makes, and it is what compositors expect
 +//! when they compute a correction for a CRTC that advertises no degamma LUT.
@@ -317,7 +333,7 @@ index 000000000000..3949113a61a9
 +            for i in 0..LUT_LEN {
 +                let mut v = expand(i as u8);
 +                if let Some(g) = gains {
-+                    v = (((g[c] as i64 * v as i64 + HALF_Q) >> 16)).clamp(0, MAX as i64) as i32;
++                    v = ((g[c] as i64 * v as i64 + HALF_Q) >> 16).clamp(0, MAX as i64) as i32;
 +                }
 +                if let Some(t) = &gamma {
 +                    v = sample(&t[c * LUT_LEN..(c + 1) * LUT_LEN], v);
@@ -395,16 +411,7 @@ index 000000000000..3949113a61a9
 +    fn eq(&self, other: &Self) -> bool {
 +        match (self, other) {
 +            (Self::Fused(a), Self::Fused(b)) => a[..] == b[..],
-+            (
-+                Self::Mixed {
-+                    ctm: a,
-+                    gamma: ga,
-+                },
-+                Self::Mixed {
-+                    ctm: b,
-+                    gamma: gb,
-+                },
-+            ) => {
++            (Self::Mixed { ctm: a, gamma: ga }, Self::Mixed { ctm: b, gamma: gb }) => {
 +                a == b
 +                    && match (ga, gb) {
 +                        (Some(x), Some(y)) => x[..] == y[..],
@@ -751,10 +758,10 @@ index 000000000000..cfd13f057676
 +}
 diff --git a/drivers/gpu/drm/evdi/ioctl.rs b/drivers/gpu/drm/evdi/ioctl.rs
 new file mode 100644
-index 000000000000..b0100980045b
+index 000000000000..a1345de3c48e
 --- /dev/null
 +++ b/drivers/gpu/drm/evdi/ioctl.rs
-@@ -0,0 +1,268 @@
+@@ -0,0 +1,270 @@
 +// SPDX-License-Identifier: GPL-2.0
 +//
 +// EVDI driver-private ioctls (libevdi / DisplayLinkManager entry points), declared via
@@ -803,14 +810,16 @@ index 000000000000..b0100980045b
 +        // publish the EDID. The hotplug causes modes to be checked against the new limits.
 +        let connection = data.events.connect(dev, file)?;
 +        *file.inner().connection.lock() = Some(connection);
-+        data.painter.lock().connected = true;
 +        data.set_mode_limits(arg.pixel_area_limit, arg.pixel_per_second_limit);
 +        if !edid.is_empty() {
 +            data.set_edid(dev, edid);
 +        }
++        // Tell this client what the display is already doing. A card the compositor configured
++        // before anyone connected -- a client restarting against a card that outlived it, most
++        // obviously -- has already sent its MODE_CHANGED, and nothing would ever send another.
++        data.replay_state();
 +    } else {
 +        *file.inner().connection.lock() = None;
-+        data.painter.lock().connected = data.events.is_connected();
 +        // Drop the EDID so the connector reports disconnected until the next CONNECT.
 +        data.clear_edid(dev);
 +    }
@@ -847,13 +856,13 @@ index 000000000000..b0100980045b
 +    arg: &mut uapi::DrmEvdiGrabpix,
 +    _file: &File,
 +) -> Result<u32> {
-+    // XRGB8888: 4 bytes per pixel (the only format the primary plane advertises).
++    // Every format the primary plane advertises is 32 bits per pixel, packed.
 +    const BPP: usize = 4;
 +
-+    match arg.mode {
-+        uapi::EVDI_GRABPIX_MODE_DIRTY => {}
-+        uapi::EVDI_GRABPIX_MODE_RECTS => return Err(EINVAL),
-+        _ => return Err(EINVAL),
++    // MODE_RECTS would have the client hand us the rectangles to copy; only MODE_DIRTY, where
++    // the driver reports the damage it accumulated, is implemented.
++    if arg.mode != uapi::EVDI_GRABPIX_MODE_DIRTY {
++        return Err(EINVAL);
 +    }
 +    if arg.num_rects < 1 {
 +        return Err(EINVAL);
@@ -1025,10 +1034,10 @@ index 000000000000..b0100980045b
 +}
 diff --git a/drivers/gpu/drm/evdi/kms.rs b/drivers/gpu/drm/evdi/kms.rs
 new file mode 100644
-index 000000000000..a4ec9cb70b31
+index 000000000000..d41849424788
 --- /dev/null
 +++ b/drivers/gpu/drm/evdi/kms.rs
-@@ -0,0 +1,831 @@
+@@ -0,0 +1,884 @@
 +// SPDX-License-Identifier: GPL-2.0
 +//
 +// The EVDI DRM/KMS device: registers a `struct drm_device` presenting one virtual
@@ -1078,7 +1087,16 @@ index 000000000000..a4ec9cb70b31
 +/// Cursor-plane format list. libevdi reports the format to the client, which expects ARGB.
 +static CURSOR_FORMATS: [u32; 1] = [drm::fourcc::ARGB8888];
 +
-+static PRIMARY_FORMATS: [u32; 1] = [drm::fourcc::XRGB8888];
++static PRIMARY_FORMATS: [u32; 8] = [
++    drm::fourcc::XRGB8888,
++    drm::fourcc::ARGB8888,
++    drm::fourcc::XBGR8888,
++    drm::fourcc::ABGR8888,
++    drm::fourcc::XRGB2101010,
++    drm::fourcc::ARGB2101010,
++    drm::fourcc::XBGR2101010,
++    drm::fourcc::ABGR2101010,
++];
 +
 +/// Fallback mode advertised before the DLM client delivers an EDID via CONNECT.
 +const FALLBACK_W: u32 = 1024;
@@ -1190,6 +1208,14 @@ index 000000000000..a4ec9cb70b31
 +    /// Cleared by default: a client that has not opted in composites the pointer into the primary
 +    /// framebuffer itself and must not also receive it out of band.
 +    pub(crate) cursor_events: AtomicBool,
++    /// The mode announced by the last [`EvdiCrtc::atomic_enable`], as `(hdisplay, vdisplay,
++    /// vrefresh)`, or `None` while the CRTC is off.
++    ///
++    /// MODE_CHANGED is an edge, and a client that connects to a card the compositor has *already*
++    /// configured never sees it -- it waits forever for a mode that was announced before it
++    /// attached, and its display stays dark. Keeping the current mode lets CONNECT replay it.
++    #[pin]
++    announced_mode: Mutex<Option<(i32, i32, i32)>>,
 +}
 +
 +impl EvdiDrmData {
@@ -1204,7 +1230,28 @@ index 000000000000..a4ec9cb70b31
 +            vblank <- new_spinlock!(None),
 +            color <- new_mutex!(None),
 +            cursor_events: AtomicBool::new(false),
++            announced_mode <- new_mutex!(None),
 +        })
++    }
++
++    /// Tell a client that has just connected what the display is already doing.
++    ///
++    /// Called from CONNECT, after the caller is registered as the event receiver. Silent when the
++    /// CRTC is off, which is the ordinary first-connect case: the mode then arrives from
++    /// [`EvdiCrtc::atomic_enable`] as usual.
++    pub(crate) fn replay_state(&self) {
++        let Some((hdisplay, vdisplay, vrefresh)) = *self.announced_mode.lock() else {
++            return;
++        };
++        crate::painter::notify_dpms(self, crate::painter::DPMS_ON);
++        crate::painter::notify_mode_changed(
++            self,
++            hdisplay,
++            vdisplay,
++            vrefresh,
++            32,
++            drm::fourcc::XRGB8888,
++        );
 +    }
 +
 +    /// Stop timer activity and release prepared scanout state before unbind.
@@ -1247,7 +1294,6 @@ index 000000000000..a4ec9cb70b31
 +    /// Store the dock bandwidth limits the client supplied via CONNECT, for
 +    /// [`EvdiConnector`]'s `mode_valid` to enforce. Must be called before the EDID is
 +    /// published (`set_edid`'s hotplug re-probes the mode list against these limits).
-+    ///
 +    pub(crate) fn set_mode_limits(&self, pixel_area: u32, pixels_per_second: u32) {
 +        self.pixel_area_limit.store(pixel_area, Ordering::Relaxed);
 +        self.pixel_per_second_limit
@@ -1361,6 +1407,11 @@ index 000000000000..a4ec9cb70b31
 +        // Advertise FB_DAMAGE_CLIPS so the compositor reports which region
 +        // changed. Without it, GRABPIX must return the full plane.
 +        primary.enable_fb_damage_clips();
++        // PRIMARY_FORMATS includes ARGB/ABGR scanout formats.  DRM requires every plane that
++        // exposes an alpha format to describe its alpha convention, even though EVDI forwards
++        // the resulting pixels to its userspace consumer instead of doing hardware compositing.
++        // Compositors supply the primary scanout in premultiplied form.
++        primary.create_blend_mode_property(plane::BlendModes::PREMULTIPLIED)?;
 +        // A real cursor plane, so the compositor keeps the pointer out of the primary framebuffer
 +        // and the client can drive its sink's own cursor. Without one, every pointer movement
 +        // dirties the desktop and costs a full frame.
@@ -1392,13 +1443,22 @@ index 000000000000..a4ec9cb70b31
 +            None,
 +            (),
 +        )?;
-+        // Use DVI-I (matching the C evdi) rather than Virtual: `__drm_connector_init` skips
++        // Use DisplayPort rather than Virtual: `__drm_connector_init` skips
 +        // `drm_connector_attach_edid_property()` for VIRTUAL/WRITEBACK connectors, and without that
 +        // property `drm_edid_connector_update()` can't populate `edid_blob_ptr`, so
 +        // `drm_edid_connector_add_modes()` would return 0 modes for a perfectly valid EDID.
-+        let conn =
-+            connector::UnregisteredConnector::<EvdiConnector>::new(dev, connector::Type::DviI, ())?;
++        let conn = connector::UnregisteredConnector::<EvdiConnector>::new(
++            dev,
++            connector::Type::DisplayPort,
++            (),
++        )?;
 +        conn.attach_encoder(&*enc)?;
++        // Do not merely advertise 10-bit framebuffer formats: compositors select them through
++        // this standard range property. EVDI's GRABPIX path transports the packed 32-bit pixels
++        // unchanged; actual HDR signalling remains conditional on the client/sink path.
++        conn.attach_max_bpc_property(8, 10)?;
++        conn.attach_hdr_output_metadata_property();
++        conn.attach_colorspace_property()?;
 +        Ok(())
 +    }
 +}
@@ -1515,13 +1575,18 @@ index 000000000000..a4ec9cb70b31
 +        let data: &EvdiDrmData = dev;
 +        let new = commit.take_new_state();
 +        let mode = new.mode();
-+        crate::painter::notify_dpms(data, dev, crate::painter::DPMS_ON);
-+        crate::painter::notify_mode_changed(
-+            data,
-+            dev,
++        let (hdisplay, vdisplay, vrefresh) = (
 +            mode.hdisplay() as i32,
 +            mode.vdisplay() as i32,
 +            mode.vrefresh(),
++        );
++        *data.announced_mode.lock() = Some((hdisplay, vdisplay, vrefresh));
++        crate::painter::notify_dpms(data, crate::painter::DPMS_ON);
++        crate::painter::notify_mode_changed(
++            data,
++            hdisplay,
++            vdisplay,
++            vrefresh,
 +            32,
 +            drm::fourcc::XRGB8888,
 +        );
@@ -1536,7 +1601,8 @@ index 000000000000..a4ec9cb70b31
 +        let data: &EvdiDrmData = dev;
 +        let _ = data.set_scanout(None);
 +        *data.color.lock() = None;
-+        crate::painter::notify_dpms(data, dev, crate::painter::DPMS_OFF);
++        *data.announced_mode.lock() = None;
++        crate::painter::notify_dpms(data, crate::painter::DPMS_OFF);
 +    }
 +
 +    /// Arm the page-flip completion event to be sent by the next vblank tick, so userspace is paced
@@ -1549,10 +1615,7 @@ index 000000000000..a4ec9cb70b31
 +        {
 +            let data: &EvdiDrmData = crtc.drm_dev();
 +            let built = crate::color::ColorPipeline::build(new.gamma_lut(), new.ctm());
-+            let mut slot = data.color.lock();
-+            if *slot != built {
-+                *slot = built;
-+            }
++            *data.color.lock() = built;
 +        }
 +        if let Some(pending) = new.get_pending_vblank_event() {
 +            match crtc.vblank_get() {
@@ -1673,7 +1736,7 @@ index 000000000000..a4ec9cb70b31
 +                new.for_each_damage_clip(old, |r| p.damage.push((r.x1, r.y1, r.x2, r.y2)));
 +                p.frame_dirty = true;
 +            }
-+            crate::painter::notify_update_ready(data, dev);
++            crate::painter::notify_update_ready(data);
 +        }
 +    }
 +}
@@ -1719,7 +1782,7 @@ index 000000000000..a4ec9cb70b31
 +    /// the connector stays usable before CONNECT.
 +    fn get_modes<'a>(
 +        connector: ConnectorGuard<'a, Self>,
-+        guard: &ModeConfigGuard<'a, Self::Driver>,
++        _guard: &ModeConfigGuard<'a, Self::Driver>,
 +    ) -> i32 {
 +        let data: &EvdiDrmData = connector.drm_dev();
 +        if let Some(blob) = data.cached_edid.lock().as_ref() {
@@ -1728,7 +1791,6 @@ index 000000000000..a4ec9cb70b31
 +                _ => {}
 +            }
 +        }
-+        let _ = guard;
 +        let n = connector.add_modes_noedid((FALLBACK_W, FALLBACK_H));
 +        connector.set_preferred_mode((FALLBACK_W, FALLBACK_H));
 +        n
@@ -1821,7 +1883,7 @@ index 000000000000..a4ec9cb70b31
 +    }
 +    let (old, new) = commit.take_old_new_state();
 +    let Some(fb) = new.framebuffer::<EvdiDrmDriver>() else {
-+        crate::painter::notify_cursor_disabled(data, dev);
++        crate::painter::notify_cursor_disabled(data);
 +        return;
 +    };
 +
@@ -1857,15 +1919,15 @@ index 000000000000..a4ec9cb70b31
 +    {
 +        let x = destination.x1 - source.x1;
 +        let y = destination.y1 - source.y1;
-+        crate::painter::notify_cursor_move(data, dev, x, y);
++        crate::painter::notify_cursor_move(data, x, y);
 +    }
 +}
 diff --git a/drivers/gpu/drm/evdi/painter.rs b/drivers/gpu/drm/evdi/painter.rs
 new file mode 100644
-index 000000000000..cda3a92fb973
+index 000000000000..2549b92dbaa5
 --- /dev/null
 +++ b/drivers/gpu/drm/evdi/painter.rs
-@@ -0,0 +1,220 @@
+@@ -0,0 +1,217 @@
 +// SPDX-License-Identifier: GPL-2.0
 +//
 +// The EVDI "painter": the per-device connection + event-delivery bookkeeping that
@@ -1887,11 +1949,10 @@ index 000000000000..cda3a92fb973
 +
 +/// Mutable per-device painter state, guarded by a mutex in [`EvdiDrmData`].
 +///
-+/// The connected client's EDID is the connector's `cached_edid` (the source of truth for the mode
-+/// list), so it is not duplicated here.
++/// Neither of the two things a client connection implies lives here: its EDID is the connector's
++/// `cached_edid` (the source of truth for the mode list), and whether anyone is attached is
++/// [`EventChannel::is_connected`].
 +pub(crate) struct PainterState {
-+    /// Whether a DLM client has issued CONNECT.
-+    pub(crate) connected: bool,
 +    /// A frame has been flipped in but not yet grabbed (the C evdi's `num_dirts > 0`). Lets
 +    /// REQUEST_UPDATE answer "grab now" (ioctl returns 1) when fresh pixels are already waiting,
 +    /// instead of self-triggering an UPDATE_READY event (which busy-loops the client).
@@ -1948,7 +2009,6 @@ index 000000000000..cda3a92fb973
 +impl PainterState {
 +    pub(crate) fn new() -> Self {
 +        Self {
-+            connected: false,
 +            frame_dirty: false,
 +            damage: Damage::new(),
 +        }
@@ -1985,13 +2045,13 @@ index 000000000000..cda3a92fb973
 +}
 +
 +/// Tell the DLM client a fresh frame is ready to be grabbed (`UPDATE_READY`).
-+pub(crate) fn notify_update_ready(data: &EvdiDrmData, _dev: &EvdiDrmDevice) {
++pub(crate) fn notify_update_ready(data: &EvdiDrmData) {
 +    let ev = uapi::DrmEvdiEventUpdateReady { base: hdr() };
 +    let _ = data.events.send(ev);
 +}
 +
 +/// Tell the DLM client the display's DPMS power state changed.
-+pub(crate) fn notify_dpms(data: &EvdiDrmData, _dev: &EvdiDrmDevice, mode: i32) {
++pub(crate) fn notify_dpms(data: &EvdiDrmData, mode: i32) {
 +    let ev = uapi::DrmEvdiEventDpms { base: hdr(), mode };
 +    let _ = data.events.send(ev);
 +}
@@ -1999,7 +2059,6 @@ index 000000000000..cda3a92fb973
 +/// Tell the DLM client the negotiated mode changed.
 +pub(crate) fn notify_mode_changed(
 +    data: &EvdiDrmData,
-+    _dev: &EvdiDrmDevice,
 +    hdisplay: i32,
 +    vdisplay: i32,
 +    vrefresh: i32,
@@ -2063,7 +2122,7 @@ index 000000000000..cda3a92fb973
 +}
 +
 +/// Tell the client the cursor is no longer visible. No buffer accompanies this.
-+pub(crate) fn notify_cursor_disabled(data: &EvdiDrmData, _dev: &EvdiDrmDevice) {
++pub(crate) fn notify_cursor_disabled(data: &EvdiDrmData) {
 +    let ev = uapi::DrmEvdiEventCursorSet {
 +        base: hdr(),
 +        hot_x: 0,
@@ -2082,16 +2141,16 @@ index 000000000000..cda3a92fb973
 +
 +/// Tell the client the cursor moved. Position changes are far more frequent than shape changes and
 +/// carry no buffer, so they never need the client's file.
-+pub(crate) fn notify_cursor_move(data: &EvdiDrmData, _dev: &EvdiDrmDevice, x: i32, y: i32) {
++pub(crate) fn notify_cursor_move(data: &EvdiDrmData, x: i32, y: i32) {
 +    let ev = uapi::DrmEvdiEventCursorMove { base: hdr(), x, y };
 +    let _ = data.events.send(ev);
 +}
 diff --git a/drivers/gpu/drm/evdi/uapi.rs b/drivers/gpu/drm/evdi/uapi.rs
 new file mode 100644
-index 000000000000..33e066923476
+index 000000000000..29de85cb2f2e
 --- /dev/null
 +++ b/drivers/gpu/drm/evdi/uapi.rs
-@@ -0,0 +1,191 @@
+@@ -0,0 +1,189 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! Rust names for the EVDI UAPI generated from `include/uapi/drm/evdi_drm.h`.
@@ -2188,8 +2247,6 @@ index 000000000000..33e066923476
 +    );
 +};
 +
-+pub(crate) const EVDI_GRABPIX_MODE_RECTS: u32 =
-+    kernel::uapi::drm_evdi_grabpix_mode_EVDI_GRABPIX_MODE_RECTS;
 +pub(crate) const EVDI_GRABPIX_MODE_DIRTY: u32 =
 +    kernel::uapi::drm_evdi_grabpix_mode_EVDI_GRABPIX_MODE_DIRTY;
 +

@@ -454,6 +454,7 @@ pub(super) fn set_mode(counter: u16, head: u8, t: &Timing) -> Result<KVec<u8>> {
     pad_to(&mut b, 66)?;
     b.extend_from_slice(&t.off66.to_le_bytes(), GFP_KERNEL)?; // off66: see `mode_profile`
     b.extend_from_slice(&0x0200u16.to_le_bytes(), GFP_KERNEL)?; // off68: profile constant
+
     // off70..73: pixel clock in 10 kHz units, a full u32. Ridge only ever fills the low half, so
     // this is byte-identical there to the old u16 followed by two zero bytes.
     b.extend_from_slice(&t.pixel_clock_10khz.to_le_bytes(), GFP_KERNEL)?;
@@ -659,11 +660,7 @@ pub(super) fn verify_in_ack(
 ///
 /// Ridge seals every reply as wire `sub=0x45`. Navarro also pushes frames framed in the clear as
 /// wire `sub=0x25`, with the inner message at offset 16 and nothing to decrypt.
-pub(super) fn inner_plaintext(
-    ks: &[u8; 16],
-    out_riv: &[u8; 8],
-    wire: &[u8],
-) -> Option<KVec<u8>> {
+pub(super) fn inner_plaintext(ks: &[u8; 16], out_riv: &[u8; 8], wire: &[u8]) -> Option<KVec<u8>> {
     if wire.len() <= 16 {
         return None;
     }
@@ -907,7 +904,14 @@ pub(super) fn cursor_image(
     }
     let mut b = KVec::with_capacity(32 + bgra.len(), GFP_KERNEL)?;
     let dock_head = CURSOR_HEAD_IDS.get(head as usize).copied().ok_or(EINVAL)?;
-    cursor_header(&mut b, 0x401c, 0x41, counter, dock_head, CURSOR_OFF23_HIDDEN)?;
+    cursor_header(
+        &mut b,
+        0x401c,
+        0x41,
+        counter,
+        dock_head,
+        CURSOR_OFF23_HIDDEN,
+    )?;
     pad_to(&mut b, 32)?; // off24..31 zero (no w/h here)
     b.extend_from_slice(&[0, 0], GFP_KERNEL)?; // off32..33
     b.extend_from_slice(&bgra[..bgra.len() - 2], GFP_KERNEL)?; // pixels @ off34
@@ -1261,9 +1265,9 @@ pub(super) fn navarro_stream_report_mode(mode_header: &[u8; 26]) -> [u8; 112] {
 ///
 /// The marker count is not a settled constant: one capture has it once followed by the six records
 /// and fourteen unexplained bytes, while a capture taken while DLM was driving both panels has it
-/// twice and no trailing bytes. Both plaintexts are 304 bytes. This follows the capture that was working, and it is the
-/// reason the fourteen bytes must not be dismissed as AES padding for *this* record: in the
-/// working capture they are consumed by a second marker at the front.
+/// twice and no trailing bytes. Both plaintexts are 304 bytes. This follows the capture that was
+/// working, and it is the reason the fourteen bytes must not be dismissed as AES padding for *this*
+/// record: in the working capture they are consumed by a second marker at the front.
 ///
 /// Only 2560x1440 has been observed, and the fixed header carries mode-derived bytes, so callers
 /// must not use this for another mode.
@@ -1275,9 +1279,15 @@ pub(super) fn navarro_pipe_descriptor(connector: u8) -> Result<KVec<u8>> {
         let alloc = u32::from((connector as u16) * NAVARRO_SLOTS_PER_CONNECTOR + index);
         b.extend_from_slice(&0x002cu16.to_le_bytes(), GFP_KERNEL)?;
         b.extend_from_slice(&0x000eu16.to_le_bytes(), GFP_KERNEL)?;
-        b.extend_from_slice(&navarro_pipe_slot(connector, index).to_le_bytes(), GFP_KERNEL)?;
+        b.extend_from_slice(
+            &navarro_pipe_slot(connector, index).to_le_bytes(),
+            GFP_KERNEL,
+        )?;
         b.extend_from_slice(&NAVARRO_SLOT_HEADER, GFP_KERNEL)?;
-        b.extend_from_slice(&navarro_pipe_ring(connector, index).to_le_bytes(), GFP_KERNEL)?;
+        b.extend_from_slice(
+            &navarro_pipe_ring(connector, index).to_le_bytes(),
+            GFP_KERNEL,
+        )?;
         b.extend_from_slice(&[0, 0], GFP_KERNEL)?;
         let plane0 = NAVARRO_PLANE0_BASE - alloc * NAVARRO_PLANE0_STEP;
         b.extend_from_slice(&plane0.to_le_bytes(), GFP_KERNEL)?;
@@ -1326,12 +1336,7 @@ pub(super) fn in_riv(out_riv: &[u8; 8]) -> [u8; 8] {
 /// one-hot selector there (`00 80` / `80 00`). A zero-padding heuristic therefore rejects two
 /// connectors' authentic messages, while accepting arbitrary unauthenticated ciphertext with a
 /// chance plaintext prefix would be unsafe.
-pub(super) fn open_in(
-    ks: &[u8; 16],
-    in_riv: &[u8; 8],
-    seq: u32,
-    body: &[u8],
-) -> Result<KVec<u8>> {
+pub(super) fn open_in(ks: &[u8; 16], in_riv: &[u8; 8], seq: u32, body: &[u8]) -> Result<KVec<u8>> {
     // Both platforms authenticate an inbound frame with a trailing Dl3Cmac over the whole body.
     // Verifying it is what lets callers read the plaintext without also testing it for
     // plausibility -- and that matters, because Navarro's per-connector HDCP pushes carry a
@@ -1467,11 +1472,7 @@ pub(super) fn probe_reply_status(
 ///
 /// Inner offset 26 bit 7 indicates that the downstream DDC read has completed. `None` distinguishes
 /// an unrelated or undecipherable frame from a matching reply that is not ready.
-pub(super) fn edid_poll_ready(
-    ks: &[u8; 16],
-    out_riv: &[u8; 8],
-    wire: &[u8],
-) -> Option<bool> {
+pub(super) fn edid_poll_ready(ks: &[u8; 16], out_riv: &[u8; 8], wire: &[u8]) -> Option<bool> {
     if wire.len() <= 16 || u16::from_le_bytes([wire[8], wire[9]]) != 0x45 {
         return None;
     }

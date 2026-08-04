@@ -1,7 +1,7 @@
 # Generated kernel patches
 
 [`kernel/`](kernel/README.md) is generated from
-`linux:integration/base-20260728..vino-upstream-rebuild` by
+`linux:integration/base-20260728..vino` by
 [`../tools/regenerate-patches.sh`](../tools/regenerate-patches.sh). Do not edit
 the patch files by hand; amend the source history and regenerate.
 

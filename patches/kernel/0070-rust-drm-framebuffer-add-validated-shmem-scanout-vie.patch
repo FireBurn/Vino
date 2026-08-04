@@ -1,7 +1,7 @@
-From 6f656d3c5035413ac2166858a02a8b4e18881da7 Mon Sep 17 00:00:00 2001
+From a68277e751013b35dcd69dc871065379a8a4cf45 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 19:15:31 +0100
-Subject: [PATCH 070/109] rust: drm: framebuffer: add validated shmem scanout
+Subject: [PATCH 070/108] rust: drm: framebuffer: add validated shmem scanout
  views
 
 Add framebuffer geometry and reference-counting operations for drivers
@@ -23,9 +23,9 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/helpers/drm/drm.c             |   1 +
  rust/helpers/drm/framebuffer.c     |  13 ++
- rust/kernel/drm/fourcc.rs          |  10 +-
- rust/kernel/drm/kms/framebuffer.rs | 324 ++++++++++++++++++++++++++++-
- 4 files changed, 342 insertions(+), 6 deletions(-)
+ rust/kernel/drm/fourcc.rs          |  28 ++-
+ rust/kernel/drm/kms/framebuffer.rs | 345 ++++++++++++++++++++++++++++-
+ 4 files changed, 381 insertions(+), 6 deletions(-)
  create mode 100644 rust/helpers/drm/framebuffer.c
 
 diff --git a/rust/helpers/drm/drm.c b/rust/helpers/drm/drm.c
@@ -60,10 +60,10 @@ index 000000000000..672cee03463a
 +	drm_framebuffer_put(fb);
 +}
 diff --git a/rust/kernel/drm/fourcc.rs b/rust/kernel/drm/fourcc.rs
-index a30e40dbc037..dd9f86cc333a 100644
+index a30e40dbc037..010823c4c86c 100644
 --- a/rust/kernel/drm/fourcc.rs
 +++ b/rust/kernel/drm/fourcc.rs
-@@ -12,9 +12,11 @@ const fn fourcc_code(a: u8, b: u8, c: u8, d: u8) -> u32 {
+@@ -12,9 +12,29 @@ const fn fourcc_code(a: u8, b: u8, c: u8, d: u8) -> u32 {
  // TODO: We manually import this because we don't have a reasonable way of getting constants from
  // function-like macros in bindgen yet.
  pub(crate) const FORMAT_MOD_INVALID: u64 = 0xffffffffffffff;
@@ -79,8 +79,26 @@ index a30e40dbc037..dd9f86cc333a 100644
 -pub const XRGB888: u32 = fourcc_code(b'X', b'R', b'2', b'4');
 +/// 32 bpp RGB with alpha.
 +pub const ARGB8888: u32 = fourcc_code(b'A', b'R', b'2', b'4');
++
++/// 32 bpp BGR with unused alpha.
++pub const XBGR8888: u32 = fourcc_code(b'X', b'B', b'2', b'4');
++
++/// 32 bpp BGR with alpha.
++pub const ABGR8888: u32 = fourcc_code(b'A', b'B', b'2', b'4');
++
++/// 30 bpp 10:10:10 RGB with unused alpha.
++pub const XRGB2101010: u32 = fourcc_code(b'X', b'R', b'3', b'0');
++
++/// 30 bpp 10:10:10 RGB with alpha.
++pub const ARGB2101010: u32 = fourcc_code(b'A', b'R', b'3', b'0');
++
++/// 30 bpp 10:10:10 BGR with unused alpha.
++pub const XBGR2101010: u32 = fourcc_code(b'X', b'B', b'3', b'0');
++
++/// 30 bpp 10:10:10 BGR with alpha.
++pub const ABGR2101010: u32 = fourcc_code(b'A', b'B', b'3', b'0');
 diff --git a/rust/kernel/drm/kms/framebuffer.rs b/rust/kernel/drm/kms/framebuffer.rs
-index 54d0391388a9..ced7a37dd2f5 100644
+index 54d0391388a9..2c218e9d487f 100644
 --- a/rust/kernel/drm/kms/framebuffer.rs
 +++ b/rust/kernel/drm/kms/framebuffer.rs
 @@ -5,9 +5,19 @@
@@ -251,7 +269,7 @@ index 54d0391388a9..ced7a37dd2f5 100644
  impl<T: KmsDriver> Framebuffer<T> {
      /// Convert a raw pointer to a `struct drm_framebuffer` into a [`Framebuffer`]
      ///
-@@ -67,4 +216,175 @@ pub(super) unsafe fn from_raw<'a>(ptr: *const bindings::drm_framebuffer) -> &'a
+@@ -67,4 +216,196 @@ pub(super) unsafe fn from_raw<'a>(ptr: *const bindings::drm_framebuffer) -> &'a
          // SAFETY: Our data layout is identical to drm_framebuffer
          unsafe { &*ptr.cast() }
      }
@@ -327,6 +345,27 @@ index 54d0391388a9..ced7a37dd2f5 100644
 +            // SAFETY: `packed_layout` rejected a null format pointer above.
 +            format: unsafe { (*raw.format).format },
 +        })
++    }
++
++    /// Returns the GEM object backing plane 0 of this framebuffer.
++    ///
++    /// A driver needs this to hand the buffer to a client, which is done by minting a handle for it
++    /// in that client's file. The same type, ownership, import and device checks as [`Self::vmap`]
++    /// apply, so the returned reference is known to belong to this driver.
++    #[cfg(CONFIG_RUST_DRM_GEM_SHMEM_HELPER)]
++    pub fn object<O>(&self) -> Result<&shmem::Object<O>>
++    where
++        O: gem::DriverObject<Driver = T>,
++        T: crate::drm::Driver<Object = shmem::Object<O>>,
++    {
++        // SAFETY: The framebuffer is initialized via its type invariant.
++        let raw = unsafe { &*self.0.get() };
++        let object_raw = raw.obj[0];
++        validate_object(raw, object_raw)?;
++
++        // SAFETY: `validate_object` established that `object_raw` is a live object of this
++        // driver's type, and it is owned by the framebuffer for at least this borrow.
++        Ok(unsafe { <shmem::Object<O> as gem::IntoGEMObject>::from_raw(object_raw) })
 +    }
 +
 +    /// Map a packed, single-plane, linear Rust shmem framebuffer and retain its backing object.

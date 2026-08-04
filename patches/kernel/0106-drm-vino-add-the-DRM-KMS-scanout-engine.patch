@@ -1,53 +1,58 @@
-From e9f868ac095103959730e5b67e18dea821b515d4 Mon Sep 17 00:00:00 2001
+From 9ae11afc42f12a7314fdbafef6b27b449f1e0204 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 21:21:05 +0100
-Subject: [PATCH 107/109] drm/vino: add the DRM/KMS scanout engine
+Subject: [PATCH 106/108] drm/vino: add the DRM/KMS scanout engine
 
-Add dual-head DRM/KMS support with EDID-backed connectors, atomic
-mode checks, a standard cursor plane, vblank events, and asynchronous
-scanout.
+Add the KMS objects, the atomic-commit path and the scanout engine that
+turns a compositor's framebuffer into the dock's wire format.
 
-Copy each commit into a driver-owned coherent shadow before userspace
-can reuse its framebuffer. A bounded four-entry mapping cache per
-head prepares compositor swapchains without driver-specific UAPI or
-unbounded pinned memory.
+The dock cannot scan out a GEM object, so a commit copies the changed
+strips into driver-owned coherent storage and only then completes,
+releasing the source framebuffer back to userspace. Encoding and USB
+submission continue asynchronously from that immutable snapshot. Nothing
+blocking runs in the atomic callbacks: they record desired state and wake
+per-head workers.
 
-Track damage against the last surface successfully presented to the
-dock. Combine retransmission debt and persistent USB queues with
-per-head ordered workers and latest-state coalescing.
+Send only what changed. Each strip's content is hashed during the snapshot,
+and a strip whose hash moves is charged a transmission for every buffer the
+dock rotates through, plus one. That debt is what a delta selects on -- not
+merely this frame's damage -- because one presentation reaches exactly one
+dock buffer, and a strip that arrives in some of them leaves the panel
+alternating between old and new content. No analysis of the wire can see
+it: the bytes are correct. An idle desktop therefore sends nothing at all,
+which is also what the vendor driver does.
 
-Support every valid DRM rotation and reflection combination through a
-shared transformed sampler. Encode transformed full frames in parallel
-while retaining damage updates and encoded-strip reuse for identity
-scanout. Use DRM atomic helpers for 1:1 geometry and cursor clipping.
+Encoding is fanned across CPUs as independent per-strip work items, and an
+encoded strip body is reused while its content hash is unchanged, so the
+retransmissions the debt owes do not re-run the codec.
 
-Apply the CRTC's CTM and gamma ramp in software during the pixel walk,
-since the dock is sent already-encoded pixels and has no colour
-hardware the host can reach. Cache the transform per head from the
-atomic flush, so a corrector that ramps its matrix on an
-already-enabled CRTC is followed. A channel-independent matrix folds
-into per-channel lookup tables, keeping the common case at one lookup
-per channel; only a matrix that mixes channels performs arithmetic per
-pixel. An identity matrix collapses to no transform so the direct
-scanout path is restored, and any change invalidates the encoded-strip
-cache, which keys on source pixels alone.
+Apply the CRTC's CTM and GAMMA_LUT in software while the pixels are still
+here. A dock has no colour hardware to program, so a compositor correcting
+through those properties has nowhere else to put the correction. color.rs
+is shared verbatim with drm/evdi, which has the same problem; the copies
+are kept byte-identical and a tool in the companion repository fails if
+they drift.
 
-Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Claude:claude-opus-5
 Assisted-by: Codex:gpt-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- drivers/gpu/drm/vino/color.rs    |  280 ++
- drivers/gpu/drm/vino/drm_sink.rs | 4907 ++++++++++++++++++++++++++++++
- 2 files changed, 5187 insertions(+)
+ drivers/gpu/drm/vino/color.rs                 |  271 ++
+ drivers/gpu/drm/vino/drm_sink.rs              | 4094 +++++++++++++++++
+ drivers/gpu/drm/vino/drm_sink/mode_objects.rs |  799 ++++
+ drivers/gpu/drm/vino/drm_sink/scanout.rs      | 1487 ++++++
+ 4 files changed, 6651 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/color.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink.rs
+ create mode 100644 drivers/gpu/drm/vino/drm_sink/mode_objects.rs
+ create mode 100644 drivers/gpu/drm/vino/drm_sink/scanout.rs
 
 diff --git a/drivers/gpu/drm/vino/color.rs b/drivers/gpu/drm/vino/color.rs
 new file mode 100644
-index 000000000000..3949113a61a9
+index 000000000000..309a10566069
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/color.rs
-@@ -0,0 +1,280 @@
+@@ -0,0 +1,271 @@
 +// SPDX-License-Identifier: GPL-2.0
 +//! Software colour management for the CRTC's `CTM` and `GAMMA_LUT` properties.
 +//!
@@ -58,14 +63,14 @@ index 000000000000..3949113a61a9
 +//! such an output unless the driver applies it while it still has the pixels. This module is that
 +//! application.
 +//!
-+//! ⚠ **This file is shared verbatim between `drm/vino` and `drm/evdi`.** They are separate
++//! NOTE: this file is shared verbatim between `drm/vino` and `drm/evdi`. They are separate
 +//! modules and cannot share a crate, so the copies are kept byte-identical and
 +//! `tools/color-selftest.sh` fails if they drift.
 +//!
 +//! Pipeline order follows DRM's: degamma, then CTM, then gamma. No degamma LUT is advertised, so
 +//! what runs here is **CTM then gamma**.
 +//!
-+//! ⚠ The transform is applied to the framebuffer's encoded (typically sRGB) values, not to linear
++//! The transform is applied to the framebuffer's encoded (typically sRGB) values, not to linear
 +//! light, because there is no degamma stage to linearise them first. That is the same
 +//! simplification every software implementation of this makes, and it is what compositors expect
 +//! when they compute a correction for a CRTC that advertises no degamma LUT.
@@ -229,7 +234,7 @@ index 000000000000..3949113a61a9
 +            for i in 0..LUT_LEN {
 +                let mut v = expand(i as u8);
 +                if let Some(g) = gains {
-+                    v = (((g[c] as i64 * v as i64 + HALF_Q) >> 16)).clamp(0, MAX as i64) as i32;
++                    v = ((g[c] as i64 * v as i64 + HALF_Q) >> 16).clamp(0, MAX as i64) as i32;
 +                }
 +                if let Some(t) = &gamma {
 +                    v = sample(&t[c * LUT_LEN..(c + 1) * LUT_LEN], v);
@@ -307,16 +312,7 @@ index 000000000000..3949113a61a9
 +    fn eq(&self, other: &Self) -> bool {
 +        match (self, other) {
 +            (Self::Fused(a), Self::Fused(b)) => a[..] == b[..],
-+            (
-+                Self::Mixed {
-+                    ctm: a,
-+                    gamma: ga,
-+                },
-+                Self::Mixed {
-+                    ctm: b,
-+                    gamma: gb,
-+                },
-+            ) => {
++            (Self::Mixed { ctm: a, gamma: ga }, Self::Mixed { ctm: b, gamma: gb }) => {
 +                a == b
 +                    && match (ga, gb) {
 +                        (Some(x), Some(y)) => x[..] == y[..],
@@ -330,10 +326,10 @@ index 000000000000..3949113a61a9
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink.rs b/drivers/gpu/drm/vino/drm_sink.rs
 new file mode 100644
-index 000000000000..556d5994afbb
+index 000000000000..33d0f8b3c105
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink.rs
-@@ -0,0 +1,4907 @@
+@@ -0,0 +1,4094 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! DRM/KMS integration for Vino.
@@ -368,7 +364,7 @@ index 000000000000..556d5994afbb
 +        SpinLock, SpinLockIrq,
 +    },
 +    time::{
-+        delay::fsleep,
++        delay::{fsleep, udelay},
 +        hrtimer::{
 +            ArcHrTimerHandle, HrTimer, HrTimerCallback, HrTimerCallbackContext, HrTimerPointer,
 +            HrTimerRestart, RelativeHardMode,
@@ -382,6 +378,16 @@ index 000000000000..556d5994afbb
 +    xxhash,
 +};
 +
++/// The KMS objects the compositor drives, and the software vblank timer that paces them.
++mod mode_objects;
++/// Framebuffer to wire: damage selection, encode, record framing and URB submission.
++mod scanout;
++
++pub(super) use mode_objects::{
++    PlaneArgs, VblankTimer, VinoConnector, VinoCrtc, VinoEncoder, VinoPlane,
++};
++use scanout::{read_cursor_bgra, run_pending_scanout, snapshot_to_shadow, src_dims};
++
 +/// Connector mode used until a downstream EDID is available.
 +const FALLBACK_W: i32 = 2560;
 +const FALLBACK_H: i32 = 1440;
@@ -392,30 +398,17 @@ index 000000000000..556d5994afbb
 +/// Cursor-plane format list.
 +static CURSOR_FORMATS: [u32; 1] = [drm::fourcc::ARGB8888];
 +
-+/// Per-mode pixel-clock ceiling in kHz.
++/// Per-mode pixel-clock ceiling in kHz for a dock whose profile has not been applied yet.
 +///
-+/// The set-mode message carries the clock at offset 70 as a `u16` in 10 kHz units, so 655.35 MHz is
-+/// the largest value it can express. Offset 72 sits above it and is zero in every decrypted DLM
-+/// message, at every resolution and refresh captured, so nothing establishes it as a high half.
-+/// Advertising a mode past this point produced a mode-set that failed at `timing_from_drm_mode`
-+/// instead of being pruned here.
-+const MAX_HEAD_CLOCK_KHZ: i32 = 655_350;
++/// Ridge's DLM never programs above 497.75 MHz, so no Ridge capture fills the high half of the
++/// offset-70 `u32`; this keeps the value that half can express on its own.
++pub(super) const DEFAULT_MAX_HEAD_CLOCK_KHZ: u32 = 655_350;
 +
-+/// Highest refresh rate that the D6000 has been observed to display.
++/// Refresh ceiling for a dock whose profile has not been applied yet.
 +///
-+/// DLM never programs the dock above this: asked for 2560x1440@180 it puts 119.998 Hz on the wire,
-+/// and asked for @85 it programs the 59.95 Hz CVT-RB timing. Every vino attempt above 120 Hz left
-+/// the panel dark, so this ceiling matches the only behaviour the hardware has ever demonstrated.
-+const DOCK_MAX_REFRESH_HZ: u32 = 120;
-+
-+pub(super) fn max_refresh_hz() -> u32 {
-+    DOCK_MAX_REFRESH_HZ
-+}
-+
-+/// Return whether DRM's rounded refresh rate is within the dock limit.
-+pub(super) fn refresh_within_limit(vrefresh: i32) -> bool {
-+    vrefresh <= 0 || (vrefresh as u32) <= max_refresh_hz()
-+}
++/// This is Ridge's limit, which is also DLM's: asked for 2560x1440@180 it puts 119.998 Hz on the
++/// wire, and asked for @85 it programs the 59.95 Hz CVT-RB timing.
++pub(super) const DEFAULT_MAX_REFRESH_HZ: u32 = 120;
 +
 +/// Return the active pixel rate, saturating on invalidly large modes.
 +pub(super) fn active_pixel_rate(hdisplay: u16, vdisplay: u16, vrefresh: i32) -> u32 {
@@ -433,17 +426,22 @@ index 000000000000..556d5994afbb
 +/// Delay before retrying a transient asynchronous control operation.
 +const KMS_RETRY_MS: u32 = 50;
 +
-+/// Whether image records carry the protocol's y-parity bit in `sub` bit 4.
-+const BAND_PARITY_BIT: bool = true;
++/// Maximum number of physical downstream connectors Vino exposes.
++///
++/// Ridge docks use the first two. Navarro has four physical DP sockets; connectors 0/2 share
++/// bulk endpoint 0x08 and connectors 1/3 share 0x0a. `DockProfile::connectors` selects the
++/// active prefix at runtime, while this constant keeps the DRM object layout fixed at registration.
++pub(crate) const HEADS: usize = 4;
 +
-+/// Emit image records in raster order.
-+const INTERLACED_BANDS: bool = false;
++/// Bulk transfer size on the video endpoints: a multiple of the 1024-byte maximum packet size, so
++/// only a frame's final transfer terminates short.
++const VIDEO_XFER: usize = 65536;
 +
-+/// Number of display heads on the D6000.
-+pub(crate) const HEADS: usize = 2;
-+
-+/// Video bulk-OUT endpoint for each head.
-+pub(crate) const VIDEO_EPS: [u8; HEADS] = [0x08, 0x0b];
++/// The repeated layout word in the DL7400's decoder configuration at 2560x1440.
++///
++/// Ridge uses `0x4000` for every mode. Only this value has been observed on the DL7400, and its
++/// derivation from the mode is not established.
++const NAVARRO_LAYOUT_WORD: u16 = 0x2100;
 +
 +/// Maximum number of individual frame-damage rectangles re-converted per flip before they are
 +/// collapsed into a single bounding box. Bounds the stack array used on the atomic-commit path
@@ -457,10 +455,16 @@ index 000000000000..556d5994afbb
 +const FRAME_PERIOD_US: i64 = FRAME_PERIOD_MS * 1000;
 +
 +/// How many consecutive frames must carry a strip after its content changes, so that every one of
-+/// the dock's buffers receives it. Two is the theoretical minimum for a double-buffered sink; a
-+/// window drag still left an occasional stale frame at two, so this carries one frame of margin
-+/// for a presentation the dock drops or applies to the buffer it just used.
-+const DAMAGE_REPEATS: u8 = 3;
++/// the dock's buffers receives it.
++///
++/// The ring depth (`Geometry::dock_buffers`) is the theoretical minimum, plus one frame of margin
++/// for a presentation the dock drops or applies to the buffer it just used. Coming up short leaves
++/// a slot holding stale pixels, which the panel shows as ghosting and no wire analysis can see --
++/// the bytes are correct.
++#[inline]
++fn damage_repeats(geom: super::video::wht::Geometry) -> u8 {
++    geom.dock_buffers.saturating_add(1)
++}
 +/// Activation timing relative to the mode-set submission.
 +const PROMPT_VIDEO_MS: i64 = 110;
 +const PROMPT_CLOSE_2F_MS: i64 = 123;
@@ -469,7 +473,7 @@ index 000000000000..556d5994afbb
 +const PROMPT_KEEPALIVE_QUIESCE_MS: i64 = 40;
 +/// Minimum interval between streaming status polls (`id=0x14 sub=0x0c`).
 +///
-+/// This was issued once per *presentation*, so two heads at ~100 fps with `DAMAGE_REPEATS`
++/// This was issued once per *presentation*, so two heads at ~100 fps with `damage_repeats()`
 +/// presentations each drove 200-600 CP round-trips a second, every one of them serialising on the
 +/// single control link. Whichever head looped fastest re-acquired it immediately and starved the
 +/// other for seconds at a time. DLM issues ~3.8 of these per second
@@ -480,7 +484,7 @@ index 000000000000..556d5994afbb
 +const PROMPT_TRAINING_TAIL_MS: i64 = 400;
 +/// How long [`VinoDrmData::blank_head`] keeps presenting black when a CRTC is disabled.
 +///
-+/// It only has to outlast the dock's buffer rotation, which `DAMAGE_REPEATS` puts at three
++/// It only has to outlast the dock's buffer rotation, which `damage_repeats` puts at three
 +/// presentations; a black frame is ~200 KB and presents in a couple of milliseconds, so this is
 +/// generous by an order of magnitude and still finishes well inside a DPMS transition. It is not a
 +/// training window -- nothing downstream needs settling -- so it does not reuse
@@ -530,6 +534,192 @@ index 000000000000..556d5994afbb
 +    /// Keep both carriers active until downstream clock programming completes.
 +    pub(super) const CARRIER_TAIL_MS: i64 = 800;
 +}
++
++/// A dock's cold bring-up choreography, anchored on the first head's mode set.
++///
++/// Ridge and Navarro differ in more than timing: Navarro opens each head's bracket with a
++/// state-0 pair before the state-1/3 pair, spaces its two mode sets 757 ms apart rather than
++/// 29 ms, sets head 0's mode a *second* time shortly before head 0's video, and streams head 1
++/// first. Replaying one dock's timeline at the other leaves the endpoint unarmed.
++pub(super) struct ColdTimeline {
++    /// Offset of the second head's mode set.
++    pub(super) h1_mode: i64,
++    /// End of any silent window on EP02 after the second mode set.
++    pub(super) quiet_end: i64,
++    /// Heads in the order they start streaming, with the offset each starts at.
++    pub(super) video: &'static [(usize, i64)],
++    /// Mode sets repeated after the initial pair, as `(offset, head)`.
++    pub(super) remode: &'static [(i64, usize)],
++    /// `(offset_ms, head, sub, state)` stream markers. `sub` 0x2f/0x2e as on the wire.
++    pub(super) markers: &'static [(i64, u8, u16, u8)],
++    /// `id=0x14 sub=0x0c` status polls.
++    pub(super) polls: &'static [i64],
++    /// `(offset_ms, head, is_fetch)` EDID re-reads inside the bracket.
++    pub(super) edid: &'static [(i64, u8, bool)],
++}
++
++/// Ridge's timeline, as replayed from a D6000 cold bring-up.
++static COLD_RIDGE: ColdTimeline = ColdTimeline {
++    h1_mode: cold::H1_MODE,
++    quiet_end: cold::QUIET_END,
++    video: &[(0, cold::H0_VIDEO), (1, cold::H1_VIDEO)],
++    remode: &[],
++    markers: cold::MARKERS,
++    polls: cold::POLLS,
++    edid: cold::EDID,
++};
++
++/// Navarro's timeline, measured from a DLM cold bring-up and anchored on connector 0's real
++/// (`off23 = 2`) mode set, exactly as Ridge's is.
++static COLD_NAVARRO: ColdTimeline = ColdTimeline {
++    h1_mode: 10,
++    // DLM polls continuously across this span; there is no silent window to preserve.
++    quiet_end: 11,
++    // Video is not a pair of one-shot events: DLM keeps head 0's carrier alive throughout the
++    // still-open control bracket, starts head 1, and continues both through the closing markers.
++    // A gap here makes the dock accept one frame and NAK the next forever. The activation path
++    // uses its pre-encoded carrier; normal scanout replaces it as soon as activation returns.
++    video: &[
++        (0, 122),
++        (0, 124),
++        (0, 134),
++        (0, 171),
++        (0, 192),
++        (0, 199),
++        (0, 235),
++        (0, 252),
++        (1, 272),
++        (0, 277),
++        (1, 293),
++        (1, 303),
++    ],
++    remode: &[],
++    markers: &[
++        (7, 0, 0x2f, 1),
++        (13, 0, 0x2e, 3),
++        (20, 1, 0x2f, 1),
++        (21, 0, 0x2f, 1),
++        (35, 0, 0x2e, 0),
++        (76, 1, 0x2e, 3),
++        (104, 1, 0x2f, 1),
++        (128, 1, 0x2e, 3),
++        (131, 0, 0x2f, 1),
++        (136, 0, 0x2e, 0),
++        (168, 1, 0x2f, 1),
++        (181, 1, 0x2e, 0),
++        (228, 0, 0x2f, 0),
++        (230, 0, 0x2e, 0),
++        (303, 1, 0x2f, 0),
++        (304, 1, 0x2e, 0),
++    ],
++    polls: &[17, 78, 120, 162, 179, 223, 267, 295, 297, 297],
++    // Navarro reads every connector's EDID before the anchor, not inside the bracket.
++    edid: &[],
++};
++
++/// Reservation-token slots for [`COLD_NAVARRO::markers`] and [`COLD_NAVARRO::polls`].
++///
++/// DLM assigns counters in its per-head workers before their EP02 writes interleave. Wire AES
++/// sequence remains monotonic, but the echoed inner counters consequently do not: for example the
++/// wire order begins `n, n+1, n+3, n+2, n+5, n+4`. Navarro starts NAKing at the first flattened
++/// counter, so retain that allocation order. These numbers index live reservation tokens; they
++/// are not protocol counters and are never added to a captured/base counter.
++static NAVARRO_MARKER_COUNTER_SLOTS: &[usize] =
++    &[1, 2, 4, 6, 8, 7, 10, 12, 11, 14, 16, 17, 20, 21, 26, 27];
++static NAVARRO_POLL_COUNTER_SLOTS: &[usize] = &[5, 9, 13, 15, 18, 19, 22, 23, 24, 25];
++const NAVARRO_COLD_COUNTERS: usize = 28;
++
++/// One operation in Navarro's cold sink-reset prelude. This is separate from [`ColdTimeline`]: it
++/// runs before the first real mode set and changes downstream EDID/sink state, whereas
++/// `ColdTimeline` brackets already-programmed streams.
++#[derive(Clone, Copy)]
++enum NavarroColdOp {
++    Poll,
++    EdidState(u8, u8),
++    Probe(u8),
++    Fetch(u8),
++    SinkState(u8, u8),
++    PostEdid(u8),
++    Clear(u8),
++}
++
++/// Authenticated DLM transaction between Navarro's first clear pair and its first real mode.
++///
++/// Offsets are milliseconds from the first head-0 clear in
++/// `navarro-dlm-today-124144/wire.pcapng`. Equal offsets deliberately retain wire order. Most
++/// importantly, DLM stops both EDID readers and sends sink state `0xff` immediately after the
++/// first clears, then re-reads and re-engages each sink before its second clear. Omitting this
++/// whole state transition left the video endpoints accepting one bulk transfer and NAKing every
++/// subsequent transfer.
++static NAVARRO_COLD_PRELUDE: &[(i64, NavarroColdOp)] = &[
++    (2, NavarroColdOp::EdidState(0, 0)),
++    (3, NavarroColdOp::Probe(0)),
++    (5, NavarroColdOp::EdidState(1, 0)),
++    (5, NavarroColdOp::Probe(1)),
++    (7, NavarroColdOp::SinkState(0, 0xff)),
++    (7, NavarroColdOp::SinkState(1, 0xff)),
++    (8, NavarroColdOp::Poll),
++    (30, NavarroColdOp::Poll),
++    (50, NavarroColdOp::Poll),
++    (69, NavarroColdOp::Poll),
++    (87, NavarroColdOp::Poll),
++    (105, NavarroColdOp::Poll),
++    (123, NavarroColdOp::Poll),
++    (143, NavarroColdOp::Poll),
++    (162, NavarroColdOp::Poll),
++    (181, NavarroColdOp::Poll),
++    (201, NavarroColdOp::Poll),
++    (219, NavarroColdOp::Poll),
++    (237, NavarroColdOp::Poll),
++    (255, NavarroColdOp::Poll),
++    (273, NavarroColdOp::Poll),
++    (293, NavarroColdOp::Poll),
++    (312, NavarroColdOp::Poll),
++    (328, NavarroColdOp::Poll),
++    (329, NavarroColdOp::Poll),
++    (329, NavarroColdOp::Poll),
++    (329, NavarroColdOp::Poll),
++    (330, NavarroColdOp::Poll),
++    (330, NavarroColdOp::Poll),
++    (1216, NavarroColdOp::Poll),
++    (1233, NavarroColdOp::Poll),
++    (1315, NavarroColdOp::Poll),
++    (1650, NavarroColdOp::Poll),
++    (1667, NavarroColdOp::Poll),
++    (1750, NavarroColdOp::Poll),
++    (1755, NavarroColdOp::Probe(0)),
++    (1757, NavarroColdOp::EdidState(0, 1)),
++    (1758, NavarroColdOp::Probe(0)),
++    (1805, NavarroColdOp::Fetch(0)),
++    (1810, NavarroColdOp::SinkState(0, 0)),
++    (1822, NavarroColdOp::Clear(0)),
++    (1827, NavarroColdOp::Poll),
++    (1850, NavarroColdOp::Probe(1)),
++    (1853, NavarroColdOp::EdidState(1, 1)),
++    (1856, NavarroColdOp::Probe(1)),
++    (1902, NavarroColdOp::PostEdid(0)),
++    (1903, NavarroColdOp::Fetch(1)),
++    (1907, NavarroColdOp::SinkState(1, 1)),
++    (1930, NavarroColdOp::Clear(1)),
++    (1934, NavarroColdOp::Poll),
++    (1956, NavarroColdOp::Poll),
++    (1975, NavarroColdOp::Poll),
++    (1994, NavarroColdOp::Poll),
++    (2003, NavarroColdOp::Poll),
++    (2005, NavarroColdOp::Poll),
++    (2007, NavarroColdOp::PostEdid(1)),
++    (2016, NavarroColdOp::Poll),
++];
++
++/// Navarro tears both pipe descriptors down first, then executes
++/// [`NAVARRO_COLD_PRELUDE`] before programming the first real mode.
++const NAVARRO_PRIME_CLEAR_H1_MS: i64 = 2;
++const NAVARRO_REAL_MODE_H0_MS: i64 = 2978;
++/// How long the KMS worker waits for the rest of a multi-head atomic commit's mode sets.
++///
++/// Bounded so a genuine single-head commit costs at most this before proceeding.
++const MODESET_BATCH_SETTLE_MS: i64 = 20;
++
 +/// Number of back-to-back presentations of one already-encoded full frame while a newly-mode-set
 +/// downstream is training.
 +const COLD_TRAINING_PRESENTATIONS: u32 = 8;
@@ -879,6 +1069,22 @@ index 000000000000..556d5994afbb
 +/// Number of post-keyframe repaints. Cold-link training uses its separate bounded deadline.
 +const SETTLE_REPAINTS: u32 = 1;
 +
++/// Longest the DL7400 tolerates a silent video endpoint before it tears the link down.
++///
++/// Measured twice, with very different transfer shapes: a full 204 KB frame and a single 4 KB
++/// image record both ended with every outstanding URB completing `-ESHUTDOWN` 1.06 s and 1.10 s
++/// after the last video byte, the dock going deaf on the control plane at the same instant. DLM
++/// never gets near it -- it pairs a sealed report with every frame, a median 9-19 ms apart and at
++/// most 1.0 s apart even when the desktop is still.
++const NAVARRO_VIDEO_QUIET_MS: i64 = 1000;
++
++/// Period at which an idle DL7400 head is re-fed, comfortably inside
++/// [`NAVARRO_VIDEO_QUIET_MS`].
++const NAVARRO_KEEPALIVE_MS: i64 = 250;
++
++/// Keep a missed repaint from being enough to trip the dock's teardown.
++const _: () = assert!(NAVARRO_KEEPALIVE_MS * 3 <= NAVARRO_VIDEO_QUIET_MS);
++
 +/// DRM device-private data: the bound USB interface, engaged CP session, connector state, deferred
 +/// scanout slots and per-head transport state.
 +#[pin_data]
@@ -931,6 +1137,10 @@ index 000000000000..556d5994afbb
 +    scanout_work_h0: Work<VinoDrmDevice, 1>,
 +    #[pin]
 +    scanout_work_h1: Work<VinoDrmDevice, 2>,
++    #[pin]
++    scanout_work_h2: Work<VinoDrmDevice, 3>,
++    #[pin]
++    scanout_work_h3: Work<VinoDrmDevice, 4>,
 +    /// Dedicated queue for initial authentication and the steady-state control session.
 +    session_queue: workqueue::OwnedQueue,
 +    /// Ordered queue for runtime KMS and cursor control transactions.
@@ -955,6 +1165,13 @@ index 000000000000..556d5994afbb
 +    /// beyond what the dock may actually display.
 +    #[pin]
 +    strip_hashes: Mutex<[Option<StripHashState>; HEADS]>,
++    /// The DL7400 per-strip size-class map most recently sent for each connector.
++    ///
++    /// The map describes the whole surface while a delta frame carries only its damaged strips, so
++    /// rebuilding it from zero each frame re-declares every untouched position as class 0. See
++    /// `video::wht::navarro_strip_params`.
++    #[pin]
++    strip_classes: Mutex<[KVec<u8>; HEADS]>,
 +    /// Per-strip retransmit debt. Spreading repeated updates across frames reaches both of the
 +    /// dock's scanout buffers; consecutive presentations can target the same buffer.
 +    #[pin]
@@ -962,10 +1179,25 @@ index 000000000000..556d5994afbb
 +    /// Set once the dock engages the CP cipher (`wsub=0x45` acks > 0); EP08 scanout is gated on it.
 +    /// Per device, so a second connected dock does not share one dock's engagement state.
 +    cp_engaged: core::sync::atomic::AtomicBool,
++    /// This device's codec geometry, packed; see [`VinoDrmData::geometry`] and
++    /// [`super::video::wht::Geometry`].
++    codec_geometry: core::sync::atomic::AtomicU32,
++    /// Which protocol generation this dock speaks; see `DockProfile::generation`. The two
++    /// platforms differ in their initialisation, per-head HDCP framing, stream open and mode
++    /// description, so one flag drives all of them rather than three that can disagree.
++    is_navarro: core::sync::atomic::AtomicBool,
++    /// How many downstream connectors this dock answers a presence probe for; see
++    /// `DockProfile::connectors`. Ridge: 2; Navarro: all four physical sockets.
++    connectors: core::sync::atomic::AtomicU8,
 +    /// Excludes the independent keepalive loop while the mode worker emits the mode-relative
 +    /// activation timeline. Without this, a keepalive poll can win `cp_link` between
 +    /// two explicitly paced markers and stretch/reorder the sequence.
 +    cp_timeline_exclusive: core::sync::atomic::AtomicBool,
++    /// Navarro's authenticated setup transcript continues directly into the first KMS
++    /// transaction: its first runtime message is a pipe clear, not a background status poll.
++    /// Hold the keepalive after publishing the session until that transaction has claimed the
++    /// control timeline.
++    initial_modeset_quiet: core::sync::atomic::AtomicBool,
 +    /// Mode generation successfully programmed on each dock head. Scanout must match it because
 +    /// atomic plane updates can precede the deferred mode-set transaction.
 +    modeset_active: [core::sync::atomic::AtomicU64; HEADS],
@@ -993,9 +1225,15 @@ index 000000000000..556d5994afbb
 +    /// Logical WHT frame sequence per head.
 +    #[pin]
 +    scanout_seq: Mutex<[u32; HEADS]>,
-+    /// Persistent pipelined bulk-OUT queue per head. It remains live between frames.
++    /// Persistent pipelined bulk-OUT queue per physical video endpoint. It remains live between
++    /// frames.
++    ///
++    /// The slot is the first connector whose endpoint address matches the caller's (see
++    /// [`UsbLink::video_pipe_index`](super::UsbLink::video_pipe_index)); duplicate slots remain
++    /// empty. Holding an individual slot mutex over a whole frame serializes connectors that share
++    /// a pipe without needlessly serializing independent endpoints.
 +    #[pin]
-+    video_q: Mutex<[Option<super::usb::BulkOutQueue>; HEADS]>,
++    video_q: [Mutex<Option<super::usb::BulkOutQueue>>; HEADS],
 +    /// One reusable 64-KiB coalescing window per head. `frame_records` deliberately stores a frame
 +    /// as small allocations so encoding never asks kmalloc for multi-megabyte physically contiguous
 +    /// memory; scanout joins those fragments into this bounded window before `BulkOutQueue::send`
@@ -1007,6 +1245,15 @@ index 000000000000..556d5994afbb
 +    last_timing: SpinLock<[Option<super::cp::Timing>; HEADS]>,
 +    /// Heads whose next video stream must be prefixed with the pipe-arm records.
 +    arm_prefix_pending: core::sync::atomic::AtomicU32,
++    /// Heads for which the read-only endpoint status at the first video stall was logged.
++    endpoint_status_logged: core::sync::atomic::AtomicU32,
++    /// Connectors still owed the short sealed open that names a stream vino does not drive.
++    ///
++    /// Held apart from `arm_prefix_pending` because it is the complement of it: a connector vino
++    /// is about to send pixels to opens its stream with the pipe descriptor instead, and both DLM
++    /// captures send this record only on the stream ids of the connectors left idle. The opens go
++    /// out before any head's first frame, as DLM's do.
++    stream_open_pending: core::sync::atomic::AtomicU32,
 +    /// Per-head "owes a full keyframe" bitmask (bit `h` = head `h`). Set (all heads) after a
 +    /// `KmsCmd::ModeSet` send: a new mode leaves the dock's framebuffer undefined, so the first
 +    /// scanout after it must be a FULL frame ([`super::video::wht::colour_frame_ep08`]), not a
@@ -1028,6 +1275,10 @@ index 000000000000..556d5994afbb
 +    cursor_geometry: Mutex<[Option<(u16, u16)>; HEADS]>,
 +    /// Dock-wide pixel-rate budget in pixels per second; zero means unknown.
 +    dock_pixel_budget: core::sync::atomic::AtomicU32,
++    /// Highest refresh rate this dock is known to drive; see `DockProfile::max_refresh_hz`.
++    max_refresh_hz: core::sync::atomic::AtomicU32,
++    /// Highest per-mode pixel clock in kHz; see `DockProfile::max_head_clock_khz`.
++    max_head_clock_khz: core::sync::atomic::AtomicU32,
 +    /// Excludes scanout while a mode-set batch can submit on a video endpoint. Paired with
 +    /// `video_inflight` using sequentially consistent store-then-check handshakes.
 +    cmd_busy: core::sync::atomic::AtomicBool,
@@ -1058,6 +1309,20 @@ index 000000000000..556d5994afbb
 +    /// Per-head key and nonce used to seal pipe-arm records.
 +    #[pin]
 +    video_keys: Mutex<[kernel::crypto::Secret<32>; HEADS]>,
++    /// When each head last put a byte on its video endpoint.
++    ///
++    /// Drives the DL7400 keep-alive: see [`NAVARRO_VIDEO_QUIET_MS`] for why a head that has
++    /// nothing to draw still has to say something.
++    #[pin]
++    last_video_at: SpinLock<[Option<Instant<Monotonic>>; HEADS]>,
++    /// Per-head AES-CTR block counter for the sealed records on that head's video stream.
++    ///
++    /// Every sealed video record carries this counter in its wire `seq`, and `seal_livemac` uses
++    /// it both as the CTR block index and as the Dl3Cmac counter. It is stream state, not record
++    /// state: DLM advances it by `ceil(plaintext / 16)` for every sealed record it sends on a
++    /// stream and never rewinds it, so a re-arm continues the count rather than restarting. It is
++    /// reset only when new video keys arrive, because a fresh key is a fresh keystream.
++    video_seal_seq: [core::sync::atomic::AtomicU32; HEADS],
 +}
 +
 +impl VinoDrmData {
@@ -1078,6 +1343,8 @@ index 000000000000..556d5994afbb
 +            cmd_work <- new_delayed_work!("vino::kms_cmd"),
 +            scanout_work_h0 <- new_work!("vino::scanout_h0"),
 +            scanout_work_h1 <- new_work!("vino::scanout_h1"),
++            scanout_work_h2 <- new_work!("vino::scanout_h2"),
++            scanout_work_h3 <- new_work!("vino::scanout_h3"),
 +            session_queue: workqueue::Queue::new_ordered().build(kernel::c_str!("vino_session"))?,
 +            kms_queue: workqueue::Queue::new_ordered().build(kernel::c_str!("vino_kms"))?,
 +            scanout_queue: workqueue::Queue::new_unbound()
@@ -1087,19 +1354,23 @@ index 000000000000..556d5994afbb
 +            heads_present: core::sync::atomic::AtomicU32::new(0),
 +            color <- new_mutex!([None; HEADS]),
 +            strip_hashes <- new_mutex!([const { None }; HEADS]),
++            strip_classes <- new_mutex!(core::array::from_fn(|_| KVec::new())),
 +            dirty_ttl <- new_mutex!([const { None }; HEADS]),
 +            cp_engaged: core::sync::atomic::AtomicBool::new(false),
 +            cp_timeline_exclusive: core::sync::atomic::AtomicBool::new(false),
++            initial_modeset_quiet: core::sync::atomic::AtomicBool::new(false),
 +            modeset_active: core::array::from_fn(|_| core::sync::atomic::AtomicU64::new(0)),
 +            modeset_requested: core::array::from_fn(|_| core::sync::atomic::AtomicU64::new(0)),
 +            last_frame <- new_spinlock!([const { None }; HEADS]),
 +            last_status_poll <- new_spinlock!(None),
 +            sustain_until <- new_spinlock!([const { None }; HEADS]),
 +            scanout_seq <- new_mutex!([0; HEADS]),
-+            video_q <- new_mutex!([const { None }; HEADS]),
++            video_q <- pin_init::pin_init_array_from_fn(|_| new_mutex!(None)),
 +            video_staging <- new_mutex!([const { None }; HEADS]),
 +            last_timing <- new_spinlock!([None; HEADS]),
 +            arm_prefix_pending: core::sync::atomic::AtomicU32::new(0),
++            endpoint_status_logged: core::sync::atomic::AtomicU32::new(0),
++            stream_open_pending: core::sync::atomic::AtomicU32::new(0),
 +            keyframe_pending: core::sync::atomic::AtomicU32::new(0),
 +            cursor_epoch: core::array::from_fn(|_| core::sync::atomic::AtomicU32::new(0)),
 +            shadow_rr: core::array::from_fn(|_| core::sync::atomic::AtomicU32::new(0)),
@@ -1107,6 +1378,8 @@ index 000000000000..556d5994afbb
 +            // D6000 default: 442,368,000 px/s (one 1440p@120) x2 compression headroom = dual
 +            // 1440p@120. Replace it if a dock capability supplies a limit.
 +            dock_pixel_budget: core::sync::atomic::AtomicU32::new(884_736_000),
++            max_refresh_hz: core::sync::atomic::AtomicU32::new(DEFAULT_MAX_REFRESH_HZ),
++            max_head_clock_khz: core::sync::atomic::AtomicU32::new(DEFAULT_MAX_HEAD_CLOCK_KHZ),
 +            cmd_busy: core::sync::atomic::AtomicBool::new(false),
 +            video_inflight: core::array::from_fn(|_| core::sync::atomic::AtomicBool::new(false)),
 +            scanout_fails: core::array::from_fn(|_| core::sync::atomic::AtomicU64::new(0)),
@@ -1117,9 +1390,16 @@ index 000000000000..556d5994afbb
 +            edid_target: core::sync::atomic::AtomicU32::new(NO_EDID_TARGET),
 +            edid_caught <- new_mutex!(None),
 +            self_blanked: core::sync::atomic::AtomicU32::new(0),
++            codec_geometry: core::sync::atomic::AtomicU32::new(0),
++            connectors: core::sync::atomic::AtomicU8::new(HEADS as u8),
++            is_navarro: core::sync::atomic::AtomicBool::new(false),
 +            video_keys <- new_mutex!(core::array::from_fn(
 +                |_| kernel::crypto::Secret::zeroed()
 +            )),
++            last_video_at <- new_spinlock!([None; HEADS]),
++            video_seal_seq: core::array::from_fn(
++                |_| core::sync::atomic::AtomicU32::new(0)
++            ),
 +        })
 +    }
 +
@@ -1132,6 +1412,7 @@ index 000000000000..556d5994afbb
 +    pub(super) fn begin_shutdown(&self) {
 +        self.shutting_down.store(true, Ordering::Release);
 +        self.cp_timeline_exclusive.store(false, Ordering::Release);
++        self.initial_modeset_quiet.store(false, Ordering::Release);
 +    }
 +
 +    /// Whether the parent interface is being removed.
@@ -1228,6 +1509,8 @@ index 000000000000..556d5994afbb
 +        drop(self.cmd_work.cancel_sync());
 +        drop(self.scanout_work_h0.cancel_sync());
 +        drop(self.scanout_work_h1.cancel_sync());
++        drop(self.scanout_work_h2.cancel_sync());
++        drop(self.scanout_work_h3.cancel_sync());
 +
 +        // A running callback may have taken a batch just before shutdown was published. It has
 +        // finished now; clear anything it left behind and tear the USB queues down while their
@@ -1240,7 +1523,9 @@ index 000000000000..556d5994afbb
 +        }
 +        *self.strip_hashes.lock() = [const { None }; HEADS];
 +        *self.dirty_ttl.lock() = [const { None }; HEADS];
-+        *self.video_q.lock() = [const { None }; HEADS];
++        for queue in &self.video_q {
++            *queue.lock() = None;
++        }
 +        *self.video_staging.lock() = [const { None }; HEADS];
 +        *self.cp_link.lock() = None;
 +        vino_debug!("vino: deferred KMS/video work drained for unplug\n");
@@ -1286,9 +1571,103 @@ index 000000000000..556d5994afbb
 +        self.color.lock().get(head).copied().flatten()
 +    }
 +
-+    /// Record whether this dock has engaged its CP cipher (`wsub=0x45` acks > 0). The plane
-+    /// scanout path is gated on it, so pushing frames at a dock whose CP channel is dead cannot
-+    /// fault it. Set by the bring-up work item once the CP setup completes.
++    /// Record this device's codec geometry; see [`Self::geometry`].
++    pub(super) fn set_codec_geometry(
++        &self,
++        strip_blocks_x: usize,
++        interlaced: bool,
++        band_parity: bool,
++        head_sub_shift: u8,
++        stream_id_mask: u8,
++        dock_buffers: u8,
++    ) {
++        let packed = (strip_blocks_x as u32 & 0xff)
++            | ((interlaced as u32) << 8)
++            | ((band_parity as u32) << 9)
++            | ((head_sub_shift as u32) << 16)
++            | ((stream_id_mask as u32) << 20)
++            | ((dock_buffers as u32) << 28);
++        self.codec_geometry
++            .store(packed | 0x8000, core::sync::atomic::Ordering::Release);
++    }
++
++    /// This device's codec geometry, to be passed into every codec call made on its behalf.
++    ///
++    /// Stored packed because the DRM device allocation is pin-initialised before `probe` knows
++    /// which dock it matched. A device with no profile applied reads the Ridge layout.
++    pub(super) fn geometry(&self) -> super::video::wht::Geometry {
++        let p = self
++            .codec_geometry
++            .load(core::sync::atomic::Ordering::Acquire);
++        if p & 0x8000 == 0 {
++            return super::video::wht::RIDGE_GEOMETRY;
++        }
++        super::video::wht::Geometry::new(
++            ((p & 0xff) as usize).max(1),
++            p & (1 << 8) != 0,
++            p & (1 << 9) != 0,
++            ((p >> 16) & 0xf) as u8,
++            ((p >> 20) & 0xff) as u8,
++            ((p >> 28) & 0xf) as u8,
++        )
++    }
++
++    /// Record which protocol generation this dock speaks.
++    pub(super) fn set_navarro(&self, on: bool) {
++        self.is_navarro.store(on, Ordering::Release);
++    }
++
++    /// Whether this dock speaks the Navarro protocol.
++    pub(super) fn is_navarro(&self) -> bool {
++        self.is_navarro.load(Ordering::Acquire)
++    }
++
++    /// Whether mode sets carry the DL7400's offset-46/48 words.
++    pub(super) fn navarro_mode_words(&self) -> bool {
++        self.is_navarro()
++    }
++
++    /// Whether the first frame after a mode set carries the cold ARM burst.
++    pub(super) fn uses_arm_burst(&self) -> bool {
++        !self.is_navarro()
++    }
++
++    /// Record how many connectors this dock exposes; see [`DockProfile::connectors`].
++    pub(super) fn set_connectors(&self, n: u8) {
++        self.connectors.store(
++            if n == 0 {
++                HEADS as u8
++            } else {
++                n.min(HEADS as u8)
++            },
++            Ordering::Release,
++        );
++    }
++
++    /// Number of physical connectors selected by the matched dock profile.
++    pub(super) fn connector_count(&self) -> usize {
++        usize::from(self.connectors.load(Ordering::Acquire)).min(HEADS)
++    }
++
++    /// Whether `head` represents a distinct runtime stream on this dock.
++    ///
++    /// The DL7400 exposes four connector selectors but maps them in pairs onto two video bulk
++    /// endpoints. DLM discovers all four selectors during setup, then drives and polls only the
++    /// first selector for each distinct endpoint. Treating selectors 2/3 as independent heads
++    /// interleaves spurious re-engage traffic into the authenticated mode-set transcript.
++    pub(super) fn runtime_connector(&self, head: usize) -> bool {
++        if head >= self.connector_count() {
++            return false;
++        }
++        if !self.navarro_mode_words() {
++            return true;
++        }
++        let address = self.eps.video[head].address();
++        !self.eps.video[..head]
++            .iter()
++            .any(|endpoint| endpoint.address() == address)
++    }
++
 +    pub(super) fn set_cp_engaged(&self, engaged: bool) {
 +        self.cp_engaged
 +            .store(engaged, core::sync::atomic::Ordering::SeqCst);
@@ -1304,6 +1683,7 @@ index 000000000000..556d5994afbb
 +    /// any event relative to the mode-set itself.
 +    fn begin_cp_timeline(&self) {
 +        self.cp_timeline_exclusive.store(true, Ordering::Release);
++        self.initial_modeset_quiet.store(false, Ordering::Release);
 +        fsleep(Delta::from_millis(PROMPT_KEEPALIVE_QUIESCE_MS));
 +    }
 +
@@ -1317,6 +1697,21 @@ index 000000000000..556d5994afbb
 +        self.cp_timeline_exclusive.load(Ordering::Acquire)
 +    }
 +
++    /// Keep Navarro's setup-to-first-mode-set control stream free of background traffic.
++    pub(super) fn hold_cp_for_initial_modeset(&self) {
++        self.initial_modeset_quiet.store(true, Ordering::Release);
++    }
++
++    /// Whether the initial Navarro mode set still owns the next control message.
++    pub(super) fn initial_modeset_quiet(&self) -> bool {
++        self.initial_modeset_quiet.load(Ordering::Acquire)
++    }
++
++    /// Release the initial hold if userspace never submits a mode set.
++    pub(super) fn release_initial_modeset_quiet(&self) {
++        self.initial_modeset_quiet.store(false, Ordering::Release);
++    }
++
 +    /// Publish the engaged CP session so the KMS callbacks can send runtime CP messages.
 +    /// Called once by the bring-up work item after the dock acks (`acks > 0`). `wire_seq`/
 +    /// `counter` are the next free values past the bring-up CP setup.
@@ -1327,11 +1722,13 @@ index 000000000000..556d5994afbb
 +        riv: &[u8; 8],
 +        wire_seq: u32,
 +        counter: u16,
++        ep84_depth: usize,
 +    ) {
 +        // EP84 must remain posted between runtime EP02 writes. A queue drained synchronously leaves
 +        // the endpoint unposted between calls and can stall the control protocol.
-+        // Match `super::EP84_QUEUE_DEPTH` so one URB stays posted while others are reaped.
-+        let ep84_q = match dev.ctrl_in_queue(super::EP84_QUEUE_DEPTH, 4096) {
++        // `ep84_depth` is the matched profile's `ep84_queue_depth`, so the runtime queue keeps the
++        // same number of reads posted that bring-up did.
++        let ep84_q = match dev.ctrl_in_queue(ep84_depth, 4096) {
 +            Ok(q) => Some(q),
 +            Err(e) => {
 +                pr_warn!("vino: persistent EP84 queue open failed ({e:?}); using sync fallback\n");
@@ -1352,6 +1749,20 @@ index 000000000000..556d5994afbb
 +    /// Called with [`publish_session`](Self::publish_session) when CP engages.
 +    pub(super) fn set_video_keys(&self, keys: [kernel::crypto::Secret<32>; HEADS]) {
 +        *self.video_keys.lock() = keys;
++        // A new key is a new keystream, so the block counters start over with it.
++        for seq in &self.video_seal_seq {
++            seq.store(0, Ordering::Release);
++        }
++    }
++
++    /// Reserve `blocks` AES-CTR blocks on a head's video stream and return the counter to seal at.
++    ///
++    /// Sealed video records must tile the stream's keystream without gaps or overlaps: the dock
++    /// tracks the same counter, and a record that repeats a block a previous record already used
++    /// is a replay of that keystream. Reserving before sealing keeps that true no matter how the
++    /// records are grouped into transfers.
++    fn take_seal_seq(&self, head: usize, blocks: u32) -> u32 {
++        self.video_seal_seq[head].fetch_add(blocks, Ordering::AcqRel)
 +    }
 +
 +    /// Status polls issued immediately before the first video presentation of a mode generation.
@@ -1373,6 +1784,31 @@ index 000000000000..556d5994afbb
 +        })
 +    }
 +
++    /// Send one captured Navarro sink-reset operation.
++    fn navarro_cold_op(&self, dev: &BoundInterface<'_>, op: NavarroColdOp) -> Result {
++        match op {
++            NavarroColdOp::Poll => self.poll_status(dev),
++            NavarroColdOp::EdidState(head, state) => self.send_cp(dev, 0x16, 0, |ctr| {
++                super::cp::edid_readiness_state(ctr, head, state)
++            }),
++            NavarroColdOp::Probe(head) => self.send_cp(dev, 0x15, 0, |ctr| {
++                super::cp::get_edid_req_sub(ctr, 0x20, head)
++            }),
++            NavarroColdOp::Fetch(head) => {
++                self.send_cp(dev, 0x15, 0, |ctr| super::cp::get_edid_req(ctr, head))
++            }
++            NavarroColdOp::SinkState(head, state) => self.send_cp(dev, 0x16, 0, |ctr| {
++                super::cp::edid_sink_state(ctr, head, state)
++            }),
++            NavarroColdOp::PostEdid(head) => {
++                self.send_cp(dev, 0x15, 0, |ctr| super::cp::post_edid_query(ctr, head))
++            }
++            NavarroColdOp::Clear(head) => {
++                self.send_cp(dev, 0x48, 0, |ctr| super::cp::clear_mode(ctr, head))
++            }
++        }
++    }
++
 +    /// Drive `head` to black on the dock, then close its stream bracket.
 +    ///
 +    /// Runs on the command worker for [`KmsCmd::Blank`], i.e. after `atomic_disable` has already
@@ -1390,22 +1826,25 @@ index 000000000000..556d5994afbb
 +            // Never modeset, so there is nothing lit to blank.
 +            return Ok(());
 +        };
-+        let w_pad = (timing.hactive as usize + super::video::wht::STRIP_W - 1)
-+            & !(super::video::wht::STRIP_W - 1);
-+        let h_pad = (timing.vactive as usize + super::video::wht::STRIP_H - 1)
-+            & !(super::video::wht::STRIP_H - 1);
-+        let frames = super::video::wht::black_frame_ep08(
-+            w_pad,
-+            h_pad,
-+            head,
-+            BAND_PARITY_BIT,
-+            INTERLACED_BANDS,
-+        )?;
++        let geom = self.geometry();
++        let w_pad = (timing.hactive as usize + geom.strip_w() - 1) & !(geom.strip_w() - 1);
++        let h_pad = (timing.vactive as usize + geom.strip_h() - 1) & !(geom.strip_h() - 1);
++        let frames = super::video::wht::black_frame_ep08(geom, w_pad, h_pad, head)?;
++        let ordinary_frames =
++            super::video::wht::black_frame_ep08_ordinary(geom, w_pad, h_pad, head)?;
 +        // Present for long enough to reach every dock buffer. The dock is multi-buffered and a
-+        // single presentation lands in one buffer only -- the same reason `DAMAGE_REPEATS` exists
++        // single presentation lands in one buffer only -- the same reason `damage_repeats` exists
 +        // -- so a one-shot blank leaves the other buffer holding the frozen desktop and the panel
 +        // alternates between black and stale content.
-+        let sent = self.submit_prompt_training(dev, head, 0, &frames, BLANK_PRESENT_MS, false)?;
++        let sent = self.submit_prompt_training(
++            dev,
++            head,
++            0,
++            &frames,
++            &ordinary_frames,
++            BLANK_PRESENT_MS,
++            false,
++        )?;
 +        // Close the stream with the validated bracket. This stops the DisplayLink stream without
 +        // forcing the monitor into hard standby.
 +        self.stream_marker(dev, head, 0x2f, 0)?;
@@ -1458,6 +1897,26 @@ index 000000000000..556d5994afbb
 +        let elapsed_ms = (Instant::<Monotonic>::now() - anchor).as_millis();
 +        if elapsed_ms < target_ms {
 +            fsleep(Delta::from_millis(target_ms - elapsed_ms));
++        }
++    }
++
++    /// Sleep/spin until an exact microsecond offset in a short video-transport schedule.
++    ///
++    /// `fsleep` handles the bulk of the delay without burning a CPU; the small busy-wait tail
++    /// avoids scheduling a producer boundary hundreds of microseconds late. This is used only for
++    /// the four submissions of Navarro's one-shot prologue.
++    fn wait_video_offset(anchor: Instant<Monotonic>, target_us: i64) {
++        const SPIN_MARGIN_US: i64 = 80;
++        let elapsed = anchor.elapsed().as_micros_ceil();
++        if elapsed >= target_us {
++            return;
++        }
++        if target_us - elapsed > SPIN_MARGIN_US {
++            fsleep(Delta::from_micros(target_us - elapsed - SPIN_MARGIN_US));
++        }
++        let elapsed = anchor.elapsed().as_micros_ceil();
++        if elapsed < target_us {
++            udelay(Delta::from_micros(target_us - elapsed));
 +        }
 +    }
 +
@@ -1523,24 +1982,71 @@ index 000000000000..556d5994afbb
 +        head: u8,
 +        want: u64,
 +        frames: &[KVec<u8>],
++        ordinary_frames: &[KVec<u8>],
 +        duration_ms: i64,
 +        with_arm: bool,
 +    ) -> Result<u32> {
 +        if frames.is_empty() {
 +            return Err(kernel::error::code::EINVAL);
 +        }
-+        const XFER: usize = 65536;
++        let geom = self.geometry();
++        // Diagnostic: shrink the transfer so a dock that stops after one *transfer* can be told
++        // apart from one that stops after a fixed *byte count*. Both look identical at the default
++        // 65536, because exactly one transfer and exactly 65536 bytes are the same event.
++        let xfer: usize = match *crate::module_parameters::video_xfer.value() {
++            0 => VIDEO_XFER,
++            n => (n as usize).clamp(1024, VIDEO_XFER) & !1023,
++        };
 +        let head_i = head as usize;
++        let pipe_i = dev.video_pipe_index(head_i)?;
 +        let head_bit = 1u32 << head;
-+        let image_len: usize = frames.iter().map(|f| f.len()).sum();
++        // Diagnostic cap: send only the first N whole image records of a frame, so a bring-up
++        // failure can be bisected between the stream's opening records and its pixels. Records
++        // are a uniform 4048-byte stride until a frame's short last one, so this stays aligned.
++        let image_cap = match *crate::module_parameters::video_records.value() {
++            0 => usize::MAX,
++            n => (n as usize).saturating_mul(4048),
++        };
++        // The DL7400's per-strip parameter map, ahead of the pixels it describes. This path --
++        // the startup/prompt-training submit -- is the one the dock's first frames go out on, so
++        // wiring the map only into the steady-state scanout left it absent from every frame that
++        // matters. Ridge has no equivalent record and gets an empty slice.
++        let params: KVec<u8> = if geom.head_sub_shift == 0 {
++            KVec::new()
++        } else {
++            let t = self.last_timing.lock().get(head_i).copied().flatten();
++            match t {
++                Some(t) => {
++                    let (sw, sh) = (geom.strip_w(), geom.strip_h());
++                    let w_pad = (t.hactive as usize).div_ceil(sw) * sw;
++                    let h_pad = (t.vactive as usize).div_ceil(sh) * sh;
++                    super::video::wht::navarro_strip_params(
++                        geom,
++                        head,
++                        w_pad,
++                        h_pad,
++                        &frames,
++                        &mut self.strip_classes.lock()[head_i],
++                    )?
++                }
++                None => KVec::new(),
++            }
++        };
++        vino_debug!(
++            "vino: head={head} prompt-training parameter map {} B\n",
++            params.len()
++        );
 +        let arm = if with_arm {
 +            if self.arm_prefix_pending.load(Ordering::Acquire) & head_bit == 0 {
 +                return Err(ENODEV);
 +            }
-+            Some(self.build_arm_burst_buf(head_i)?)
++            Some(self.build_stream_prefix_buf(head_i)?)
 +        } else {
 +            None
 +        };
++        if arm.is_some() {
++            self.send_stream_open(dev, head_i)?;
++        }
 +        let startup = arm.is_some();
 +        let seq0 = self.scanout_seq.lock()[head_i];
 +        let started = Instant::<Monotonic>::now();
@@ -1555,51 +2061,197 @@ index 000000000000..556d5994afbb
 +            }
 +
 +            let seq = seq0.wrapping_add(repeat);
-+            let trailer = super::video::wht::frame_trailer(head, seq);
++            let trailer = self.build_frame_trailer(head, seq);
 +            let arm_slice: &[u8] = if repeat == 0 {
 +                arm.as_ref().map_or(&[], |a| &a[..])
 +            } else {
 +                &[]
 +            };
-+            let wire_len = arm_slice.len() + image_len + trailer.len();
++            let opener = self.build_frame_opener(head, seq, !arm_slice.is_empty());
++            let opener_slice: &[u8] = opener.as_ref().map_or(&[], |o| &o[..]);
++            // The dock is owed one sealed report on the stream sub for every frame on the frame
++            // sub; without it the link is torn down a few seconds after the first frame.
++            //
++            // The prologue frame is the one exception for the report: DLM goes directly from its
++            // decoder configuration into image records. It is *not* an exception for the
++            // parameter map. The same-day DLM cold capture carries the map part-way through frame
++            // zero, and Windows carries it after the image records. Both put it before frame
++            // close. Omitting it made vino's first frame exactly 5,984 bytes short and left the
++            // dock briefly scanning a partially described framebuffer.
++            let report = if arm_slice.is_empty() {
++                self.build_stream_report_buf(head_i)?
++            } else {
++                None
++            };
++            let report_slice: &[u8] = report.as_ref().map_or(&[], |r| &r[..]);
++            let params_slice: &[u8] = &params[..];
++            // The prologue and ordinary DLM carriers contain identical strips but different
++            // producer record boundaries. Select by the presence of the one-shot arm rather than
++            // by this helper's local `repeat`: the cold timeline invokes the helper once per
++            // measured presentation, so every invocation starts with repeat zero.
++            let frame_parts = if arm_slice.is_empty() {
++                ordinary_frames
++            } else {
++                frames
++            };
++            let mut image_len: usize = 0;
++            let mut image_parts = 0usize;
++            for f in frame_parts.iter() {
++                if image_len >= image_cap {
++                    break;
++                }
++                image_len += f.len().min(image_cap - image_len);
++                image_parts += 1;
++            }
++            let wire_len = arm_slice.len()
++                + opener_slice.len()
++                + report_slice.len()
++                + params_slice.len()
++                + image_len
++                + trailer.len();
 +            {
 +                let mut staging_slots = self.video_staging.lock();
 +                let staging_slot = &mut staging_slots[head_i];
 +                if staging_slot.is_none() {
 +                    let mut staging = KVec::new();
-+                    staging.resize(XFER, 0, GFP_KERNEL)?;
++                    staging.resize(xfer, 0, GFP_KERNEL)?;
 +                    *staging_slot = Some(staging);
 +                }
 +                let staging = staging_slot.as_mut().ok_or(kernel::error::code::ENOMEM)?;
 +
-+                let mut queues = self.video_q.lock();
-+                let queue_slot = &mut queues[head_i];
++                let mut queue_slot = self.video_q[pipe_i].lock();
 +                if queue_slot.is_none() {
-+                    *queue_slot = Some(dev.video_queue(head_i, 8, XFER)?);
++                    // Navarro's required EP08/EP0a clears are sent together at their captured
++                    // pre-commit point in `send_cp_setup`. Repeating a clear here, after stream
++                    // setup has begun, is intentionally diagnostic-only: it changes SuperSpeed
++                    // endpoint sequence state at a point DLM does not.
++                    if *crate::module_parameters::video_clear_halt.value() != 0 {
++                        let _ = dev.clear_video_halt(head_i);
++                    }
++                    *queue_slot = Some(dev.video_queue(head_i, 8, xfer)?);
 +                    vino_debug!(
-+                        "vino: head={} persistent video queue opened by prompt training\n",
-+                        head
++                        "vino: head={} endpoint={:#04x} persistent video queue opened by prompt training\n",
++                        head,
++                        dev.eps.video[head_i].address()
 +                    );
 +                }
-+                let queue = queue_slot.as_mut().ok_or(kernel::error::code::ENODEV)?;
++                let queue = queue_slot
++                    .as_mut()
++                    .get_mut()
++                    .as_mut()
++                    .ok_or(kernel::error::code::ENODEV)?;
 +
-+                let arm_parts = usize::from(!arm_slice.is_empty());
-+                let part_count = arm_parts + frames.len() + 1;
++                // A carrier is one protocol frame split over several URBs. Never block after
++                // submitting only its prefix: DLM's video producer and control workers are
++                // independent, while this cold-timeline worker also owes the marker burst that
++                // surrounds the first video bytes. On a non-draining endpoint the old path filled
++                // the eight slots with two complete frames plus one URB of frame three, then
++                // waited a second for frame-three URB two. The due +14-ms marker consequently
++                // never reached EP02 even though the dock had authenticated the preceding marker.
++                // Defer the whole presentation when it cannot fit; the next scheduled carrier can
++                // retry after the control messages have advanced the dock state.
++                let frame_urbs = wire_len.div_ceil(xfer);
++                if !queue.can_send_n(dev.io(), frame_urbs)? {
++                    if self
++                        .endpoint_status_logged
++                        .fetch_or(head_bit, Ordering::AcqRel)
++                        & head_bit
++                        == 0
++                    {
++                        match dev.video_endpoint_status(head_i) {
++                            Ok(status) => pr_info!(
++                                "vino: head={} endpoint={:#04x} stopped accepting video: GET_STATUS={:#06x} halt={}\n",
++                                head,
++                                dev.eps.video[head_i].address(),
++                                status,
++                                status & 1
++                            ),
++                            Err(e) => pr_warn!(
++                                "vino: head={} endpoint={:#04x} stopped accepting video: GET_STATUS failed ({e:?})\n",
++                                head,
++                                dev.eps.video[head_i].address()
++                            ),
++                        }
++                    }
++                    if duration_ms <= 0 {
++                        return Ok(repeat);
++                    }
++                    if (Instant::<Monotonic>::now() - started).as_millis() >= duration_ms {
++                        break;
++                    }
++                    fsleep(Delta::from_millis(1));
++                    continue;
++                }
++
++                // Navarro's captured DLM stream flushes its two parameter records after exactly
++                // 115168 bytes of image records in both the prologue and ordinary carriers. The
++                // placement is load-bearing: putting the same valid records after all pixels lets
++                // two presentations complete, then leaves the first transfer of frame three
++                // permanently pending. Build a borrowed scatter list in the captured order. The
++                // insertion may fall inside one allocation chunk, but is always on a wire-record
++                // boundary.
++                const NAVARRO_PARAM_IMAGE_OFFSET: usize = 115168;
++                let mut wire_parts: KVec<&[u8]> = KVec::with_capacity(image_parts + 6, GFP_KERNEL)?;
++                if !arm_slice.is_empty() {
++                    wire_parts.push(arm_slice, GFP_KERNEL)?;
++                }
++                if !opener_slice.is_empty() {
++                    wire_parts.push(opener_slice, GFP_KERNEL)?;
++                }
++                if !report_slice.is_empty() {
++                    wire_parts.push(report_slice, GFP_KERNEL)?;
++                }
++                let param_at = NAVARRO_PARAM_IMAGE_OFFSET.min(image_len);
++                let mut image_off = 0usize;
++                let mut param_inserted = params_slice.is_empty();
++                for f in frame_parts.iter() {
++                    if image_off >= image_len {
++                        break;
++                    }
++                    let n = f.len().min(image_len - image_off);
++                    let split = param_at.saturating_sub(image_off).min(n);
++                    if !param_inserted && image_off + n >= param_at {
++                        if split != 0 {
++                            wire_parts.push(&f[..split], GFP_KERNEL)?;
++                        }
++                        wire_parts.push(params_slice, GFP_KERNEL)?;
++                        param_inserted = true;
++                        if split != n {
++                            wire_parts.push(&f[split..n], GFP_KERNEL)?;
++                        }
++                    } else if n != 0 {
++                        wire_parts.push(&f[..n], GFP_KERNEL)?;
++                    }
++                    image_off += n;
++                }
++                if !param_inserted {
++                    wire_parts.push(params_slice, GFP_KERNEL)?;
++                }
++                wire_parts.push(&trailer[..], GFP_KERNEL)?;
++
++                let part_count = wire_parts.len();
 +                let mut part_i = 0usize;
 +                let mut part_off = 0usize;
 +                let mut wire_off = 0usize;
++                // DLM's authenticated first head-0 prologue does not put all four URBs on the
++                // xHCI ring at once. It submits at +0/+806/+851/+873 us and receives completion
++                // of the first at +104 us, so the dock gets a ~700-us ready interval before the
++                // second transfer and then a three-URB pipeline. Submitting chunk two immediately
++                // leaves Navarro NRDY forever after exactly one completed URB. Preserve this
++                // producer boundary only for the one-shot, full-size prologue; ordinary frames
++                // use the normal eight-deep queue, just as DLM does.
++                const NAVARRO_PROLOGUE_SUBMIT_US: [i64; 4] = [0, 806, 851, 873];
++                let pace_prologue = !arm_slice.is_empty()
++                    && xfer == VIDEO_XFER
++                    && geom.head_sub_shift != 0
++                    && *crate::module_parameters::video_sync.value() == 0;
++                let mut prologue_anchor: Option<Instant<Monotonic>> = None;
 +                while wire_off < wire_len {
-+                    let data_len = (wire_len - wire_off).min(XFER);
++                    let data_len = (wire_len - wire_off).min(xfer);
 +                    let dst = &mut staging[..data_len];
 +                    let mut dst_off = 0usize;
 +                    while dst_off < dst.len() && part_i < part_count {
-+                        let part: &[u8] = if part_i < arm_parts {
-+                            arm_slice
-+                        } else if part_i < arm_parts + frames.len() {
-+                            &frames[part_i - arm_parts][..]
-+                        } else {
-+                            &trailer[..]
-+                        };
++                        let part = wire_parts[part_i];
 +                        let n = (part.len() - part_off).min(dst.len() - dst_off);
 +                        dst[dst_off..dst_off + n].copy_from_slice(&part[part_off..part_off + n]);
 +                        dst_off += n;
@@ -1609,10 +2261,46 @@ index 000000000000..556d5994afbb
 +                            part_off = 0;
 +                        }
 +                    }
-+                    if let Err(e) = queue.send(dev.io(), dst, super::timeout()) {
-+                        let _ = dev.clear_video_halt(head_i);
++                    // Diagnostic: the dock accepts exactly one transfer and then takes no more
++                    // -- 16384 bytes when the transfer is 16384, 65536 when it is 65536, so it is
++                    // one *transfer*, not a byte count. Clearing the halt before each one tests
++                    // whether the dock is halting the endpoint after every transfer.
++                    if *crate::module_parameters::video_clear_each.value() != 0 {
++                        if *crate::module_parameters::video_clear_halt.value() != 0 {
++                            let _ = dev.clear_video_halt(head_i);
++                        }
++                    }
++                    if pace_prologue {
++                        let chunk = wire_off / xfer;
++                        if let Some(anchor) = prologue_anchor {
++                            if let Some(&target_us) = NAVARRO_PROLOGUE_SUBMIT_US.get(chunk) {
++                                Self::wait_video_offset(anchor, target_us);
++                            }
++                        }
++                    }
++                    // `video_sync` is an all-synchronous diagnostic. The normal queue path uses
++                    // DLM's mixed transport: prologue chunk zero is reaped below, then the rest
++                    // and all ordinary frames are pipelined.
++                    let sent = if *crate::module_parameters::video_sync.value() != 0 {
++                        dev.video_send(head_i, dst, super::timeout(), GFP_KERNEL)
++                            .map(|_| ())
++                    } else {
++                        queue.send(dev.io(), dst, super::timeout())
++                    };
++                    if let Err(e) = sent {
++                        if *crate::module_parameters::video_clear_halt.value() != 0 {
++                            let _ = dev.clear_video_halt(head_i);
++                        }
 +                        return Err(e);
 +                    }
++                    if pace_prologue && wire_off == 0 {
++                        let anchor = Instant::<Monotonic>::now();
++                        prologue_anchor = Some(anchor);
++                        // Do not expose chunk two to xHCI before chunk zero completes. The capture
++                        // has the first completion at +104 us and the next submit at +806 us.
++                        queue.flush(dev.io(), super::timeout())?;
++                    }
++                    self.last_video_at.lock()[head_i] = Some(Instant::<Monotonic>::now());
 +                    wire_off += data_len;
 +                }
 +            }
@@ -1662,17 +2350,12 @@ index 000000000000..556d5994afbb
 +            return Ok(false);
 +        }
 +
-+        let w_pad = (timing.hactive as usize + super::video::wht::STRIP_W - 1)
-+            & !(super::video::wht::STRIP_W - 1);
-+        let h_pad = (timing.vactive as usize + super::video::wht::STRIP_H - 1)
-+            & !(super::video::wht::STRIP_H - 1);
-+        let prompt = super::video::wht::black_frame_ep08(
-+            w_pad,
-+            h_pad,
-+            head,
-+            BAND_PARITY_BIT,
-+            INTERLACED_BANDS,
-+        )?;
++        let geom = self.geometry();
++        let w_pad = (timing.hactive as usize + geom.strip_w() - 1) & !(geom.strip_w() - 1);
++        let h_pad = (timing.vactive as usize + geom.strip_h() - 1) & !(geom.strip_h() - 1);
++        let prompt = super::video::wht::black_frame_ep08(geom, w_pad, h_pad, head)?;
++        let prompt_ordinary =
++            super::video::wht::black_frame_ep08_ordinary(geom, w_pad, h_pad, head)?;
 +        let wake = self.modeset_active[head_i].load(Ordering::Acquire) == 0;
 +
 +        self.begin_cp_timeline();
@@ -1681,6 +2364,12 @@ index 000000000000..556d5994afbb
 +                self.modeset_bracket_pre(dev, head)?;
 +            }
 +            let mode_anchor = Instant::<Monotonic>::now();
++            // Tear the connector's pipe down before configuring it, as DLM does. See
++            // `cp::clear_mode`: offset 23 is an operation code, and vino only ever sent the
++            // "set this mode" form.
++            if self.navarro_mode_words() {
++                self.send_cp(dev, 0x48, 0, |ctr| super::cp::clear_mode(ctr, head))?;
++            }
 +            self.send_cp(dev, 0x48, 0, |ctr| super::cp::set_mode(ctr, head, timing))?;
 +            if self.modeset_requested[head_i].load(Ordering::Acquire) != want {
 +                return Ok(false);
@@ -1691,6 +2380,8 @@ index 000000000000..556d5994afbb
 +                Some(Instant::<Monotonic>::now() + Delta::from_millis(3000));
 +            let bit = 1u32 << head;
 +            self.arm_prefix_pending.fetch_or(bit, Ordering::Release);
++            // A driven connector's stream opens with its pipe descriptor, not the idle open.
++            self.stream_open_pending.fetch_and(!bit, Ordering::Release);
 +            self.owe_keyframe(head_i);
 +            self.strip_hashes.lock()[head_i] = None;
 +            self.dirty_ttl.lock()[head_i] = None;
@@ -1701,6 +2392,7 @@ index 000000000000..556d5994afbb
 +                head,
 +                want,
 +                &prompt,
++                &prompt_ordinary,
 +                PROMPT_TRAINING_OPEN_MS,
 +                true,
 +            );
@@ -1721,9 +2413,15 @@ index 000000000000..556d5994afbb
 +        if !activated {
 +            return Ok(false);
 +        }
-+        if let Err(e) =
-+            self.submit_prompt_training(dev, head, want, &prompt, PROMPT_TRAINING_TAIL_MS, false)
-+        {
++        if let Err(e) = self.submit_prompt_training(
++            dev,
++            head,
++            want,
++            &prompt,
++            &prompt_ordinary,
++            PROMPT_TRAINING_TAIL_MS,
++            false,
++        ) {
 +            self.modeset_active[head_i].store(0, Ordering::Release);
 +            return Err(e);
 +        }
@@ -1745,7 +2443,9 @@ index 000000000000..556d5994afbb
 +        dev: &BoundInterface<'_>,
 +        timings: [Option<super::cp::Timing>; HEADS],
 +    ) -> Result<bool> {
++        let geom = self.geometry();
 +        let mut prompts: [Option<KVec<KVec<u8>>>; HEADS] = core::array::from_fn(|_| None);
++        let mut ordinary_prompts: [Option<KVec<KVec<u8>>>; HEADS] = core::array::from_fn(|_| None);
 +        let mut keys = [0u64; HEADS];
 +        let mut valid = 0u32;
 +
@@ -1768,16 +2468,13 @@ index 000000000000..556d5994afbb
 +                timing.vactive,
 +                timing.refresh_hz
 +            );
-+            let w_pad = (timing.hactive as usize + super::video::wht::STRIP_W - 1)
-+                & !(super::video::wht::STRIP_W - 1);
-+            let h_pad = (timing.vactive as usize + super::video::wht::STRIP_H - 1)
-+                & !(super::video::wht::STRIP_H - 1);
++            let w_pad = (timing.hactive as usize + geom.strip_w() - 1) & !(geom.strip_w() - 1);
++            let h_pad = (timing.vactive as usize + geom.strip_h() - 1) & !(geom.strip_h() - 1);
 +            prompts[head] = Some(super::video::wht::black_frame_ep08(
-+                w_pad,
-+                h_pad,
-+                head as u8,
-+                BAND_PARITY_BIT,
-+                INTERLACED_BANDS,
++                geom, w_pad, h_pad, head as u8,
++            )?);
++            ordinary_prompts[head] = Some(super::video::wht::black_frame_ep08_ordinary(
++                geom, w_pad, h_pad, head as u8,
 +            )?);
 +            keys[head] = key;
 +            valid |= 1u32 << head;
@@ -1786,27 +2483,64 @@ index 000000000000..556d5994afbb
 +            return Ok(false);
 +        }
 +
-+        // One clock anchors the whole transaction. A slow send therefore makes the next event
-+        // catch up instead of shifting every subsequent protocol deadline.
++        // Keep the clear/settle phase and the real mode-set choreography in one exclusive control
++        // transaction. Their deadlines have separate anchors because the Navarro cold timeline was
++        // measured from the real head-0 mode set, 1,156 ms after its pipe clear.
 +        self.begin_cp_timeline();
-+        let anchor = Instant::<Monotonic>::now();
++        let activation_started = Instant::<Monotonic>::now();
++        let mut anchor = activation_started;
 +        let mut sent = 0u32;
 +        let mut started = 0u32;
 +        let timeline = (|| -> Result<(u32, u32)> {
++            if self.navarro_mode_words() {
++                // DLM's first clear pair begins a dock-wide sink reset. The authenticated
++                // transcript then stops/restarts each EDID reader, disengages/re-engages the
++                // downstream sinks, and clears each pipe a second time before any real mode.
++                for head in 0..HEADS {
++                    if valid & (1u32 << head) == 0 {
++                        continue;
++                    }
++                    if head == 1 {
++                        Self::wait_mode_offset(activation_started, NAVARRO_PRIME_CLEAR_H1_MS);
++                    }
++                    self.send_cp(dev, 0x48, 0, |ctr| super::cp::clear_mode(ctr, head as u8))?;
++                }
++                for &(at, op) in NAVARRO_COLD_PRELUDE {
++                    Self::wait_mode_offset(activation_started, at);
++                    self.navarro_cold_op(dev, op)?;
++                }
++                Self::wait_mode_offset(activation_started, NAVARRO_REAL_MODE_H0_MS);
++                anchor = Instant::<Monotonic>::now();
++            }
++
++            let navarro_counters = if self.navarro_mode_words() {
++                Some(self.reserve_cp_counters::<NAVARRO_COLD_COUNTERS>()?)
++            } else {
++                None
++            };
++
 +            // Three cursors walk the sorted schedules; `cp_until` drains everything due at or
 +            // before a given offset, preserving the ordering between markers, polls, and EDID
 +            // reads.
 +            let mut mi = 0usize;
 +            let mut pi = 0usize;
 +            let mut ei = 0usize;
++            // Replaying Ridge's choreography at Navarro leaves its video endpoint unarmed, so the
++            // timeline follows the dock, not the driver.
++            let timeline: &ColdTimeline = if self.uses_arm_burst() {
++                &COLD_RIDGE
++            } else {
++                &COLD_NAVARRO
++            };
++            let mut remoded = 0u32;
 +
 +            macro_rules! cp_until {
 +                ($limit:expr) => {{
 +                    let limit: i64 = $limit;
 +                    loop {
-+                        let nm = cold::MARKERS.get(mi).map(|m| m.0);
-+                        let np = cold::POLLS.get(pi).copied();
-+                        let ne = cold::EDID.get(ei).map(|e| e.0);
++                        let nm = timeline.markers.get(mi).map(|m| m.0);
++                        let np = timeline.polls.get(pi).copied();
++                        let ne = timeline.edid.get(ei).map(|e| e.0);
 +                        let next = [nm, np, ne]
 +                            .into_iter()
 +                            .flatten()
@@ -1815,16 +2549,33 @@ index 000000000000..556d5994afbb
 +                        let Some(off) = next else { break };
 +                        Self::wait_mode_offset(anchor, off);
 +                        if nm == Some(off) {
-+                            let (_, head, sub, state) = cold::MARKERS[mi];
++                            let (_, head, sub, state) = timeline.markers[mi];
 +                            if sent & (1u32 << head) != 0 {
-+                                self.stream_marker(dev, head, sub, state)?;
++                                if let Some(counters) = navarro_counters.as_ref() {
++                                    let slot =
++                                        *NAVARRO_MARKER_COUNTER_SLOTS.get(mi).ok_or(EINVAL)?;
++                                    let ctr = *counters.get(slot).ok_or(EINVAL)?;
++                                    self.send_cp_reserved(dev, 0x16, ctr, |ctr| {
++                                        super::cp::stream_marker(ctr, head, sub, state)
++                                    })?;
++                                } else {
++                                    self.stream_marker(dev, head, sub, state)?;
++                                }
 +                            }
 +                            mi += 1;
 +                        } else if np == Some(off) {
-+                            self.poll_status(dev)?;
++                            if let Some(counters) = navarro_counters.as_ref() {
++                                let slot = *NAVARRO_POLL_COUNTER_SLOTS.get(pi).ok_or(EINVAL)?;
++                                let ctr = *counters.get(slot).ok_or(EINVAL)?;
++                                self.send_cp_reserved(dev, 0x14, ctr, |ctr| {
++                                    super::cp::device_query_req(ctr, 0x000c)
++                                })?;
++                            } else {
++                                self.poll_status(dev)?;
++                            }
 +                            pi += 1;
 +                        } else {
-+                            let (_, head, fetch) = cold::EDID[ei];
++                            let (_, head, fetch) = timeline.edid[ei];
 +                            // Re-read the sink's EDID at its required place in the transaction.
 +                            // This dock-side DDC operation is not a source of new modes, so discard
 +                            // its reply rather than publishing a hotplug during a mode set.
@@ -1841,7 +2592,9 @@ index 000000000000..556d5994afbb
 +                }};
 +            }
 +
-+            // Both mode-sets go out first, 29 ms apart, before any video.
++            // Both real mode sets go out before any video, spaced according to this dock's
++            // measured cold timeline. Navarro's pipe clears were sent during the settling phase
++            // above; do not collapse them back into this loop.
 +            for head in 0..HEADS {
 +                let bit = 1u32 << head;
 +                if valid & bit == 0 {
@@ -1851,12 +2604,20 @@ index 000000000000..556d5994afbb
 +                    continue;
 +                };
 +                if head == 1 {
-+                    cp_until!(cold::H1_MODE - 1);
-+                    Self::wait_mode_offset(anchor, cold::H1_MODE);
++                    cp_until!(timeline.h1_mode - 1);
++                    Self::wait_mode_offset(anchor, timeline.h1_mode);
 +                }
-+                self.send_cp(dev, 0x48, 0, |ctr| {
-+                    super::cp::set_mode(ctr, head as u8, &timing)
-+                })?;
++                if let Some(counters) = navarro_counters.as_ref() {
++                    let slot = if head == 0 { 0 } else { 3 };
++                    let ctr = *counters.get(slot).ok_or(EINVAL)?;
++                    self.send_cp_reserved(dev, 0x48, ctr, |ctr| {
++                        super::cp::set_mode(ctr, head as u8, &timing)
++                    })?;
++                } else {
++                    self.send_cp(dev, 0x48, 0, |ctr| {
++                        super::cp::set_mode(ctr, head as u8, &timing)
++                    })?;
++                }
 +                if self.modeset_requested[head].load(Ordering::Acquire) != keys[head] {
 +                    continue;
 +                }
@@ -1864,6 +2625,8 @@ index 000000000000..556d5994afbb
 +                self.sustain_until.lock()[head] =
 +                    Some(Instant::<Monotonic>::now() + Delta::from_millis(3000));
 +                self.arm_prefix_pending.fetch_or(bit, Ordering::Release);
++                // A driven connector's stream opens with its pipe descriptor, not the idle open.
++                self.stream_open_pending.fetch_and(!bit, Ordering::Release);
 +                self.owe_keyframe(head);
 +                self.strip_hashes.lock()[head] = None;
 +                self.dirty_ttl.lock()[head] = None;
@@ -1872,12 +2635,42 @@ index 000000000000..556d5994afbb
 +
 +            // Preserve the required silent window on EP02 between the head-1 mode set and
 +            // `cold::QUIET_END`. The exclusive control timeline already excludes keepalives.
-+            Self::wait_mode_offset(anchor, cold::QUIET_END);
++            Self::wait_mode_offset(anchor, timeline.quiet_end);
 +
 +            // Bracket, status polls and the mid-bracket EDID re-read, up to the first video.
-+            cp_until!(cold::H0_VIDEO - 1);
++            cp_until!(timeline.video[0].1 - 1);
 +
-+            for (head, at) in [(0usize, cold::H0_VIDEO), (1usize, cold::H1_VIDEO)] {
++            // Name the streams vino will not drive, before any head sends pixels. DLM does this
++            // for every connector without a monitor and only then starts a frame; the connectors
++            // that are about to stream open with their pipe descriptor instead.
++            if !self.uses_arm_burst() && *crate::module_parameters::idle_opens.value() != 0 {
++                let idle = !sent & ((1u32 << HEADS) - 1);
++                self.stream_open_pending.fetch_or(idle, Ordering::Release);
++                for head in 0..HEADS {
++                    if idle & (1u32 << head) != 0 {
++                        self.send_stream_open(dev, head)?;
++                    }
++                }
++            }
++
++            for &(head, at) in timeline.video {
++                cp_until!(at - 1);
++                // Some docks set a head's mode a second time shortly before its video.
++                for &(off, rehead) in timeline.remode {
++                    if off >= at || remoded & (1u32 << rehead) != 0 || sent & (1u32 << rehead) == 0
++                    {
++                        continue;
++                    }
++                    let Some(timing) = timings[rehead] else {
++                        continue;
++                    };
++                    cp_until!(off - 1);
++                    Self::wait_mode_offset(anchor, off);
++                    self.send_cp(dev, 0x48, 0, |ctr| {
++                        super::cp::set_mode(ctr, rehead as u8, &timing)
++                    })?;
++                    remoded |= 1u32 << rehead;
++                }
 +                cp_until!(at - 1);
 +                Self::wait_mode_offset(anchor, at);
 +                let bit = 1u32 << head;
@@ -1887,14 +2680,28 @@ index 000000000000..556d5994afbb
 +                // Exactly one ARM+carrier presentation keeps the closing markers from being
 +                // delayed behind a blocking multi-frame submission.
 +                let frames = prompts[head].as_ref().ok_or(EINVAL)?;
++                let ordinary_frames = ordinary_prompts[head].as_ref().ok_or(EINVAL)?;
++                let t_sub = Instant::<Monotonic>::now();
++                let first_for_head = started & bit == 0;
 +                self.submit_prompt_training(
 +                    dev,
 +                    head as u8,
 +                    keys[head],
 +                    frames,
++                    ordinary_frames,
 +                    PROMPT_TRAINING_OPEN_MS,
-+                    true,
++                    first_for_head,
 +                )?;
++                // The timeline collapses right after this call: head 1's video slipped from its
++                // scheduled +150 ms to +1321 ms, so the markers DLM sends inside the stream never
++                // go out. Report the cost unconditionally until that is understood.
++                pr_info!(
++                    "vino: head {} video submit took {} ms (timeline offset {} ms, {} ms since anchor)\n",
++                    head,
++                    (Instant::<Monotonic>::now() - t_sub).as_millis(),
++                    at,
++                    (Instant::<Monotonic>::now() - anchor).as_millis()
++                );
 +                started |= bit;
 +            }
 +
@@ -1936,11 +2743,13 @@ index 000000000000..556d5994afbb
 +                    continue;
 +                }
 +                let frames = prompts[head].as_ref().ok_or(EINVAL)?;
++                let ordinary_frames = ordinary_prompts[head].as_ref().ok_or(EINVAL)?;
 +                if let Err(e) = self.submit_prompt_training(
 +                    dev,
 +                    head as u8,
 +                    keys[head],
 +                    frames,
++                    ordinary_frames,
 +                    PROMPT_TRAINING_OPEN_MS,
 +                    false,
 +                ) {
@@ -1970,6 +2779,287 @@ index 000000000000..556d5994afbb
 +    /// from the per-head SKE with `riv_h ^ (0x08 | head)` in byte 7, and share
 +    /// one block counter. Records #8/#9 carry the decoder configuration and
 +    /// independent nonces.
++    /// Build the per-head video stream-open this platform wants in place of the cold ARM burst.
++    ///
++    /// Sealed with the head's video key like every other video-endpoint message, and prefixed to
++    /// the first frame after a mode set so it reaches the dock before any pixels.
++    /// Build the prefix that opens a head's video stream after a mode set.
++    ///
++    /// Ridge prefixes a cold ARM burst to the first frame; Navarro prefixes a short sealed
++    /// stream-open. Both occupy the same slot ahead of any pixels, and every submission path must
++    /// pick between them the same way: sending one platform's opening to the other's dock leaves
++    /// the stream unopened, and the dock then watchdog-resets a few seconds later.
++    /// Build the records that close a frame, in this dock's format.
++    fn build_frame_trailer(&self, head: u8, seq0: u32) -> super::video::wht::FrameTrailer {
++        let geom = self.geometry();
++        if self.uses_arm_burst() {
++            super::video::wht::frame_trailer(geom, head, seq0)
++        } else {
++            super::video::wht::navarro_frame_trailer(geom, head, seq0)
++        }
++    }
++
++    /// Build the record that starts a non-prologue DL7400 frame.
++    ///
++    /// Ridge carries its slot transition in the three-record trailer. Navarro terminates the old
++    /// frame after its close record and starts the next USB transfer with this opener instead.
++    fn build_frame_opener(&self, head: u8, seq0: u32, prologue: bool) -> Option<[u8; 32]> {
++        if self.uses_arm_burst() || prologue {
++            None
++        } else {
++            Some(super::video::wht::navarro_frame_opener(
++                self.geometry(),
++                head,
++                seq0,
++            ))
++        }
++    }
++
++    /// Open a head's video stream, once per mode generation, ahead of any pixels.
++    ///
++    /// Does nothing on a dock whose opening is the ARM burst carried with the first frame.
++    fn send_stream_open(&self, dev: &BoundInterface<'_>, head: usize) -> Result {
++        let bit = 1u32 << head;
++        if self.stream_open_pending.load(Ordering::Acquire) & bit == 0 {
++            return Ok(());
++        }
++        let Some(open) = self.build_stream_open_buf(head)? else {
++            self.stream_open_pending.fetch_and(!bit, Ordering::Release);
++            return Ok(());
++        };
++        let pipe_i = dev.video_pipe_index(head)?;
++        let mut queue_slot = self.video_q[pipe_i].lock();
++        if queue_slot.is_none() {
++            if *crate::module_parameters::video_clear_halt.value() != 0 {
++                let _ = dev.clear_video_halt(head);
++            }
++            *queue_slot = Some(dev.video_queue(head, 8, VIDEO_XFER)?);
++        }
++        let queue = queue_slot
++            .as_mut()
++            .get_mut()
++            .as_mut()
++            .ok_or(kernel::error::code::ENODEV)?;
++        queue.send(dev.io(), &open, super::timeout())?;
++        self.stream_open_pending.fetch_and(!bit, Ordering::Release);
++        vino_debug!("vino: head {} video stream opened\n", head);
++        Ok(())
++    }
++
++    /// Keep every engaged head's video endpoint from going quiet long enough for the dock to tear
++    /// the link down.
++    ///
++    /// The DL7400 stops answering -- video *and* control -- about a second after the last byte on
++    /// a video endpoint, whatever it was doing before. A compositor with nothing to redraw leaves
++    /// vino silent well past that, so each head that has not sent anything for
++    /// [`NAVARRO_KEEPALIVE_MS`] sends the same sealed report DLM pairs with every frame. Called
++    /// from the control keepalive, which already runs for the life of the session.
++    ///
++    /// Only heads whose video queue is already open are fed: a head that has never streamed has
++    /// nothing to keep alive, and opening a queue here would start a stream nothing follows.
++    pub(super) fn send_video_keepalive(&self, dev: &BoundInterface<'_>) {
++        if self.uses_arm_burst() || self.shutting_down.load(Ordering::Acquire) {
++            return;
++        }
++        let now = Instant::<Monotonic>::now();
++        for head in 0..HEADS {
++            if self.modeset_active[head].load(Ordering::Acquire) == 0 {
++                continue;
++            }
++            let due = match self.last_video_at.lock()[head] {
++                Some(last) => (now - last).as_millis() >= NAVARRO_KEEPALIVE_MS,
++                None => false,
++            };
++            if !due {
++                continue;
++            }
++            let Ok(report) = self.build_stream_report_buf(head) else {
++                continue;
++            };
++            let Some(report) = report else { continue };
++            let Ok(pipe_i) = dev.video_pipe_index(head) else {
++                continue;
++            };
++            let mut queue_slot = self.video_q[pipe_i].lock();
++            let Some(queue) = queue_slot.as_mut().get_mut().as_mut() else {
++                continue;
++            };
++            if queue.send(dev.io(), &report, super::timeout()).is_ok() {
++                self.last_video_at.lock()[head] = Some(Instant::<Monotonic>::now());
++            }
++        }
++    }
++
++    fn build_stream_prefix_buf(&self, head: usize) -> Result<KVec<u8>> {
++        if self.uses_arm_burst() {
++            self.build_arm_burst_buf(head)
++        } else {
++            self.build_navarro_prologue_buf(head)
++        }
++    }
++
++    /// Build the message a head's video stream opens with, sent alone ahead of everything else.
++    ///
++    /// Ridge has none: its ARM burst opens the stream from within the first frame's transfer.
++    ///
++    /// Navarro has none either, for a head it is about to drive. The short sealed open does exist
++    /// on this dock, but both DLM captures send it only on the stream ids of the connectors with
++    /// no monitor -- `0x17` and `0x1f` while pixels went to connectors 0 and 1 -- each as the
++    /// first and only record on its own stream, sealed with that connector's own key at block 0.
++    /// A driven connector's sealed chain instead opens with the pipe descriptor at block 0.
++    ///
++    /// It must not go out on `stream_id | 0x10`, which for head 0 is connector 2's stream id,
++    /// sealed with head 0's key. That both signed another connector's stream with the wrong key
++    /// and, because the prologue then also started at block 0, used the head's first keystream
++    /// block twice.
++    fn build_stream_open_buf(&self, head: usize) -> Result<Option<KVec<u8>>> {
++        if self.uses_arm_burst() {
++            return Ok(None);
++        }
++        let keys = self.video_keys.lock();
++        let key = keys.get(head).ok_or(EINVAL)?;
++        let mut vkey = kernel::crypto::Secret::zeroed();
++        vkey.copy_from_slice(&key[..16]);
++        let mut vnonce = [0u8; 8];
++        vnonce.copy_from_slice(&key[16..24]);
++        drop(keys);
++        let content = super::cp::navarro_stream_open();
++        let stream = self.geometry().stream_id(head as u8);
++        let seq = self.take_seal_seq(head, content.len().div_ceil(16) as u32);
++        Ok(Some(super::cp::seal_video_arm(
++            &vkey, &vnonce, stream, 0x0002, seq, &content,
++        )?))
++    }
++
++    /// Build the sealed report a head owes its stream for one frame.
++    ///
++    /// DLM pairs every frame on the frame sub with one of these on the stream sub, so a stream
++    /// that sends pixels and then falls silent on its stream sub is a stream the dock stops
++    /// believing in. Returns `None` on a dock whose frames carry no such record.
++    ///
++    /// The ordinary `aux=0x000c` form is what DLM sends for all but a handful of frames; the
++    /// `aux=0x0002` form restates the mode and goes out with the frame that carries the prologue,
++    /// which is the frame right after a mode set.
++    fn build_stream_report_buf(&self, head: usize) -> Result<Option<KVec<u8>>> {
++        if self.uses_arm_burst() {
++            return Ok(None);
++        }
++        let keys = self.video_keys.lock();
++        let key = keys.get(head).ok_or(EINVAL)?;
++        let mut vkey = kernel::crypto::Secret::zeroed();
++        vkey.copy_from_slice(&key[..16]);
++        let mut vnonce = [0u8; 8];
++        vnonce.copy_from_slice(&key[16..24]);
++        drop(keys);
++        let stream = self.geometry().stream_id(head as u8);
++        let with_mode = self.arm_prefix_pending.load(Ordering::Acquire) & (1u32 << head) != 0;
++        let (aux, content): (u16, KVec<u8>) = if with_mode {
++            let timing = self
++                .last_timing
++                .lock()
++                .get(head)
++                .copied()
++                .flatten()
++                .ok_or(ENODEV)?;
++            let header =
++                super::video_arm::mode_header(timing.hactive, timing.vactive, NAVARRO_LAYOUT_WORD);
++            let mut v = KVec::new();
++            v.extend_from_slice(&super::cp::navarro_stream_report_mode(&header), GFP_KERNEL)?;
++            (0x0002, v)
++        } else {
++            let mut v = KVec::new();
++            v.extend_from_slice(&super::cp::navarro_stream_report(), GFP_KERNEL)?;
++            (0x000c, v)
++        };
++        let seq = self.take_seal_seq(head, content.len().div_ceil(16) as u32);
++        Ok(Some(super::cp::seal_video_arm(
++            &vkey, &vnonce, stream, aux, seq, &content,
++        )?))
++    }
++
++    /// Build the DL7400 records that precede a head's first frame.
++    ///
++    /// In wire order: two plaintext stream markers, the sealed pipe descriptor, a plaintext frame
++    /// marker, an unsealed record naming the connector's first and fifth ring addresses, and the
++    /// sealed decoder configuration. Both sealed records draw from the stream's running block
++    /// counter, so on a first arm the descriptor seals at block 0 and the configuration at block
++    /// 19 -- the descriptor's 304 bytes in blocks -- exactly as DLM's `0 -> 19 -> 88` chain does.
++    fn build_navarro_prologue_buf(&self, head: usize) -> Result<KVec<u8>> {
++        let keys = self.video_keys.lock();
++        let key = keys.get(head).ok_or(EINVAL)?;
++        let mut vkey = kernel::crypto::Secret::zeroed();
++        vkey.copy_from_slice(&key[..16]);
++        let mut vnonce = [0u8; 8];
++        vnonce.copy_from_slice(&key[16..24]);
++        drop(keys);
++        let timing = self
++            .last_timing
++            .lock()
++            .get(head)
++            .copied()
++            .flatten()
++            .ok_or(ENODEV)?;
++        let connector = head as u8;
++        let geom = self.geometry();
++        let stream = geom.stream_id(connector);
++        let frame_sub = u16::from(geom.head_sub(connector));
++
++        let mut buf = KVec::with_capacity(1600, GFP_KERNEL)?;
++        for sub in [stream, stream | 0x0010] {
++            let mut body = [0u8; 16];
++            body[0..2].copy_from_slice(&sub.to_le_bytes());
++            body[2..4].copy_from_slice(&0x0006u16.to_le_bytes());
++            buf.extend_from_slice(&super::cp::video_arm_plain_frame(sub, &body), GFP_KERNEL)?;
++        }
++
++        let descriptor = super::cp::navarro_pipe_descriptor(connector)?;
++        let seal_seq = self.take_seal_seq(head, descriptor.len().div_ceil(16) as u32);
++        let mut sealed =
++            super::cp::seal_video_arm(&vkey, &vnonce, stream, 0x0000, seal_seq, &descriptor)?;
++        // Diagnostic: a dock that authenticates this record must behave differently when its tag
++        // is wrong. Identical behaviour means the record is already being dropped.
++        if *crate::module_parameters::break_mac.value() != 0 {
++            if let Some(last) = sealed.last_mut() {
++                *last ^= 0xff;
++            }
++        }
++        buf.extend_from_slice(&sealed, GFP_KERNEL)?;
++
++        let mut body = [0u8; 16];
++        body[0..2].copy_from_slice(&frame_sub.to_le_bytes());
++        buf.extend_from_slice(
++            &super::cp::video_arm_plain_frame(frame_sub, &body),
++            GFP_KERNEL,
++        )?;
++
++        // Unsealed type-4 record: the connector's first and fifth ring addresses.
++        let mut ring = [0u8; 32];
++        ring[2..4].copy_from_slice(&0x001cu16.to_le_bytes());
++        ring[4..8].copy_from_slice(&4u32.to_le_bytes());
++        ring[8..10].copy_from_slice(&frame_sub.to_le_bytes());
++        ring[10..12].copy_from_slice(&0x0004u16.to_le_bytes());
++        ring[16..19].copy_from_slice(&[0x0a, 0x00, 0x04]);
++        ring[19] = frame_sub as u8;
++        ring[22..26].copy_from_slice(&super::cp::navarro_pipe_ring(connector, 0).to_le_bytes());
++        ring[26..30].copy_from_slice(&super::cp::navarro_pipe_ring(connector, 4).to_le_bytes());
++        buf.extend_from_slice(&ring, GFP_KERNEL)?;
++
++        let mut tail = [0u8; 14];
++        super::rng::fill(&mut tail);
++        let config = super::video_arm::build_with_layout_word(
++            timing.hactive,
++            timing.vactive,
++            NAVARRO_LAYOUT_WORD,
++            &tail,
++        )?;
++        let seal_seq = self.take_seal_seq(head, config.len().div_ceil(16) as u32);
++        buf.extend_from_slice(
++            &super::cp::seal_video_arm(&vkey, &vnonce, stream, 0x000e, seal_seq, &config)?,
++            GFP_KERNEL,
++        )?;
++        Ok(buf)
++    }
++
 +    fn build_arm_burst_buf(&self, head: usize) -> Result<KVec<u8>> {
 +        let keys = self.video_keys.lock();
 +        let key = keys.get(head).ok_or(EINVAL)?;
@@ -2052,6 +3142,7 @@ index 000000000000..556d5994afbb
 +        dev: &BoundInterface<'_>,
 +        id: u16,
 +        tag_reserved: usize,
++        reserved_counter: Option<u16>,
 +        build: impl FnOnce(u16) -> Result<KVec<u8>>,
 +        consume: impl FnOnce(&[u8; 16], &[u8; 8], &[u8]) -> Result<T>,
 +    ) -> Result<T> {
@@ -2059,39 +3150,101 @@ index 000000000000..556d5994afbb
 +        let Some(link) = (&mut *guard).as_mut() else {
 +            return Err(ENODEV);
 +        };
-+        let msg = build(link.counter)?;
++        // DLM normally uses the next wire-order counter. Its cold Navarro mode transaction is the
++        // exception: per-head workers reserve counters before their writes interleave, so the
++        // inner counter order differs from the monotonically advancing AES block sequence.
++        let request_counter = reserved_counter.unwrap_or(link.counter);
++        let msg = build(request_counter)?;
++        let inner_sub = if msg.len() >= 4 {
++            u16::from_le_bytes([msg[2], msg[3]])
++        } else {
++            0
++        };
 +        let content = &msg[..msg.len().saturating_sub(tag_reserved)];
 +        let frame = super::cp::seal_interactive(&link.ks, &link.riv, id, link.wire_seq, content)?;
 +        dev.ctrl_send(&frame, super::timeout(), GFP_KERNEL)?;
 +        link.wire_seq = link
 +            .wire_seq
 +            .wrapping_add(((content.len() + 15) / 16) as u32);
-+        link.counter = link.counter.wrapping_add(1);
-+        // Keep EP84 in lockstep with EP02 by reaping one reply after each control write. A missing
-+        // reply is non-fatal because not every request produces one, but leaving replies queued
-+        // eventually blocks the dock's control plane. Use the validated 4096-byte request size so
-+        // larger logical replies can arrive as consecutive fragments.
++        // A normal message consumes the next counter now. A reserved message consumed its counter
++        // when its logical worker queued the transaction, before independently queued EP02 writes
++        // interleaved; consuming it twice here would skip a value after the cold transaction.
++        if reserved_counter.is_none() {
++            link.counter = link.counter.wrapping_add(1);
++        }
++        // DLM keeps reading EP84 until it sees the reply whose inner counter echoes this request.
++        // Navarro also emits unprompted `id=2/sub=0x86` status pushes on the same endpoint;
++        // treating the first such push as the paired reply advances EP02 before the dock has
++        // completed the transaction.  The dock then NAKs that write until the real reply is reaped,
++        // which is the exact 100-ms staircase visible in the failed captures.  Consume pushes here
++        // and stop only at the echoed counter (or a bounded timeout for request classes which do
++        // not reply).
++        //
++        //
++        // Use the validated 4096-byte request size so larger logical replies arrive intact.
 +        let mut reply = KVec::from_elem(0u8, 4096, GFP_KERNEL)?;
-+        let got = if let Some(q) = link.ep84_q.as_mut() {
-+            match q.recv(dev.io(), &mut reply, super::cp_reply_timeout()) {
-+                Ok(Some(n)) => n,
-+                _ => 0,
++        let deadline = Instant::<Monotonic>::now() + Delta::from_millis(64);
++        let mut matched = 0usize;
++        let (mut reaped, mut undecodable) = (0u32, 0u32);
++        let (mut seen_id, mut seen_sub, mut seen_counter) = (0u16, 0u16, 0u16);
++        loop {
++            let got = if let Some(q) = link.ep84_q.as_mut() {
++                match q.recv(dev.io(), &mut reply, super::cp_reply_timeout()) {
++                    Ok(Some(n)) => n,
++                    Ok(None) => 0,
++                    Err(_) => break,
++                }
++            } else {
++                dev.ctrl_recv(&mut reply, super::cp_reply_timeout(), GFP_KERNEL)
++                    .unwrap_or(0)
++            };
++            if got > 16 {
++                // During re-engagement an EDID push can precede the paired acknowledgment. Keep
++                // it for the waiting head while continuing to wait for the echoed counter.
++                let target = self.edid_target.load(Ordering::Relaxed);
++                if target != NO_EDID_TARGET {
++                    if let Ok(Some(blob)) =
++                        super::cp::parse_edid_from_reply(&link.ks, &link.riv, &reply[..got])
++                    {
++                        *self.edid_caught.lock() = Some(blob);
++                    }
++                }
++                if let Some((reply_id, reply_sub, reply_counter)) =
++                    super::cp::decode_in_lenient(&link.ks, &link.riv, &reply[..got])
++                {
++                    if reply_counter == request_counter {
++                        matched = got;
++                        break;
++                    }
++                    seen_id = reply_id;
++                    seen_sub = reply_sub;
++                    seen_counter = reply_counter;
++                    if matches!(reply_id, 0x44 | 0x194) {
++                        self.downstream_event.store(true, Ordering::Release);
++                    }
++                } else {
++                    undecodable += 1;
++                }
++                reaped += 1;
 +            }
-+        } else {
-+            dev.ctrl_recv(&mut reply, super::cp_reply_timeout(), GFP_KERNEL)
-+                .unwrap_or(0)
-+        };
-+        // During re-engagement the EDID push can be the reply consumed here. Preserve it for the
-+        // waiting head rather than requiring it to arrive in the later unpaired drain.
-+        let target = self.edid_target.load(Ordering::Relaxed);
-+        if target != NO_EDID_TARGET && got > 16 {
-+            if let Ok(Some(blob)) =
-+                super::cp::parse_edid_from_reply(&link.ks, &link.riv, &reply[..got])
-+            {
-+                *self.edid_caught.lock() = Some(blob);
++            if (Instant::<Monotonic>::now() - deadline).as_millis() >= 0 {
++                break;
 +            }
 +        }
-+        consume(&link.ks, &link.riv, &reply[..got])
++        // Name the message that went unanswered, and say whether the dock was silent or merely
++        // unreadable. Without this a stalled control session can only be reported as ETIMEDOUT,
++        // which cannot distinguish "the dock sent nothing" from "the dock replied and vino could
++        // not decode it" -- and on the D6000 the wire shows 50 sealed replies arriving during an
++        // attempt that ends in ETIMEDOUT.
++        if matched == 0 {
++            // Name the *inner* sub as well as the wire id. "id=0x16 went unanswered" covers the
++            // EDID engage, the readiness kick and both stream/display markers, and which one the
++            // dock ignored is the whole diagnosis.
++            pr_info!(
++                "vino: unanswered id={id:#06x} sub={inner_sub:#06x} ctr={request_counter}: reaped {reaped} reply/replies, {undecodable} undecodable, last decoded id={seen_id:#06x} sub={seen_sub:#06x} ctr={seen_counter}\n"
++            );
++        }
++        consume(&link.ks, &link.riv, &reply[..matched])
 +    }
 +
 +    /// Seal and send one interactive CP message on EP02, advancing the session keystream.
@@ -2102,7 +3255,34 @@ index 000000000000..556d5994afbb
 +        tag_reserved: usize,
 +        build: impl FnOnce(u16) -> Result<KVec<u8>>,
 +    ) -> Result {
-+        self.send_cp_reply(dev, id, tag_reserved, build, |_, _, _| Ok(()))
++        self.send_cp_reply(dev, id, tag_reserved, None, build, |_, _, _| Ok(()))
++    }
++
++    /// Send one CP message using a counter token previously consumed from the live allocator.
++    fn send_cp_reserved(
++        &self,
++        dev: &BoundInterface<'_>,
++        id: u16,
++        inner_counter: u16,
++        build: impl FnOnce(u16) -> Result<KVec<u8>>,
++    ) -> Result {
++        self.send_cp_reply(dev, id, 0, Some(inner_counter), build, |_, _, _| Ok(()))
++    }
++
++    /// Consume `N` consecutive counters from the live session and return them as reservation
++    /// tokens. This models DLM's independently queued per-head workers: allocation order remains
++    /// monotonic even when their actual EP02 writes interleave in a different order.
++    fn reserve_cp_counters<const N: usize>(&self) -> Result<[u16; N]> {
++        let mut guard = self.cp_link.lock();
++        let Some(link) = (&mut *guard).as_mut() else {
++            return Err(ENODEV);
++        };
++        let mut counters = [0u16; N];
++        for counter in &mut counters {
++            *counter = link.counter;
++            link.counter = link.counter.wrapping_add(1);
++        }
++        Ok(counters)
 +    }
 +
 +    /// Consume the dock's *unprompted* EP84 pushes, i.e. reads that are not the reply to any of our
@@ -2122,12 +3302,13 @@ index 000000000000..556d5994afbb
 +        let mut n = 0;
 +        while n < max {
 +            let got = match link.ep84_q.as_mut() {
-+                // Every queue slot is already posted. This is an opportunistic drain, so never
-+                // spend the ordinary 8-ms paired-reply timeout waiting for a push which has not
-+                // happened. A zero timeout still reaps and re-posts any completed slot.
-+                Some(q) => q.recv(dev.io(), &mut reply, Delta::from_millis(0)),
++                // Every queue slot is already posted. One millisecond is enough to reap a
++                // completion without turning this best-effort reader into another control
++                // deadline. A zero-jiffy completion wait does not observe an already-signalled
++                // completion reliably, so it left pushes queued until the next EP02 write.
++                Some(q) => q.recv(dev.io(), &mut reply, Delta::from_millis(1)),
 +                None => dev
-+                    .ctrl_recv(&mut reply, Delta::from_millis(0), GFP_KERNEL)
++                    .ctrl_recv(&mut reply, Delta::from_millis(1), GFP_KERNEL)
 +                    .map(Some),
 +            };
 +            // `Ok(None)` is the queue's timeout: nothing pending, so the dock has nothing more to
@@ -2183,6 +3364,16 @@ index 000000000000..556d5994afbb
 +        if head >= HEADS {
 +            return;
 +        }
++        // Tagged with the dock's connector count (Navarro 4, Ridge 2). With both docks bound only
++        // one ever ends up with a `connected` DRM connector, and vino logs
++        // `head 0 monitor connected` for the loser on a path that does call `set_connected` --
++        // so something clears it afterwards and this says which dock, and when.
++        if self.heads_present.load(Ordering::Acquire) & (1u32 << head) != 0 {
++            pr_info!(
++                "vino: [{}conn] head {head} presence CLEARED (connector goes disconnected)\n",
++                self.connector_count()
++            );
++        }
 +        self.heads_present
 +            .fetch_and(!(1u32 << head), core::sync::atomic::Ordering::Release);
 +        if let Some(slot) = self.cached_edids.lock().get_mut(head) {
@@ -2231,8 +3422,25 @@ index 000000000000..556d5994afbb
 +        match caught.or_else(|| self.drain_for_edid(io)) {
 +            Some(blob) => {
 +                let n = blob.len();
++                // Say what the EDID claims to be, not just that one arrived. On unfamiliar
++                // hardware this is what distinguishes a real monitor from a block the dock
++                // synthesised for an empty port.
++                if blob.len() >= 12 {
++                    let m = u16::from_be_bytes([blob[8], blob[9]]);
++                    let vendor = [
++                        b'@' + ((m >> 10) & 0x1f) as u8,
++                        b'@' + ((m >> 5) & 0x1f) as u8,
++                        b'@' + (m & 0x1f) as u8,
++                    ];
++                    pr_info!(
++                        "vino: head {head} EDID {n} B, vendor {}{}{} product {:#06x}\n",
++                        vendor[0] as char,
++                        vendor[1] as char,
++                        vendor[2] as char,
++                        u16::from_le_bytes([blob[10], blob[11]])
++                    );
++                }
 +                self.set_edid(head as usize, blob);
-+                vino_debug!("vino: head {head} EDID re-cached after re-engage ({n} bytes)\n");
 +                Ok(true)
 +            }
 +            None => {
@@ -2275,42 +3483,69 @@ index 000000000000..556d5994afbb
 +        None
 +    }
 +
-+    /// Stage 2 (runtime monitor hotplug): probe whether head `head` currently has a monitor.
++    /// Stage 2 (runtime monitor hotplug): probe one physical connector.
 +    ///
-+    /// Sends the per-head EDID probe (`id=0x15 sub=0x20`, byte22 = head selector -- the same
-+    /// selector that unblocked the whole EDID path) and decodes the dock's sealed `0x45` reply.
-+    /// A present monitor routes the probe to the dock's trusted EDID/display-capability handler
-+    /// (`id=0x44`/`id=0x194`/`id=0x78`); an empty port gets a bare generic `id=0x14` ack. Returns
-+    /// `Some(true/false)` on a decodable reply, `None` if CP is down or no reply decoded (caller
-+    /// treats `None` as "no change", and debounces `Some` transitions). Reuses the live session
-+    /// `ks/riv/counter` exactly like `send_cp`, so it stays in CP lockstep.
++    /// Navarro multiplexes two connectors per bulk endpoint, but its EDID selector and stream
++    /// record subfield are still per socket. Never collapse sockets 0/2 or 1/3 here: doing so
++    /// turns two independently connected monitors into one KMS connector.
 +    pub(super) fn probe_head_present(&self, dev: &BoundInterface<'_>, head: u8) -> Option<bool> {
++        if usize::from(head) >= self.connector_count() {
++            return Some(false);
++        }
++        self.probe_connector_present(dev, head, head)
++    }
++
++    /// Probe one downstream connector. `head` selects its own presence-change cell.
++    ///
++    /// Sends the EDID probe (`id=0x15 sub=0x20`, byte22 = connector selector -- the same selector
++    /// that unblocked the whole EDID path) and decodes the dock's sealed `0x45` reply. Returns
++    /// `Some(true/false)` on a decodable reply, `None` if CP is down or nothing decoded. Reuses the
++    /// live session `ks/riv/counter` exactly like `send_cp`, so it stays in CP lockstep.
++    fn probe_connector_present(&self, dev: &BoundInterface<'_>, sel: u8, head: u8) -> Option<bool> {
 +        let mut guard = self.cp_link.lock();
 +        let link = (&mut *guard).as_mut()?;
-+        let msg = super::cp::get_edid_req_sub(link.counter, 0x0020, head).ok()?;
++        let request_counter = link.counter;
++        let msg = super::cp::get_edid_req_sub(request_counter, 0x0020, sel).ok()?;
 +        let frame =
 +            super::cp::seal_interactive(&link.ks, &link.riv, 0x15, link.wire_seq, &msg).ok()?;
 +        dev.ctrl_send(&frame, super::timeout(), GFP_KERNEL).ok()?;
 +        link.wire_seq = link.wire_seq.wrapping_add(((msg.len() + 15) / 16) as u32);
 +        link.counter = link.counter.wrapping_add(1);
++        // Take the reply that answers this probe, not simply the next frame on EP84: the
++        // connectors are probed back to back, so a late reply or an unprompted push would
++        // otherwise be attributed to the wrong head. The inner counter echoes the request. A round
++        // that never sees its own echo returns `None`, which the caller treats as "this poll
++        // learned nothing" rather than as an unplug.
 +        let mut reply = KVec::from_elem(0u8, 4096, GFP_KERNEL).ok()?;
-+        let got = match link.ep84_q.as_mut() {
-+            Some(q) => match q.recv(dev.io(), &mut reply, super::cp_reply_timeout()) {
-+                Ok(Some(n)) if n > 16 => n,
-+                _ => return None,
-+            },
-+            None => match dev.ctrl_recv(&mut reply, super::cp_reply_timeout(), GFP_KERNEL) {
-+                Ok(n) if n > 16 => n,
-+                _ => return None,
-+            },
++        let deadline = Instant::<Monotonic>::now() + Delta::from_millis(64);
++        let got = loop {
++            let n = match link.ep84_q.as_mut() {
++                Some(q) => match q.recv(dev.io(), &mut reply, super::cp_reply_timeout()) {
++                    Ok(Some(n)) => n,
++                    Ok(None) => 0,
++                    Err(_) => return None,
++                },
++                None => dev
++                    .ctrl_recv(&mut reply, super::cp_reply_timeout(), GFP_KERNEL)
++                    .unwrap_or(0),
++            };
++            if n > 16 {
++                match super::cp::decode_in_lenient(&link.ks, &link.riv, &reply[..n]) {
++                    Some((_, _, echoed)) if echoed == request_counter => break n,
++                    // Undecodable frames are the dock's asynchronous pushes; keep draining.
++                    _ => {}
++                }
++            }
++            if (Instant::<Monotonic>::now() - deadline).as_millis() >= 0 {
++                return None;
++            }
 +        };
 +        // Decode the downstream status at inner bytes 22..26 as well as the handler ID.
 +        let (id, status, _) = super::cp::probe_reply_status(&link.ks, &link.riv, &reply[..got])?;
-+        // A head with no monitor cannot be routed to an EDID handler, so the dock answers the
-+        // generic `id=0x14` rather than the rich `id=0x44` -- the same substitution it makes for a
-+        // wrong head selector, which is how the EDID head-selector bug was found. Keep that as the
-+        // primary discriminator and let the status word refine it.
-+        let present = matches!(id, 0x44 | 0x194 | 0x78);
++        // Presence is bit 0x10 of inner byte 23, which lands in bits 8..15 of the status word:
++        // `05 11 27 00` for an occupied connector, `05 01 <20|21|60|61> 00` for an empty one.
++        // Which handler answered says nothing about it -- both docks reply `id=0x44` either way.
++        let present = status & 0x0000_1000 != 0;
 +        // One line per *changed* answer per head, so a steady link is silent and an unplug is
 +        // unmissable. Both fields are packed into the same cell: the id alone cannot distinguish a
 +        // dock that keeps saying `0x44` from one whose downstream state has moved underneath it.
@@ -2323,6 +3558,20 @@ index 000000000000..556d5994afbb
 +            if prev != 0 {
 +                self.downstream_event.store(true, Ordering::Release);
 +            }
++            // The decoded answer itself, not just the verdict derived from it. Without this a
++            // presence flap can only be read as "monitor disconnected", which says nothing about
++            // whether the dock changed its mind or vino changed the question. It is one line per
++            // *changed* reply per head, so a steady link prints nothing at all.
++            // Tagged with the dock's connector count -- Navarro exposes four, Ridge two -- because
++            // an untagged line cannot be attributed when both docks are bound, and reading these
++            // as the wrong dock's is exactly how this session lost time.
++            pr_info!(
++                "vino: [{}conn] head {head} presence reply id={id:#06x} status={status:#010x} \
++                 -> present={present} (was id={:#06x} status={:#06x})\n",
++                self.connector_count(),
++                prev >> 16,
++                prev & 0xffff
++            );
 +        }
 +        Some(present)
 +    }
@@ -2359,6 +3608,50 @@ index 000000000000..556d5994afbb
 +    fn dock_budget(&self) -> u32 {
 +        self.dock_pixel_budget
 +            .load(core::sync::atomic::Ordering::Relaxed)
++    }
++
++    /// Record this dock's pixel-rate budget, refresh ceiling and pixel-clock ceiling.
++    pub(super) fn set_mode_limits(
++        &self,
++        pixel_budget: u32,
++        max_refresh_hz: u32,
++        max_head_clock_khz: u32,
++    ) {
++        self.dock_pixel_budget
++            .store(pixel_budget, core::sync::atomic::Ordering::Relaxed);
++        self.max_refresh_hz.store(
++            if max_refresh_hz == 0 {
++                DEFAULT_MAX_REFRESH_HZ
++            } else {
++                max_refresh_hz
++            },
++            core::sync::atomic::Ordering::Relaxed,
++        );
++        self.max_head_clock_khz.store(
++            if max_head_clock_khz == 0 {
++                DEFAULT_MAX_HEAD_CLOCK_KHZ
++            } else {
++                max_head_clock_khz
++            },
++            core::sync::atomic::Ordering::Relaxed,
++        );
++    }
++
++    /// Highest per-mode pixel clock in kHz this dock is known to accept.
++    fn max_head_clock_khz(&self) -> u32 {
++        self.max_head_clock_khz
++            .load(core::sync::atomic::Ordering::Relaxed)
++    }
++
++    /// Highest refresh rate this dock is known to drive.
++    pub(super) fn max_refresh_hz(&self) -> u32 {
++        self.max_refresh_hz
++            .load(core::sync::atomic::Ordering::Relaxed)
++    }
++
++    /// Whether DRM's rounded refresh rate is within this dock's limit.
++    pub(super) fn refresh_within_limit(&self, vrefresh: i32) -> bool {
++        vrefresh <= 0 || (vrefresh as u32) <= self.max_refresh_hz()
 +    }
 +
 +    /// Combined pixel rate of every head *except* `head` that currently has a mode driven onto it.
@@ -2451,7 +3744,13 @@ index 000000000000..556d5994afbb
 +            (pool.slots[idx].surface.take(), binding, idx)
 +        };
 +
-+        let r = snapshot_to_shadow(&mut surface, &binding.mapping, source_w, source_h);
++        let r = snapshot_to_shadow(
++            self.geometry(),
++            &mut surface,
++            &binding.mapping,
++            source_w,
++            source_h,
++        );
 +
 +        let snapshot = {
 +            let mut pool = self.shadow[head].lock();
@@ -2519,9 +3818,8 @@ index 000000000000..556d5994afbb
 +    }
 +
 +    /// Wake `head`'s scanout worker. The work ID is a const generic, so the runtime head index has
-+    /// to be matched into it here; the `HEADS == 2` assertion by the `WorkItem` impls keeps this
-+    /// exhaustive. Enqueueing an already-pending item is a no-op, and enqueueing one that is
-+    /// currently running re-arms it, preserving a flip that arrives during
++    /// to be matched into it here. Enqueueing an already-pending item is a no-op, and enqueueing
++    /// one that is currently running re-arms it, preserving a flip that arrives during
 +    /// encoding for the worker's next pass.
 +    fn enqueue_scanout(&self, dev: &VinoDrmDevice, head: usize) {
 +        match head {
@@ -2530,6 +3828,12 @@ index 000000000000..556d5994afbb
 +            }
 +            1 => {
 +                let _ = self.scanout_queue.enqueue::<_, 2>(ARef::from(dev));
++            }
++            2 => {
++                let _ = self.scanout_queue.enqueue::<_, 3>(ARef::from(dev));
++            }
++            3 => {
++                let _ = self.scanout_queue.enqueue::<_, 4>(ARef::from(dev));
 +            }
 +            _ => {}
 +        }
@@ -2648,15 +3952,15 @@ index 000000000000..556d5994afbb
 +impl_has_work! {
 +    impl HasWork<VinoDrmDevice, 1> for VinoDrmData { self.scanout_work_h0 }
 +    impl HasWork<VinoDrmDevice, 2> for VinoDrmData { self.scanout_work_h1 }
++    impl HasWork<VinoDrmDevice, 3> for VinoDrmData { self.scanout_work_h2 }
++    impl HasWork<VinoDrmDevice, 4> for VinoDrmData { self.scanout_work_h3 }
 +}
 +
-+/// One scanout work item exists per head, and a work ID is a const generic. Raising [`HEADS`]
-+/// without adding a `scanout_work_hN` field (plus its `HasWork`/`WorkItem` impls and an
-+/// `enqueue_scanout` arm) would silently leave the extra heads with no worker at all -- their
-+/// frames would sit in `pending_scanout` until some other head's flip happened to run. Fail the
-+/// build instead.
++/// One scanout work item exists per connector, and its work ID is a const generic. Keep this
++/// assertion adjacent to the explicit fields/arms below: adding another connector without all
++/// three would silently leave its frames in `pending_scanout`.
 +const _: () = assert!(
-+    HEADS == 2,
++    HEADS == 4,
 +    "add a scanout_work_hN work item per head (see VinoDrmData::enqueue_scanout)"
 +);
 +
@@ -2671,6 +3975,20 @@ index 000000000000..556d5994afbb
 +    type Pointer = ARef<VinoDrmDevice>;
 +    fn run(this: ARef<VinoDrmDevice>) {
 +        run_scanout_worker(this, 1);
++    }
++}
++
++impl WorkItem<3> for VinoDrmData {
++    type Pointer = ARef<VinoDrmDevice>;
++    fn run(this: ARef<VinoDrmDevice>) {
++        run_scanout_worker(this, 2);
++    }
++}
++
++impl WorkItem<4> for VinoDrmData {
++    type Pointer = ARef<VinoDrmDevice>;
++    fn run(this: ARef<VinoDrmDevice>) {
++        run_scanout_worker(this, 3);
 +    }
 +}
 +
@@ -2755,11 +4073,50 @@ index 000000000000..556d5994afbb
 +            if data.shutting_down.load(Ordering::Acquire) {
 +                return;
 +            }
++            // A dual-head atomic commit runs `atomic_enable` once per head, and each of those
++            // queues its own `ModeSet` and wakes this worker -- microseconds apart, but far less
++            // than it takes to get scheduled. Taking the first one alone turns one dock-wide wake
++            // into two single-head activations and skips the cold choreography that arms the video
++            // endpoints, so wait, briefly and boundedly, for the siblings the compositor has
++            // already published a timing for.
++            {
++                let started = Instant::<Monotonic>::now();
++                let present = data.heads_present.load(Ordering::Acquire);
++                loop {
++                    let queued = data.pending_kms.lock().heads.iter().enumerate().fold(
++                        0u32,
++                        |acc, (h, p)| {
++                            if matches!(p.stream, Some(KmsCmd::ModeSet { .. })) {
++                                acc | (1u32 << h)
++                            } else {
++                                acc
++                            }
++                        },
++                    );
++                    // Nothing to wait for until at least one mode set has landed, and nothing
++                    // left to wait for once every head with a monitor is either already active
++                    // or represented in this batch.
++                    let outstanding = (0..HEADS).any(|h| {
++                        present & (1u32 << h) != 0
++                            && queued & (1u32 << h) == 0
++                            && data.modeset_active[h].load(Ordering::Acquire) == 0
++                    });
++                    if queued == 0
++                        || !outstanding
++                        || (Instant::<Monotonic>::now() - started).as_millis()
++                            >= MODESET_BATCH_SETTLE_MS
++                    {
++                        break;
++                    }
++                    fsleep(Delta::from_millis(1));
++                }
++            }
 +            let pending = core::mem::replace(&mut *data.pending_kms.lock(), PendingKms::new());
 +            // A cold dual-head atomic commit is one dock-wide wake: both mode-sets precede either
 +            // head's video. Detect that shape before
 +            // consuming the owned state.
 +            let mut dual_timings: [Option<super::cp::Timing>; HEADS] = [None; HEADS];
++            let mut cmd_heads = 0u32;
 +            for head in &pending.heads {
 +                if let Some(KmsCmd::ModeSet {
 +                    head: cmd_head,
@@ -2767,12 +4124,14 @@ index 000000000000..556d5994afbb
 +                }) = &head.stream
 +                {
 +                    let head_i = *cmd_head as usize;
-+                    if head_i < HEADS
-+                        && data.modeset_active[head_i].load(Ordering::Acquire) == 0
-+                        && data.modeset_requested[head_i].load(Ordering::Acquire)
-+                            == timing_key(timing)
-+                    {
-+                        dual_timings[head_i] = Some(*timing);
++                    if head_i < HEADS {
++                        cmd_heads |= 1u32 << head_i;
++                        if data.modeset_active[head_i].load(Ordering::Acquire) == 0
++                            && data.modeset_requested[head_i].load(Ordering::Acquire)
++                                == timing_key(timing)
++                        {
++                            dual_timings[head_i] = Some(*timing);
++                        }
 +                    }
 +                }
 +            }
@@ -2792,6 +4151,22 @@ index 000000000000..556d5994afbb
 +                data.wait_for_video_idle();
 +            }
 +            let dual_wake = dual_timings.iter().flatten().count() >= 2;
++            if has_modeset {
++                vino_debug!(
++                    "vino: KMS batch -- stream cmds {}, dual timings {}, dual_wake {}, requested [{} {} {} {}], active [{} {} {} {}]\n",
++                    (0..HEADS).filter(|&h| cmd_heads & (1u32 << h) != 0).count(),
++                    dual_timings.iter().flatten().count(),
++                    dual_wake,
++                    data.modeset_requested[0].load(Ordering::Acquire),
++                    data.modeset_requested[1].load(Ordering::Acquire),
++                    data.modeset_requested[2].load(Ordering::Acquire),
++                    data.modeset_requested[3].load(Ordering::Acquire),
++                    data.modeset_active[0].load(Ordering::Acquire),
++                    data.modeset_active[1].load(Ordering::Acquire),
++                    data.modeset_active[2].load(Ordering::Acquire),
++                    data.modeset_active[3].load(Ordering::Acquire),
++                );
++            }
 +            let dual_complete = dual_wake
 +                && match data.activate_dual_wake(dev, dual_timings) {
 +                    Ok(done) => done,
@@ -3049,14 +4424,27 @@ index 000000000000..556d5994afbb
 +        Ok(())
 +    }
 +}
+diff --git a/drivers/gpu/drm/vino/drm_sink/mode_objects.rs b/drivers/gpu/drm/vino/drm_sink/mode_objects.rs
+new file mode 100644
+index 000000000000..a94823079503
+--- /dev/null
++++ b/drivers/gpu/drm/vino/drm_sink/mode_objects.rs
+@@ -0,0 +1,799 @@
++// SPDX-License-Identifier: GPL-2.0
 +
-+// ---- CRTC -----------------------------------------------------------------
++//! The KMS objects the compositor drives: CRTC, primary and cursor planes, encoder and connector,
++//! plus the software vblank timer that paces them.
++//!
++//! These callbacks run under the DRM atomic lock and must not block, so anything that talks to the
++//! dock is queued for [`super::VinoDrmData`]'s workers rather than done here.
++
++use super::*;
 +
 +/// A software vblank source: an hrtimer that fires once per frame and drives
 +/// `drm_crtc_handle_vblank()`. It stops when vblank is disabled and is also cancelled
 +/// unconditionally by [`VinoDrmData::shutdown`].
 +#[pin_data]
-+pub(super) struct VblankTimer {
++pub(crate) struct VblankTimer {
 +    #[pin]
 +    timer: HrTimer<Self>,
 +    /// Owned CRTC reference used by the hard-timer callback.
@@ -3064,11 +4452,11 @@ index 000000000000..556d5994afbb
 +    /// This reference forms a cycle through the DRM device, so shutdown clears it after cancelling
 +    /// the timer. The IRQ-aware lock permits access from both process and hard-timer context.
 +    #[pin]
-+    crtc: SpinLockIrq<Option<crtc::CrtcRef<VinoCrtc>>>,
++    pub(super) crtc: SpinLockIrq<Option<crtc::CrtcRef<VinoCrtc>>>,
 +    /// One scanout frame in nanoseconds (from the mode's `framedur_ns`).
 +    interval_ns: AtomicI64,
 +    /// Whether vblanks should currently be delivered (toggled by enable/disable_vblank).
-+    enabled: AtomicBool,
++    pub(super) enabled: AtomicBool,
 +}
 +
 +impl VblankTimer {
@@ -3117,7 +4505,7 @@ index 000000000000..556d5994afbb
 +}
 +
 +#[pin_data]
-+pub(super) struct VinoCrtc {
++pub(crate) struct VinoCrtc {
 +    /// Which display head (0-based) this CRTC drives. Used for diagnostics; the mode-set/DDC CP
 +    /// messages this CRTC sends are not yet head-differentiated on the wire (see the module doc).
 +    head: u8,
@@ -3132,11 +4520,11 @@ index 000000000000..556d5994afbb
 +    /// `atomic_enable` and released in `atomic_disable`, which is longer than a borrowed
 +    /// `VblankRef` can live, so an owned one is stored here.
 +    #[pin]
-+    vblank_pinned: Mutex<Option<OwnedVblankRef<VinoCrtc>>>,
++    pub(super) vblank_pinned: Mutex<Option<OwnedVblankRef<VinoCrtc>>>,
 +}
 +
 +#[derive(Clone, Default)]
-+pub(super) struct VinoCrtcState;
++pub(crate) struct VinoCrtcState;
 +
 +impl crtc::DriverCrtcState for VinoCrtcState {
 +    type Crtc = VinoCrtc;
@@ -3181,7 +4569,7 @@ index 000000000000..556d5994afbb
 +        };
 +        let new_rate = if new.active() {
 +            let m = new.mode();
-+            if (!old.active() || new.mode_changed()) && !super::cp::mode_supported(m) {
++            if (!old.active() || new.mode_changed()) && !crate::cp::mode_supported(m) {
 +                pr_warn!(
 +                    "vino: head {head} mode {}x{}@{} has no dock profile\n",
 +                    m.hdisplay(),
@@ -3213,8 +4601,8 @@ index 000000000000..556d5994afbb
 +        } else {
 +            0
 +        };
-+        if new_refresh > old_refresh && !refresh_within_limit(new_refresh) {
-+            let limit = DOCK_MAX_REFRESH_HZ;
++        if new_refresh > old_refresh && !data.refresh_within_limit(new_refresh) {
++            let limit = data.max_refresh_hz();
 +            pr_warn!("vino: head {head} refresh {new_refresh} exceeds {limit} Hz\n");
 +            return Err(EINVAL);
 +        }
@@ -3256,7 +4644,7 @@ index 000000000000..556d5994afbb
 +        // Whatever this head's sink state was, the enable path re-runs the full bracket and
 +        // mode-set, so any silence from here is the dock's news, not vino's.
 +        data.set_self_blanked(head as usize, false);
-+        let timing = match super::cp::timing_from_drm_mode(new.mode()) {
++        let timing = match crate::cp::timing_from_drm_mode(new.mode(), data.navarro_mode_words()) {
 +            Ok(timing) => timing,
 +            Err(e) => {
 +                pr_err!(
@@ -3420,15 +4808,15 @@ index 000000000000..556d5994afbb
 +/// Constructor arguments for a [`VinoPlane`]: which head it belongs to and whether it is that
 +/// head's cursor plane (vs. its primary scanout plane).
 +#[derive(Clone, Copy)]
-+pub(super) struct PlaneArgs {
-+    head: u8,
-+    is_cursor: bool,
++pub(crate) struct PlaneArgs {
++    pub(super) head: u8,
++    pub(super) is_cursor: bool,
 +}
 +
 +#[pin_data]
-+pub(super) struct VinoPlane {
++pub(crate) struct VinoPlane {
 +    /// Which display head (0-based) this plane belongs to. Selects the scanout video endpoint
-+    /// ([`VIDEO_EPS`]) and the cursor CP `head` field.
++    /// (see `DockProfile::video_eps`) and the cursor CP `head` field.
 +    head: u8,
 +    /// Whether this is the cursor plane (vs. the primary scanout plane).
 +    is_cursor: bool,
@@ -3445,7 +4833,7 @@ index 000000000000..556d5994afbb
 +}
 +
 +#[derive(Clone, Default)]
-+pub(super) struct VinoPlaneState;
++pub(crate) struct VinoPlaneState;
 +
 +impl plane::DriverPlaneState for VinoPlaneState {
 +    type Plane = VinoPlane;
@@ -3683,9 +5071,189 @@ index 000000000000..556d5994afbb
 +    }
 +}
 +
++/// The connector's fixed encoder. The dock has no encoder configuration of its own.
++#[pin_data]
++pub(crate) struct VinoEncoder;
++
++#[vtable]
++impl encoder::DriverEncoder for VinoEncoder {
++    type Driver = VinoDrmDriver;
++    type Args = ();
++
++    fn new(_device: &drm::Device<Self::Driver>, _args: ()) -> impl PinInit<Self, Error> {
++        try_pin_init!(VinoEncoder {})
++    }
++}
++
++// ---- Connector --------------------------------------------------------------
++
++#[pin_data]
++pub(crate) struct VinoConnector {
++    /// Index into the owning device's per-head EDID/presence arrays.
++    head: u8,
++}
++
++#[derive(Clone, Default)]
++pub(crate) struct VinoConnectorState;
++
++impl connector::DriverConnectorState for VinoConnectorState {
++    type Connector = VinoConnector;
++}
++
++#[vtable]
++impl connector::DriverConnector for VinoConnector {
++    type Args = u8;
++    type Driver = VinoDrmDriver;
++    type State = VinoConnectorState;
++
++    fn new(_device: &drm::Device<Self::Driver>, head: u8) -> impl PinInit<Self, Error> {
++        try_pin_init!(VinoConnector { head })
++    }
++
++    /// Install the dock's real EDID (read during probe) when available; otherwise fall back
++    /// to a single 1920x1080@60 CVT mode. Reading the real EDID gives the true monitor
++    /// name/size and its native mode list; the fallback keeps the connector usable when
++    /// nothing is plugged into the dock or the CP channel has not yet delivered the EDID.
++    fn get_modes<'a>(
++        connector: ConnectorGuard<'a, Self>,
++        guard: &ModeConfigGuard<'a, Self::Driver>,
++    ) -> i32 {
++        let data: &VinoDrmData = connector.drm_dev();
++        let edids = data.cached_edids.lock();
++        if let Some(blob) = edids.get(connector.head as usize).and_then(Option::as_ref) {
++            // A failed EDID update adds no modes; fall through to the built-in list rather than
++            // reporting a count the core did not actually get.
++            if let Ok(n) = connector.add_edid_modes(blob) {
++                if n > 0 {
++                    return n;
++                }
++            }
++        }
++        drop(edids);
++        let _ = guard;
++        // No downstream EDID yet: advertise the standard mode list up to the fallback resolution
++        // and prefer it, keeping the connector usable until the dock delivers a real EDID.
++        let n = connector.add_modes_noedid((FALLBACK_W as u32, FALLBACK_H as u32));
++        connector.set_preferred_mode((FALLBACK_W as u32, FALLBACK_H as u32));
++        n
++    }
++
++    /// Report the head connected once the dock has delivered this head's downstream EDID (a real
++    /// monitor is attached and described) OR the bring-up work item confirmed CP engagement +
++    /// this head's DISPLAY-CAP push (`heads_present`: on 3.4.26 the raw-EDID path can fail, so
++    /// cached EDID alone would leave every connector permanently
++    /// disconnected despite a fully-engaged dock). A head with neither stays disconnected rather
++    /// than advertising a phantom output.
++    fn detect(connector: &Connector<Self>, _force: bool) -> Status {
++        let data: &VinoDrmData = connector.drm_dev();
++        let head = connector.head as usize;
++        if head >= data.connector_count() {
++            return Status::Disconnected;
++        }
++        let has_edid = data
++            .cached_edids
++            .lock()
++            .get(head)
++            .is_some_and(Option::is_some);
++        let present = data
++            .heads_present
++            .load(core::sync::atomic::Ordering::Acquire)
++            & (1 << head)
++            != 0;
++        if has_edid || present {
++            Status::Connected
++        } else {
++            Status::Disconnected
++        }
++    }
++
++    /// Prune modes whose pixel clock exceeds a single head's bandwidth ceiling
++    /// ([`MAX_HEAD_CLOCK_KHZ`], ~4K@60), whose refresh rate exceeds what the dock has ever been
++    /// shown to display ([`DOCK_MAX_REFRESH_HZ`]), or whose pixel rate exceeds the dock's budget.
++    fn mode_valid(connector: ConnectorModeValidation<'_, Self>, mode: &DisplayMode) -> ModeStatus {
++        let data: &VinoDrmData = connector.drm_dev();
++        if mode.clock() < 0 || mode.clock() as u32 > data.max_head_clock_khz() {
++            return ModeStatus::ClockHigh;
++        }
++        if !data.refresh_within_limit(mode.vrefresh()) {
++            return ModeStatus::ClockHigh;
++        }
++        if !crate::cp::mode_supported(mode) {
++            return ModeStatus::Bad;
++        }
++        // Reject a mode only when that head exceeds the dock's whole pixel budget. The atomic CRTC
++        // check enforces the combined rate of simultaneously active heads.
++        let budget = data.dock_budget();
++        let head_rate = active_pixel_rate(mode.hdisplay(), mode.vdisplay(), mode.vrefresh());
++        if budget != 0 && head_rate > budget {
++            return ModeStatus::Bad;
++        }
++        ModeStatus::Ok
++    }
++}
++
++/// Apply the cached gamma ramp (three 256-entry 8-bit LUTs) to an `(r, g, b)` pixel, or return it
++/// unchanged when no gamma is programmed.
++#[inline]
++
++/// Map an output pixel `(dx, dy)` back to its source-framebuffer pixel `(sx, sy)` under a DRM
++/// plane `rotation` bitmask (`DRM_MODE_ROTATE_*` | `DRM_MODE_REFLECT_*`, the values the
++/// standard `drm_plane_create_rotation_property` exposes). `sw`/`sh` are the SOURCE
++/// (framebuffer) dimensions. Rotation is clockwise; reflection is applied in source space
++/// after rotation. Pure and total (saturating), so it is unit-tested directly. Applied per source
++/// pixel in [`encode_and_send`]/[`encode_and_send_wht`] for the plane's rotation property.
++pub(crate) fn rot_src(
++    rotation: plane::Rotation,
++    dx: usize,
++    dy: usize,
++    sw: usize,
++    sh: usize,
++) -> (usize, usize) {
++    let xmax = sw.saturating_sub(1);
++    let ymax = sh.saturating_sub(1);
++    let rot = rotation.angle();
++    let (mut sx, mut sy) = if rot == plane::Rotation::ROTATE_90 {
++        (dy, ymax.saturating_sub(dx))
++    } else if rot == plane::Rotation::ROTATE_180 {
++        (xmax.saturating_sub(dx), ymax.saturating_sub(dy))
++    } else if rot == plane::Rotation::ROTATE_270 {
++        (xmax.saturating_sub(dy), dx)
++    } else {
++        (dx, dy) // ROTATE_0 / unset
++    };
++    if rotation.contains(plane::Rotation::REFLECT_X) {
++        sx = xmax.saturating_sub(sx);
++    }
++    if rotation.contains(plane::Rotation::REFLECT_Y) {
++        sy = ymax.saturating_sub(sy);
++    }
++    (sx, sy)
++}
+diff --git a/drivers/gpu/drm/vino/drm_sink/scanout.rs b/drivers/gpu/drm/vino/drm_sink/scanout.rs
+new file mode 100644
+index 000000000000..25b5a495ca5b
+--- /dev/null
++++ b/drivers/gpu/drm/vino/drm_sink/scanout.rs
+@@ -0,0 +1,1487 @@
++// SPDX-License-Identifier: GPL-2.0
++
++//! Turning a committed framebuffer into bytes on a video endpoint.
++//!
++//! The compositor's atomic callback does no work beyond snapshotting: everything below runs on the
++//! deferred scanout worker. In order, a frame goes through damage selection against the previous
++//! frame's per-strip hashes, encoding (fanned across CPUs as [`EncodeChunk`]s), record framing, and
++//! submission through the head's persistent URB queue.
++
++use super::mode_objects::rot_src;
++use super::*;
++
 +/// Compress and submit one coalesced primary-plane flip on the deferred worker. Keeping all slow
 +/// work here makes the DRM atomic callback bounded to state inspection plus an `ARef` increment.
-+fn run_pending_scanout(dev: &BoundInterface<'_>, data: &VinoDrmData, frame: PendingScanout) {
++pub(super) fn run_pending_scanout(
++    dev: &BoundInterface<'_>,
++    data: &VinoDrmData,
++    frame: PendingScanout,
++) {
 +    use core::sync::atomic::Ordering::Relaxed;
 +
 +    let head_i = frame.head as usize;
@@ -3754,14 +5322,7 @@ index 000000000000..556d5994afbb
 +        band,
 +    } = shadow;
 +    let color = data.color_snapshot(head_i);
-+    let direct = direct_pixel_map(
-+        frame.rotation,
-+        &color,
-+        source_w,
-+        source_h,
-+        frame.w,
-+        frame.h,
-+    );
++    let direct = direct_pixel_map(frame.rotation, &color, source_w, source_h, frame.w, frame.h);
 +    let src = match Arc::new(
 +        PixelSource {
 +            pixels,
@@ -3811,9 +5372,7 @@ index 000000000000..556d5994afbb
 +    {
 +        let mut pool = data.shadow[head_i].lock();
 +        if pool.inflight == Some(slot) {
-+            if pool.slots[slot].generation == generation
-+                && pool.slots[slot].surface.is_none()
-+            {
++            if pool.slots[slot].generation == generation && pool.slots[slot].surface.is_none() {
 +                pool.slots[slot].surface = returned;
 +            }
 +            pool.inflight = None;
@@ -3840,14 +5399,19 @@ index 000000000000..556d5994afbb
 +                // else charges one settle repaint against this
 +                // head's keyframe obligation and stops when it runs out. See `SETTLE_REPAINTS` for
 +                // the unbounded keyframe loop that made a static desktop stream ~2.7 MB/s per head.
-+                let unbudgeted = sustaining;
++                // A dock that tears the link down over a silent video endpoint has to be re-fed
++                // whether or not anything changed, so its repaint is periodic and unbudgeted.
++                let keepalive = data.is_navarro();
++                let unbudgeted = sustaining || keepalive;
 +                let charged = unbudgeted
 +                    || data.settle_budget[head_i]
 +                        .fetch_update(Relaxed, Relaxed, |b| b.checked_sub(1))
 +                        .is_ok();
 +                if charged {
-+                    let delay = if unbudgeted {
++                    let delay = if sustaining {
 +                        FRAME_PERIOD_MS
++                    } else if keepalive {
++                        NAVARRO_KEEPALIVE_MS
 +                    } else {
 +                        SETTLE_REPAINT_MS
 +                    };
@@ -3859,7 +5423,7 @@ index 000000000000..556d5994afbb
 +                }
 +            } else {
 +                // Repaint the same framebuffer while strips still have retransmit debt. This is a
-+                // delta, not a keyframe, and terminates after at most `DAMAGE_REPEATS` accepted
++                // delta, not a keyframe, and terminates after at most `damage_repeats()` accepted
 +                // presentations because each pass decrements the debt ledger.
 +                let owes = data.dirty_ttl.lock()[head_i]
 +                    .as_ref()
@@ -3887,11 +5451,11 @@ index 000000000000..556d5994afbb
 +
 +/// Copy a whole cursor framebuffer for the dock.
 +///
-+/// The dock takes DRM `ARGB8888` unchanged; [`super::cp::cursor_image`] owns the wire placement.
++/// The dock takes DRM `ARGB8888` unchanged; [`crate::cp::cursor_image`] owns the wire placement.
 +/// The complete bitmap is sent every time rather than the helper's clipped rectangle: the dock is
 +/// configured for a fixed cursor size (`mode_config.cursor_width/height`) and clips at the panel
 +/// edge itself.
-+fn read_cursor_bgra(
++pub(super) fn read_cursor_bgra(
 +    fb: &kms::framebuffer::Framebuffer<VinoDrmDriver>,
 +    w: usize,
 +    h: usize,
@@ -3910,34 +5474,10 @@ index 000000000000..556d5994afbb
 +    Ok(out)
 +}
 +
-+/// Replace the cursor bitmap with a diagnostic pattern. **Temporary, 2026-07-29.**
-+///
-+/// The pointer is uniformly translucent on both heads, which is a pixel-format question, and the
-+/// DLM capture never caught a `sub=0x41` bitmap upload to compare against. This substitutes four
-+/// horizontal bands whose intended appearance is unambiguous, so what actually shows on the panel
-+/// identifies the format directly instead of by guesswork:
-+///
-+/// **Stage 2 -- locate the alpha byte.** Stage 1 (opaque red / green / blue / 50% grey, in
-+/// DRM_FORMAT_ARGB8888 little-endian order `B G R A`) came back with only the green and grey bands
-+/// visible: an "equals sign". Zero-for-red-and-blue, `ff`-for-green holds at exactly one byte
-+/// index, **byte 1** -- so the dock is not reading alpha from byte 3, and vino's opaque cursors
-+/// have been shipping their green channel as alpha.
-+///
-+/// **Stage 3 -- silhouette test, to tell a format difference from a byte offset.**
-+///
-+/// Stage 2 (band `k` sets only byte `k`, drawn as `k + 1` dashes) returned **two dashes**, so the
-+/// dock takes alpha from **byte 1**. Two causes fit that equally well, because every pixel within a
-+/// band is identical and a shift is therefore invisible:
-+///
-+/// * **(A)** the dock's pixel format really does carry alpha at index 1;
-+/// * **(B)** the format is ordinary (alpha at index 3) but the bitmap sits **±2 bytes** from where
-+///   the dock expects it -- [`super::cp::cursor_image`] pads to `off32` and appends there.
-+///
-+
 +/// Source (framebuffer) dimensions for an output of `ow`x`oh` pixels under plane `rotation`.
 +/// The 90/270 rotations swap width and height between the framebuffer and the displayed output;
 +/// the others preserve them.
-+fn src_dims(rotation: plane::Rotation, ow: usize, oh: usize) -> (usize, usize) {
++pub(super) fn src_dims(rotation: plane::Rotation, ow: usize, oh: usize) -> (usize, usize) {
 +    if matches!(
 +        rotation.angle(),
 +        plane::Rotation::ROTATE_90 | plane::Rotation::ROTATE_270
@@ -3967,7 +5507,8 @@ index 000000000000..556d5994afbb
 +/// Strips whose hash is unchanged are still not written, so an idle desktop moves no more memory
 +/// than before; a busy one no longer reads the source twice.
 +#[inline(never)]
-+fn snapshot_to_shadow(
++pub(super) fn snapshot_to_shadow(
++    geom: crate::video::wht::Geometry,
 +    slot: &mut Option<ShadowSurface>,
 +    source: &kms::framebuffer::FramebufferVMapOwned<VinoObject>,
 +    w: usize,
@@ -3982,8 +5523,7 @@ index 000000000000..556d5994afbb
 +    let pitch = source.pitch();
 +    let view = source.view();
 +
-+    let sw = super::video::wht::STRIP_W;
-+    let sh = super::video::wht::STRIP_H;
++    let (sw, sh) = (geom.strip_w(), geom.strip_h());
 +    let w_pad = (w + sw - 1) & !(sw - 1);
 +    let h_pad = (h + sh - 1) & !(sh - 1);
 +    let tiles_x = w_pad / sw;
@@ -4071,14 +5611,15 @@ index 000000000000..556d5994afbb
 +/// allocation or spending more time testing rectangles than encoding strips.
 +#[inline(never)]
 +fn changed_strip_rects(
++    geom: crate::video::wht::Geometry,
 +    old: &[u64],
 +    new: &[u64],
 +    w_pad: usize,
 +    h_pad: usize,
 +) -> Result<KVec<DamageRect>> {
 +    const MAX_RECTS: usize = 128;
-+    let tiles_x = w_pad / super::video::wht::STRIP_W;
-+    let tiles_y = h_pad / super::video::wht::STRIP_H;
++    let tiles_x = w_pad >> geom.strip_w_shift();
++    let tiles_y = h_pad >> geom.strip_h_shift();
 +    if old.len() != tiles_x * tiles_y || new.len() != old.len() {
 +        return Err(EINVAL);
 +    }
@@ -4094,10 +5635,10 @@ index 000000000000..556d5994afbb
 +            while tx < tiles_x && old[ty * tiles_x + tx] != new[ty * tiles_x + tx] {
 +                tx += 1;
 +            }
-+            let x0 = run_start * super::video::wht::STRIP_W;
-+            let x1 = tx * super::video::wht::STRIP_W;
-+            let y0 = ty * super::video::wht::STRIP_H;
-+            let y1 = y0 + super::video::wht::STRIP_H;
++            let x0 = run_start * geom.strip_w();
++            let x1 = tx * geom.strip_w();
++            let y0 = ty * geom.strip_h();
++            let y1 = y0 + geom.strip_h();
 +            let mut merged = false;
 +            for prior in rects.iter_mut().rev() {
 +                if prior.0 == x0 && prior.2 == x1 && prior.3 == y0 {
@@ -4131,7 +5672,7 @@ index 000000000000..556d5994afbb
 +const ENCODE_MIN_STRIPS_PER_CHUNK: usize = 32;
 +
 +/// Immutable driver-owned pixel source shared by parallel encode workers.
-+struct PixelSource {
++pub(super) struct PixelSource {
 +    pixels: KVVec<u8>,
 +    pitch: usize,
 +    /// Dimensions of the untransformed framebuffer snapshot.
@@ -4141,7 +5682,7 @@ index 000000000000..556d5994afbb
 +    output_w: usize,
 +    output_h: usize,
 +    rotation: plane::Rotation,
-+    color: Option<super::color::ColorPipeline>,
++    color: Option<crate::color::ColorPipeline>,
 +    /// True when an output pixel is the source pixel at the same coordinates: identity rotation, no
 +    /// gamma table, and output dimensions equal to the snapshot's.
 +    ///
@@ -4159,7 +5700,7 @@ index 000000000000..556d5994afbb
 +/// [`PixelSource::direct`].
 +fn direct_pixel_map(
 +    rotation: plane::Rotation,
-+    color: &Option<super::color::ColorPipeline>,
++    color: &Option<crate::color::ColorPipeline>,
 +    w: usize,
 +    h: usize,
 +    output_w: usize,
@@ -4255,12 +5796,16 @@ index 000000000000..556d5994afbb
 +}
 +
 +/// Encode a batch of strips from `src`, in the order given.
-+fn encode_coords(src: &PixelSource, coords: &[(usize, usize)]) -> Result<KVec<KVec<u8>>> {
++fn encode_coords(
++    geom: crate::video::wht::Geometry,
++    src: &PixelSource,
++    coords: &[(usize, usize)],
++) -> Result<KVec<KVec<u8>>> {
 +    let mut out = KVec::with_capacity(coords.len(), GFP_KERNEL)?;
 +    for &(sx, sy) in coords.iter() {
 +        let mut px = |dx, dy| src.px(dx, dy);
 +        out.push(
-+            super::video::wht::colour_strip_at(sx, sy, &mut px)?,
++            crate::video::wht::colour_strip_at(geom, sx, sy, &mut px)?,
 +            GFP_KERNEL,
 +        )?;
 +    }
@@ -4279,6 +5824,9 @@ index 000000000000..556d5994afbb
 +    done: Completion,
 +    src: Arc<PixelSource>,
 +    coords: KVec<(usize, usize)>,
++    /// The dock's strip layout, carried per chunk so two docks of different generations can
++    /// encode concurrently on the same workqueue.
++    geom: crate::video::wht::Geometry,
 +    /// Encoded strip bodies. Written once by the worker, read once by the joiner after `done`;
 +    /// the lock is uncontended and taken twice per chunk per frame.
 +    #[pin]
@@ -4290,13 +5838,18 @@ index 000000000000..556d5994afbb
 +}
 +
 +impl EncodeChunk {
-+    fn new(src: Arc<PixelSource>, coords: KVec<(usize, usize)>) -> Result<Arc<Self>> {
++    fn new(
++        geom: crate::video::wht::Geometry,
++        src: Arc<PixelSource>,
++        coords: KVec<(usize, usize)>,
++    ) -> Result<Arc<Self>> {
 +        Arc::pin_init(
 +            pin_init!(EncodeChunk {
 +                work <- new_work!("vino::EncodeChunk::work"),
 +                done <- Completion::new(),
 +                src,
 +                coords,
++                geom,
 +                out <- new_mutex!(KVec::new(), "vino::EncodeChunk::out"),
 +            }),
 +            GFP_KERNEL,
@@ -4308,7 +5861,7 @@ index 000000000000..556d5994afbb
 +    type Pointer = Arc<EncodeChunk>;
 +
 +    fn run(this: Arc<EncodeChunk>) {
-+        if let Ok(strips) = encode_coords(&this.src, &this.coords) {
++        if let Ok(strips) = encode_coords(this.geom, &this.src, &this.coords) {
 +            *this.out.lock() = strips;
 +        }
 +        // Complete unconditionally. On failure `out` stays short and the joiner detects that by
@@ -4319,13 +5872,14 @@ index 000000000000..556d5994afbb
 +
 +/// Encode `coords` across CPUs and return the strip bodies in the **same** order.
 +///
-+/// Order is not a nicety: [`super::video::wht::frame_records`] groups strips into one wire record
++/// Order is not a nicety: [`crate::video::wht::frame_records`] groups strips into one wire record
 +/// per single-Y band and needs them x-ordered within a band, so the chunks are contiguous slices
 +/// of the raster-ordered coordinate list and are reassembled strictly in chunk order.
 +///
 +/// Returns `Ok(None)` when the frame is too small to be worth splitting, so the caller falls
 +/// through to the serial encoder rather than paying dispatch cost for a handful of strips.
 +fn parallel_strip_encode(
++    geom: crate::video::wht::Geometry,
 +    src: &Arc<PixelSource>,
 +    coords: &[(usize, usize)],
 +) -> Result<Option<KVec<KVec<u8>>>> {
@@ -4351,7 +5905,7 @@ index 000000000000..556d5994afbb
 +        for &c in &coords[start..end] {
 +            mine.push(c, GFP_KERNEL)?;
 +        }
-+        let chunk = EncodeChunk::new(src.clone(), mine)?;
++        let chunk = EncodeChunk::new(geom, src.clone(), mine)?;
 +        // `enqueue` gives the item back if it is already pending -- impossible for one allocated
 +        // a line ago, but if it ever happened, waiting on its completion would hang the scanout
 +        // worker forever. Record it and encode that chunk inline instead.
@@ -4374,7 +5928,7 @@ index 000000000000..556d5994afbb
 +            chunk.done.wait_for_completion();
 +            core::mem::take(&mut *chunk.out.lock())
 +        } else {
-+            encode_coords(&chunk.src, &chunk.coords)?
++            encode_coords(chunk.geom, &chunk.src, &chunk.coords)?
 +        };
 +        if mine.len() != chunk.coords.len() {
 +            // A chunk failed to allocate. Sending a frame with strips missing would paint a
@@ -4428,9 +5982,10 @@ index 000000000000..556d5994afbb
 +        },
 +        GFP_KERNEL,
 +    )?;
-+    let w_pad = output_w.next_multiple_of(super::video::wht::STRIP_W);
-+    let h_pad = output_h.next_multiple_of(super::video::wht::STRIP_H);
-+    let coords = super::video::wht::all_strip_coords(w_pad, h_pad)?;
++    let geom = crate::video::wht::RIDGE_GEOMETRY;
++    let w_pad = output_w.next_multiple_of(geom.strip_w());
++    let h_pad = output_h.next_multiple_of(geom.strip_h());
++    let coords = crate::video::wht::all_strip_coords(geom, w_pad, h_pad)?;
 +
 +    let mut serial: KVec<KVec<u8>> = KVec::with_capacity(coords.len(), GFP_KERNEL)?;
 +    for &(strip_x, strip_y) in coords.iter() {
@@ -4442,12 +5997,12 @@ index 000000000000..556d5994afbb
 +            src.source_px(sx, sy)
 +        };
 +        serial.push(
-+            super::video::wht::colour_strip_at(strip_x, strip_y, &mut px)?,
++            crate::video::wht::colour_strip_at(geom, strip_x, strip_y, &mut px)?,
 +            GFP_KERNEL,
 +        )?;
 +    }
 +
-+    let parallel = parallel_strip_encode(&src, &coords)?.ok_or(EINVAL)?;
++    let parallel = parallel_strip_encode(geom, &src, &coords)?.ok_or(EINVAL)?;
 +    if serial.len() != parallel.len()
 +        || serial
 +            .iter()
@@ -4475,6 +6030,7 @@ index 000000000000..556d5994afbb
 +    w: usize,
 +    h: usize,
 +) -> Result {
++    let geom = data.geometry();
 +    // Gate video on the matching mode-set reaching the dock. Plane updates run before the CRTC
 +    // enable queues that mode-set, and the dock rejects video on an unconfigured stream. Deferring
 +    // does not advance the codec sequence; the next scanout pass retries the frame.
@@ -4537,12 +6093,12 @@ index 000000000000..556d5994afbb
 +    // The codec operates on complete 64x16 strips. Pad non-aligned modes to the next strip
 +    // boundary; the mode-set retains the visible dimensions and the sampler supplies black for
 +    // pixels outside them.
-+    let w_pad = (w + super::video::wht::STRIP_W - 1) & !(super::video::wht::STRIP_W - 1);
-+    let h_pad = (h + super::video::wht::STRIP_H - 1) & !(super::video::wht::STRIP_H - 1);
++    let w_pad = (w + geom.strip_w() - 1) & !(geom.strip_w() - 1);
++    let h_pad = (h + geom.strip_h() - 1) & !(geom.strip_h() - 1);
 +    let mut content_hashes: Option<KVVec<u64>> = None;
 +    let mut content_damage: KVec<DamageRect> = KVec::new();
 +    if identity {
-+        let expected = (w_pad / super::video::wht::STRIP_W) * (h_pad / super::video::wht::STRIP_H);
++        let expected = (w_pad >> geom.strip_w_shift()) * (h_pad >> geom.strip_h_shift());
 +        if src.hashes.len() != expected {
 +            return Err(EINVAL);
 +        }
@@ -4568,7 +6124,7 @@ index 000000000000..556d5994afbb
 +                    let debt = ttl[head_i].as_mut().ok_or(kernel::error::code::ENOMEM)?;
 +                    for i in 0..hashes.len() {
 +                        if state.hashes[i] != hashes[i] {
-+                            debt[i] = DAMAGE_REPEATS;
++                            debt[i] = damage_repeats(geom);
 +                        }
 +                    }
 +                    // Reuse the hash differ: mark an owed strip by handing it a baseline value that
@@ -4578,7 +6134,7 @@ index 000000000000..556d5994afbb
 +                    for i in 0..hashes.len() {
 +                        baseline[i] = if debt[i] > 0 { !hashes[i] } else { hashes[i] };
 +                    }
-+                    content_damage = changed_strip_rects(&baseline, &hashes, w_pad, h_pad)?;
++                    content_damage = changed_strip_rects(geom, &baseline, &hashes, w_pad, h_pad)?;
 +                } else {
 +                    full = true;
 +                }
@@ -4608,28 +6164,27 @@ index 000000000000..556d5994afbb
 +    // handed to the codec; kept for the post-send cache publish below.
 +    let mut encoded: Option<(KVec<(usize, usize)>, KVec<KVec<u8>>)> = None;
 +    let parallel = if !identity {
-+        let coords = super::video::wht::all_strip_coords(w_pad, h_pad)?;
-+        match parallel_strip_encode(src, &coords)? {
++        let coords = crate::video::wht::all_strip_coords(geom, w_pad, h_pad)?;
++        match parallel_strip_encode(geom, src, &coords)? {
 +            Some(strips) => {
-+                let records = super::video::wht::frame_records(
-+                    &strips,
-+                    head,
-+                    BAND_PARITY_BIT,
-+                    INTERLACED_BANDS,
-+                )?;
++                let records = if geom.head_sub_shift != 0 {
++                    crate::video::wht::frame_records_navarro_ordinary(geom, &strips, head)?
++                } else {
++                    crate::video::wht::frame_records(geom, &strips, head)?
++                };
 +                Some((records, seq0.wrapping_add(1)))
 +            }
 +            None => None,
 +        }
 +    } else {
 +        let coords = if full {
-+            super::video::wht::all_strip_coords(w_pad, h_pad)?
++            crate::video::wht::all_strip_coords(geom, w_pad, h_pad)?
 +        } else {
-+            super::video::wht::damage_strip_coords(w_pad, h_pad, &content_damage)?
++            crate::video::wht::damage_strip_coords(geom, w_pad, h_pad, &content_damage)?
 +        };
 +        // Reuse an encoded strip body when its pixels and gamma tag are unchanged. Encode only
 +        // misses, then restore the required x-order within each Y band.
-+        let tiles_x = w_pad / super::video::wht::STRIP_W;
++        let tiles_x = w_pad >> geom.strip_w_shift();
 +        let mut reuse: KVec<Option<KVec<u8>>> = KVec::with_capacity(coords.len(), GFP_KERNEL)?;
 +        let mut misses: KVec<(usize, usize)> = KVec::with_capacity(coords.len(), GFP_KERNEL)?;
 +        {
@@ -4638,8 +6193,7 @@ index 000000000000..556d5994afbb
 +                .as_ref()
 +                .filter(|c| c.w_pad == w_pad && c.h_pad == h_pad && c.tag == gamma_tag);
 +            for &(sx, sy) in coords.iter() {
-+                let idx =
-+                    (sy / super::video::wht::STRIP_H) * tiles_x + sx / super::video::wht::STRIP_W;
++                let idx = (sy >> geom.strip_h_shift()) * tiles_x + (sx >> geom.strip_w_shift());
 +                let hit = usable.and_then(|c| {
 +                    // Same pixels as when this body was produced, and a body was kept.
 +                    let same = c.hashes.get(idx).zip(content_hashes.as_ref()?.get(idx));
@@ -4659,11 +6213,11 @@ index 000000000000..556d5994afbb
 +                }
 +            }
 +        }
-+        let fresh = match parallel_strip_encode(src, &misses)? {
++        let fresh = match parallel_strip_encode(geom, src, &misses)? {
 +            Some(s) => Some(s),
 +            // Too few misses to be worth splitting: encode them here rather than dropping to
 +            // the whole-frame serial path, which would re-encode the cache hits as well.
-+            None if !misses.is_empty() => Some(encode_coords(src, &misses)?),
++            None if !misses.is_empty() => Some(encode_coords(geom, src, &misses)?),
 +            None => Some(KVec::new()),
 +        };
 +        match fresh {
@@ -4676,12 +6230,11 @@ index 000000000000..556d5994afbb
 +                        None => strips.push(next.next().ok_or(EINVAL)?, GFP_KERNEL)?,
 +                    }
 +                }
-+                let records = super::video::wht::frame_records(
-+                    &strips,
-+                    head,
-+                    BAND_PARITY_BIT,
-+                    INTERLACED_BANDS,
-+                )?;
++                let records = if full && geom.head_sub_shift != 0 {
++                    crate::video::wht::frame_records_navarro_ordinary(geom, &strips, head)?
++                } else {
++                    crate::video::wht::frame_records(geom, &strips, head)?
++                };
 +                encoded = Some((coords, strips));
 +                Some((records, seq0.wrapping_add(1)))
 +            }
@@ -4690,23 +6243,19 @@ index 000000000000..556d5994afbb
 +    };
 +    let (frames, next_seq) = match parallel {
 +        Some(r) => r,
-+        None if full => super::video::wht::colour_frame_ep08(
-+            w_pad,
-+            h_pad,
-+            seq0,
-+            head,
-+            BAND_PARITY_BIT,
-+            INTERLACED_BANDS,
-+            px,
-+        )?,
-+        None => super::video::wht::colour_frame_ep08_damage(
++        None if full && geom.head_sub_shift != 0 => {
++            crate::video::wht::colour_frame_ep08_navarro_ordinary(
++                geom, w_pad, h_pad, seq0, head, px,
++            )?
++        }
++        None if full => crate::video::wht::colour_frame_ep08(geom, w_pad, h_pad, seq0, head, px)?,
++        None => crate::video::wht::colour_frame_ep08_damage(
++            geom,
 +            w_pad,
 +            h_pad,
 +            seq0,
 +            head,
 +            &content_damage,
-+            BAND_PARITY_BIT,
-+            INTERLACED_BANDS,
 +            px,
 +        )?,
 +    };
@@ -4736,7 +6285,7 @@ index 000000000000..556d5994afbb
 +        & head_bit
 +        != 0
 +    {
-+        Some(data.build_arm_burst_buf(head_i)?)
++        Some(data.build_stream_prefix_buf(head_i)?)
 +    } else {
 +        None
 +    };
@@ -4774,6 +6323,32 @@ index 000000000000..556d5994afbb
 +    // whole-frame coalescing allocation.
 +    let frame_count = frames.len();
 +    let image_len: usize = frames.iter().take(frame_count).map(|f| f.len()).sum();
++    // The DL7400's per-strip parameter map. DLM and Windows both include it in frame zero after
++    // at least some image records; the deterministic image-then-map ordering is used below. Ridge
++    // has no equivalent record and gets an empty slice.
++    let params: KVec<u8> = if geom.head_sub_shift == 0 {
++        KVec::new()
++    } else {
++        crate::video::wht::navarro_strip_params(
++            geom,
++            head,
++            w_pad,
++            h_pad,
++            &frames,
++            &mut data.strip_classes.lock()[head_i],
++        )?
++    };
++    vino_debug!(
++        "vino: head={} shift={} params={} B ({}x{} pad)\n",
++        head,
++        geom.head_sub_shift,
++        params.len(),
++        w_pad,
++        h_pad
++    );
++    if arm.is_some() {
++        data.send_stream_open(dev, head_i)?;
++    }
 +    let startup = arm.is_some();
 +    // A cold link requires a bounded back-to-back full-frame burst until the downstream clock is
 +    // programmed. Reuse the encoded image and advance only its frame trailer and per-frame control
@@ -4784,15 +6359,36 @@ index 000000000000..556d5994afbb
 +    let repeat_count = if training {
 +        COLD_TRAINING_PRESENTATIONS
 +    } else if full {
-+        // A keyframe must reach both dock buffers. One presentation updates only one buffer, while
-+        // later deltas repair only their selected regions.
-+        2
++        // A keyframe must reach EVERY dock buffer. One presentation updates only one of them,
++        // while later deltas repair only their selected regions -- and the ledger is cleared
++        // outright below on the strength of this, so a keyframe that comes up short leaves stale
++        // pixels nothing will ever repair.
++        u32::from(geom.dock_buffers)
 +    } else {
 +        // Consecutive copies land in the same dock buffer. Spread delta retransmissions across
-+        // successive frames through `DAMAGE_REPEATS` and the debt repaint instead.
++        // successive frames through `damage_repeats` and the debt repaint instead.
 +        1
 +    };
-+    let first_wire_len = arm_len + image_len + super::video::wht::frame_trailer(head, seq0).len();
++    let first_opener_len = data
++        .build_frame_opener(head, seq0, startup)
++        .as_ref()
++        .map_or(0, |o| o.len());
++    // Every ordinary Navarro presentation pairs its frame-sub records with one authenticated
++    // report on the stream sub. Build presentation zero once here so the diagnostic length and
++    // the bytes submitted below refer to the same live counter reservation. The prologue itself
++    // has no report; presentation one will allocate its own inside the loop.
++    let mut first_report = if startup {
++        None
++    } else {
++        data.build_stream_report_buf(head_i)?
++    };
++    let first_report_len = first_report.as_ref().map_or(0, |r| r.len());
++    let first_wire_len = arm_len
++        + first_opener_len
++        + first_report_len
++        + params.len()
++        + image_len
++        + data.build_frame_trailer(head, seq0).len();
 +    vino_debug!(
 +        "vino: head={} chunks={} arm={} first={} presentations={}\n",
 +        head,
@@ -4805,7 +6401,8 @@ index 000000000000..556d5994afbb
 +    // so only the final transfer terminates short. Submit through a persistent eight-deep queue to
 +    // keep the frame continuous across transfer boundaries. Do not flush between frames: slot reuse
 +    // reaps completions without introducing a pipeline gap.
-+    const XFER: usize = 65536;
++    const XFER: usize = VIDEO_XFER;
++    let pipe_i = dev.video_pipe_index(head_i)?;
 +    let mut last_wire_len = 0usize;
 +    for repeat in 0..repeat_count {
 +        // A compositor mode change can arrive while the presentation is in flight. Never let the
@@ -4824,7 +6421,7 @@ index 000000000000..556d5994afbb
 +        }
 +
 +        let repeat_seq = seq0.wrapping_add(repeat);
-+        let frame_trailer = super::video::wht::frame_trailer(head, repeat_seq);
++        let frame_trailer = data.build_frame_trailer(head, repeat_seq);
 +        // Prefix ARM only to presentation zero. Every later presentation starts directly at the
 +        // image records and carries a freshly advanced three-record frame trailer.
 +        let arm_slice: &[u8] = if repeat == 0 {
@@ -4832,12 +6429,29 @@ index 000000000000..556d5994afbb
 +        } else {
 +            &[]
 +        };
-+        let wire_len = arm_slice.len() + image_len + frame_trailer.len();
++        let frame_opener = data.build_frame_opener(head, repeat_seq, !arm_slice.is_empty());
++        let opener_slice: &[u8] = frame_opener.as_ref().map_or(&[], |o| &o[..]);
++        let report = if arm_slice.is_empty() {
++            if repeat == 0 {
++                first_report.take()
++            } else {
++                data.build_stream_report_buf(head_i)?
++            }
++        } else {
++            None
++        };
++        let report_slice: &[u8] = report.as_ref().map_or(&[], |r| &r[..]);
++        let wire_len = arm_slice.len()
++            + opener_slice.len()
++            + report_slice.len()
++            + params.len()
++            + image_len
++            + frame_trailer.len();
 +        last_wire_len = wire_len;
 +        {
-+            // Take this head's staging buffer and queue out of their arrays while submitting, then
-+            // restore them. The per-head slots require one submitter each without holding a shared
-+            // array lock across blocking queue operations.
++            // Take this head's staging buffer while submitting, then restore it. The queue mutex
++            // stays locked for the complete frame: two connectors that address the same physical
++            // endpoint must never submit their record streams concurrently.
 +            let mut staging = match data.video_staging.lock()[head_i].take() {
 +                Some(s) => s,
 +                None => {
@@ -4846,78 +6460,100 @@ index 000000000000..556d5994afbb
 +                    s
 +                }
 +            };
-+            let mut queue = match data.video_q.lock()[head_i].take() {
-+                Some(q) => q,
-+                None => match dev.video_queue(head_i, 8, XFER) {
-+                    Ok(q) => {
-+                        vino_debug!(
-+                            "vino: head={} persistent video queue opened (depth=8, {} B URBs)\n",
-+                            head,
-+                            XFER
-+                        );
-+                        q
++            let submitted = {
++                let mut queue_slot = data.video_q[pipe_i].lock();
++                if queue_slot.is_none() {
++                    if *crate::module_parameters::video_clear_halt.value() != 0 {
++                        let _ = dev.clear_video_halt(head_i);
 +                    }
-+                    // Nothing was taken that needs restoring yet except staging.
-+                    Err(e) => {
-+                        data.video_staging.lock()[head_i] = Some(staging);
-+                        return Err(e);
-+                    }
-+                },
-+            };
-+            // Submit inside a closure so BOTH borrows are returned to their slots on every exit
-+            // path, including the mid-frame submit failure below. Dropping the queue instead would
-+            // silently close and reopen the endpoint pipe on the next frame.
-+            let submit = |staging: &mut KVec<u8>, q: &mut super::usb::BulkOutQueue| -> Result {
-+                let staging = &mut staging[..];
-+                let q = &mut *q;
-+                // Scatter/gather cursor over [optional ARM][record chunks][trailer]. Join only one
-+                // transfer at a time in the reusable bounded staging allocation, avoiding a
-+                // contiguous allocation spanning the complete frame.
-+                let arm_parts = usize::from(!arm_slice.is_empty());
-+                let trailer_parts = 1usize;
-+                let part_count = arm_parts + frame_count + trailer_parts;
-+                let mut part_i = 0usize;
-+                let mut part_off = 0usize;
-+                let mut wire_off = 0usize;
-+                while wire_off < wire_len {
-+                    let data_len = (wire_len - wire_off).min(XFER);
-+                    let dst = &mut staging[..data_len];
-+                    let mut dst_off = 0usize;
-+                    while dst_off < dst.len() && part_i < part_count {
-+                        let part: &[u8] = if part_i < arm_parts {
-+                            arm_slice
-+                        } else if part_i < arm_parts + frame_count {
-+                            &frames[part_i - arm_parts][..]
-+                        } else {
-+                            &frame_trailer[..]
-+                        };
-+                        let n = (part.len() - part_off).min(dst.len() - dst_off);
-+                        dst[dst_off..dst_off + n].copy_from_slice(&part[part_off..part_off + n]);
-+                        dst_off += n;
-+                        part_off += n;
-+                        if part_off == part.len() {
-+                            part_i += 1;
-+                            part_off = 0;
++                    match dev.video_queue(head_i, 8, XFER) {
++                        Ok(q) => {
++                            *queue_slot = Some(q);
++                            vino_debug!(
++                                "vino: head={} endpoint={:#04x} persistent video queue opened (depth=8, {} B URBs)\n",
++                                head,
++                                dev.eps.video[head_i].address(),
++                                XFER
++                            );
++                        }
++                        // Nothing was taken from the shared pipe slot, but return this head's
++                        // staging allocation before propagating the open error.
++                        Err(e) => {
++                            data.video_staging.lock()[head_i] = Some(staging);
++                            return Err(e);
 +                        }
 +                    }
-+                    if let Err(e) = q.send(dev.io(), dst, super::timeout()) {
-+                        pr_warn!(
-+                            "vino: scanout head={} pipeline submit at off={}/{} failed\n",
-+                            head,
-+                            wire_off,
-+                            wire_len
-+                        );
-+                        let _ = dev.clear_video_halt(head_i);
-+                        return Err(e);
-+                    }
-+                    wire_off += data_len;
 +                }
-+                Ok(())
++                let mut queue = queue_slot.as_mut().get_mut().as_mut().ok_or(ENODEV)?;
++                // Keep both borrows inside the mutex scope. Dropping the queue or unlocking it
++                // mid-frame would permit a second connector to interleave URBs on this endpoint.
++                let submit = |staging: &mut KVec<u8>, q: &mut crate::usb::BulkOutQueue| -> Result {
++                    let staging = &mut staging[..];
++                    let q = &mut *q;
++                    // Scatter/gather cursor over
++                    // [optional ARM][optional Navarro opener][authenticated stream report]
++                    // [record chunks][parameter map][trailer]. Join only one
++                    // transfer at a time in the reusable bounded staging allocation, avoiding a
++                    // contiguous allocation spanning the complete frame.
++                    let arm_parts = usize::from(!arm_slice.is_empty());
++                    let opener_parts = usize::from(!opener_slice.is_empty());
++                    let report_parts = usize::from(!report_slice.is_empty());
++                    let param_parts = usize::from(!params.is_empty());
++                    let trailer_parts = 1usize;
++                    let opener_end = arm_parts + opener_parts;
++                    let lead = opener_end + report_parts;
++                    let part_count = lead + frame_count + param_parts + trailer_parts;
++                    let mut part_i = 0usize;
++                    let mut part_off = 0usize;
++                    let mut wire_off = 0usize;
++                    while wire_off < wire_len {
++                        let data_len = (wire_len - wire_off).min(XFER);
++                        let dst = &mut staging[..data_len];
++                        let mut dst_off = 0usize;
++                        while dst_off < dst.len() && part_i < part_count {
++                            let part: &[u8] = if part_i < arm_parts {
++                                arm_slice
++                            } else if part_i < opener_end {
++                                opener_slice
++                            } else if part_i < lead {
++                                report_slice
++                            } else if part_i < lead + frame_count {
++                                &frames[part_i - lead][..]
++                            } else if part_i < lead + frame_count + param_parts {
++                                &params[..]
++                            } else {
++                                &frame_trailer[..]
++                            };
++                            let n = (part.len() - part_off).min(dst.len() - dst_off);
++                            dst[dst_off..dst_off + n]
++                                .copy_from_slice(&part[part_off..part_off + n]);
++                            dst_off += n;
++                            part_off += n;
++                            if part_off == part.len() {
++                                part_i += 1;
++                                part_off = 0;
++                            }
++                        }
++                        if let Err(e) = q.send(dev.io(), dst, crate::timeout()) {
++                            pr_warn!(
++                                "vino: scanout head={} pipeline submit at off={}/{} failed\n",
++                                head,
++                                wire_off,
++                                wire_len
++                            );
++                            if *crate::module_parameters::video_clear_halt.value() != 0 {
++                                let _ = dev.clear_video_halt(head_i);
++                            }
++                            return Err(e);
++                        }
++                        wire_off += data_len;
++                    }
++                    Ok(())
++                };
++                submit(&mut staging, &mut queue)
 +            };
-+            let submitted = submit(&mut staging, &mut queue);
-+            // Restore both borrows before propagating any error.
++            // Restore the per-connector staging allocation after the endpoint transaction.
 +            data.video_staging.lock()[head_i] = Some(staging);
-+            data.video_q.lock()[head_i] = Some(queue);
 +            submitted?;
 +        }
 +
@@ -4942,7 +6578,7 @@ index 000000000000..556d5994afbb
 +            // The dock expects two stream-commit messages on EP02 immediately after accepting the
 +            // video arm burst.
 +            for _ in 0..2 {
-+                match data.send_cp(dev, 0x16, 0, |ctr| super::cp::stream_commit(ctr, head)) {
++                match data.send_cp(dev, 0x16, 0, |ctr| crate::cp::stream_commit(ctr, head)) {
 +                    Ok(()) => vino_debug!("vino: stream-commit head={} ok\n", head),
 +                    Err(e) => pr_warn!("vino: stream-commit head={} failed ({e:?})\n", head),
 +                }
@@ -4961,9 +6597,12 @@ index 000000000000..556d5994afbb
 +        };
 +        if due {
 +            if let Err(e) =
-+                data.send_cp(dev, 0x14, 0, |ctr| super::cp::device_query_req(ctr, 0x000c))
++                data.send_cp(dev, 0x14, 0, |ctr| crate::cp::device_query_req(ctr, 0x000c))
 +            {
-+                vino_debug!("vino: scanout head={} CP status poll failed ({e:?})\n", head);
++                vino_debug!(
++                    "vino: scanout head={} CP status poll failed ({e:?})\n",
++                    head
++                );
 +            }
 +        }
 +        // Do not drain here. The eight-URB ring spans frame boundaries; `send()` reaps a
@@ -4990,7 +6629,7 @@ index 000000000000..556d5994afbb
 +        }
 +    }
 +    // Publish the content shadow, and with it the encoded body of every strip this frame carried,
-+    // so the retransmissions `DAMAGE_REPEATS` owes can re-use the bytes instead of re-running the
++    // so the retransmissions `damage_repeats` owes can re-use the bytes instead of re-running the
 +    // codec (see `StripHashState::bodies`). Bodies for strips this frame did NOT touch are carried
 +    // forward from the previous state -- they are still what the dock holds, and a later debt pass
 +    // may select them. Best-effort throughout: a failed allocation costs a cache miss, never a
@@ -5028,10 +6667,10 @@ index 000000000000..556d5994afbb
 +            }
 +            if bodies.len() == hashes.len() {
 +                if let Some((coords, strips)) = encoded {
-+                    let tiles_x = w_pad / super::video::wht::STRIP_W;
++                    let tiles_x = w_pad >> geom.strip_w_shift();
 +                    for (&(sx, sy), body) in coords.iter().zip(strips) {
-+                        let idx = (sy / super::video::wht::STRIP_H) * tiles_x
-+                            + sx / super::video::wht::STRIP_W;
++                        let idx =
++                            (sy >> geom.strip_h_shift()) * tiles_x + (sx >> geom.strip_w_shift());
 +                        if let Some(slot) = bodies.get_mut(idx) {
 +                            *slot = body;
 +                        }
@@ -5064,7 +6703,7 @@ index 000000000000..556d5994afbb
 +
 +/// Convert the mapped XRGB8888 frame to RGB565, Vino-encode it against the previous frame,
 +/// and bulk-write the resulting EP08 frame to the dock.
-+fn encode_and_send(
++pub(super) fn encode_and_send(
 +    dev: &BoundInterface<'_>,
 +    data: &VinoDrmData,
 +    head: u8,
@@ -5083,161 +6722,3 @@ index 000000000000..556d5994afbb
 +}
 +
 +// ---- Encoder ----------------------------------------------------------------
-+
-+#[pin_data]
-+pub(super) struct VinoEncoder;
-+
-+#[vtable]
-+impl encoder::DriverEncoder for VinoEncoder {
-+    type Driver = VinoDrmDriver;
-+    type Args = ();
-+
-+    fn new(_device: &drm::Device<Self::Driver>, _args: ()) -> impl PinInit<Self, Error> {
-+        try_pin_init!(VinoEncoder {})
-+    }
-+}
-+
-+// ---- Connector --------------------------------------------------------------
-+
-+#[pin_data]
-+pub(super) struct VinoConnector {
-+    /// Index into the owning device's per-head EDID/presence arrays.
-+    head: u8,
-+}
-+
-+#[derive(Clone, Default)]
-+pub(super) struct VinoConnectorState;
-+
-+impl connector::DriverConnectorState for VinoConnectorState {
-+    type Connector = VinoConnector;
-+}
-+
-+#[vtable]
-+impl connector::DriverConnector for VinoConnector {
-+    type Args = u8;
-+    type Driver = VinoDrmDriver;
-+    type State = VinoConnectorState;
-+
-+    fn new(_device: &drm::Device<Self::Driver>, head: u8) -> impl PinInit<Self, Error> {
-+        try_pin_init!(VinoConnector { head })
-+    }
-+
-+    /// Install the dock's real EDID (read during probe) when available; otherwise fall back
-+    /// to a single 1920x1080@60 CVT mode. Reading the real EDID gives the true monitor
-+    /// name/size and its native mode list; the fallback keeps the connector usable when
-+    /// nothing is plugged into the dock or the CP channel has not yet delivered the EDID.
-+    fn get_modes<'a>(
-+        connector: ConnectorGuard<'a, Self>,
-+        guard: &ModeConfigGuard<'a, Self::Driver>,
-+    ) -> i32 {
-+        let data: &VinoDrmData = connector.drm_dev();
-+        let edids = data.cached_edids.lock();
-+        if let Some(blob) = edids.get(connector.head as usize).and_then(Option::as_ref) {
-+            // A failed EDID update adds no modes; fall through to the built-in list rather than
-+            // reporting a count the core did not actually get.
-+            if let Ok(n) = connector.add_edid_modes(blob) {
-+                if n > 0 {
-+                    return n;
-+                }
-+            }
-+        }
-+        drop(edids);
-+        let _ = guard;
-+        // No downstream EDID yet: advertise the standard mode list up to the fallback resolution
-+        // and prefer it, keeping the connector usable until the dock delivers a real EDID.
-+        let n = connector.add_modes_noedid((FALLBACK_W as u32, FALLBACK_H as u32));
-+        connector.set_preferred_mode((FALLBACK_W as u32, FALLBACK_H as u32));
-+        n
-+    }
-+
-+    /// Report the head connected once the dock has delivered this head's downstream EDID (a real
-+    /// monitor is attached and described) OR the bring-up work item confirmed CP engagement +
-+    /// this head's DISPLAY-CAP push (`heads_present`: on 3.4.26 the raw-EDID path can fail, so
-+    /// cached EDID alone would leave every connector permanently
-+    /// disconnected despite a fully-engaged dock). A head with neither stays disconnected rather
-+    /// than advertising a phantom output.
-+    fn detect(connector: &Connector<Self>, _force: bool) -> Status {
-+        let data: &VinoDrmData = connector.drm_dev();
-+        let head = connector.head as usize;
-+        let has_edid = data
-+            .cached_edids
-+            .lock()
-+            .get(head)
-+            .is_some_and(Option::is_some);
-+        let present = data
-+            .heads_present
-+            .load(core::sync::atomic::Ordering::Acquire)
-+            & (1 << head)
-+            != 0;
-+        if has_edid || present {
-+            Status::Connected
-+        } else {
-+            Status::Disconnected
-+        }
-+    }
-+
-+    /// Prune modes whose pixel clock exceeds a single head's bandwidth ceiling
-+    /// ([`MAX_HEAD_CLOCK_KHZ`], ~4K@60), whose refresh rate exceeds what the dock has ever been
-+    /// shown to display ([`DOCK_MAX_REFRESH_HZ`]), or whose pixel rate exceeds the dock's budget.
-+    fn mode_valid(connector: ConnectorModeValidation<'_, Self>, mode: &DisplayMode) -> ModeStatus {
-+        // Hard single-link ceiling (~4K@60) first.
-+        if mode.clock() > MAX_HEAD_CLOCK_KHZ {
-+            return ModeStatus::ClockHigh;
-+        }
-+        // The dock clamps higher vendor-stack requests to 120 Hz and does not display native
-+        // 165/180 Hz timings.
-+        if !refresh_within_limit(mode.vrefresh()) {
-+            return ModeStatus::ClockHigh;
-+        }
-+        if !super::cp::mode_supported(mode) {
-+            return ModeStatus::Bad;
-+        }
-+        // Reject a mode only when that head exceeds the dock's whole pixel budget. The atomic CRTC
-+        // check enforces the combined rate of simultaneously active heads.
-+        let data: &VinoDrmData = connector.drm_dev();
-+        let budget = data.dock_budget();
-+        let head_rate = active_pixel_rate(mode.hdisplay(), mode.vdisplay(), mode.vrefresh());
-+        if budget != 0 && head_rate > budget {
-+            return ModeStatus::Bad;
-+        }
-+        ModeStatus::Ok
-+    }
-+}
-+
-+/// Apply the cached gamma ramp (three 256-entry 8-bit LUTs) to an `(r, g, b)` pixel, or return it
-+/// unchanged when no gamma is programmed.
-+#[inline]
-+
-+/// Map an output pixel `(dx, dy)` back to its source-framebuffer pixel `(sx, sy)` under a DRM
-+/// plane `rotation` bitmask (`DRM_MODE_ROTATE_*` | `DRM_MODE_REFLECT_*`, the values the
-+/// standard `drm_plane_create_rotation_property` exposes). `sw`/`sh` are the SOURCE
-+/// (framebuffer) dimensions. Rotation is clockwise; reflection is applied in source space
-+/// after rotation. Pure and total (saturating), so it is unit-tested directly. Applied per source
-+/// pixel in [`encode_and_send`]/[`encode_and_send_wht`] for the plane's rotation property.
-+pub(super) fn rot_src(
-+    rotation: plane::Rotation,
-+    dx: usize,
-+    dy: usize,
-+    sw: usize,
-+    sh: usize,
-+) -> (usize, usize) {
-+    let xmax = sw.saturating_sub(1);
-+    let ymax = sh.saturating_sub(1);
-+    let rot = rotation.angle();
-+    let (mut sx, mut sy) = if rot == plane::Rotation::ROTATE_90 {
-+        (dy, ymax.saturating_sub(dx))
-+    } else if rot == plane::Rotation::ROTATE_180 {
-+        (xmax.saturating_sub(dx), ymax.saturating_sub(dy))
-+    } else if rot == plane::Rotation::ROTATE_270 {
-+        (xmax.saturating_sub(dy), dx)
-+    } else {
-+        (dx, dy) // ROTATE_0 / unset
-+    };
-+    if rotation.contains(plane::Rotation::REFLECT_X) {
-+        sx = xmax.saturating_sub(sx);
-+    }
-+    if rotation.contains(plane::Rotation::REFLECT_Y) {
-+        sy = ymax.saturating_sub(sy);
-+    }
-+    (sx, sy)
-+}

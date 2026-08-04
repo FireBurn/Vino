@@ -1,7 +1,7 @@
 From ac2357a35c185ddfe890c41fb88c74df890ef5ec Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Tue, 26 May 2026 08:21:40 -0700
-Subject: [PATCH 004/109] openrisc: Include <linux/cpumask.h> in smp.h
+Subject: [PATCH 004/108] openrisc: Include <linux/cpumask.h> in smp.h
 
 While OpenRISC currently doesn't fail to build upstream, it appears that
 include <asm/smp.h> in the right headers is enough to break that -

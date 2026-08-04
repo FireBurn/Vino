@@ -1,7 +1,7 @@
-From b015a46d24caa43d7f1c38a8b7138fb982eb8707 Mon Sep 17 00:00:00 2001
+From cfabfe34b693746af2d847b40a9968ad81ff668e Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 07:10:55 +0100
-Subject: [PATCH 069/109] rust: sysfs: add root-device attribute groups
+Subject: [PATCH 069/108] rust: sysfs: add root-device attribute groups
 
 Add owned root-device and attribute-group abstractions for drivers
 which expose control files directly below /sys/devices.

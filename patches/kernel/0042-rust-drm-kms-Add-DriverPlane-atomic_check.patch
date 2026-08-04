@@ -1,7 +1,7 @@
 From fdddddf26c78fc48a17798a357c86eeddc2323de Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 23 May 2024 16:48:56 -0400
-Subject: [PATCH 042/109] rust: drm/kms: Add DriverPlane::atomic_check()
+Subject: [PATCH 042/108] rust: drm/kms: Add DriverPlane::atomic_check()
 
 Optional trait method for implementing a plane's atomic_check().
 

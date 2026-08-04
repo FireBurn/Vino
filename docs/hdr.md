@@ -217,7 +217,7 @@ It is encrypted using AES-128 (ECB / CBC zero-IV) with the general obfuscation k
 1. **Raw SM4/SM5 Instruction Header (`0x00000`–`0x015af`, ~5.5 KB):** Dispatch routines and opcode token streams.
 2. **DXBC Container Array (`0x015b0` onwards):** Exactly **19 compiled DXBC Shader Model 5.0 Compute Shader containers (`cs_5_0`)**.
 
-The complete set of extracted `.dxbc` binaries and disassembled `.asm` assembly listings is available in [`gpu-shaders/`](../gpu-shaders/).
+The complete set of extracted `.dxbc` binaries and disassembled `.asm` assembly listings lives in the local capture archive, outside this repository, as `gpu-shaders/`.
 
 ### Shader Suite Breakdown
 

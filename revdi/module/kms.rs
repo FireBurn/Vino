@@ -535,8 +535,11 @@ impl crtc::DriverCrtc for EvdiCrtc {
         let data: &EvdiDrmData = dev;
         let new = commit.take_new_state();
         let mode = new.mode();
-        let (hdisplay, vdisplay, vrefresh) =
-            (mode.hdisplay() as i32, mode.vdisplay() as i32, mode.vrefresh());
+        let (hdisplay, vdisplay, vrefresh) = (
+            mode.hdisplay() as i32,
+            mode.vdisplay() as i32,
+            mode.vrefresh(),
+        );
         *data.announced_mode.lock() = Some((hdisplay, vdisplay, vrefresh));
         crate::painter::notify_dpms(data, crate::painter::DPMS_ON);
         crate::painter::notify_mode_changed(

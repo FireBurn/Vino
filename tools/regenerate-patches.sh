@@ -8,7 +8,7 @@ set -euo pipefail
 workspace="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 kernel_tree="${KERNEL_TREE:-$workspace/linux}"
 kernel_base="${KERNEL_BASE:-integration/base-20260728}"
-kernel_head="${KERNEL_HEAD:-vino-upstream-rebuild}"
+kernel_head="${KERNEL_HEAD:-vino}"
 output="$workspace/patches/kernel"
 
 require_ref() {
@@ -102,6 +102,18 @@ for i in "${!group_starts[@]}"; do
     write_group "$name" "$first" "$last"
     prev_end="$last"
 done
+
+# Keep the export's own README honest about what it was generated from.
+readme="$output/README.md"
+if [ -f "$readme" ]; then
+    base_sha="$(git -C "$kernel_tree" rev-parse "$kernel_base")"
+    head_sha="$(git -C "$kernel_tree" rev-parse "$kernel_head")"
+    sed -i \
+        -e "s|^base: .*|base: $base_sha|" \
+        -e "s|^head: .*|head: $head_sha|" \
+        -e "s|^range: .*|range: $kernel_base..$kernel_head|" \
+        "$readme"
+fi
 
 printf 'kernel: %s patches (%s..%s)\n' \
     "$(wc -l <"$output/series")" \

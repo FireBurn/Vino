@@ -9,8 +9,10 @@ device documentation, and the scripts used to reproduce the review artifacts.
 
 The `vino` branch in `../drm-v3` is the implementation source of truth from
 which this cleanup started. Its imported tip is preserved as
-`linux:reference/drm-v3-vino`; it is not modified. Upstream-facing work is on
-`linux:vino-upstream-rebuild`.
+`linux:reference/drm-v3-vino`; it is not modified. Upstream-facing work is
+`linux:vino` itself: development history is folded into the review series rather
+than kept beside it, and the pre-fold branch is retained as
+`linux:backup/vino-pre-v3-fold-20260804-2051`.
 
 | Item | Revision |
 |---|---|
@@ -18,8 +20,8 @@ which this cleanup started. Its imported tip is preserved as
 | `drm-rust-next` parent checked 2026-07-28 | `93b9511a3bba7f31d95502e5f912f0a476b0cf4a` |
 | integration base | `0755a4e3e809610a14befc9ad28d35e2e460da68` |
 | imported `drm-v3` Vino tip | `19a91f95f35785f5f15ba57c6efffc855c47cc76` |
-| kernel review branch | `vino-upstream-rebuild` |
-| kernel review head | `ef9d133e44e6c13b1c8e2a030c8e0440ea1bfb0a` |
+| kernel review branch | `vino` |
+| kernel review head | `7614ff24714925a661df9bcde40e5a987eb8795a` |
 
 The integration base is the existing `drm-rust-next` merge of the current
 `drm-next` parent. The series does not create an artificial merge or pretend

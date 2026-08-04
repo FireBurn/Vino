@@ -1,7 +1,7 @@
 From 17188d3061d64b7f12dd28940f22259419941734 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 23 May 2024 15:45:33 -0400
-Subject: [PATCH 034/109] rust: drm/kms: Add OpaqueConnector and
+Subject: [PATCH 034/108] rust: drm/kms: Add OpaqueConnector and
  OpaqueConnectorState
 
 Since we allow drivers to have multiple implementations of DriverConnector

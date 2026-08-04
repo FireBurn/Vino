@@ -1,7 +1,7 @@
 From 36a0433909a1b10b94b3cf440b6dec780e0e4e53 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Fri, 6 Sep 2024 13:19:35 -0400
-Subject: [PATCH 053/109] rust: drm/kms: Add VblankSupport
+Subject: [PATCH 053/108] rust: drm/kms: Add VblankSupport
 
 This commit adds bindings for implementing vblank support for a driver's
 CRTCs. These bindings are optional, to account for the fact that not all

@@ -1,24 +1,24 @@
-From a13775e0cdc561347fa8de5cb48472b4ef59bdb9 Mon Sep 17 00:00:00 2001
+From 7614ff24714925a661df9bcde40e5a987eb8795a Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 21:21:23 +0100
-Subject: [PATCH 109/109] docs: gpu: document the Vino driver
+Subject: [PATCH 108/108] docs: gpu: document the Vino driver
 
-Document supported hardware, configuration and diagnostics, KMS
-behaviour, validated timing profiles, coherent snapshots and damage
-accounting, encrypted control sessions, recovery, monitor handling,
-teardown, and build-time validation.
+Describe the driver as it behaves: the supported device profiles, the KMS
+model and mode validation, framebuffer ownership and the
+damage/retransmission contract, software colour management, control and
+authentication, monitor handling and teardown.
 
 Keep reverse-engineering evidence and capture history in the companion
-repository. Describe only the production driver contract and its
-invariants in the in-tree document.
+repository. Describe only the production driver contract and its invariants
+in the in-tree document.
 
-Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Claude:claude-opus-5
 Assisted-by: Codex:gpt-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  Documentation/gpu/drivers.rst |   1 +
- Documentation/gpu/vino.rst    | 152 ++++++++++++++++++++++++++++++++++
- 2 files changed, 153 insertions(+)
+ Documentation/gpu/vino.rst    | 176 ++++++++++++++++++++++++++++++++++
+ 2 files changed, 177 insertions(+)
  create mode 100644 Documentation/gpu/vino.rst
 
 diff --git a/Documentation/gpu/drivers.rst b/Documentation/gpu/drivers.rst
@@ -35,19 +35,22 @@ index 20d2c454aa1d..b630bd67e182 100644
     xe/index
 diff --git a/Documentation/gpu/vino.rst b/Documentation/gpu/vino.rst
 new file mode 100644
-index 000000000000..33ad8edcd9a9
+index 000000000000..0d6e7c0c2b26
 --- /dev/null
 +++ b/Documentation/gpu/vino.rst
-@@ -0,0 +1,152 @@
+@@ -0,0 +1,176 @@
 +.. SPDX-License-Identifier: GPL-2.0-only
 +
 +==========================
 +Vino DisplayLink DL3 driver
 +==========================
 +
-+Vino is a Rust DRM/KMS driver for DisplayLink DL3 USB display devices. The
-+initial device profile supports the Dell Universal Dock D6000
-+(``17e9:6006``).
++Vino is a Rust DRM/KMS driver for DisplayLink DL3 USB display devices. Two
++device profiles are supported: the Dell Universal Dock D6000 (``17e9:6006``,
++DL-6xxx silicon) and the DL-7400 quad-display docks (``17e9:7000``, DL-7000
++silicon). Each profile carries the endpoints, strip geometry, connector count
++and link limits of its hardware; the rest of the driver reads those values
++rather than branching on the model.
 +
 +The driver owns the USB device and implements the dock's initialization,
 +HDCP 2.2 authentication, encrypted control protocol, downstream monitor
@@ -71,19 +74,24 @@ index 000000000000..33ad8edcd9a9
 +Errors, connection changes, and session state remain visible without this
 +parameter.
 +
++On x86-64 the encoder can use an AVX2 block transform instead of the scalar
++one. It is byte-exact against the scalar path, which remains the default and
++the reference, and is enabled with ``simd_transform=1``.
++
 +The optional ``CONFIG_DRM_VINO_KUNIT_TEST`` setting builds the driver's KUnit
 +suite. It is intended for development kernels and is disabled by default.
 +
 +KMS model
 +=========
 +
-+The D6000 exposes two independent display heads. Each head has:
++A dock exposes independent display connectors: two on the D6000, four on the
++DL-7400, where they are multiplexed over two video endpoints. Each has:
 +
 +* one primary plane using ``DRM_FORMAT_XRGB8888``;
 +* one cursor plane using ``DRM_FORMAT_ARGB8888``;
 +* one CRTC, encoder, and connector;
 +* a downstream EDID channel; and
-+* a dedicated bulk-OUT video endpoint.
++* a bulk-OUT video endpoint, which two connectors may share.
 +
 +Atomic commits record the latest desired state and wake an ordered,
 +device-owned control queue. Blocking USB transactions are never issued from
@@ -105,12 +113,14 @@ index 000000000000..33ad8edcd9a9
 +
 +* 1280x720 at 60 Hz;
 +* 1920x1080 at 60 or 120 Hz;
-+* 2560x1440 CVT-RB at 60 or 120 Hz; and
++* 2560x1440 CVT-RB at 60, 120 or 165 Hz; and
 +* 3840x2160 CVT-RB at 60 Hz.
 +
-+The per-head pixel-clock limit is 750 MHz and the dock-wide active-pixel
-+budget is checked when both CRTCs are enabled. Unsupported timings are
-+rejected during atomic validation instead of being approximated on the wire.
++Each profile also names the ceilings of its hardware: the highest pixel clock a
++single head may carry, an optional refresh-rate cap where the vendor driver is
++known to clamp, and a dock-wide pixel budget checked when more than one CRTC is
++enabled. Unsupported timings are rejected during atomic validation instead of
++being approximated on the wire.
 +
 +Framebuffer ownership and damage
 +================================
@@ -129,8 +139,13 @@ index 000000000000..33ad8edcd9a9
 +Encoding and USB submission run asynchronously on per-head workers. Damage is
 +tracked against the last frame successfully submitted to the dock, not merely
 +against the previous atomic commit. This preserves changes when commits are
-+coalesced or a transfer fails. A bounded retransmission debt accounts for the
-+dock's internal display buffers.
++coalesced or a transfer fails.
++
++A strip whose content changes is charged one transmission for each buffer the
++dock rotates through, plus one, and remains selected until that debt is paid.
++One presentation reaches exactly one of those buffers, so a strip delivered to
++only some of them would leave the panel alternating between old and new
++content. A surface with no change and no debt outstanding sends nothing.
 +
 +The video path keeps a bounded, persistent USB request ring. The first
 +presentation after a mode change carries the decoder arm sequence and the
@@ -154,6 +169,15 @@ index 000000000000..33ad8edcd9a9
 +AES, AES-CMAC, SHA-256, HMAC-SHA256, and RSA operations use kernel crypto
 +interfaces. Session material is stored per device and is not exposed through
 +a driver-specific userspace API.
++
++Colour management
++=================
++
++The CRTC advertises ``CTM`` and a 256-entry ``GAMMA_LUT``, and both are applied
++in software during encoding. A dock has no colour hardware to program, so a
++compositor correcting through those properties -- as GNOME's Night Light and
++KDE's Night Colour do -- would otherwise have nowhere to put the correction on
++this output while native outputs are corrected normally.
 +
 +Monitor handling
 +================

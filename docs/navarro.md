@@ -343,10 +343,10 @@ streams share one endpoint's budget, so the dock's `pixel_per_second_limit` must
 
 ### What this means for vino
 
-vino currently enumerates two heads and probes selectors 0..1. For Navarro it must probe **0..3**,
-read presence from bit `0x10` of reply byte 23, and act on the dock's pushed `sub=0x0c` events
-rather than on probe silence. All three are Navarro-only and belong behind `DockProfile`, so Ridge
-keeps its measured behaviour unchanged.
+✅ **Done.** vino probes selectors `0..connectors-1` — four on Navarro, two on Ridge — reads
+presence from bit `0x10` of reply byte 23 (bit `0x1000` of the status word), and acts on the dock's
+pushed `sub=0x0c` events rather than on probe silence. The connector count is profile data; the
+presence rule turned out to be right for **both** docks, so it is shared rather than Navarro-only.
 
 ## 3. The main AKE is plaintext-framed
 

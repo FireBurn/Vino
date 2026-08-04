@@ -162,7 +162,7 @@ pub(crate) mod wht {
     #[inline(never)]
     pub(crate) fn transform(block: &[i32; PIXELS]) -> [i32; COEFFS] {
         let sh = |x: i32| x >> 6; // arithmetic shift: wire fixed-point floor division by 64
-        // Level 1: 8x8 -> three 4x4 detail bands.
+                                  // Level 1: 8x8 -> three 4x4 detail bands.
         let (mut ll1, mut hl1, mut lh1, mut hh1) = ([0i32; 16], [0i32; 16], [0i32; 16], [0i32; 16]);
         haar2d_8(block, &mut ll1, &mut hl1, &mut lh1, &mut hh1);
         // Level 2: LL1 (4x4) -> 2x2 subbands.
@@ -1180,31 +1180,27 @@ pub(crate) mod wht {
     // stops draining immediately after vino's first ordering mismatch, at strip 300. Rows alone
     // encode almost the whole permutation; the handful of split rows below are worker boundaries.
     const NAVARRO_PROLOGUE_ROWS: &[u8] = &[
-        0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 29, 31, 33, 35, 37,
-        39, 41, 43, 45, 47, 49, 51, 53, 54, 57, 59, 60, 62, 64, 66, 68, 70, 72, 74,
-        76, 78, 80, 82, 84, 86, 88, 90, 92, 94, 96, 98, 100, 1, 3, 5, 7, 9, 11,
-        13, 15, 17, 19, 21, 23, 25, 27, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48,
-        50, 52, 55, 56, 58, 61, 63, 65, 67, 69, 71, 73, 75, 77, 79, 81, 83, 85,
-        87, 89, 91, 93, 95, 97, 99, 101, 102, 103, 110, 112, 114, 116, 118, 120,
-        122, 124, 126, 128, 130, 132, 134, 136, 138, 140, 142, 144, 146, 148, 150,
-        152, 154, 156, 158, 160, 162, 164, 166, 168, 170, 172, 174, 176, 178, 100,
-        104, 105, 106, 107, 108, 109, 111, 113, 115, 117, 119, 121, 123, 125, 127,
-        129, 131, 133, 135, 137, 139, 141, 143, 145, 147, 149, 151, 153, 155, 157,
-        159, 161, 163, 165, 167, 169, 171, 173, 175, 177, 179,
+        0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 29, 31, 33, 35, 37, 39, 41, 43, 45,
+        47, 49, 51, 53, 54, 57, 59, 60, 62, 64, 66, 68, 70, 72, 74, 76, 78, 80, 82, 84, 86, 88, 90,
+        92, 94, 96, 98, 100, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 30, 32, 34, 36, 38,
+        40, 42, 44, 46, 48, 50, 52, 55, 56, 58, 61, 63, 65, 67, 69, 71, 73, 75, 77, 79, 81, 83, 85,
+        87, 89, 91, 93, 95, 97, 99, 101, 102, 103, 110, 112, 114, 116, 118, 120, 122, 124, 126,
+        128, 130, 132, 134, 136, 138, 140, 142, 144, 146, 148, 150, 152, 154, 156, 158, 160, 162,
+        164, 166, 168, 170, 172, 174, 176, 178, 100, 104, 105, 106, 107, 108, 109, 111, 113, 115,
+        117, 119, 121, 123, 125, 127, 129, 131, 133, 135, 137, 139, 141, 143, 145, 147, 149, 151,
+        153, 155, 157, 159, 161, 163, 165, 167, 169, 171, 173, 175, 177, 179,
     ];
 
     const NAVARRO_ORDINARY_ROWS: &[u8] = &[
-        1, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 29, 31, 33, 35, 37, 39,
-        41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63, 64, 66, 68, 70, 72, 73, 75,
-        77, 79, 81, 83, 85, 87, 89, 91, 93, 95, 97, 99, 0, 3, 5, 7, 9, 11, 13,
-        15, 17, 19, 21, 23, 25, 27, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48,
-        50, 52, 54, 56, 58, 60, 62, 65, 67, 69, 71, 74, 76, 78, 80, 82, 84, 86,
-        88, 90, 92, 94, 96, 98, 100, 102, 99, 101, 102, 103, 105, 107, 109, 111,
-        113, 115, 117, 118, 120, 122, 125, 127, 129, 131, 133, 135, 137, 139, 141,
-        144, 146, 148, 150, 152, 154, 156, 158, 160, 162, 164, 166, 168, 170, 172,
-        174, 176, 178, 101, 104, 106, 108, 110, 112, 114, 116, 119, 121, 123, 124,
-        126, 128, 130, 132, 134, 136, 138, 140, 142, 143, 145, 147, 149, 151, 153,
-        155, 157, 159, 161, 163, 165, 167, 169, 171, 173, 175, 177, 179,
+        1, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47,
+        49, 51, 53, 55, 57, 59, 61, 63, 64, 66, 68, 70, 72, 73, 75, 77, 79, 81, 83, 85, 87, 89, 91,
+        93, 95, 97, 99, 0, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 28, 30, 32, 34, 36, 38,
+        40, 42, 44, 46, 48, 50, 52, 54, 56, 58, 60, 62, 65, 67, 69, 71, 74, 76, 78, 80, 82, 84, 86,
+        88, 90, 92, 94, 96, 98, 100, 102, 99, 101, 102, 103, 105, 107, 109, 111, 113, 115, 117,
+        118, 120, 122, 125, 127, 129, 131, 133, 135, 137, 139, 141, 144, 146, 148, 150, 152, 154,
+        156, 158, 160, 162, 164, 166, 168, 170, 172, 174, 176, 178, 101, 104, 106, 108, 110, 112,
+        114, 116, 119, 121, 123, 124, 126, 128, 130, 132, 134, 136, 138, 140, 142, 143, 145, 147,
+        149, 151, 153, 155, 157, 159, 161, 163, 165, 167, 169, 171, 173, 175, 177, 179,
     ];
 
     fn frame_records_with_boundary(
@@ -1295,9 +1291,7 @@ pub(crate) mod wht {
             // A record ends at a y-band boundary only where the band is part of its identity.
             // Ridge carries the band parity in `sub`, so a record cannot span two bands; Navarro
             // does not, and fills each record to the stride cap instead.
-            while i < order.len()
-                && (!band_parity_bit || strip_y(&strips[order[i]]) == y0)
-            {
+            while i < order.len() && (!band_parity_bit || strip_y(&strips[order[i]]) == y0) {
                 // Preserve DLM's captured producer flushes exactly. They are not a uniform
                 // 1024-strip rule: applying that to the final 1552-strip segment added a record
                 // at 3072 and made the prologue 210064 bytes instead of 210048. The ordinary
@@ -1387,7 +1381,9 @@ pub(crate) mod wht {
     /// Each record body holds strips as `[u16 len][body]`, and every strip body opens with the
     /// codec's `01 28` magic -- which is what terminates the walk when a record's trailing
     /// padding is reached, since `aux` is a producer lane on this dock and not a pad count.
-    fn framed_strip_extents(frames: &[KVec<u8>]) -> impl Iterator<Item = (usize, usize, usize)> + '_ {
+    fn framed_strip_extents(
+        frames: &[KVec<u8>],
+    ) -> impl Iterator<Item = (usize, usize, usize)> + '_ {
         frames.iter().flat_map(|chunk| {
             // Each element of `frames` is an allocation chunk holding several complete records,
             // not one record, so walk records by their own stride: a record is `[u16 pad][u16
@@ -1612,7 +1608,10 @@ pub(crate) mod wht {
         out[22..24].copy_from_slice(&ring.to_le_bytes());
         out[25] = (seq0 as u8).wrapping_add(1);
 
-        FrameTrailer { bytes: out, len: 32 }
+        FrameTrailer {
+            bytes: out,
+            len: 32,
+        }
     }
 
     /// They delimit every logical frame, including the ARM-prefixed first frame. The first record

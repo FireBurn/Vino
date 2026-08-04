@@ -1,7 +1,7 @@
 From 5147721107be8c6116d1f6021cb81e0d8cc70ff0 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:35:15 +0100
-Subject: [PATCH 057/109] rust: drm: kms: tie mode-object references to their
+Subject: [PATCH 057/108] rust: drm: kms: tie mode-object references to their
  owners
 
 The plane and encoder constructors accepted a caller-selected output

@@ -40,10 +40,41 @@ heads, fetches EDIDs, creates Revdi outputs, performs validated mode activation,
 encodes compositor frames, reconciles DPMS and cursor state, monitors topology,
 and rebuilds owned session state after transport failure.
 
-The optimized source and offline oracle build, and the workspace tests pass.
 The byte-exact proof checks the production protocol builders against DLM
-captures. This cleanup did not exercise the service against hardware, so full
-live DLM parity remains a hardware-validation claim.
+captures, and the workspace tests pass.
+
+✅ **HW-verified 2026-08-04** with vino unloaded: Revdi's `evdi.ko` serves
+librevdi, Chimera authenticates a D6000, fetches head 0's EDID, creates the card,
+KWin enables it at 2560x1440@120 and the damage path runs. A frame captured off
+the wire and rendered back to pixels decodes 3600/3600 strips with no coverage
+gap. Two probe bugs the run exposed are fixed and are worth knowing about,
+because both had already been solved in the driver: presence is bit `0x1000` of
+the probe reply's **status word**, never the handler id, and a reply must be
+paired with its request by **echoed counter** — the dock's answer routinely
+arrives only after the next message has gone out, so taking the next frame off
+EP84 reports the wrong head connected.
+
+## Sending damage, not frames
+
+Chimera sends what the dock still needs, the way DLM does, following the
+driver's scanout engine: `chimera/src/scanout.rs` keeps a content hash per strip
+and a retransmit debt of `dock_buffers + 1`. A keyframe is presented as many
+times as the dock has buffers; a delta once, with its repeats spread over
+following frames by the debt; and a still desktop sends nothing at all. Encoded
+strip bodies are cached against the hash they were encoded from, so the
+retransmissions the debt owes do not re-run the codec.
+
+⚠ The debt is paid per *presented* frame, so a change made just before the
+desktop goes still would strand in one dock buffer and ghost. The daemon
+re-presents the last surface while `ControlSession::owes_repaint()` holds.
+
+## Reconnecting to a configured card
+
+`MODE_CHANGED` is an edge, and evdi cards outlive the client process — they are
+removed through `/sys/devices/evdi/remove_all`, not by exit. A client attaching
+to a card the compositor has already configured therefore used to wait forever
+for an announcement that had already happened, with its output dark and the CRTC
+enabled. CONNECT now replays the current mode, so restarting the service works.
 
 ## Cursor
 

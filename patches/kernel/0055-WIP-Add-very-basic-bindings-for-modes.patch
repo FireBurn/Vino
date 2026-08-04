@@ -1,7 +1,7 @@
 From 14f615353dcf26ed5bc0e4e2a295be09286d3489 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Wed, 29 Oct 2025 15:31:39 -0400
-Subject: [PATCH 055/109] WIP: Add very basic bindings for modes
+Subject: [PATCH 055/108] WIP: Add very basic bindings for modes
 
 We ended up needing this to do some calculations in the vblank portion of
 rvkms, so - write some very very basic bindings for DisplayMode.

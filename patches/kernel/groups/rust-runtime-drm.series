@@ -18,5 +18,5 @@
 0098-rust-drm-expose-mode-flags-and-CTA-VIC-matching.patch
 0099-rust-drm-expose-CRTC-mode-changes.patch
 0100-rust-drm-kms-add-synthesized-CVT-connector-modes.patch
-0101-rust-drm-lend-the-connected-event-file-to-a-sleepabl.patch
-0102-rust-drm-kms-expose-a-framebuffer-s-backing-object.patch
+0101-rust-fpu-add-a-safe-kernel-FPU-section-guard.patch
+0102-rust-time-add-ktime_get_real_seconds.patch

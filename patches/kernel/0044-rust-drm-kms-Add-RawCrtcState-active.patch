@@ -1,7 +1,7 @@
 From cb87b029611a20d465f3ee2605bfb7f6b8efd474 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Fri, 6 Sep 2024 12:52:42 -0400
-Subject: [PATCH 044/109] rust: drm/kms: Add RawCrtcState::active()
+Subject: [PATCH 044/108] rust: drm/kms: Add RawCrtcState::active()
 
 A binding for checking drm_crtc_state.active.
 

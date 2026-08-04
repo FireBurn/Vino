@@ -16,7 +16,7 @@ To reproduce from another kernel checkout:
 ```sh
 KERNEL_TREE=/work/linux \
 KERNEL_BASE=integration/base-20260728 \
-KERNEL_HEAD=vino-upstream-rebuild \
+KERNEL_HEAD=vino \
 ./tools/regenerate-patches.sh
 ```
 
@@ -40,8 +40,10 @@ compilation:
 SKIP_BUILD=1 ./tools/validate.sh
 ```
 
-The build uses a temporary out-of-tree kernel output unless `KBUILD_OUTPUT` is
-provided. It compiles `rust/kernel.o`, `evdi.o`, and `vino.o`, then runs the
+The build runs from a disposable Git worktree of the branch, into a temporary
+kernel output unless `KBUILD_OUTPUT` is provided, so it works whether or not the
+working tree has been built in place. It compiles `rust/kernel.o`, `evdi.o`, and
+`vino.o` under a plain `defconfig` plus the two drivers, then runs the
 Revdi/Chimera workspace, all-feature, library, and protocol-oracle tests.
 
 Focused source commands are:

@@ -1,7 +1,7 @@
 From f2a0e3199c64747c907f32294b0f41452d46aaae Mon Sep 17 00:00:00 2001
 From: Joel Fernandes <joelagnelf@nvidia.com>
 Date: Tue, 26 May 2026 08:21:37 -0700
-Subject: [PATCH 001/109] preempt: Track NMI nesting to separate per-CPU
+Subject: [PATCH 001/108] preempt: Track NMI nesting to separate per-CPU
  counter
 
 Move NMI nesting tracking from the preempt_count bits to a separate per-CPU

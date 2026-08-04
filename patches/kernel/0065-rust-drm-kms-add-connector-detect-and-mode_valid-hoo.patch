@@ -1,7 +1,7 @@
-From a3fa14ce13bbba125f010d9a164407860745ac27 Mon Sep 17 00:00:00 2001
+From c29ac97de34b5daa5c04cb01125376af07ebe0ef Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 16:27:50 +0100
-Subject: [PATCH 065/109] rust: drm: kms: add connector detect() and
+Subject: [PATCH 065/108] rust: drm: kms: add connector detect() and
  mode_valid() hooks
 
 Add optional connector detect() and mode_valid() callbacks to the

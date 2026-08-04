@@ -1,7 +1,7 @@
 From 3fec09da95e79bd0b37639f15ad3f69da6013071 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Mon, 30 Sep 2024 16:38:37 -0400
-Subject: [PATCH 030/109] rust: drm/kms: Add ConnectorGuard::add_modes_noedid()
+Subject: [PATCH 030/108] rust: drm/kms: Add ConnectorGuard::add_modes_noedid()
 
 A simple binding for drm_add_modes_noedid() using the ConnectorGuard type
 we just added.

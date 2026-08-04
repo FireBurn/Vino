@@ -1,8 +1,15 @@
 # Vectorising the transform — measured in the kernel
 
-**Result: not worth it.** The FPU section is cheap; the transform is the problem.
+**Result: the transform vectorises 2x, and that is worth about 15% of the enclosing block encode
+and 7.5% of machine CPU on live video — but only when it is written to vectorise *within* a block.
+The obvious form, across blocks, is a 2.7x regression.** It is in the tree, off by default, behind
+`simd_transform=1`.
 
-`drivers/gpu/drm/vino/simd.rs` carries optional AVX2 and AVX-512 Haar transforms and an in-kernel
+The ceiling is low and known: the transform is 11% of a strip encode and the bit-serial entropy
+coder is 72%, so no amount of wider arithmetic reaches far. The FPU section — the thing that
+motivated the original feasibility question — costs 4 ns and was never the obstacle.
+
+`drivers/gpu/drm/vino/simd.rs` carries the AVX2 and AVX-512 Haar transforms and an in-kernel
 benchmark for them. The scalar transform is always present, is the default, and is the oracle: the
 benchmark checks byte-exactness against it before reporting any timing, and refuses to report a
 speedup if a single block differs. Run it with:
@@ -48,9 +55,9 @@ question before any of the rows below matter:
 ⇒ Yes, it would be more CPU with live video: roughly a fifth more encode CPU, against a best case of
 a tenth less that no implementation can reach.
 
-⚠ Not measured on live frames. The AVX2 path is benchmark-only and is deliberately not wired into
-the encoder, so no displayed frame has gone through it. The +18% is the measured per-strip cost
-applied to the measured strip mix, not an end-to-end capture.
+⚠ These rows are the **across-blocks** form, which is benchmark-only and is not what the encoder
+uses. The +18% is the measured per-strip cost applied to the measured strip mix, not an end-to-end
+capture. The within-block form measured on live frames is further down.
 
 ## Where a strip encode actually goes
 
@@ -171,7 +178,7 @@ reach here. The 72% that is left is the entropy coder, and the lever there is no
 but fewer unpredictable branches per symbol — the same shape of fix as replacing per-coefficient
 branch dispatch with const tables.
 
-## What that says
+## What the across-blocks attempt said
 
 **The FPU section is not the obstacle.** At 4 ns against a transform of ~80 ns it is noise, and
 hoisting one section around the whole run instead of opening one per call changes nothing
@@ -193,8 +200,9 @@ together — `cr`, `cb`, `y` — so five of eight lanes idle and the call costs 
 Filling the lanes means batching across strips, i.e. restructuring the encode loop, for a ceiling
 that has now been measured at 1.02x.
 
-⇒ **Do not vectorise the transform.** Both the ceiling and the realistic case are measured in the
-kernel rather than inferred, and the stage breakdown above shows why it was never the right target.
+⇒ **Do not vectorise the transform across blocks.** Both the ceiling and the realistic case are
+measured in the kernel rather than inferred. Vectorising *within* a block, above, is the form that
+works: it has no transpose and no idle lanes, and it is what the tree carries.
 
 ## Implementation notes worth keeping
 

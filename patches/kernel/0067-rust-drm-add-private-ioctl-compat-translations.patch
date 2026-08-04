@@ -1,7 +1,7 @@
-From ae42675ab9be66e6baebc5959d7e597266f9906d Mon Sep 17 00:00:00 2001
+From d0faa3c809522ec31c0917adf21e4597e88ae9b8 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 06:19:08 +0100
-Subject: [PATCH 067/109] rust: drm: add private ioctl compat translations
+Subject: [PATCH 067/108] rust: drm: add private ioctl compat translations
 
 Allow Rust DRM drivers to declare translations for pointer-bearing
 private ioctls whose 32-bit layout differs from the native UAPI type.

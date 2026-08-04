@@ -1,7 +1,7 @@
 From b66190f2c29c0c28bf52ae2b625ae4838b0254aa Mon Sep 17 00:00:00 2001
 From: Boqun Feng <boqun.feng@gmail.com>
 Date: Tue, 26 May 2026 08:21:38 -0700
-Subject: [PATCH 002/109] preempt: Introduce HARDIRQ_DISABLE_BITS
+Subject: [PATCH 002/108] preempt: Introduce HARDIRQ_DISABLE_BITS
 
 In order to support preempt_disable()-like interrupt disabling, that is,
 using part of preempt_count() to track interrupt disabling nested level,

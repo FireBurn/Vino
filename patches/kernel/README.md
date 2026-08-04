@@ -1,9 +1,10 @@
 # Kernel patch series
 
+<!-- The block below is rewritten by ../../tools/regenerate-patches.sh. -->
 ```text
 base: 0755a4e3e809610a14befc9ad28d35e2e460da68
-head: ef9d133e44e6c13b1c8e2a030c8e0440ea1bfb0a
-range: integration/base-20260728..vino-upstream-rebuild
+head: 7614ff24714925a661df9bcde40e5a987eb8795a
+range: integration/base-20260728..vino
 ```
 
 Apply the exact integration series in recorded order:
@@ -27,7 +28,7 @@ discussions:
 | `kms-lyude` | 37 | Lyude Paul's original Rust KMS work |
 | `drm-crypto-platform` | 18 | DRM, crypto, driver core |
 | `usb` | 7 | USB and Rust |
-| `rust-runtime-drm` | 20 | Rust core, timer/workqueue, DRM |
+| `rust-runtime-drm` | 22 | Rust core, timer/workqueue, FPU, time, DRM |
 | `evdi` | 1 | DRM |
 | `vino` | 5 | DRM and USB |
 

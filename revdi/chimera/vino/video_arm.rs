@@ -70,8 +70,19 @@ pub(super) fn build(width: u16, height: u16, nonce: &[u8; 14]) -> Result<KVec<u8
 pub(super) fn mode_header(width: u16, height: u16, layout_word: u16) -> [u8; 26] {
     let mut out = [0u8; 26];
     for (i, value) in [
-        0x0018u16, 0x030b, 0x0204, 0x0002, 0x0002, width, height, layout_word, 0x0002, width,
-        height, layout_word, 0,
+        0x0018u16,
+        0x030b,
+        0x0204,
+        0x0002,
+        0x0002,
+        width,
+        height,
+        layout_word,
+        0x0002,
+        width,
+        height,
+        layout_word,
+        0,
     ]
     .into_iter()
     .enumerate()

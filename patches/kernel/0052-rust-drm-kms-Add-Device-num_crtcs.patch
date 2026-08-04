@@ -1,7 +1,7 @@
 From faa2d3f1283223b1831ab537c4eb4fa058a9f7cd Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Fri, 6 Sep 2024 13:09:42 -0400
-Subject: [PATCH 052/109] rust: drm/kms: Add Device::num_crtcs()
+Subject: [PATCH 052/108] rust: drm/kms: Add Device::num_crtcs()
 
 A binding for checking drm_device.num_crtcs. We'll need this in a moment
 for vblank support, since setting it up requires knowing the number of

@@ -1,7 +1,7 @@
-From 079f478913bf96c50d1fc69c71e54321c85e9f83 Mon Sep 17 00:00:00 2001
+From 737b96c9ce06cb7d92a487d8dd1e95ab7069d4ff Mon Sep 17 00:00:00 2001
 From: Alice Ryhl <aliceryhl@google.com>
 Date: Thu, 12 Mar 2026 09:23:02 +0000
-Subject: [PATCH 086/109] rust: workqueue: restrict delayed work to global wqs
+Subject: [PATCH 086/108] rust: workqueue: restrict delayed work to global wqs
 
 When a workqueue is shut down, delayed work that is pending but not
 scheduled does not get properly cleaned up, so it's not safe to use

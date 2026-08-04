@@ -1,7 +1,7 @@
 From fed80e2abb776da975ec58f7a6cb9f690f01bf82 Mon Sep 17 00:00:00 2001
 From: Boqun Feng <boqun.feng@gmail.com>
 Date: Mon, 2 Mar 2026 18:16:45 -0500
-Subject: [PATCH 015/109] rust: helper: Add
+Subject: [PATCH 015/108] rust: helper: Add
  spin_{un,}lock_irq_{enable,disable}() helpers
 
 spin_lock_irq_disable() and spin_unlock_irq_enable() are inline

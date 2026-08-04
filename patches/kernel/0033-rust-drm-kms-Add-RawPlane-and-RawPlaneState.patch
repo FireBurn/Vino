@@ -1,7 +1,7 @@
 From 51e484e13698270e906d8c7cd5476df068761f8c Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 23 May 2024 16:17:38 -0400
-Subject: [PATCH 033/109] rust: drm/kms: Add RawPlane and RawPlaneState
+Subject: [PATCH 033/108] rust: drm/kms: Add RawPlane and RawPlaneState
 
 Same thing as RawCrtc and RawCrtcState, but for DRM planes now
 

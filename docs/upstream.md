@@ -1,7 +1,8 @@
 # Upstream status and review disposition
 
 Status was rechecked on 2026-07-28 against the public patch threads and the
-available remote branch tips.
+available remote branch tips. The series was refolded on 2026-08-04; only v2 has
+been posted, so the next posting is v3.
 
 ## Current base
 
@@ -63,8 +64,11 @@ without creating a competing kernel API.
 Automated findings from the previous Vino posting were rechecked and corrected,
 but are not treated as human acceptance. EVDI now uses a conventional C UAPI
 header, generated Rust bindings, safe compat translation, normal DRM plane
-geometry, and the shared owned shmem view. The Vino match table remains limited
-to the hardware profile actually validated: Dell D6000 `17e9:6006`.
+geometry, and the shared owned shmem view. The Vino match table lists the two profiles
+actually validated on hardware: the Dell D6000 `17e9:6006` and the DL-7400
+`17e9:7000`. Both are described by data the driver reads rather than by
+open-coded model checks, and a third device needs its own profile and its own
+evidence.
 
 ## Reused external work
 
@@ -84,32 +88,47 @@ their presence in the integration branch is not a claim of acceptance.
 ## Patch authorship
 
 Third-party commits retain their authors, messages, and trailers. Every
-Mike-authored kernel patch ends with:
+Mike-authored kernel patch names the assistants that worked on it and then, last,
+the only sign-off:
 
 ```text
-Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Claude:claude-opus-5
 Assisted-by: Codex:gpt-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ```
 
-This follows `Documentation/process/coding-assistants.rst`: the assistant and
-model are identified, while only Mike supplies the DCO sign-off.
+This follows `Documentation/process/coding-assistants.rst`'s
+`AGENT_NAME:MODEL_VERSION` form: the assistant and model are identified, while
+only Mike supplies the DCO sign-off. The model version legitimately differs
+between patches written months apart, so `tools/validate.sh` checks the shape of
+the block and that the sign-off is last, not a fixed string.
 
 ## Series shape
 
-The branch contains 106 commits in seven contiguous review groups:
+The branch contains 108 commits in seven contiguous review groups, exported to
+`patches/kernel/` with a manifest per group:
 
-1. interrupt/preemption prerequisites;
-2. Lyude's Rust KMS series;
-3. DRM, crypto, and driver-core interfaces;
-4. USB interfaces;
-5. Rust runtime and further DRM interfaces;
-6. EVDI;
-7. five Vino patches: control, codec, KMS, USB/lifecycle, documentation.
+| Group | Patches | Ownership |
+|---|---:|---|
+| `interrupt-prerequisites` | 18 | scheduler, locking, architecture, Rust |
+| `kms-lyude` | 37 | Lyude Paul's original Rust KMS work |
+| `drm-crypto-platform` | 18 | DRM, crypto, driver core |
+| `usb` | 7 | USB and Rust |
+| `rust-runtime-drm` | 22 | Rust core, timer/workqueue, FPU, time, DRM |
+| `evdi` | 1 | DRM |
+| `vino` | 5 | DRM and USB |
 
-Bring-up chronology, experimental switches, reversions, temporary workarounds,
-and unsupported hardware claims are absent. Generic facilities are introduced
-in their owning subsystem rather than hidden in the driver.
+The five Vino patches are control protocol, codec, KMS/scanout, the USB driver,
+and the documentation. Each introduces its subject once, in the state it is in:
+the development history — bring-up chronology, experimental switches,
+reversions, temporary workarounds — is folded away, and the branch it was folded
+from is kept as `backup/vino-pre-v3-fold-20260804-2051` rather than published as
+review material.
+
+Generic facilities are introduced in their owning subsystem rather than hidden
+in the driver. Two were added this round: a safe kernel-FPU section guard, which
+the optional AVX2 transform needs, and `ktime_get_real_seconds()`, which replaced
+the driver's one remaining raw `bindings::` call.
 
 ## References
 

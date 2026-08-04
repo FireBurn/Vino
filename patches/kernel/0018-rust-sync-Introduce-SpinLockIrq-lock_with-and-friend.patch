@@ -1,7 +1,7 @@
 From b6f8c2e74a85852dcec3430e5d54c9ee61922036 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Mon, 2 Mar 2026 18:16:48 -0500
-Subject: [PATCH 018/109] rust: sync: Introduce SpinLockIrq::lock_with() and
+Subject: [PATCH 018/108] rust: sync: Introduce SpinLockIrq::lock_with() and
  friends
 
 `SpinLockIrq` and `SpinLock` use the exact same underlying C structure,

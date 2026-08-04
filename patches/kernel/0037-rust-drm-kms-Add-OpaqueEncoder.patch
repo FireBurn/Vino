@@ -1,7 +1,7 @@
 From bdfae461e56e01249afb3f41b4e2f0d8ad63b2da Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 23 May 2024 16:18:26 -0400
-Subject: [PATCH 037/109] rust: drm/kms: Add OpaqueEncoder
+Subject: [PATCH 037/108] rust: drm/kms: Add OpaqueEncoder
 
 Same thing as OpaquePlane, but for encoders now.
 

@@ -179,7 +179,7 @@ impl ColorPipeline {
             for i in 0..LUT_LEN {
                 let mut v = expand(i as u8);
                 if let Some(g) = gains {
-                    v = (((g[c] as i64 * v as i64 + HALF_Q) >> 16)).clamp(0, MAX as i64) as i32;
+                    v = ((g[c] as i64 * v as i64 + HALF_Q) >> 16).clamp(0, MAX as i64) as i32;
                 }
                 if let Some(t) = &gamma {
                     v = sample(&t[c * LUT_LEN..(c + 1) * LUT_LEN], v);
@@ -257,16 +257,7 @@ impl PartialEq for ColorPipeline {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Fused(a), Self::Fused(b)) => a[..] == b[..],
-            (
-                Self::Mixed {
-                    ctm: a,
-                    gamma: ga,
-                },
-                Self::Mixed {
-                    ctm: b,
-                    gamma: gb,
-                },
-            ) => {
+            (Self::Mixed { ctm: a, gamma: ga }, Self::Mixed { ctm: b, gamma: gb }) => {
                 a == b
                     && match (ga, gb) {
                         (Some(x), Some(y)) => x[..] == y[..],

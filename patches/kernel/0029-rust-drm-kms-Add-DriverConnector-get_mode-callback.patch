@@ -1,7 +1,7 @@
 From f5cd1445e40c59b35ec83c60a23dce2af9b759bd Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Fri, 17 May 2024 18:49:31 -0400
-Subject: [PATCH 029/109] rust: drm/kms: Add DriverConnector::get_mode callback
+Subject: [PATCH 029/108] rust: drm/kms: Add DriverConnector::get_mode callback
 
 Next up is filling out some of the basic connector hotplugging callbacks -
 which we'll need for setting up the fbdev helpers for KMS devices. Note

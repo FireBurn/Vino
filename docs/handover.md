@@ -20,6 +20,9 @@ Last updated 2026-08-04.
 | Control-plane idle load | ✅ 0 unanswered CP messages per 45 s (was 22) |
 | DL7400 refresh ceiling | ✅ 165 Hz offered; 180 Hz excluded, it fails on Windows too |
 | Time from dock power-on to pixels | ⚠ still long; driver-side bind→connector is now ~2 s |
+| Revdi + Chimera on the D6000 | ✅ HW-verified 2026-08-04 with vino unloaded; wire renders 3600/3600 strips |
+| Chimera's video path | ✅ damage deltas + retransmit debt, like DLM; nothing on the wire when idle |
+| Kernel series | ✅ refolded to 108 reviewable patches on `linux:vino`; `tools/validate.sh` passes |
 
 ---
 
@@ -104,6 +107,26 @@ video.rs hunk is behind `navarro_ordinary` (`None` for Ridge) or `interlaced_ban
 Ridge); the only other edit is a doc comment.
 
 ---
+
+## ✅ Fixed on 2026-08-04, evening
+
+**Chimera drove the D6000 through Revdi end to end**, and the run found three bugs — the first two
+had already been solved in the driver, which is where to look first next time:
+
+1. **presence from the reply id.** The dock answers `id=0x44` whether or not a monitor is attached;
+   presence is bit `0x1000` of the status word. Reading the id reports every head connected.
+2. **taking the next EP84 frame as "the reply".** The dock's answer to one message routinely
+   arrives only after the next has gone out, so back-to-back head probes each read the other head's
+   answer — head 1 (empty) came back present and head 0 (the real monitor) absent. Replies are now
+   paired by echoed counter with a 64 ms deadline, and an empty read no longer ends the wait.
+3. **evdi's `MODE_CHANGED` is an edge.** Cards outlive the client process, so a client attaching to
+   a card KWin had already configured waited forever with the output dark. CONNECT now replays the
+   current mode.
+
+⭐ **Verify the picture without eyes**: capture with
+`tools/hardware/capture-usbmon-session.py --snap 65536`, then render a frame back to pixels with
+`scripts/codec-re/wire-render.py <cap>.mon 2560 1440 --ep 8 --min-strips 3000`. That is what
+established the image was clean, with the user away from the machine.
 
 ## ✅ Also fixed on 2026-08-04
 

@@ -9,7 +9,7 @@ set -euo pipefail
 workspace="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 kernel_tree="${KERNEL_TREE:-$workspace/linux}"
 kernel_base="${KERNEL_BASE:-integration/base-20260728}"
-kernel_head="${KERNEL_HEAD:-vino-upstream-rebuild}"
+kernel_head="${KERNEL_HEAD:-vino}"
 patch_dir="$workspace/patches/kernel"
 
 mkdir -p "$workspace/.worktrees"

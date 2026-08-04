@@ -1,7 +1,7 @@
-From 023b0568a04e677cc7ddeea3b52ace90b373cc1e Mon Sep 17 00:00:00 2001
+From dbf5fdb4acbf17b84f6b1aa483f8dc9a15971a1b Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 21:37:16 +0100
-Subject: [PATCH 098/109] rust: drm: expose mode flags and CTA VIC matching
+Subject: [PATCH 098/108] rust: drm: expose mode flags and CTA VIC matching
 
 Let Rust DRM drivers construct modes with signal flags, inspect those
 flags, and use the DRM EDID helper to identify the matching CTA-861
