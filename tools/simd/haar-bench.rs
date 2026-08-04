@@ -1,27 +1,38 @@
-//! Does an AVX2 Haar transform beat the scalar one, and does it produce identical bytes?
+//! Is a vectorised Haar transform worth an in-kernel FPU section, and does it produce identical
+//! bytes?
 //!
-//!     rustc -O -C target-cpu=native tools/simd/haar-bench.rs -o /tmp/haar-bench && /tmp/haar-bench
+//!     rustc -O tools/simd/haar-bench.rs -o /tmp/haar-bench && /tmp/haar-bench
 //!
-//! Userspace on purpose. The kernel disables SIMD for Rust globally and vector registers need an
-//! FPU section (see `docs/simd.md`), so a kernel prototype needs a binding that does not exist
-//! yet. None of that changes the arithmetic, and the question worth answering first is whether the
-//! speedup justifies the plumbing at all.
+//! Build it twice. `-C target-cpu=native` auto-vectorises the scalar baseline and understates the
+//! gain; the kernel's own flags are the representative case:
+//!
+//!     rustc -O -C target-feature=-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-avx,-avx2 \
+//!         tools/simd/haar-bench.rs -o /tmp/haar-bench-kflags
+//!
+//! Userspace on purpose: none of this changes the arithmetic, and the arithmetic is what decides
+//! whether the plumbing is worth adding. The one thing userspace cannot measure is the cost of
+//! `kernel_fpu_begin()`/`kernel_fpu_end()`, so the summary reports the per-call saving and the
+//! break-even FPU cost instead of guessing at it. `tools/simd/fpu-cost.md` says how to measure the
+//! other half.
 //!
 //! The scalar side is `video::wht`'s transform copied verbatim, so a mismatch here is a real
 //! mismatch. The codec is byte-exact against DisplayLink's own encoder, so "faster" is worthless
 //! without "identical" -- the check runs first and the benchmark refuses to report a speedup if it
 //! fails.
 //!
-//! The vectorisation is across blocks rather than within one. A single 8x8 block needs shuffles to
-//! pair neighbours; eight blocks in eight lanes need none, so every operation is a straight vector
-//! add or subtract and the transform's own structure is untouched.
+//! ⚠ **Read the batch-3 row, not the full-lane row.** `colour_block` transforms exactly three
+//! blocks together -- `cr`, `cb`, `y` -- so a vector path processing eight or sixteen at a time
+//! leaves most of its lanes idle on the encoder's real workload. The full-lane row is the ceiling
+//! that would need the encode loop restructured to batch across strips; the batch-3 row is what
+//! adding an intrinsic today would actually buy.
 
 use std::arch::x86_64::*;
 use std::time::Instant;
 
 const PIXELS: usize = 64;
 const COEFFS: usize = 64;
-const LANES: usize = 8;
+/// Blocks `colour_block` transforms together: the `cr`, `cb` and `y` planes of one 8x8 block.
+const ENCODER_BATCH: usize = 3;
 
 // ---------------------------------------------------------------- scalar, copied from video::wht
 
@@ -97,179 +108,287 @@ fn transform_scalar(block: &[i32; PIXELS]) -> [i32; COEFFS] {
     out
 }
 
-// ---------------------------------------------------------------- AVX2, eight blocks at a time
+// ---------------------------------------------------------------- vector paths
+//
+// One lane per block, so pairing neighbours needs no shuffle: element `i` of a vector is the same
+// coefficient of `LANES` different blocks. Loads and stores go through `read_unaligned`/
+// `write_unaligned` rather than the width-specific `_mm*_loadu_*` intrinsics, whose signatures
+// differ between widths and have changed between compiler releases.
 
-/// One lane per block, so pairing neighbours needs no shuffle: `src[i]` is the same coefficient of
-/// eight different blocks.
-#[target_feature(enable = "avx2")]
-unsafe fn haar_level_v<const N: usize, const H: usize>(
-    src: &[__m256i],
-    ll: &mut [__m256i],
-    hl: &mut [__m256i],
-    lh: &mut [__m256i],
-    hh: &mut [__m256i],
-) {
-    let mut l = [_mm256_setzero_si256(); 64];
-    let mut hb = [_mm256_setzero_si256(); 64];
-    for r in 0..N {
-        for i in 0..H {
-            let a = src[r * N + 2 * i];
-            let b = src[r * N + 2 * i + 1];
-            l[r * H + i] = _mm256_add_epi32(a, b);
-            hb[r * H + i] = _mm256_sub_epi32(a, b);
-        }
-    }
-    for c in 0..H {
-        for i in 0..H {
-            let a = l[2 * i * H + c];
-            let b = l[(2 * i + 1) * H + c];
-            ll[i * H + c] = _mm256_add_epi32(a, b);
-            lh[i * H + c] = _mm256_sub_epi32(a, b);
-            let a2 = hb[2 * i * H + c];
-            let b2 = hb[(2 * i + 1) * H + c];
-            hl[i * H + c] = _mm256_add_epi32(a2, b2);
-            hh[i * H + c] = _mm256_sub_epi32(a2, b2);
-        }
-    }
-}
+macro_rules! simd_transform {
+    ($name:ident, $feature:literal, $vec:ty, $lanes:literal, $set0:ident, $add:ident, $sub:ident, $sra:ident) => {
+        /// Transform `$lanes` blocks at once. `blocks` and `out` must both hold `$lanes` entries;
+        /// lanes past the caller's real batch are transformed and discarded.
+        #[target_feature(enable = $feature)]
+        unsafe fn $name(blocks: &[[i32; PIXELS]], out: &mut [[i32; COEFFS]]) {
+            assert!(blocks.len() >= $lanes && out.len() >= $lanes);
 
-/// `blocks` is eight blocks; `out` receives their eight coefficient sets.
-#[target_feature(enable = "avx2")]
-unsafe fn transform_avx2(blocks: &[[i32; PIXELS]; LANES], out: &mut [[i32; COEFFS]; LANES]) {
-    // Transpose to lanes-per-coefficient once; every stage below is then shuffle-free.
-    let mut src = [_mm256_setzero_si256(); PIXELS];
-    let mut tmp = [0i32; LANES];
-    for (p, slot) in src.iter_mut().enumerate() {
-        for (b, t) in tmp.iter_mut().enumerate() {
-            *t = blocks[b][p];
-        }
-        *slot = _mm256_loadu_si256(tmp.as_ptr() as *const __m256i);
-    }
+            #[target_feature(enable = $feature)]
+            unsafe fn level<const N: usize, const H: usize>(
+                src: &[$vec],
+                ll: &mut [$vec],
+                hl: &mut [$vec],
+                lh: &mut [$vec],
+                hh: &mut [$vec],
+            ) {
+                let mut l = [$set0(); 64];
+                let mut hb = [$set0(); 64];
+                for r in 0..N {
+                    for i in 0..H {
+                        let (a, b) = (src[r * N + 2 * i], src[r * N + 2 * i + 1]);
+                        l[r * H + i] = $add(a, b);
+                        hb[r * H + i] = $sub(a, b);
+                    }
+                }
+                for c in 0..H {
+                    for i in 0..H {
+                        let (a, b) = (l[2 * i * H + c], l[(2 * i + 1) * H + c]);
+                        ll[i * H + c] = $add(a, b);
+                        lh[i * H + c] = $sub(a, b);
+                        let (a2, b2) = (hb[2 * i * H + c], hb[(2 * i + 1) * H + c]);
+                        hl[i * H + c] = $add(a2, b2);
+                        hh[i * H + c] = $sub(a2, b2);
+                    }
+                }
+            }
 
-    let z = _mm256_setzero_si256();
-    let (mut ll1, mut hl1, mut lh1, mut hh1) = ([z; 16], [z; 16], [z; 16], [z; 16]);
-    haar_level_v::<8, 4>(&src, &mut ll1, &mut hl1, &mut lh1, &mut hh1);
-    let (mut ll2, mut hl2, mut lh2, mut hh2) = ([z; 4], [z; 4], [z; 4], [z; 4]);
-    haar_level_v::<4, 2>(&ll1, &mut ll2, &mut hl2, &mut lh2, &mut hh2);
-    let (mut ll3, mut hl3, mut lh3, mut hh3) = ([z; 1], [z; 1], [z; 1], [z; 1]);
-    haar_level_v::<2, 1>(&ll2, &mut ll3, &mut hl3, &mut lh3, &mut hh3);
+            // Transpose to lanes-per-coefficient once; every stage below is then shuffle-free.
+            let mut src = [$set0(); PIXELS];
+            let mut tmp = [0i32; $lanes];
+            for (p, slot) in src.iter_mut().enumerate() {
+                for (b, t) in tmp.iter_mut().enumerate() {
+                    *t = blocks[b][p];
+                }
+                *slot = std::ptr::read_unaligned(tmp.as_ptr() as *const $vec);
+            }
 
-    // `>> 6` is an arithmetic shift in both paths; _mm256_srai_epi32 matches Rust's `>>` on i32.
-    let mut store = |coeff: usize, v: __m256i, out: &mut [[i32; COEFFS]; LANES]| {
-        let mut lanes = [0i32; LANES];
-        _mm256_storeu_si256(lanes.as_mut_ptr() as *mut __m256i, _mm256_srai_epi32(v, 6));
-        for (b, val) in lanes.iter().enumerate() {
-            out[b][coeff] = *val;
+            let z = $set0();
+            let (mut ll1, mut hl1, mut lh1, mut hh1) = ([z; 16], [z; 16], [z; 16], [z; 16]);
+            level::<8, 4>(&src, &mut ll1, &mut hl1, &mut lh1, &mut hh1);
+            let (mut ll2, mut hl2, mut lh2, mut hh2) = ([z; 4], [z; 4], [z; 4], [z; 4]);
+            level::<4, 2>(&ll1, &mut ll2, &mut hl2, &mut lh2, &mut hh2);
+            let (mut ll3, mut hl3, mut lh3, mut hh3) = ([z; 1], [z; 1], [z; 1], [z; 1]);
+            level::<2, 1>(&ll2, &mut ll3, &mut hl3, &mut lh3, &mut hh3);
+
+            // `>> 6` is an arithmetic shift in both paths.
+            let mut store = |coeff: usize, v: $vec, out: &mut [[i32; COEFFS]]| {
+                let mut lanes = [0i32; $lanes];
+                std::ptr::write_unaligned(lanes.as_mut_ptr() as *mut $vec, $sra(v, 6));
+                for (b, val) in lanes.iter().enumerate() {
+                    out[b][coeff] = *val;
+                }
+            };
+            store(0, ll3[0], out);
+            store(1, hl3[0], out);
+            store(2, lh3[0], out);
+            store(3, hh3[0], out);
+            for i in 0..4 {
+                store(4 + i, hl2[i], out);
+            }
+            for i in 0..4 {
+                store(8 + i, lh2[i], out);
+            }
+            for i in 0..4 {
+                store(12 + i, hh2[i], out);
+            }
+            for (i, &s) in SCAN4_MORTON.iter().enumerate() {
+                store(16 + i, hl1[s], out);
+            }
+            for (i, &s) in SCAN4_MORTON.iter().enumerate() {
+                store(32 + i, lh1[s], out);
+            }
+            for (i, &s) in SCAN4_MORTON.iter().enumerate() {
+                store(48 + i, hh1[s], out);
+            }
         }
     };
-    store(0, ll3[0], out);
-    store(1, hl3[0], out);
-    store(2, lh3[0], out);
-    store(3, hh3[0], out);
-    for i in 0..4 {
-        store(4 + i, hl2[i], out);
-    }
-    for i in 0..4 {
-        store(8 + i, lh2[i], out);
-    }
-    for i in 0..4 {
-        store(12 + i, hh2[i], out);
-    }
-    for (i, &s) in SCAN4_MORTON.iter().enumerate() {
-        store(16 + i, hl1[s], out);
-    }
-    for (i, &s) in SCAN4_MORTON.iter().enumerate() {
-        store(32 + i, lh1[s], out);
-    }
-    for (i, &s) in SCAN4_MORTON.iter().enumerate() {
-        store(48 + i, hh1[s], out);
-    }
 }
+
+simd_transform!(
+    transform_avx2,
+    "avx2",
+    __m256i,
+    8,
+    _mm256_setzero_si256,
+    _mm256_add_epi32,
+    _mm256_sub_epi32,
+    _mm256_srai_epi32
+);
+
+simd_transform!(
+    transform_avx512,
+    "avx512f",
+    __m512i,
+    16,
+    _mm512_setzero_si512,
+    _mm512_add_epi32,
+    _mm512_sub_epi32,
+    _mm512_srai_epi32
+);
 
 // ---------------------------------------------------------------- harness
 
-fn main() {
-    if !is_x86_feature_detected!("avx2") {
-        println!("no AVX2 on this CPU");
-        return;
-    }
-    // Deterministic pseudo-random blocks spanning the full 8-bit input range the codec sees.
+/// Deterministic pseudo-random blocks spanning the 8-bit input range the codec sees.
+fn make_blocks(n: usize) -> Vec<[i32; PIXELS]> {
     let mut state = 0x2545_f491_4f6c_dd1du64;
-    let mut rnd = || {
+    let mut rnd = move || {
         state ^= state << 13;
         state ^= state >> 7;
         state ^= state << 17;
         state
     };
-    const BATCHES: usize = 4096;
-    let mut input = vec![[[0i32; PIXELS]; LANES]; BATCHES];
-    for batch in input.iter_mut() {
-        for block in batch.iter_mut() {
-            for px in block.iter_mut() {
+    (0..n)
+        .map(|_| {
+            let mut b = [0i32; PIXELS];
+            for px in b.iter_mut() {
                 *px = (rnd() % 256) as i32;
             }
+            b
+        })
+        .collect()
+}
+
+struct Row {
+    name: &'static str,
+    lanes: usize,
+    /// Seconds to transform one batch of `ENCODER_BATCH` blocks, the encoder's real call shape.
+    per_encoder_batch_s: f64,
+    /// Seconds per block when every lane is fed, i.e. the ceiling if the encode loop batched
+    /// across strips.
+    per_block_full_s: f64,
+}
+
+fn bench<F>(lanes: usize, name: &'static str, blocks: &[[i32; PIXELS]], reps: usize, mut run: F) -> Row
+where
+    F: FnMut(&[[i32; PIXELS]], &mut [[i32; COEFFS]]),
+{
+    let mut out = vec![[0i32; COEFFS]; lanes];
+    // Full lanes: every call does `lanes` useful blocks.
+    let batches = blocks.len() / lanes;
+    let t = Instant::now();
+    for _ in 0..reps {
+        for c in 0..batches {
+            run(&blocks[c * lanes..(c + 1) * lanes], &mut out);
         }
     }
+    let full = t.elapsed().as_secs_f64() / (reps * batches * lanes) as f64;
 
-    // 1. byte-exactness, before any timing
-    let mut mismatches = 0usize;
-    for batch in input.iter() {
-        let mut got = [[0i32; COEFFS]; LANES];
-        unsafe { transform_avx2(batch, &mut got) };
-        for (b, block) in batch.iter().enumerate() {
-            if transform_scalar(block) != got[b] {
-                mismatches += 1;
-            }
+    // The encoder's shape: one call per three blocks, whatever the lane count.
+    let calls = blocks.len() / ENCODER_BATCH.max(lanes.min(ENCODER_BATCH));
+    let t = Instant::now();
+    for _ in 0..reps {
+        for c in 0..blocks.len() / lanes.max(ENCODER_BATCH) {
+            run(&blocks[c * lanes.max(ENCODER_BATCH)..], &mut out);
         }
     }
-    let blocks = BATCHES * LANES;
-    println!("== correctness");
-    if mismatches == 0 {
-        println!("   {blocks} blocks, AVX2 output identical to scalar");
-    } else {
-        println!("   {mismatches}/{blocks} MISMATCH -- speedup is meaningless, stopping");
-        std::process::exit(1);
-    }
+    let elapsed = t.elapsed().as_secs_f64();
+    let _ = calls;
+    let per_call = elapsed / (reps * (blocks.len() / lanes.max(ENCODER_BATCH))) as f64;
 
-    // 2. throughput
-    let reps = 40;
+    Row {
+        name,
+        lanes,
+        per_encoder_batch_s: per_call,
+        per_block_full_s: full,
+    }
+}
+
+fn main() {
+    const BLOCKS: usize = 32768;
+    const REPS: usize = 40;
+    let blocks = make_blocks(BLOCKS);
+
+    println!("== correctness (gates everything below)");
+    let mut rows = Vec::new();
+
+    // Scalar reference, and its own timing.
+    let mut out = vec![[0i32; COEFFS]; 16];
+    let t = Instant::now();
     let mut sink = 0i64;
-    let t0 = Instant::now();
-    for _ in 0..reps {
-        for batch in input.iter() {
-            for block in batch.iter() {
-                sink += transform_scalar(block)[0] as i64;
+    for _ in 0..REPS {
+        for b in blocks.iter() {
+            sink += transform_scalar(b)[0] as i64;
+        }
+    }
+    let scalar_per_block = t.elapsed().as_secs_f64() / (REPS * BLOCKS) as f64;
+    println!("   scalar is the oracle");
+
+    macro_rules! check_and_bench {
+        ($feat:literal, $f:ident, $lanes:literal, $label:literal) => {
+            if is_x86_feature_detected!($feat) {
+                let mut bad = 0usize;
+                for c in 0..BLOCKS / $lanes {
+                    let batch = &blocks[c * $lanes..(c + 1) * $lanes];
+                    unsafe { $f(batch, &mut out) };
+                    for (i, b) in batch.iter().enumerate() {
+                        if transform_scalar(b) != out[i] {
+                            bad += 1;
+                        }
+                    }
+                }
+                if bad != 0 {
+                    println!("   {} MISMATCH on {bad} blocks -- stopping", $label);
+                    std::process::exit(1);
+                }
+                println!("   {:<7} identical to scalar over {BLOCKS} blocks", $label);
+                rows.push(bench($lanes, $label, &blocks, REPS, |b, o| unsafe {
+                    $f(b, o)
+                }));
+            } else {
+                println!("   {:<7} not supported on this CPU -- skipped", $label);
             }
+        };
+    }
+    check_and_bench!("avx2", transform_avx2, 8, "avx2");
+    check_and_bench!("avx512f", transform_avx512, 16, "avx512");
+
+    let scalar_batch = scalar_per_block * ENCODER_BATCH as f64;
+    println!("\n== the encoder's real call: {ENCODER_BATCH} blocks (cr, cb, y)");
+    println!("   scalar  {:>8.1} ns/call", scalar_batch * 1e9);
+    for r in rows.iter() {
+        let idle = r.lanes.saturating_sub(ENCODER_BATCH);
+        println!(
+            "   {:<7} {:>8.1} ns/call   {:.2}x   ({idle} of {} lanes idle)",
+            r.name,
+            r.per_encoder_batch_s * 1e9,
+            scalar_batch / r.per_encoder_batch_s,
+            r.lanes
+        );
+    }
+
+    println!("\n== ceiling, if the encode loop batched across strips to fill the lanes");
+    println!("   scalar  {:>8.2} ns/block", scalar_per_block * 1e9);
+    for r in rows.iter() {
+        println!(
+            "   {:<7} {:>8.2} ns/block   {:.2}x",
+            r.name,
+            r.per_block_full_s * 1e9,
+            scalar_per_block / r.per_block_full_s
+        );
+    }
+
+    println!("\n== is an FPU section worth it?");
+    println!("   An in-kernel vector path must wrap each region in kernel_fpu_begin()/end().");
+    println!("   A change pays for itself only when the saving exceeds that cost:");
+    for r in rows.iter() {
+        let save_call = (scalar_batch - r.per_encoder_batch_s) * 1e9;
+        let save_block = (scalar_per_block - r.per_block_full_s) * 1e9;
+        println!(
+            "   {:<7} saves {:>7.1} ns per {ENCODER_BATCH}-block call, {:>6.2} ns per block at full lanes",
+            r.name, save_call, save_block
+        );
+        if save_call > 0.0 {
+            println!(
+                "           -> break-even needs the FPU section under {:.0} ns, or one section \
+                 amortised over {:.0} calls at a 200 ns cost",
+                save_call,
+                (200.0 / save_call).ceil()
+            );
+        } else {
+            println!("           -> no saving at this batch size; the lanes are too empty");
         }
     }
-    let scalar = t0.elapsed();
-
-    let t1 = Instant::now();
-    let mut got = [[0i32; COEFFS]; LANES];
-    for _ in 0..reps {
-        for batch in input.iter() {
-            unsafe { transform_avx2(batch, &mut got) };
-            sink += got[0][0] as i64;
-        }
-    }
-    let simd = t1.elapsed();
-
-    let total = (blocks * reps) as f64;
-    println!("\n== throughput ({total:.0} blocks each)");
-    println!(
-        "   scalar {:>8.1} ms   {:>7.1} M blocks/s",
-        scalar.as_secs_f64() * 1e3,
-        total / scalar.as_secs_f64() / 1e6
-    );
-    println!(
-        "   avx2   {:>8.1} ms   {:>7.1} M blocks/s",
-        simd.as_secs_f64() * 1e3,
-        total / simd.as_secs_f64() / 1e6
-    );
-    println!(
-        "   speedup {:.2}x",
-        scalar.as_secs_f64() / simd.as_secs_f64()
-    );
+    println!("\n   Measure the FPU section itself in-kernel; see tools/simd/fpu-cost.md.");
     if sink == i64::MIN {
         println!("unreachable {sink}");
     }

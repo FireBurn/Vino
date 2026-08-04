@@ -1,85 +1,77 @@
-# AVX2 in the encoder — what it would take
+# Vectorising the transform — measured in the kernel
 
-Feasibility notes, established 2026-08-01. **Nothing is implemented yet.**
+**Result: not worth it.** The FPU section is cheap; the transform is the problem.
 
-The encoder is the driver's dominant cost: fullscreen video is ~2.7 cores of irreducible codec work,
-and `PixelSource::px` alone is the third-hottest symbol in the kernel (13.8% of the machine on a 4K
-clip). The last big win came from removing per-coefficient branch dispatch in favour of const
-tables (2.65 → ~2.05 cores). Vectorising the transform and quantise passes is the obvious next
-lever.
+`drivers/gpu/drm/vino/simd.rs` carries optional AVX2 and AVX-512 Haar transforms and an in-kernel
+benchmark for them. The scalar transform is always present, is the default, and is the oracle: the
+benchmark checks byte-exactness against it before reporting any timing, and refuses to report a
+speedup if a single block differs. Run it with:
 
-## It is feasible, with three constraints
-
-**1. The kernel disables SIMD for Rust globally.** `arch/x86/Makefile`:
-
-```
-KBUILD_RUSTFLAGS += -Ctarget-feature=-sse,-sse2,-sse3,-ssse3,-sse4.1,-sse4.2,-avx,-avx2
+```sh
+sudo tools/hardware/vino-cycle.sh simd_bench=1
+dmesg | grep vino-simd
 ```
 
-This mirrors what C does, and for the same reason: the kernel does not preserve FPU/vector state
-across context switches unless told to. `#[target_feature(enable = "avx2")]` on an `unsafe fn` is
-**additive per function**, so it still compiles under that global disable — this is the supported
-way in, not a workaround.
+## Measured, AMD Ryzen 9 5900HX, 7.2.0-rc2-drm+
 
-**2. Vector registers need an explicit FPU section.** Both halves are already in the generated
-bindings, so no new C helper is required:
+Three runs, 131,072 blocks each; the spread across runs is 1–3 ns.
 
-```
-kernel_fpu_begin_mask(kfpu_mask: c_uint)
-kernel_fpu_end()
-```
+| | ns/block | vs scalar |
+|---|---|---|
+| scalar (the current code) | 80–83 | — |
+| AVX2, 8 lanes fed, FPU section per call | 81–82 | **1.02x** |
+| AVX2, 8 lanes fed, one FPU section for the whole run | 81–82 | 1.02x |
+| AVX2, the encoder's real batch of 3 | 218–221 | **0.37x** |
 
-What is missing is a safe Rust wrapper. An RAII guard — `begin` on construction, `end` on drop —
-belongs in `rust/kernel/` and therefore in `patches/`, not in the driver. It must be
-non-`Send`/non-`Sync` and must not allow sleeping while held; the section has to be short and
-straight-line.
+`kernel_fpu_begin()`/`kernel_fpu_end()` with an empty body: **4 ns per section.**
 
-**3. The codec is byte-exact against DLM and must stay that way.** Any vectorised path needs the
-scalar one kept as the oracle, and a differential test that runs both over the same input and
-compares output bytes. `revdi/chimera` already compiles vino's codec verbatim in userspace, which
-is where that comparison should live — no dock required, and userspace has AVX2 unconditionally.
+## What that says
 
-## Measured: 1.29x, and the batch is only three blocks
+**The FPU section is not the obstacle.** At 4 ns against a transform of ~80 ns it is noise, and
+hoisting one section around the whole run instead of opening one per call changes nothing
+measurable. The concern that motivated the original feasibility note turns out not to be the
+deciding factor.
 
-`tools/simd/haar-bench.rs` vectorises **across blocks**, one per lane, and checks byte-exactness
-before timing (the codec is byte-exact against DisplayLink's encoder, so a speedup without that is
-worthless).
+**Full-lane AVX2 is parity, not a speedup.** Every block still has to be gathered into lane-major
+order before any vector arithmetic happens: 64 pixels x 8 lanes is 512 scalar loads per call, to
+feed roughly 200 vector operations. The transpose is scalar, does not vectorise, and costs about
+what the vectorised arithmetic saves.
 
-| build | scalar | avx2 | speedup |
-|---|---|---|---|
-| `-C target-cpu=native` | 30.8 M blocks/s | 37.0 | **1.20x** |
-| kernel flags (`-sse…-avx2`) | 29.2 M blocks/s | 37.6 | **1.29x** |
+⚠ **A userspace benchmark of the same arithmetic reported 1.29x.** It is `tools/simd/haar-bench.rs`,
+and it is not wrong about the arithmetic — it is measuring a different baseline. Trust the in-kernel
+number: the kernel builds Rust with `-Ctarget-feature=-sse,…,-avx2`, links differently, and runs the
+real `video::wht::transform` rather than a copy.
 
-32768 blocks, output **identical** in both builds. The native figure is lower because the scalar
-baseline is auto-vectorised there; the kernel-flag figure is the representative one.
+**At the encoder's real shape it is 2.7x slower.** `colour_block` transforms exactly three blocks
+together — `cr`, `cb`, `y` — so five of eight lanes idle and the call costs the same as a full one.
+Filling the lanes means batching across strips, i.e. restructuring the encode loop, for a ceiling
+that has now been measured at 1.02x.
 
-⛔ **But the encoder cannot feed eight lanes.** `colour_block` transforms exactly **three** blocks
-together -- `cr`, `cb`, `y`. Five of eight lanes would sit idle, which gives back more than the
-1.29x buys. Reaching eight means batching across strips, i.e. restructuring the encode loop, not
-adding an intrinsic.
+⇒ **Do not vectorise the transform.** Both the ceiling and the realistic case are now measured in
+the kernel rather than inferred.
 
-⇒ **Recommendation: do not vectorise the transform.** The measured ceiling is small, the natural
-batch is 3, and the cost is an FPU section plus an unsafe path that has to stay byte-exact forever.
-Re-profile before revisiting: the last real win came from removing per-coefficient branch dispatch,
-not from the arithmetic.
+## Implementation notes worth keeping
 
-`FpuGuard` (`rust/kernel/fpu.rs`) is implemented and builds regardless -- it is the piece any future
-in-kernel SIMD needs, and it is useful on its own.
+**Bounds checks cost 10%.** The scratch buffers started as `KVec` and the transform ran at 89% of
+scalar; the same code with fixed-size arrays in a `KBox` runs at 102%. Sizes must be compile-time
+constants for the indexing in the inner loops to be free — but the several KB they occupy must stay
+off the stack, because the encode path already runs deep in a 16 KB kernel stack and has
+`#[inline(never)]` markers specifically to keep it there.
 
-## Suggested order
+**`#[target_feature]` is additive.** The kernel's global `-Ctarget-feature=-avx2` does not stop a
+per-function `#[target_feature(enable = "avx2")]` from compiling. That is the supported way in.
 
-1. Add the `FpuGuard` binding in `patches/`, with the safety contract documented.
-2. Prototype the vectorised transform **in chimera first**, where it can be measured and diffed
-   against the scalar output without a kernel build or hardware.
-3. Only once byte-exactness holds, port it behind a runtime `boot_cpu_has(X86_FEATURE_AVX2)` check
-   with the scalar path retained as the fallback.
-4. Measure with `tools/hardware/vino-perf.py`.
+**Feature detection** reads `boot_cpu_data.x86_capability`, which bindgen places behind an anonymous
+union (`__bindgen_anon_3`).
 
-⚠ Measure in **cores from `/proc/stat`**, not relative percentages — relative figures have twice
-produced conclusions that did not survive checking.
+## AVX-512, on a machine that has it
 
-## Where the time actually goes
+The AVX-512 path is written, compiles, and is skipped at runtime on any CPU without `avx512f` — this
+machine reports `avx2=true avx512f=false`. On a machine with it, the same command reports an
+`avx512` row beside the `avx2` one.
 
-Worth re-measuring before optimising, rather than assuming. The last profile put the cost in
-`transform` and `colour_block`, with the encoded-strip retransmit cache already at its ceiling
-(68–69% reuse against a 66.7% ideal), so it is the per-strip arithmetic that is left.
+Expect it to look worse, not better, for this workload: 16 lanes against an encoder batch of three
+leaves thirteen idle, and the transpose that already dominates the AVX2 case doubles in width. The
+interesting number is the full-lane row — whether wider lanes beat the transpose — and the licence
+behaviour, since sustained AVX-512 can drop core frequency on some parts and that would show up as
+the *scalar* baseline changing between runs.
