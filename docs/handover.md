@@ -18,7 +18,7 @@ Last updated 2026-08-04.
 | Both docks bound at once | ✅ one connector each, real EDID, native 2560x1440, 0 resets |
 | Phantom connector | ✅ fixed -- presence reads the status word on both docks |
 | Control-plane idle load | ✅ 0 unanswered CP messages per 45 s (was 22) |
-| DL7400 refresh ceiling | ⛔ lower than the hardware allows; Windows corpus has the real list |
+| DL7400 refresh ceiling | ✅ 165 Hz offered; 180 Hz excluded, it fails on Windows too |
 | Time from dock power-on to pixels | ⚠ still long; driver-side bind→connector is now ~2 s |
 
 ---
@@ -136,6 +136,25 @@ empty socket largely never answers:
 
     unanswered CP messages per 45 s   22 -> 0
 
+### The mode ceilings are per dock, and the DL7400 gets 165 Hz
+
+`64e6ae791baa`. `max_refresh_hz`, `max_head_clock_khz` and `pixel_budget` were single constants
+derived from the D6000 and applied to every dock. Each is now a profile field carrying DLM's own
+behaviour on that dock: Ridge 120 Hz / 655.35 MHz, DL7400 165 Hz / 699.50 MHz. The binding limit
+turned out to be the *clock* ceiling, not the refresh one -- the old 655.35 MHz was the range of the
+low half of the offset-70 `u32`, which only Ridge's captures ever fill.
+
+    card2-DP-2 (D6000)  36 modes, 3 at 2560x1440
+    card3-DP-6 (DL7400) 37 modes, 4 at 2560x1440
+
+⛔ **2560x1440@180 is a known-bad mode on the vendor stack too, not merely untested by us.** Under
+Windows, delivered frame records fell from 5,462 to 344 over a comparable window -- ~230/s to ~15/s,
+a 16x drop at three times the nominal rate -- while ep0 control transfers rose from 4 to 1,724, and
+the dock then entered a disconnect/reconnect loop needing a manual power cycle.
+`ChangeDisplaySettingsEx` returned `DISP_CHANGE_SUCCESSFUL` and the mode read back as 180 Hz
+throughout. **Mode acceptance is not evidence of deliverable bandwidth.** Its 714.81 MHz timing is
+above the new clock ceiling, so it is pruned on both tests.
+
 ### The DL7400's intermittent blank
 
 `f56461774810`. `probe_connector_present()` reaped one EP84 read and decoded it as the answer.
@@ -148,22 +167,13 @@ echoes the probe.
 
 ## Open, in priority order
 
-### 1. The DL7400's refresh ceiling is lower than the hardware allows
-
-All available resolutions were captured under Windows; the corpus is
-`captures/navarro-wincap-20260802/` (`out/NOTES.md`). Check the bandwidth admission and the
-mode-set words against that list rather than against Ridge-derived limits -- `dock_pixel_budget`,
-`BANDWIDTH_HEADROOM`, and `cp::mode_words`' off42/off66, whose 1080p165 discriminator is still
-unproven. ⚠ One Windows capture put 1440p@180 into a reconnect loop, so raise the ceiling against
-the captured list, not past it.
-
-### 2. Time from dock power-on to pixels
+### 1. Time from dock power-on to pixels
 
 Driver-side bind to connector is now ~2 s and the idle control plane is quiet, so what remains is
 before or after vino: dock firmware boot, USB enumeration, and userspace re-enabling the output.
 Measure the whole path before changing anything in the driver.
 
-### 3. Both docks bound: the D6000's control session can lose the overlap
+### 2. Both docks bound: the D6000's control session can lose the overlap
 
 With the DL7400 also probing, the D6000 has been seen going straight to
 `control session failed after 3 attempts (ETIMEDOUT)` while Navarro reaches `4/4 head(s)
@@ -176,7 +186,7 @@ fatal.
 under `/sys/bus/usb/devices/`. `tools/hardware/vino-hold-off.sh <6006|7000>` keeps vino off one dock
 across re-enumerations so the other can be measured alone.
 
-### 4. Ring-slot shortfall (DL7400) — fix committed, **never verified**
+### 3. Ring-slot shortfall (DL7400) — fix committed, **never verified**
 
 `029c2bd6c747`. The dock rotates **three** slots (`ring_phase` = `seq0 % 3`), but the keyframe
 presentation count was hardcoded 2 ("must reach both dock buffers") and `DAMAGE_REPEATS` was 3,
@@ -199,7 +209,7 @@ Measure by counting **transmissions per distinct payload per position** and requ
 depth. Verification needs one delta-heavy capture; three attempts were confounded (two-dock race,
 uniform on-screen content, stale sysfs).
 
-### 5. D6000 EP02 queue flush
+### 4. D6000 EP02 queue flush
 
 `610754e7a62c`, `dbe004a2d6be`'s revert. `send_cp_setup` ended with
 `queue.flush(dev.io(), timeout())?`; `timeout()` is 1000 ms, matching the measured 1.06 s between
