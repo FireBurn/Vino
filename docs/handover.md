@@ -13,13 +13,14 @@ Last updated 2026-08-04.
 
 | | |
 |---|---|
-| DL7400 (Navarro, `17e9:7000`) draws a picture | ✅ connector `connected` + `enabled`, EP08 draining |
-| DL7400 codec correctness | ✅ **proven**, twice, independently |
-| Codec geometry shared between docks | ✅ **fixed** -- passed as a value, statics deleted |
-| D6000 (Ridge) control session | ✅ **fixed** -- completes, EDID reads, connector comes up |
-| D6000 picture | ⛔ takes ONE video frame, then the endpoint stops draining |
-| D6000 dock health | ⛔ **wedged; needs a physical power cycle** (see below) |
-| Two docks bound at once | ⛔ D6000's control session times out while Navarro brings up |
+| DL7400 (Navarro) draws a picture | ✅ |
+| **DL7400 corruption** | ✅ **FIXED, user-confirmed clean** (`6e3b2862e40d`) |
+| Codec geometry shared between docks | ✅ fixed -- passed as a value, statics deleted |
+| D6000 (Ridge) control session | ✅ fixed -- completes, EDID reads, connector comes up |
+| D6000 frame framing | ✅ root-caused + fixed; frame is byte-exact to the proven size again |
+| **D6000 picture** | ⛔ dock takes the first frame, then stops draining EP08 |
+| D6000 warm re-attach | ⛔ **one bring-up per power cycle**; nothing in software clears it |
+| Two docks bound at once | ⚠ D6000's control session loses the bring-up overlap |
 
 ---
 
@@ -107,7 +108,11 @@ Ridge); the only other edit is a doc comment.
 
 ### 0. ⭐ ROOT-CAUSED: Ridge frames were reordered by the DL7400's permutation
 
-`139bf929a013`. **Fix committed, HW-verification blocked on the power cycle above.**
+`139bf929a013`. **Fix committed and confirmed by byte count.** With it in, the D6000's first training frame is
+**205,696 bytes** -- exactly the size `docs/` records for a proven Ridge ARM+all-black frame. It was
+**207,072** before, and the 1,376-byte difference was the permutation reordering records across
+band boundaries. ⛔ The dock nevertheless still stops draining EP08 after that frame, so the
+permutation was necessary and is not sufficient.
 
 `NAVARRO_PROLOGUE_ROWS` / `NAVARRO_ORDINARY_ROWS` are DLM's measured producer completion order for
 a 2560x1440 *Navarro* surface -- 20 strips across x 180 bands, because Navarro strips are 128x8.
@@ -163,6 +168,49 @@ a dock driven at a fallback mode behaved differently.
 ⚠ Do **not** re-chase codec geometry (now a value, corruption impossible), the `send_init!` burst
 (gated), `open_in`'s Dl3Cmac (gated), `send_cp_reply`'s counter loop (gated), or Ridge's EP84 queue
 depth (already a profile field, 4).
+
+### 0a. ⛔ The D6000 accepts exactly one video frame, byte-exact, and then stops
+
+The live fault, measured on a clean first-after-power-cycle load with the DL7400 held off:
+
+```
+KMS CRTC enable -- head 0 display ON, mode 2560x1440@120 (scanout begins)
+   ... 159 ms ...
+head 0 startup frame submitted after 0 ms (205696 bytes)
+head=0 training complete (1 presentations, 0 ms)
+   ... 19 ms ...
+head=0 endpoint=0x08 stopped accepting video: GET_STATUS=0x0000 halt=0
+KMS CRTC disable -- head 0 display OFF (scanout stopped)
+```
+
+The frame is now the historically proven one, so **this is not the frame**. `halt=0`, so the
+endpoint is not stalled. None of the frame's four 64-KiB URBs complete in the 19 ms before the next
+presentation is attempted, so the dock stops consuming immediately, within the first frame.
+
+⇒ Look at what surrounds the write, not at what is in it: the mode-set bracket
+(`modeset_bracket_post_open` / `_post_close`), `COLD_RIDGE`'s timeline offsets, and whether the
+stream is actually open when the first bytes go out. DLM starts video ~110 ms after its mode set
+and closes the bracket ~13 ms later; vino is at 159 ms and closes after.
+
+### 0c. ⛔ The D6000 accepts exactly ONE bring-up per power cycle
+
+`ef6cef0a4945`. The first bring-up after power succeeds; every one after it NAKs `init_0` forever
+(`control-session attempt 1/3 failed (ETIMEDOUT)` ~1 s after bind, before any session exists). The
+dock answers every control request throughout and reports `interface state` as 28 zero bytes; it
+simply will not drain EP02. **Only unplugging its power clears it.**
+
+This was invisible while the dock re-enumerated every few seconds -- that cleared it as a side
+effect. It makes every D6000 experiment cost one power cycle, so plan them accordingly.
+
+⛔ Tried and does **not** work, each built and measured: driving vendor request `0x24` back to
+wValue 0 before claiming (`vendor_state_reset`); CLEAR_FEATURE(ENDPOINT_HALT) on EP02/EP84 at
+bring-up (`ctrl_clear_halt`); and `USBDEVFS_RESET` on the whole device followed by a rebind. The
+port reset completes and `init_0` still times out ⇒ this is dock **firmware** state, not host-side
+endpoint or enumeration state.
+
+⭐ The remaining candidate: vino never tells the dock its session is over. `disconnect()` reaches
+`shutdown()` and sends no CP teardown. One frida attach on a DLM **shutdown** would name the
+message.
 
 ### 0b. Both docks bound: the D6000's control session loses the overlap
 
