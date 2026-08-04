@@ -168,6 +168,14 @@ pub(crate) struct EvdiDrmData {
     /// Cleared by default: a client that has not opted in composites the pointer into the primary
     /// framebuffer itself and must not also receive it out of band.
     pub(crate) cursor_events: AtomicBool,
+    /// The mode announced by the last [`EvdiCrtc::atomic_enable`], as `(hdisplay, vdisplay,
+    /// vrefresh)`, or `None` while the CRTC is off.
+    ///
+    /// MODE_CHANGED is an edge, and a client that connects to a card the compositor has *already*
+    /// configured never sees it -- it waits forever for a mode that was announced before it
+    /// attached, and its display stays dark. Keeping the current mode lets CONNECT replay it.
+    #[pin]
+    announced_mode: Mutex<Option<(i32, i32, i32)>>,
 }
 
 impl EvdiDrmData {
@@ -182,7 +190,28 @@ impl EvdiDrmData {
             vblank <- new_spinlock!(None),
             color <- new_mutex!(None),
             cursor_events: AtomicBool::new(false),
+            announced_mode <- new_mutex!(None),
         })
+    }
+
+    /// Tell a client that has just connected what the display is already doing.
+    ///
+    /// Called from CONNECT, after the caller is registered as the event receiver. Silent when the
+    /// CRTC is off, which is the ordinary first-connect case: the mode then arrives from
+    /// [`EvdiCrtc::atomic_enable`] as usual.
+    pub(crate) fn replay_state(&self) {
+        let Some((hdisplay, vdisplay, vrefresh)) = *self.announced_mode.lock() else {
+            return;
+        };
+        crate::painter::notify_dpms(self, crate::painter::DPMS_ON);
+        crate::painter::notify_mode_changed(
+            self,
+            hdisplay,
+            vdisplay,
+            vrefresh,
+            32,
+            drm::fourcc::XRGB8888,
+        );
     }
 
     /// Stop timer activity and release prepared scanout state before unbind.
@@ -506,12 +535,15 @@ impl crtc::DriverCrtc for EvdiCrtc {
         let data: &EvdiDrmData = dev;
         let new = commit.take_new_state();
         let mode = new.mode();
+        let (hdisplay, vdisplay, vrefresh) =
+            (mode.hdisplay() as i32, mode.vdisplay() as i32, mode.vrefresh());
+        *data.announced_mode.lock() = Some((hdisplay, vdisplay, vrefresh));
         crate::painter::notify_dpms(data, crate::painter::DPMS_ON);
         crate::painter::notify_mode_changed(
             data,
-            mode.hdisplay() as i32,
-            mode.vdisplay() as i32,
-            mode.vrefresh(),
+            hdisplay,
+            vdisplay,
+            vrefresh,
             32,
             drm::fourcc::XRGB8888,
         );
@@ -526,6 +558,7 @@ impl crtc::DriverCrtc for EvdiCrtc {
         let data: &EvdiDrmData = dev;
         let _ = data.set_scanout(None);
         *data.color.lock() = None;
+        *data.announced_mode.lock() = None;
         crate::painter::notify_dpms(data, crate::painter::DPMS_OFF);
     }
 

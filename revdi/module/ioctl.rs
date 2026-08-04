@@ -50,6 +50,10 @@ pub(crate) fn connect(
         if !edid.is_empty() {
             data.set_edid(dev, edid);
         }
+        // Tell this client what the display is already doing. A card the compositor configured
+        // before anyone connected -- a client restarting against a card that outlived it, most
+        // obviously -- has already sent its MODE_CHANGED, and nothing would ever send another.
+        data.replay_state();
     } else {
         *file.inner().connection.lock() = None;
         // Drop the EDID so the connector reports disconnected until the next CONNECT.
