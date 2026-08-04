@@ -13,24 +13,25 @@ Last updated 2026-08-04.
 
 | | |
 |---|---|
-| DL7400 (Navarro) draws a picture | ✅ |
-| **DL7400 corruption** | ✅ **FIXED, user-confirmed clean** (`6e3b2862e40d`) |
-| Codec geometry shared between docks | ✅ fixed -- passed as a value, statics deleted |
-| D6000 (Ridge) control session | ✅ fixed -- completes, EDID reads, connector comes up |
-| D6000 frame framing | ✅ root-caused + fixed; frame is byte-exact to the proven size again |
-| **D6000 picture** | ⛔ dock takes the first frame, then stops draining EP08 |
-| D6000 warm re-attach | ⛔ **one bring-up per power cycle**; nothing in software clears it |
-| Two docks bound at once | ⚠ D6000's control session loses the bring-up overlap |
+| DL7400 (Navarro) picture | ✅ clean, user-confirmed |
+| D6000 (Ridge) picture | ✅ driving video, user-confirmed |
+| Both docks bound at once | ✅ one connector each, real EDID, native 2560x1440, 0 resets |
+| Phantom connector | ✅ fixed -- presence reads the status word on both docks |
+| Control-plane idle load | ✅ 0 unanswered CP messages per 45 s (was 22) |
+| DL7400 refresh ceiling | ⛔ lower than the hardware allows; Windows corpus has the real list |
+| Time from dock power-on to pixels | ⚠ still long; driver-side bind→connector is now ~2 s |
 
 ---
 
-## ⛔ Do this first: power-cycle the D6000
+## ⚠ Measurement correction: usbmon completions
 
-After ~20 firmware resets in one session the dock stopped answering at all. It now fails
-`control-session attempt 1/3 (ETIMEDOUT)` about a second after bind, *before*
-`plaintext session initialized`, i.e. in `bring_up()`'s first control transfer -- a failure mode it
-does not otherwise show. Unplug its power for ten seconds. Any D6000 measurement taken without
-doing this is measuring the wedge, not the driver.
+`tools/hardware/capture-usbmon-session.py` records **`S` (submit) for OUT endpoints and `C`
+(callback) for IN endpoints only**. "Zero completions on EP08" is therefore what a *healthy* dock
+looks like through this tool, and any earlier conclusion drawn from it is void.
+
+⛔ Do not use completion counts to decide whether video is flowing. Use **bytes submitted on the
+video endpoints over a window with forced damage** -- the protocol is damage-driven, so a static
+desktop legitimately sends kilobytes.
 
 ---
 
@@ -104,242 +105,78 @@ Ridge); the only other edit is a doc comment.
 
 ---
 
+## ✅ Also fixed on 2026-08-04
+
+### Ridge's frames were reordered by the DL7400's producer permutation
+
+`139bf929a013`. `NAVARRO_PROLOGUE_ROWS`/`NAVARRO_ORDINARY_ROWS` were selected on
+`strips.len() == 3600` alone, and Ridge at 2560x1440 is *also* exactly 3600 strips (40x90, against
+Navarro's 20x180), so every D6000 frame was reordered against a grid half its real width with no
+change in byte count. Fixing it put the frame back to 205,696 B, the proven Ridge ARM+black size.
+
+### Ridge's H' computation hold
+
+`e6171c1f60e7`. `498a10040294` gated the post-`AKE_No_Stored_km` hold and drain on
+`per_head_onehot`, so Ridge sent `LC_Init` while the receiver was still computing H'.
+
+    before   1/2 head(s) authenticated, head 1 "no downstream sink", one connector
+    after    2/2 head(s) authenticated, both connectors, zero re-enumerations
+
+### The phantom connector, and one presence rule for both docks
+
+`bd7cf0f48e42`. Both platforms answer the presence probe with the same status word --
+`0x00271105` occupied, `0x00200105` empty, bit `0x1000` being presence. Ridge keyed on *which
+handler* replied instead, which is `id=0x44` either way, so its empty head read as present and came
+up as an enabled `DP-3` with no EDID and a `1920x1440` fallback list. `presence_from_status` and the
+silence-counting removal path are gone with it.
+
+The absent-head re-engage now stands down once the probe has answered for a connector. It exists to
+recover a deferred discovery, not to poll an empty socket, and each attempt is seven CP messages an
+empty socket largely never answers:
+
+    unanswered CP messages per 45 s   22 -> 0
+
+### The DL7400's intermittent blank
+
+`f56461774810`. `probe_connector_present()` reaped one EP84 read and decoded it as the answer.
+Connectors are probed back to back, so a late reply was consumed by the *next* connector's probe and
+attributed to the wrong head -- head 0 and head 1 traded `present`, the live output was dropped, and
+a sink re-engagement brought it back seconds later. It now waits for the reply whose inner counter
+echoes the probe.
+
+---
+
 ## Open, in priority order
 
-### 0. ⭐ ROOT-CAUSED: Ridge frames were reordered by the DL7400's permutation
+### 1. The DL7400's refresh ceiling is lower than the hardware allows
 
-`139bf929a013`. **Fix committed and confirmed by byte count.** With it in, the D6000's first training frame is
-**205,696 bytes** -- exactly the size `docs/` records for a proven Ridge ARM+all-black frame. It was
-**207,072** before, and the 1,376-byte difference was the permutation reordering records across
-band boundaries. ⛔ The dock nevertheless still stops draining EP08 after that frame, so the
-permutation was necessary and is not sufficient.
+All available resolutions were captured under Windows; the corpus is
+`captures/navarro-wincap-20260802/` (`out/NOTES.md`). Check the bandwidth admission and the
+mode-set words against that list rather than against Ridge-derived limits -- `dock_pixel_budget`,
+`BANDWIDTH_HEADROOM`, and `cp::mode_words`' off42/off66, whose 1080p165 discriminator is still
+unproven. ⚠ One Windows capture put 1440p@180 into a reconnect loop, so raise the ceiling against
+the captured list, not past it.
 
-`NAVARRO_PROLOGUE_ROWS` / `NAVARRO_ORDINARY_ROWS` are DLM's measured producer completion order for
-a 2560x1440 *Navarro* surface -- 20 strips across x 180 bands, because Navarro strips are 128x8.
-`frame_records_with_boundary` selected them on `strips.len() == 3600` alone.
+### 2. Time from dock power-on to pixels
 
-⭐ **Ridge at 2560x1440 also has exactly 3600 strips**: 40 across x 90 bands, its strips being
-64x16. So every D6000 frame at its usual mode was reordered by the other dock's permutation,
-indexed `y * STRIPS_ACROSS + x` with `STRIPS_ACROSS` hardcoded to **20** against a **40**-wide
-grid. Identical byte count, thoroughly scrambled coordinates -- which is why no length or record
-check ever caught it.
+Driver-side bind to connector is now ~2 s and the idle control plane is quiet, so what remains is
+before or after vino: dock firmware boot, USB enumeration, and userspace re-enabling the output.
+Measure the whole path before changing anything in the driver.
 
-Both black training carriers reach that code on **every** dock: `black_frame_ep08` passes
-`Some(false)` and `black_frame_ep08_ordinary` passes `Some(true)`, unconditionally. The strip count
-was the only guard and Ridge's most common mode walks straight through it. The guard is now the
-Navarro layout itself (interlaced bands + a 128-px strip).
+### 3. Both docks bound: the D6000's control session can lose the overlap
 
-This is the "no pixels at all" half of the bisected regression, and `498a10040294` is exactly the
-commit that introduced these tables -- consistent with the bisect and with the parent still
-resetting for the unrelated phantom-head-1 reason.
+With the DL7400 also probing, the D6000 has been seen going straight to
+`control session failed after 3 attempts (ETIMEDOUT)` while Navarro reaches `4/4 head(s)
+authenticated` in the same window. It is not shared driver state -- the only module-level statics
+left are read-only tables, the two `ColdTimeline`s and the encode workqueue -- so look at the USB
+layer, or stagger the two bring-ups. The eight-attempt backoff makes it recoverable rather than
+fatal.
 
-**How it presented** (D6000 alone, `debug=1`):
+⚠ Both docks change bus path on every re-enumeration. Resolve them from `idProduct` (`7000`/`6006`)
+under `/sys/bus/usb/devices/`. `tools/hardware/vino-hold-off.sh <6006|7000>` keeps vino off one dock
+across re-enumerations so the other can be measured alone.
 
-
-
-Measured at HEAD with all four gates off, D6000 alone, `debug=1`:
-
-```
-KMS CRTC enable -- head 0 display ON, mode 2560x1440@120 (scanout begins)
-head=0 prompt-training parameter map 0 B
-head=0 endpoint=0x08 persistent video queue opened by prompt training
-head 0 startup frame submitted after 0 ms (207072 bytes)
-head=0 training complete (1 presentations, 0 ms)
-   ... 36 ms ...
-head=0 prompt-training parameter map 0 B
-head=0 endpoint=0x08 stopped accepting video: GET_STATUS=0x0000 halt=0
-   ... 92 ms ...
-usb 2-2.1: USB disconnect
-```
-
-Only 70 us separate "queue opened" from "startup frame submitted", so those URBs were *queued*, not
-completed. 36 ms later the next presentation cannot fit a whole frame -- `can_send_n()` false -- and
-the dock re-enumerates. `halt=0`: the endpoint is not stalled, the dock simply stops consuming.
-
-Only 70 us separate "queue opened" from "startup frame submitted", so those URBs were *queued*, not
-completed; 36 ms later `can_send_n(4)` is false against an eight-deep queue, so **none of the first
-frame's four URBs had completed**. The dock took the first transfer and then stopped, exactly as it
-would for a frame whose records name coordinates it cannot place.
-
-⚠ Ridge's 3600-strip coincidence is only at 2560x1440. Any other Ridge mode has a different strip
-count, misses the guard and is framed correctly -- which is why this looked mode-specific and why
-a dock driven at a fallback mode behaved differently.
-
-⚠ Do **not** re-chase codec geometry (now a value, corruption impossible), the `send_init!` burst
-(gated), `open_in`'s Dl3Cmac (gated), `send_cp_reply`'s counter loop (gated), or Ridge's EP84 queue
-depth (already a profile field, 4).
-
-### 0. ✅ Ridge got its H' hold back -- both heads authenticate and both connectors come up
-
-`e6171c1f60e7`. `AKE_No_Stored_km` starts the receiver's H' calculation, and the parent of
-`498a10040294` held `HDCP_HPRIME_WAIT_US` after it and then drained EP84 **for every dock** before
-letting `LC_Init` (i == 3) go out. That commit gated the whole block on `profile.per_head_onehot`,
-so Ridge silently lost both the hold and the drain: it sent LC_Init while the receiver was still
-computing and picked up `fresh_rrx` only if it happened to land in an unrelated drain.
-
-Measured on the D6000, before and after, same power cycle:
-
-| | before | after |
-|---|---|---|
-| per-head auth | `1/2 head(s) authenticated` | **`2/2`** |
-| head 1 | `no downstream sink (no AKE_Send_Rrx); skipping` | **`monitor connected`** |
-| connectors | one, and only after a re-engage | **both `connected` + `enabled`** |
-| re-enumerations | several per minute | **zero** |
-
-So the head that "had no downstream sink" had one all along -- vino was asking before the receiver
-had answered. This is a **third** Ridge regression from `498a10040294`, alongside the `send_init!`
-burst and the record permutation, and it was costing the dock a whole connector. It also makes the
-dock iterable again, which is what let the bisect below run at all.
-
-### 0a. ⛔ Still no picture: the dock accepts ZERO video bytes
-
-⭐⭐⭐ **`a13775e0cdc5` is a working D6000 reference on today's kernel.**
-
-⭐⭐⭐ **Measured 2026-08-04, and it collapses the search: at `a13775e0cdc5` -- the user's bisect
-"good" anchor, built with `tools/hardware/vino-at.sh` so bindings, DRM core and the HDR work stay at
-HEAD -- the D6000 comes up `connected` **and** `enabled`, with zero re-enumerations and zero
-`stopped accepting video`.** The dock and the monitor are fine. The regression is in the driver, and
-there is a revision on this very kernel that demonstrates it.
-
-⚠ At `c57634406a47` (the bad commit's parent) it already re-enumerates, for the unrelated
-phantom-head-1 reason above. So there are **two** Ridge regressions between the anchor and HEAD, and
-the user's bisect separated only the second: "pixels while restarting a lot" vs "no pixels at all".
-
-**What HEAD does, on the wire.** A usbmon capture of a bring-up, filtered to the D6000's devnum:
-
-```
-S st=-115 len= 65536   02000000 08000000 00000000 08000600 ...   <- frame 0, ARM record first
-S st=-115 len= 65536
-S st=-115 len= 65536
-S st=-115 len=  9088                                             (205,696 B total)
-S st=-115 len= 65536   frame 1 ...
-S st=-115 len=  6528
-```
-
-**Eight submits, zero completions.** Not one video byte is accepted. This is not a byte count and
-not a transfer count -- `video_xfer`/`video_records` cannot bisect something that never starts. The
-stream is simply never open, and `GET_STATUS` says `halt=0`, so the endpoint is not stalled either.
-
-⭐ And the control plane says so: `send_cp_reply` now names the inner sub of an unanswered message,
-and the one the dock ignores is **`id=0x16 sub=0x2e`** -- a stream/display marker from the mode-set
-bracket (`modeset_bracket_post_open` sends `2f(1)`, `2e(3)`, `2f(1)`, `2e(3)`, `2f(1)`, `2e(0)`).
-The dock answers the earlier markers and then goes silent.
-
-After the H' fix vino submits **24-26 MB per endpoint** across both heads and still gets **zero**
-completions, so the dock is refusing the stream outright, not throttling it.
-
-⛔ `wait_perhead_push` is **eliminated**: all four of its sites are already behind
-`profile.per_head_onehot`, so Ridge never reaches them. What Ridge *lost* at those sites was the
-plain `drain_ep84` that used to follow -- that is what `e6171c1f60e7` restores.
-
-⭐ **The bisect, now that the dock survives it** (`vino-at.sh` + a verdict of "a connector comes up
-and no `stopped accepting video`"):
-
-```
-a13775e0cdc5  (anchor)  GOOD   sessions=1 stalls=0 resets=0 connected=yes enabled=yes
-0db19e6bb3e4  (26/52)   GOOD   sessions=2 stalls=0 resets=1 connected=yes enabled=yes
-01f2c49347bd  (27/52)   BAD    connected=no          (reproduced twice)
-c57634406a47  (29/52)   BAD    connected=no
-```
-
-⚠ **And `01f2c49347bd` touches nothing but `COLD_NAVARRO`** -- it replaces the DL7400's cold
-timeline with one measured from a real cold bring-up: `h1_mode` 757 -> 10 ms, video at +122/+272
-instead of +1116/+1245, i.e. roughly **nine times faster** and with the heads in the opposite order.
-Ridge selects `COLD_RIDGE`, so no Ridge code path changed.
-
-⇒ The most likely reading is that the D6000 is **losing bus contention** to a Navarro activation
-that became nine times more aggressive at that commit -- the same shape as 0b below. Testing it
-needs the DL7400 held off *and* a dock that has just been power-cycled; the one attempt made scored
-`sessions=0` because the dock had wedged by then.
-
-⛔ Do not simply run `git bisect`: see 0c. A wedged dock fails at *every* revision, and it wedges
-after roughly two bring-ups, so a bisect silently reports "bad" for revisions that are good. Two
-steps were run this way and both readings are worthless -- `a13775e0cdc5` itself scored
-`sessions=0` on the third pass. Each bisect step needs a dock that has just re-enumerated.
-
-### 0c. ⛔ The D6000 accepts exactly ONE bring-up per power cycle
-
-`ef6cef0a4945`. The first bring-up after power succeeds; every one after it NAKs `init_0` forever
-(`control-session attempt 1/3 failed (ETIMEDOUT)` ~1 s after bind, before any session exists). The
-dock answers every control request throughout and reports `interface state` as 28 zero bytes; it
-simply will not drain EP02. **Only unplugging its power clears it.**
-
-This was invisible while the dock re-enumerated every few seconds -- that cleared it as a side
-effect. It makes every D6000 experiment cost one power cycle, so plan them accordingly.
-
-⛔ Tried and does **not** work, each built and measured: driving vendor request `0x24` back to
-wValue 0 before claiming (`vendor_state_reset`); CLEAR_FEATURE(ENDPOINT_HALT) on EP02/EP84 at
-bring-up (`ctrl_clear_halt`); and `USBDEVFS_RESET` on the whole device followed by a rebind. The
-port reset completes and `init_0` still times out ⇒ this is dock **firmware** state, not host-side
-endpoint or enumeration state.
-
-⭐ The remaining candidate: vino never tells the dock its session is over. `disconnect()` reaches
-`shutdown()` and sends no CP teardown. One frida attach on a DLM **shutdown** would name the
-message.
-
-### 0b. Both docks bound: the D6000's control session loses the overlap
-
-With the DL7400 also probing, the D6000 goes straight to
-`control session failed after 3 attempts (ETIMEDOUT)` while Navarro reaches
-`4/4 head(s) authenticated` in the same window. Alone (with the DL7400 held unbound) it completes.
-
-⛔ It is **not** shared driver state: after `a799158705f8` the only remaining module-level statics in
-the driver are read-only tables, the two `ColdTimeline`s and the encode workqueue. Look at the USB
-layer -- both docks are on bus 2 behind the same xHCI -- or stagger the two bring-ups.
-
-⚠ Both docks change bus path on every re-enumeration. Resolve them at runtime from `idProduct`
-(`7000`/`6006`) under `/sys/bus/usb/devices/`. `tools/hardware/vino-hold-off.sh <6006|7000>` keeps
-vino off one dock -- re-unbinding across re-enumerations -- so the other can be measured alone.
-
-
-### 1. ✅ FIXED: the DL7400's intermittent blank was a mis-attributed presence reply
-
-`f56461774810`. `probe_connector_present()` reaped exactly one EP84 read after its write and decoded
-it as the answer. The connectors are probed back to back, so a reply that arrived a moment late --
-or any unprompted push -- was consumed by the *next* connector's probe and its status word
-attributed to the wrong head. From the journal, monitor on socket 1 only:
-
-```
-01:18:02  head 1 -> present=true     (head 1 is EMPTY)
-01:18:22  head 0 -> present=false    (head 0 has the monitor)
-01:18:22  head 0 monitor disconnected        <- live output dropped
-01:18:23  head 1 -> present=true
-01:18:27  head 0 monitor connected after sink re-engagement
-```
-
-Exactly one of the two is ever "present", which is the true state; **which head it lands on
-alternates**. The dock never changed its mind. It now waits for the reply whose inner counter echoes
-the probe, and a round that never sees its own echo returns `None` -- which the caller already
-treats as "this poll learned nothing" rather than as an unplug.
-
-⇒ This is the "disconnects with the new dock". ⚠ Not the same thing as the three genuine
-re-enumerations of `usb 2-1.3` earlier in the session; those stopped once the D6000's reset loop
-did, and none has occurred since.
-
-### 1b. The DL7400's connector, when both docks are bound
-
-⚠ **Superseded in part on 2026-08-04.** With both docks bound and the geometry fix in, the DL7400's
-`DP-2` reads `connected` **and** `enabled`, the control keepalive runs, EP08 drains and no
-`stopped accepting video` appears. So the "reads `disconnected`, no output" symptom did not
-reproduce. What is still unconfirmed is whether the panel shows the *right* pixels -- that needs a
-forced-damage measurement (trap 3 below), which a headless shell cannot produce.
-
-The old measurement, kept because the mechanism is real and may return: its head 0 presence
-genuinely flips. The dock answers `status=0x00271105` (bit 0x1000 set, present) and later
-`status=0x00200105` (clear) with the monitor physically attached throughout, so
-`presence_from_status` correctly reports it gone and DRM follows. `detect()` returns Connected on
-`cached_edids[head].is_some() || heads_present & (1<<head)`, and the re-engage path does call
-`set_connected(h)`, so something clears it afterwards -- most likely the presence watcher calling
-`set_disconnected`.
-
-⚠ The presence log fires **only when the reply changes**. An absence of lines for a dock means its
-answers are steady, NOT that it is unprobed. That inference was made and was wrong.
-
-⚠ Card numbering is not stable and is not a dock identity. Across today's reloads the D6000 was
-`card2` then `card3` then `card2`. Resolve a card to a dock through
-`/sys/class/drm/cardN/device` -> the USB path -> `idProduct`.
-
-### 2. Ring-slot shortfall (DL7400) — fix committed, **never verified**
+### 4. Ring-slot shortfall (DL7400) — fix committed, **never verified**
 
 `029c2bd6c747`. The dock rotates **three** slots (`ring_phase` = `seq0 % 3`), but the keyframe
 presentation count was hardcoded 2 ("must reach both dock buffers") and `DAMAGE_REPEATS` was 3,
@@ -362,7 +199,7 @@ Measure by counting **transmissions per distinct payload per position** and requ
 depth. Verification needs one delta-heavy capture; three attempts were confounded (two-dock race,
 uniform on-screen content, stale sysfs).
 
-### 3. D6000 EP02 queue flush
+### 5. D6000 EP02 queue flush
 
 `610754e7a62c`, `dbe004a2d6be`'s revert. `send_cp_setup` ended with
 `queue.flush(dev.io(), timeout())?`; `timeout()` is 1000 ms, matching the measured 1.06 s between
