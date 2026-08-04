@@ -169,28 +169,49 @@ a dock driven at a fallback mode behaved differently.
 (gated), `open_in`'s Dl3Cmac (gated), `send_cp_reply`'s counter loop (gated), or Ridge's EP84 queue
 depth (already a profile field, 4).
 
-### 0a. ⛔ The D6000 accepts exactly one video frame, byte-exact, and then stops
+### 0a. ⛔ The D6000's dock refuses EVERY video byte -- and `a13775e0cdc5` is a working reference
 
-The live fault, measured on a clean first-after-power-cycle load with the DL7400 held off:
+⭐⭐⭐ **Measured 2026-08-04, and it collapses the search: at `a13775e0cdc5` -- the user's bisect
+"good" anchor, built with `tools/hardware/vino-at.sh` so bindings, DRM core and the HDR work stay at
+HEAD -- the D6000 comes up `connected` **and** `enabled`, with zero re-enumerations and zero
+`stopped accepting video`.** The dock and the monitor are fine. The regression is in the driver, and
+there is a revision on this very kernel that demonstrates it.
+
+⚠ At `c57634406a47` (the bad commit's parent) it already re-enumerates, for the unrelated
+phantom-head-1 reason above. So there are **two** Ridge regressions between the anchor and HEAD, and
+the user's bisect separated only the second: "pixels while restarting a lot" vs "no pixels at all".
+
+**What HEAD does, on the wire.** A usbmon capture of a bring-up, filtered to the D6000's devnum:
 
 ```
-KMS CRTC enable -- head 0 display ON, mode 2560x1440@120 (scanout begins)
-   ... 159 ms ...
-head 0 startup frame submitted after 0 ms (205696 bytes)
-head=0 training complete (1 presentations, 0 ms)
-   ... 19 ms ...
-head=0 endpoint=0x08 stopped accepting video: GET_STATUS=0x0000 halt=0
-KMS CRTC disable -- head 0 display OFF (scanout stopped)
+S st=-115 len= 65536   02000000 08000000 00000000 08000600 ...   <- frame 0, ARM record first
+S st=-115 len= 65536
+S st=-115 len= 65536
+S st=-115 len=  9088                                             (205,696 B total)
+S st=-115 len= 65536   frame 1 ...
+S st=-115 len=  6528
 ```
 
-The frame is now the historically proven one, so **this is not the frame**. `halt=0`, so the
-endpoint is not stalled. None of the frame's four 64-KiB URBs complete in the 19 ms before the next
-presentation is attempted, so the dock stops consuming immediately, within the first frame.
+**Eight submits, zero completions.** Not one video byte is accepted. This is not a byte count and
+not a transfer count -- `video_xfer`/`video_records` cannot bisect something that never starts. The
+stream is simply never open, and `GET_STATUS` says `halt=0`, so the endpoint is not stalled either.
 
-⇒ Look at what surrounds the write, not at what is in it: the mode-set bracket
-(`modeset_bracket_post_open` / `_post_close`), `COLD_RIDGE`'s timeline offsets, and whether the
-stream is actually open when the first bytes go out. DLM starts video ~110 ms after its mode set
-and closes the bracket ~13 ms later; vino is at 159 ms and closes after.
+⭐ And the control plane says so: `send_cp_reply` now names the inner sub of an unanswered message,
+and the one the dock ignores is **`id=0x16 sub=0x2e`** -- a stream/display marker from the mode-set
+bracket (`modeset_bracket_post_open` sends `2f(1)`, `2e(3)`, `2f(1)`, `2e(3)`, `2f(1)`, `2e(0)`).
+The dock answers the earlier markers and then goes silent.
+
+**The method that will converge**: diff HEAD against `a13775e0cdc5` for everything that touches
+Ridge's *video open* -- the per-head HDCP sequencing is the largest ungated candidate
+(`wait_perhead_push` replaced `drain_ep84` at four sites in `send_cp_setup`; two of them, the
+`AKE_SEND_H_PRIME` and pairing-info waits, run for **both** docks), then
+`b837e4ea9333` "serialize queues by physical endpoint" and `40568f66f3ed` "Navarro authenticates the
+link once, not once per head".
+
+⛔ Do not simply run `git bisect`: see 0c. A wedged dock fails at *every* revision, and it wedges
+after roughly two bring-ups, so a bisect silently reports "bad" for revisions that are good. Two
+steps were run this way and both readings are worthless -- `a13775e0cdc5` itself scored
+`sessions=0` on the third pass. Each bisect step needs a dock that has just re-enumerated.
 
 ### 0c. ⛔ The D6000 accepts exactly ONE bring-up per power cycle
 
@@ -227,7 +248,31 @@ layer -- both docks are on bus 2 behind the same xHCI -- or stagger the two brin
 vino off one dock -- re-unbinding across re-enumerations -- so the other can be measured alone.
 
 
-### 1. The DL7400's connector, when both docks are bound
+### 1. ✅ FIXED: the DL7400's intermittent blank was a mis-attributed presence reply
+
+`f56461774810`. `probe_connector_present()` reaped exactly one EP84 read after its write and decoded
+it as the answer. The connectors are probed back to back, so a reply that arrived a moment late --
+or any unprompted push -- was consumed by the *next* connector's probe and its status word
+attributed to the wrong head. From the journal, monitor on socket 1 only:
+
+```
+01:18:02  head 1 -> present=true     (head 1 is EMPTY)
+01:18:22  head 0 -> present=false    (head 0 has the monitor)
+01:18:22  head 0 monitor disconnected        <- live output dropped
+01:18:23  head 1 -> present=true
+01:18:27  head 0 monitor connected after sink re-engagement
+```
+
+Exactly one of the two is ever "present", which is the true state; **which head it lands on
+alternates**. The dock never changed its mind. It now waits for the reply whose inner counter echoes
+the probe, and a round that never sees its own echo returns `None` -- which the caller already
+treats as "this poll learned nothing" rather than as an unplug.
+
+⇒ This is the "disconnects with the new dock". ⚠ Not the same thing as the three genuine
+re-enumerations of `usb 2-1.3` earlier in the session; those stopped once the D6000's reset loop
+did, and none has occurred since.
+
+### 1b. The DL7400's connector, when both docks are bound
 
 ⚠ **Superseded in part on 2026-08-04.** With both docks bound and the geometry fix in, the DL7400's
 `DP-2` reads `connected` **and** `enabled`, the control keepalive runs, EP08 drains and no
