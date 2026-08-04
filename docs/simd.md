@@ -52,6 +52,41 @@ a tenth less that no implementation can reach.
 the encoder, so no displayed frame has gone through it. The +18% is the measured per-strip cost
 applied to the measured strip mix, not an end-to-end capture.
 
+## Where a strip encode actually goes
+
+The same benchmark times each stage. This is the answer to "is there a more efficient way to write
+the codec for AVX2":
+
+| stage | ns/strip | share | vectorises? |
+|---|---|---|---|
+| entropy coder | 29,603 | **72%** | **no** — bit-serial, variable-length, data-dependent |
+| transform | 4,368 | 11% | poorly — needs a transpose (see below) |
+| quantise + `chroma_last` | 3,920 | 10% | yes, elementwise |
+| `colour()` conversion | 1,024 | 2% | yes, elementwise |
+| pixel gather, allocation | 2,126 | 5% | — |
+| **total** | **41,041** | | |
+
+⇒ **The codec is dominated by the one stage SIMD cannot help.** Building a variable-length bitstream
+is inherently serial: each symbol's length depends on its value and on how many bits are already in
+the accumulator. Vectorising every elementwise stage perfectly — transform, quantise and colour
+together, 23% — caps the whole encoder at a 23% win, and the realistic share of that is far less.
+
+## Could the transform itself be written better?
+
+Yes, and it would still not matter. Two formulations beat the one measured here:
+
+1. **Vectorise within a block instead of across blocks.** A row of an 8x8 `i32` block is exactly one
+   `__m256i`, so the column pass is whole-vector add/sub with no shuffle at all, and only the row
+   pass needs one. That removes the transpose entirely, which is the cost that ate the gain.
+2. **Keep the data lane-major from the gather.** The pixel gather runs anyway; having it write
+   lane-major costs nothing extra and amortises the transpose across the whole strip.
+
+Both attack the 11%. Neither touches the 72%.
+
+⇒ If the encoder's CPU is worth attacking, attack the entropy coder — and not with SIMD. The last
+real win there came from replacing per-coefficient branch dispatch with const tables, which is the
+same shape of fix: fewer unpredictable branches per symbol, not wider arithmetic.
+
 ## What that says
 
 **The FPU section is not the obstacle.** At 4 ns against a transform of ~80 ns it is noise, and
@@ -74,11 +109,8 @@ together — `cr`, `cb`, `y` — so five of eight lanes idle and the call costs 
 Filling the lanes means batching across strips, i.e. restructuring the encode loop, for a ceiling
 that has now been measured at 1.02x.
 
-⇒ **Do not vectorise the transform.** Both the ceiling and the realistic case are now measured in
-the kernel rather than inferred — and the 9% share means even a perfect one was never worth much.
-If the encoder's CPU is worth attacking, attack the other 91%: the last real win came from removing
-per-coefficient branch dispatch, and `PixelSource::px` was the third-hottest symbol on the machine
-in the last profile.
+⇒ **Do not vectorise the transform.** Both the ceiling and the realistic case are measured in the
+kernel rather than inferred, and the stage breakdown above shows why it was never the right target.
 
 ## Implementation notes worth keeping
 
