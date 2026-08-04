@@ -169,7 +169,31 @@ a dock driven at a fallback mode behaved differently.
 (gated), `open_in`'s Dl3Cmac (gated), `send_cp_reply`'s counter loop (gated), or Ridge's EP84 queue
 depth (already a profile field, 4).
 
-### 0a. ⛔ The D6000's dock refuses EVERY video byte -- and `a13775e0cdc5` is a working reference
+### 0. ✅ Ridge got its H' hold back -- both heads authenticate and both connectors come up
+
+`e6171c1f60e7`. `AKE_No_Stored_km` starts the receiver's H' calculation, and the parent of
+`498a10040294` held `HDCP_HPRIME_WAIT_US` after it and then drained EP84 **for every dock** before
+letting `LC_Init` (i == 3) go out. That commit gated the whole block on `profile.per_head_onehot`,
+so Ridge silently lost both the hold and the drain: it sent LC_Init while the receiver was still
+computing and picked up `fresh_rrx` only if it happened to land in an unrelated drain.
+
+Measured on the D6000, before and after, same power cycle:
+
+| | before | after |
+|---|---|---|
+| per-head auth | `1/2 head(s) authenticated` | **`2/2`** |
+| head 1 | `no downstream sink (no AKE_Send_Rrx); skipping` | **`monitor connected`** |
+| connectors | one, and only after a re-engage | **both `connected` + `enabled`** |
+| re-enumerations | several per minute | **zero** |
+
+So the head that "had no downstream sink" had one all along -- vino was asking before the receiver
+had answered. This is a **third** Ridge regression from `498a10040294`, alongside the `send_init!`
+burst and the record permutation, and it was costing the dock a whole connector. It also makes the
+dock iterable again, which is what let the bisect below run at all.
+
+### 0a. ⛔ Still no picture: the dock accepts ZERO video bytes
+
+⭐⭐⭐ **`a13775e0cdc5` is a working D6000 reference on today's kernel.**
 
 ⭐⭐⭐ **Measured 2026-08-04, and it collapses the search: at `a13775e0cdc5` -- the user's bisect
 "good" anchor, built with `tools/hardware/vino-at.sh` so bindings, DRM core and the HDR work stay at
@@ -201,12 +225,32 @@ and the one the dock ignores is **`id=0x16 sub=0x2e`** -- a stream/display marke
 bracket (`modeset_bracket_post_open` sends `2f(1)`, `2e(3)`, `2f(1)`, `2e(3)`, `2f(1)`, `2e(0)`).
 The dock answers the earlier markers and then goes silent.
 
-**The method that will converge**: diff HEAD against `a13775e0cdc5` for everything that touches
-Ridge's *video open* -- the per-head HDCP sequencing is the largest ungated candidate
-(`wait_perhead_push` replaced `drain_ep84` at four sites in `send_cp_setup`; two of them, the
-`AKE_SEND_H_PRIME` and pairing-info waits, run for **both** docks), then
-`b837e4ea9333` "serialize queues by physical endpoint" and `40568f66f3ed` "Navarro authenticates the
-link once, not once per head".
+After the H' fix vino submits **24-26 MB per endpoint** across both heads and still gets **zero**
+completions, so the dock is refusing the stream outright, not throttling it.
+
+⛔ `wait_perhead_push` is **eliminated**: all four of its sites are already behind
+`profile.per_head_onehot`, so Ridge never reaches them. What Ridge *lost* at those sites was the
+plain `drain_ep84` that used to follow -- that is what `e6171c1f60e7` restores.
+
+⭐ **The bisect, now that the dock survives it** (`vino-at.sh` + a verdict of "a connector comes up
+and no `stopped accepting video`"):
+
+```
+a13775e0cdc5  (anchor)  GOOD   sessions=1 stalls=0 resets=0 connected=yes enabled=yes
+0db19e6bb3e4  (26/52)   GOOD   sessions=2 stalls=0 resets=1 connected=yes enabled=yes
+01f2c49347bd  (27/52)   BAD    connected=no          (reproduced twice)
+c57634406a47  (29/52)   BAD    connected=no
+```
+
+⚠ **And `01f2c49347bd` touches nothing but `COLD_NAVARRO`** -- it replaces the DL7400's cold
+timeline with one measured from a real cold bring-up: `h1_mode` 757 -> 10 ms, video at +122/+272
+instead of +1116/+1245, i.e. roughly **nine times faster** and with the heads in the opposite order.
+Ridge selects `COLD_RIDGE`, so no Ridge code path changed.
+
+⇒ The most likely reading is that the D6000 is **losing bus contention** to a Navarro activation
+that became nine times more aggressive at that commit -- the same shape as 0b below. Testing it
+needs the DL7400 held off *and* a dock that has just been power-cycled; the one attempt made scored
+`sessions=0` because the dock had wedged by then.
 
 ⛔ Do not simply run `git bisect`: see 0c. A wedged dock fails at *every* revision, and it wedges
 after roughly two bring-ups, so a bisect silently reports "bad" for revisions that are good. Two
