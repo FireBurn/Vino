@@ -14,16 +14,43 @@ dmesg | grep vino-simd
 
 ## Measured, AMD Ryzen 9 5900HX, 7.2.0-rc2-drm+
 
-Three runs, 131,072 blocks each; the spread across runs is 1–3 ns.
+Four runs, 131,072 blocks each. Full-lane AVX2 lands either side of parity across runs, which is
+itself the finding: the effect is smaller than the run-to-run spread.
 
 | | ns/block | vs scalar |
 |---|---|---|
 | scalar (the current code) | 80–83 | — |
-| AVX2, 8 lanes fed, FPU section per call | 81–82 | **1.02x** |
-| AVX2, 8 lanes fed, one FPU section for the whole run | 81–82 | 1.02x |
-| AVX2, the encoder's real batch of 3 | 218–221 | **0.37x** |
+| AVX2, 8 lanes fed, FPU section per call | 81–88 | **0.93–1.02x** |
+| AVX2, 8 lanes fed, one FPU section for the whole run | 81–85 | 0.96–1.02x |
+| AVX2, the encoder's real batch of 3 | 218–232 | **0.35–0.37x** |
 
 `kernel_fpu_begin()`/`kernel_fpu_end()` with an empty body: **4 ns per section.**
+
+## The transform is 9% of a strip encode
+
+The same benchmark times a whole strip through `colour_strip_at` — pixel gather, transform,
+quantiser, entropy coder — against the transform alone:
+
+```
+strip encode 40025 ns (1907 B avg), of which 48 transforms = 3936 ns, 9%
+```
+
+A strip is 16 blocks and `colour_block` transforms three planes per block, so a strip pays 48
+transforms. **Everything the transform can win or lose is bounded by that 9%**, which settles the
+question before any of the rows below matter:
+
+| | ns/strip | live encode CPU |
+|---|---|---|
+| today | 40,025 | — |
+| a *perfect*, zero-cost transform | 36,089 | **−10%** (the ceiling) |
+| AVX2 at the encoder's batch of 3 | 47,225 | **+18%** |
+
+⇒ Yes, it would be more CPU with live video: roughly a fifth more encode CPU, against a best case of
+a tenth less that no implementation can reach.
+
+⚠ Not measured on live frames. The AVX2 path is benchmark-only and is deliberately not wired into
+the encoder, so no displayed frame has gone through it. The +18% is the measured per-strip cost
+applied to the measured strip mix, not an end-to-end capture.
 
 ## What that says
 
@@ -32,10 +59,10 @@ hoisting one section around the whole run instead of opening one per call change
 measurable. The concern that motivated the original feasibility note turns out not to be the
 deciding factor.
 
-**Full-lane AVX2 is parity, not a speedup.** Every block still has to be gathered into lane-major
-order before any vector arithmetic happens: 64 pixels x 8 lanes is 512 scalar loads per call, to
-feed roughly 200 vector operations. The transpose is scalar, does not vectorise, and costs about
-what the vectorised arithmetic saves.
+**Full-lane AVX2 is parity, not a speedup** — it lands either side of 1.00x across runs. Every
+block still has to be gathered into lane-major order before any vector arithmetic happens: 64
+pixels x 8 lanes is 512 scalar loads per call, to feed roughly 200 vector operations. The transpose
+is scalar, does not vectorise, and costs about what the vectorised arithmetic saves.
 
 ⚠ **A userspace benchmark of the same arithmetic reported 1.29x.** It is `tools/simd/haar-bench.rs`,
 and it is not wrong about the arithmetic — it is measuring a different baseline. Trust the in-kernel
@@ -48,7 +75,10 @@ Filling the lanes means batching across strips, i.e. restructuring the encode lo
 that has now been measured at 1.02x.
 
 ⇒ **Do not vectorise the transform.** Both the ceiling and the realistic case are now measured in
-the kernel rather than inferred.
+the kernel rather than inferred — and the 9% share means even a perfect one was never worth much.
+If the encoder's CPU is worth attacking, attack the other 91%: the last real win came from removing
+per-coefficient branch dispatch, and `PixelSource::px` was the third-hottest symbol on the machine
+in the last profile.
 
 ## Implementation notes worth keeping
 
