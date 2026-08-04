@@ -108,9 +108,31 @@ the deterministic strip benchmark:
 noise floor of the whole-strip figure, so only the `colour_block` number is solid: **−15.5%**, which
 is the transform's ~53% share of that function speeding up 2x.
 
-⇒ Expect single-digit percent off encode CPU. Not demonstrable on live video: two 60 s windows of
-the same clip differed in frames, bytes and CPU all at once, because the content varies. Comparing
-runs there needs a deterministic loop, not a music video.
+### On live video: −7.5% CPU
+
+Two 1440p120 dock screens, both playing the same clip, three alternating runs each way with a module
+cycle between them.
+
+⚠ **Raw core counts say nothing here.** Throughput varied 92–148 MB/s between windows because the
+content varies, and CPU follows throughput. Normalise by bytes actually delivered to the docks:
+
+| | cores of machine-busy CPU per 100 MB/s | |
+|---|---|---|
+| scalar | 4.49, 4.37, 4.39 | mean **4.42** |
+| avx2 | 4.21, 3.94, 4.12 | mean **4.09** |
+
+The two ranges do not overlap. At the 138 MB/s both configurations reached:
+
+    scalar   6.10 cores
+    avx2     5.64 cores
+    saving   0.46 cores   (-7.5%)
+
+That is machine-wide busy CPU, so it includes mpv's decode and KWin's compositing as well as vino;
+vino's own share of the saving is larger than 7.5%. It is consistent with the deterministic
+measurement above — a 2x transform over its share of `colour_block`.
+
+⇒ Do not compare raw `machine busy` between runs on varying content. Normalise by delivered bytes,
+and alternate the configurations.
 
 ⇒ The transform is worth 2x and about 15% of `colour_block`, and that is the whole of what SIMD can
 reach here. The 72% that is left is the entropy coder, and the lever there is not wider arithmetic
