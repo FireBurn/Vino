@@ -19,11 +19,10 @@ pub(crate) const DPMS_OFF: i32 = 3;
 
 /// Mutable per-device painter state, guarded by a mutex in [`EvdiDrmData`].
 ///
-/// The connected client's EDID is the connector's `cached_edid` (the source of truth for the mode
-/// list), so it is not duplicated here.
+/// Neither of the two things a client connection implies lives here: its EDID is the connector's
+/// `cached_edid` (the source of truth for the mode list), and whether anyone is attached is
+/// [`EventChannel::is_connected`].
 pub(crate) struct PainterState {
-    /// Whether a DLM client has issued CONNECT.
-    pub(crate) connected: bool,
     /// A frame has been flipped in but not yet grabbed (the C evdi's `num_dirts > 0`). Lets
     /// REQUEST_UPDATE answer "grab now" (ioctl returns 1) when fresh pixels are already waiting,
     /// instead of self-triggering an UPDATE_READY event (which busy-loops the client).
@@ -80,7 +79,6 @@ impl Damage {
 impl PainterState {
     pub(crate) fn new() -> Self {
         Self {
-            connected: false,
             frame_dirty: false,
             damage: Damage::new(),
         }
@@ -117,13 +115,13 @@ const fn hdr() -> uapi::DrmEvent {
 }
 
 /// Tell the DLM client a fresh frame is ready to be grabbed (`UPDATE_READY`).
-pub(crate) fn notify_update_ready(data: &EvdiDrmData, _dev: &EvdiDrmDevice) {
+pub(crate) fn notify_update_ready(data: &EvdiDrmData) {
     let ev = uapi::DrmEvdiEventUpdateReady { base: hdr() };
     let _ = data.events.send(ev);
 }
 
 /// Tell the DLM client the display's DPMS power state changed.
-pub(crate) fn notify_dpms(data: &EvdiDrmData, _dev: &EvdiDrmDevice, mode: i32) {
+pub(crate) fn notify_dpms(data: &EvdiDrmData, mode: i32) {
     let ev = uapi::DrmEvdiEventDpms { base: hdr(), mode };
     let _ = data.events.send(ev);
 }
@@ -131,7 +129,6 @@ pub(crate) fn notify_dpms(data: &EvdiDrmData, _dev: &EvdiDrmDevice, mode: i32) {
 /// Tell the DLM client the negotiated mode changed.
 pub(crate) fn notify_mode_changed(
     data: &EvdiDrmData,
-    _dev: &EvdiDrmDevice,
     hdisplay: i32,
     vdisplay: i32,
     vrefresh: i32,
@@ -195,7 +192,7 @@ pub(crate) fn notify_cursor_set(
 }
 
 /// Tell the client the cursor is no longer visible. No buffer accompanies this.
-pub(crate) fn notify_cursor_disabled(data: &EvdiDrmData, _dev: &EvdiDrmDevice) {
+pub(crate) fn notify_cursor_disabled(data: &EvdiDrmData) {
     let ev = uapi::DrmEvdiEventCursorSet {
         base: hdr(),
         hot_x: 0,
@@ -214,7 +211,7 @@ pub(crate) fn notify_cursor_disabled(data: &EvdiDrmData, _dev: &EvdiDrmDevice) {
 
 /// Tell the client the cursor moved. Position changes are far more frequent than shape changes and
 /// carry no buffer, so they never need the client's file.
-pub(crate) fn notify_cursor_move(data: &EvdiDrmData, _dev: &EvdiDrmDevice, x: i32, y: i32) {
+pub(crate) fn notify_cursor_move(data: &EvdiDrmData, x: i32, y: i32) {
     let ev = uapi::DrmEvdiEventCursorMove { base: hdr(), x, y };
     let _ = data.events.send(ev);
 }

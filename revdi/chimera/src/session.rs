@@ -608,7 +608,14 @@ fn configure_control(
         )?;
     }
 
-    for (id, sub, selector) in kvino::CP_SETUP_FINALIZE {
+    // Three finalization messages per head, head-major, exactly as the driver repeats
+    // `CP_SETUP_FINALIZE_STEPS` for each connector that authenticated.
+    let finalize = (0..HEADS as u8).flat_map(|head| {
+        kvino::CP_SETUP_FINALIZE_STEPS
+            .iter()
+            .map(move |&(id, sub)| (id, sub, head))
+    });
+    for (id, sub, selector) in finalize {
         let mut content = [0; 32];
         content[..2].copy_from_slice(&id.to_le_bytes());
         content[2..4].copy_from_slice(&sub.to_le_bytes());

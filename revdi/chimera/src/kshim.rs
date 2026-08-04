@@ -422,7 +422,14 @@ macro_rules! pr_debug {
     ($($arg:tt)*) => {{ let _ = format_args!($($arg)*); }};
 }
 
-pub use crate::{pr_debug, pr_err, pr_info, pr_warn};
+/// The driver's own diagnostic macro, defined in `vino.rs` (which is not vendored). In the kernel
+/// it is gated on the `debug` module parameter; here it is silent, like `pr_debug!`.
+#[macro_export]
+macro_rules! vino_debug {
+    ($($arg:tt)*) => {{ let _ = format_args!($($arg)*); }};
+}
+
+pub use crate::{pr_debug, pr_err, pr_info, pr_warn, vino_debug};
 
 // ---- monotonic time --------------------------------------------------------
 //

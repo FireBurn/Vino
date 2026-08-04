@@ -54,14 +54,42 @@ fn push_u32(out: &mut KVec<u8>, value: u32) -> Result {
 
 /// Build the plaintext decoder configuration for a cold pipe-arm record.
 pub(super) fn build(width: u16, height: u16, nonce: &[u8; 14]) -> Result<KVec<u8>> {
+    build_with_layout_word(width, height, 0x4000, nonce)
+}
+
+/// Build a plaintext decoder configuration with the captured repeated layout word.
+///
+/// Ridge uses `0x4000`.  The DL7400's independently authenticated startup records use `0x2100`
+/// at 2560x1440.  Its semantic name is not established, so callers must pass an observed value
+/// rather than treating it as a generic pitch calculation.
+/// The 26-byte `[len=0x0018][kind=0x030b]` header that states a stream's mode.
+///
+/// It opens the decoder configuration and is repeated verbatim by the mode-restating form of the
+/// per-frame stream report, so both build it here. The mode appears twice, each time as
+/// `[0x0002][width][height][layout word]`.
+pub(super) fn mode_header(width: u16, height: u16, layout_word: u16) -> [u8; 26] {
+    let mut out = [0u8; 26];
+    for (i, value) in [
+        0x0018u16, 0x030b, 0x0204, 0x0002, 0x0002, width, height, layout_word, 0x0002, width,
+        height, layout_word, 0,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        out[i * 2..i * 2 + 2].copy_from_slice(&value.to_le_bytes());
+    }
+    out
+}
+
+pub(super) fn build_with_layout_word(
+    width: u16,
+    height: u16,
+    layout_word: u16,
+    nonce: &[u8; 14],
+) -> Result<KVec<u8>> {
     let mut out = KVec::with_capacity(CONFIG_LEN, GFP_KERNEL)?;
 
-    for value in [
-        0x0018, 0x030b, 0x0204, 0x0002, 0x0002, width, height, 0x4000, 0x0002, width, height,
-        0x4000, 0,
-    ] {
-        push_u16(&mut out, value)?;
-    }
+    out.extend_from_slice(&mode_header(width, height, layout_word), GFP_KERNEL)?;
 
     for (index, table) in CODE_TABLES.iter().enumerate() {
         push_u16(&mut out, TABLE_RECORD_LEN)?;

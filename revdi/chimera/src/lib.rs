@@ -30,6 +30,9 @@ pub mod prove;
 pub mod revdi;
 #[cfg(feature = "live")]
 pub mod session;
+// `video.rs` reaches for `crate::simd` on x86_64, exactly as it does in the kernel crate.
+#[cfg(target_arch = "x86_64")]
+pub mod simd;
 
 #[cfg(test)]
 mod kshim_crypto_kat {

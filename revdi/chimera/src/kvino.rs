@@ -79,11 +79,36 @@ pub fn seal_interactive(
     Ok(cp::seal_interactive(ks, riv, id, wire_seq, content)?.into_vec())
 }
 
+/// The bare AES-CTR keystream transform, for the untagged frames only a capture contains.
+///
+/// The driver's [`cp::open_in`] verifies a trailing Dl3Cmac before decrypting, which is right for
+/// everything the dock sends today and wrong for the pre-engagement `wsub=0x04` bodies in the old
+/// captures: those carry no tag at all. This is that construction with the authentication removed,
+/// and it is deliberately the only hand-written cipher code in the rig -- every frame vino itself
+/// emits or accepts goes through the kernel path.
+fn ctr_xor(ks: &[u8; 16], riv: &[u8; 8], seq: u32, data: &[u8]) -> Result<Vec<u8>> {
+    let cipher = crypto::Aes128::new(ks)?;
+    let mut out = Vec::with_capacity(data.len());
+    for (i, chunk) in data.chunks(16).enumerate() {
+        let mut iv = [0u8; 16];
+        iv[..8].copy_from_slice(riv);
+        iv[12..].copy_from_slice(&seq.wrapping_add(i as u32).to_be_bytes());
+        let block = cipher.encrypt_block(&iv);
+        out.extend(chunk.iter().zip(block.iter()).map(|(&c, &k)| c ^ k));
+    }
+    Ok(out)
+}
+
+/// Recover the plaintext of an untagged type-4 stream frame body.
+pub fn open_stream(ks: &[u8; 16], riv: &[u8; 8], seq: u32, ct: &[u8]) -> Result<Vec<u8>> {
+    ctr_xor(ks, riv, seq, ct)
+}
+
 /// Rebuild an untagged type-4 stream frame from the current kernel primitives.
 ///
 /// Older DLM captures contain pre-engagement `wsub=0x04` frames whose bodies use the same AES-CTR
 /// transform as [`cp::open_in`] but carry no Dl3Cmac. Vino no longer emits that historical path,
-/// so the proof composes the literal kernel decrypt/encrypt primitive and universal framer here.
+/// so the proof composes [`ctr_xor`] with the literal kernel framer here.
 pub fn seal_stream(
     key: &[u8; 16],
     riv: &[u8; 8],
@@ -91,7 +116,7 @@ pub fn seal_stream(
     seq: u32,
     inner: &[u8],
 ) -> Result<Vec<u8>> {
-    let ciphertext = cp::open_in(key, riv, seq, inner)?;
+    let ciphertext = ctr_xor(key, riv, seq, inner)?;
     let id = inner
         .get(..2)
         .map(|id| u16::from_le_bytes([id[0], id[1]]))
@@ -108,9 +133,12 @@ pub fn seal_stream(
     Ok(frame.into_vec())
 }
 
-/// `cp::open_in` — AES-CTR decrypt a frame body with the given riv/seq.
-pub fn open_in(ks: &[u8; 16], riv: &[u8; 8], seq: u32, ct: &[u8]) -> Result<Vec<u8>> {
-    Ok(cp::open_in(ks, riv, seq, ct)?.into_vec())
+/// `cp::open_in` — verify a dock->host body's trailing Dl3Cmac and AES-CTR decrypt it.
+///
+/// `body` is everything after the 16-byte wire header, tag included: the tag is what proves the
+/// riv candidate, so it must not be stripped first.
+pub fn open_in(ks: &[u8; 16], riv: &[u8; 8], seq: u32, body: &[u8]) -> Result<Vec<u8>> {
+    Ok(cp::open_in(ks, riv, seq, body)?.into_vec())
 }
 
 /// `cp::in_riv` — derive the dock→host riv from the host→dock riv (identity).
@@ -150,8 +178,9 @@ pub fn cp_session_key(ske_ks: &[u8; 16]) -> ::kernel::crypto::Secret<16> {
     cp::cp_session_key(ske_ks)
 }
 
+/// `cp::stream_content_nonce` for one of this dock's video streams.
 pub fn video_content_nonce(riv: &[u8; 8], head: u8) -> [u8; 8] {
-    cp::video_content_nonce(riv, head)
+    cp::stream_content_nonce(riv, geometry().stream_id(head))
 }
 
 /// `cp::get_edid_req` — OUT `id=0x15 sub=0x21` EDID-read request inner plaintext.
@@ -228,14 +257,29 @@ pub fn parse_edid_from_reply(
 }
 
 pub const CP_SETUP_PER_HEAD: [(u16, u16, usize); 9] = cp::CP_SETUP_PER_HEAD;
-pub const CP_SETUP_FINALIZE: [(u16, u16, u8); 6] = cp::CP_SETUP_FINALIZE;
+
+/// The three finalization messages sent per connector. The driver repeats them for each head that
+/// authenticated, which is what the six-entry constant this replaced spelled out by hand.
+pub const CP_SETUP_FINALIZE_STEPS: [(u16, u16); 3] = cp::CP_SETUP_FINALIZE_STEPS;
 
 pub fn stream_manage_restatement(counter: u16, head: u8) -> Result<Vec<u8>> {
-    Ok(cp::stream_manage_restatement(counter, head)?.into_vec())
+    let geom = geometry();
+    Ok(cp::stream_manage_restatement(counter, head, geom.stream_id(head), NAVARRO)?.into_vec())
 }
 
+/// The fresh per-head `rrx` from an `AKE_Send_rrx` push, if this frame is one.
+///
+/// The kernel decodes every downstream-HDCP push through one parser and dispatches on the HDCP
+/// message id; the rig needs only `AKE_Send_rrx` (`0x06`), whose payload starts with the eight
+/// `rrx` bytes.
 pub fn perhead_rrx(ks: &[u8; 16], out_riv: &[u8; 8], wire: &[u8]) -> Option<[u8; 8]> {
-    cp::perhead_rrx(ks, out_riv, wire)
+    let push = cp::perhead_hdcp_push(ks, out_riv, wire)?;
+    if push.msg_id != 0x06 || push.payload_len < 8 {
+        return None;
+    }
+    let mut rrx = [0u8; 8];
+    rrx.copy_from_slice(&push.payload[..8]);
+    Some(rrx)
 }
 
 // ---- video: solid-colour frame builder over the kernel WHT codec ------------
@@ -243,6 +287,21 @@ pub fn perhead_rrx(ks: &[u8; 16], out_riv: &[u8; 8], wire: &[u8]) -> Option<[u8;
 /// Vino strip geometry: each `solid_strip` covers a 64-px-wide × 16-px-tall tile.
 pub const STRIP_W: u16 = 64;
 pub const STRIP_H: u16 = 16;
+
+/// Which protocol generation the rig drives. The driver's `Generation` names the same split; the
+/// rig speaks Ridge only, so the calls that branch on it -- the per-head connector selector and the
+/// mode-set words -- take `false` here.
+const NAVARRO: bool = false;
+
+/// The dock geometry every call below encodes for.
+///
+/// The driver carries one of these per dock in `profile.rs` and passes it down; the rig drives a
+/// Ridge dock only, so it names Ridge's `DockProfile::geometry()` -- 8 blocks across a strip, no
+/// interlaced bands, band parity in the record `sub`, head in the low bits, stream ids `0x08 |
+/// head`, two dock buffers -- in one place instead of threading a parameter no caller varies.
+pub(crate) fn geometry() -> video::wht::Geometry {
+    video::wht::Geometry::new(8, false, true, 0, 0x08, 2)
+}
 
 /// `video::wht::colour` — the Vino integer colour transform
 /// `(Y=16R+32G+16B, Cb=64(R−G), Cr=64(B−G))`, yielding the per-plane DC values.
@@ -282,7 +341,7 @@ pub fn colour_frame_ep08_head(
     head: u8,
 ) -> Result<(Vec<Vec<u8>>, u32)> {
     let (frames, seq) =
-        video::wht::colour_frame_ep08(width, height, seq0, head, true, false, |x, y| {
+        video::wht::colour_frame_ep08(geometry(), width, height, seq0, head, |x, y| {
             let i = (y * width + x) * 3;
             (rgb[i], rgb[i + 1], rgb[i + 2])
         })?;
@@ -302,12 +361,12 @@ pub fn colour_frame_ep08_head(
 /// caller building an EP08 stream must do the same. Its phase is derived from the sequence number
 /// (`seq % 3`), which is how the dock rotates its buffers: repeating one sequence pins the phase.
 pub fn frame_trailer(head: u8, seq: u32) -> Vec<u8> {
-    video::wht::frame_trailer(head, seq).to_vec()
+    video::wht::frame_trailer(geometry(), head, seq).to_vec()
 }
 
 pub fn black_frame_ep08(width: usize, height: usize, head: u8) -> Result<Vec<Vec<u8>>> {
     Ok(
-        video::wht::black_frame_ep08(width, height, head, true, false)?
+        video::wht::black_frame_ep08(geometry(), width, height, head)?
             .into_vec()
             .into_iter()
             .map(|frame| frame.into_vec())
@@ -370,7 +429,7 @@ pub fn set_mode_profile(
         _ => return Err(kernel::error::code::EOPNOTSUPP),
     };
     let mode = kernel::drm::kms::modes::DisplayMode(raw);
-    let timing = cp::timing_from_drm_mode(&mode)?;
+    let timing = cp::timing_from_drm_mode(&mode, NAVARRO)?;
     Ok(cp::set_mode(counter, head, &timing)?.into_vec())
 }
 

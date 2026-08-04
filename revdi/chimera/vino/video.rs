@@ -461,10 +461,147 @@ pub(crate) mod wht {
         }
     }
 
-    /// Number of blocks across a 64-px-wide strip and the rows of blocks within its 16-px height.
-    const STRIP_BLOCKS_X: usize = 8;
-    const STRIP_ROW_BLOCKS: usize = 8; // blocks in one 8-row half (8 across x 1 down)
-    const STRIP_BLOCKS: usize = 16; // 8 across x 2 down
+    const STRIP_ROW_BLOCKS: usize = 8; // blocks in one coded half
+    const STRIP_BLOCKS: usize = 16;
+
+    /// Everything about a dock's video encoding that differs between platforms.
+    ///
+    /// Passed by value rather than held in shared state: two docks of different generations may
+    /// encode concurrently, and each frame must carry its own dock's layout.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct Geometry {
+        /// `log2` of the strip width in pixels. A strip is always [`STRIP_BLOCKS`] blocks of
+        /// `DIM` x `DIM` split into two halves of [`STRIP_ROW_BLOCKS`]; the docks differ only in
+        /// how those blocks are laid over pixels. Ridge puts them 8 across x 2 down (64x16), the
+        /// DL7400 16 across x 1 down (128x8). Same block count, same coded strip.
+        ///
+        /// Held as shifts because a strip is a power of two in each direction, so every geometry
+        /// query is a shift or a mask: dividing by a value the compiler cannot bound would put a
+        /// panic path into the codec's hot functions.
+        strip_w_shift: u32,
+        /// `log2` of the strip height in pixels; see [`Geometry::strip_w_shift`].
+        strip_h_shift: u32,
+        /// Whether image records are emitted with even y-bands before odd ones.
+        ///
+        /// Ridge sends them in raster order; the DL7400 interlaces, which its own records show as
+        /// a y sequence of 0, 16, 32 ... over 8-row strips before it returns for 8, 24, 40 ...
+        pub(crate) interlaced_bands: bool,
+        /// Whether an image record's `sub` carries the y-band parity in bit 4.
+        ///
+        /// Ridge does, which also means one of its records can never span two bands. Navarro's
+        /// image records carry only the connector, and fill to the stride cap across band
+        /// boundaries.
+        pub(crate) band_parity_bit: bool,
+        /// How the dock encodes a head in a video record's `sub` field, as a left shift.
+        ///
+        /// Ridge puts the bare head number there (0, 1). Navarro shifts it by three: its records
+        /// use `0x00`/`0x08`/`0x10`/`0x18` and its stream-open ids are `0x07`/`0x0f`/`0x17`/`0x1f`
+        /// -- the same eight-apart spacing.
+        pub(crate) head_sub_shift: u8,
+        /// The bits a head's stream id sets over its record `sub`.
+        ///
+        /// A dock names each video stream by its head's record `sub` with a fixed low pattern set:
+        /// Ridge uses `0x08 | head`, Navarro `(connector << 3) | 7`. The same id is the wire `sub`
+        /// of the stream's control records, the value its `RepeaterAuth_Stream_Manage`
+        /// restatement declares, and the byte-7 tweak deriving the stream's AES-CTR nonce from its
+        /// SKE RIV.
+        pub(crate) stream_id_mask: u8,
+        /// How many buffers the dock rotates through as it presents frames; see
+        /// `DockProfile::dock_buffers`.
+        pub(crate) dock_buffers: u8,
+    }
+
+    impl Geometry {
+        /// Build a dock's geometry from its profile.
+        ///
+        /// `strip_blocks_x` must divide [`STRIP_BLOCKS`]; anything else falls back to the Ridge
+        /// layout rather than producing a strip that is not a whole number of blocks.
+        pub(crate) fn new(
+            strip_blocks_x: usize,
+            interlaced_bands: bool,
+            band_parity_bit: bool,
+            head_sub_shift: u8,
+            stream_id_mask: u8,
+            dock_buffers: u8,
+        ) -> Self {
+            let (strip_w_shift, strip_h_shift) = match strip_blocks_x {
+                16 => (7, 3), // 128 x 8
+                _ => (6, 4),  // 64 x 16
+            };
+            Self {
+                strip_w_shift,
+                strip_h_shift,
+                interlaced_bands,
+                band_parity_bit,
+                head_sub_shift,
+                stream_id_mask,
+                dock_buffers: dock_buffers.max(1),
+            }
+        }
+
+        /// `log2` of the strip width; see [`Geometry::strip_w_shift`].
+        #[inline]
+        pub(crate) fn strip_w_shift(&self) -> u32 {
+            self.strip_w_shift
+        }
+
+        /// `log2` of the strip height; see [`Geometry::strip_w_shift`].
+        #[inline]
+        pub(crate) fn strip_h_shift(&self) -> u32 {
+            self.strip_h_shift
+        }
+
+        /// Strip width in pixels: [`Geometry::strip_w_shift`] blocks across, each `DIM` square.
+        #[inline]
+        pub(crate) fn strip_w(&self) -> usize {
+            1usize << self.strip_w_shift
+        }
+
+        /// Strip height in pixels; see [`Geometry::strip_w`].
+        #[inline]
+        pub(crate) fn strip_h(&self) -> usize {
+            1usize << self.strip_h_shift
+        }
+
+        /// Damage macro-tile: 4x4 strips. A touched macro-tile must be resent in full because the
+        /// dock rotates its backing buffers at this granularity.
+        #[inline]
+        pub(crate) fn macro_w(&self) -> usize {
+            4 * self.strip_w()
+        }
+
+        /// Damage macro-tile height; see [`Geometry::macro_w`].
+        #[inline]
+        pub(crate) fn macro_h(&self) -> usize {
+            4 * self.strip_h()
+        }
+
+        /// Encode `head` the way this dock expects it in a record `sub` field.
+        #[inline]
+        pub(crate) fn head_sub(&self, head: u8) -> u8 {
+            head << self.head_sub_shift
+        }
+
+        /// The content-stream id of `head` on this dock; see [`Geometry::stream_id_mask`].
+        #[inline]
+        pub(crate) fn stream_id(&self, head: u8) -> u16 {
+            u16::from(self.head_sub(head) | self.stream_id_mask)
+        }
+    }
+
+    /// The Ridge layout, and the value every geometry-free code path starts from.
+    pub(crate) const RIDGE_GEOMETRY: Geometry = Geometry {
+        strip_w_shift: 6,
+        strip_h_shift: 4,
+        interlaced_bands: false,
+        band_parity_bit: true,
+        head_sub_shift: 0,
+        stream_id_mask: 0x08,
+        dock_buffers: 2,
+    };
+
+    /// `log2(DIM)`, so a block index splits into (x, y) by shift and mask rather than division.
+    const DIM_SHIFT: u32 = 3;
 
     /// Round a byte count up to an even number (every coder sub-region is even-aligned).
     fn round_even(n: usize) -> usize {
@@ -599,9 +736,13 @@ pub(crate) mod wht {
         cb: &[i32; PIXELS],
         y: &[i32; PIXELS],
     ) -> ColourBlock {
-        let tcr = transform(cr);
-        let tcb = transform(cb);
-        let ty = transform(y);
+        #[cfg(target_arch = "x86_64")]
+        let (tcr, tcb, ty) = match crate::simd::colour_block_transforms(cr, cb, y) {
+            Some(t) => t,
+            None => (transform(cr), transform(cb), transform(y)),
+        };
+        #[cfg(not(target_arch = "x86_64"))]
+        let (tcr, tcb, ty) = (transform(cr), transform(cb), transform(y));
         // Quantise all three planes and find each one's last significant coefficient in a single
         // pass. These were separate steps, so every block ran three further 63-element reverse
         // scans ([`chroma_last`]) across arrays it had only just written. Folding the search into
@@ -703,16 +844,6 @@ pub(crate) mod wht {
         Ok(out)
     }
 
-    /// Strip pixel geometry: a strip is 64 px wide and 16 px tall
-    /// (`STRIP_BLOCKS_X * DIM` x `2 * DIM`).
-    pub(crate) const STRIP_W: usize = STRIP_BLOCKS_X * DIM; // 64
-    pub(crate) const STRIP_H: usize = 2 * DIM; // 16
-
-    /// Damage macro-tile: 256x64 pixels, or 4x4 strips. A touched macro-tile must be resent in full
-    /// because the dock rotates its backing buffers at this granularity.
-    pub(crate) const MACRO_W: usize = 4 * STRIP_W; // 256
-    pub(crate) const MACRO_H: usize = 4 * STRIP_H; // 64
-
     /// Gather one 64x16 strip's 16 colour blocks from a pixel source. `px(x, y)` returns the
     /// 8-bit `(R, G, B)` at absolute frame coordinate `(x, y)`; `(ox, oy)` is the strip's
     /// top-left pixel. Each block's three planes are built in the codec's x64 fixed point via
@@ -724,13 +855,15 @@ pub(crate) mod wht {
     /// the kernel stack.
     #[inline(never)]
     fn colour_strip_blocks(
+        geom: Geometry,
         ox: usize,
         oy: usize,
         px: &mut impl FnMut(usize, usize) -> (u8, u8, u8),
     ) -> Result<KVec<ColourBlock>> {
         let mut blocks = KVec::with_capacity(STRIP_BLOCKS, GFP_KERNEL)?;
         for k in 0..STRIP_BLOCKS {
-            let (bx, by) = (k % STRIP_BLOCKS_X, k / STRIP_BLOCKS_X);
+            let across_shift = geom.strip_w_shift() - DIM_SHIFT;
+            let (bx, by) = (k & ((1usize << across_shift) - 1), k >> across_shift);
             // One `px` call per pixel, in the same row-major order as before -- it is the
             // expensive accessor, so the converted values are gathered once and then split into
             // the three planes. `from_fn` avoids the zeroing that filling `[0i32; PIXELS]`
@@ -767,15 +900,40 @@ pub(crate) mod wht {
     /// This function remains out of line to bound kernel stack use.
     #[inline(never)]
     pub(crate) fn colour_frame_ep08(
+        geom: Geometry,
         width: usize,
         height: usize,
         seq0: u32,
         head: u8,
-        band_parity: bool,
-        interlaced: bool,
         mut px: impl FnMut(usize, usize) -> (u8, u8, u8),
     ) -> Result<(KVec<KVec<u8>>, u32)> {
-        if width % STRIP_W != 0 || height % STRIP_H != 0 {
+        colour_frame_ep08_variant(geom, width, height, seq0, head, None, &mut px)
+    }
+
+    /// Encode a full live Navarro frame using the ordinary-frame producer permutation measured
+    /// from DLM. The first ordinary band is y=8, not y=0, and the captured worker boundaries are
+    /// part of the record grammar for a 2560x1440 surface.
+    pub(crate) fn colour_frame_ep08_navarro_ordinary(
+        geom: Geometry,
+        width: usize,
+        height: usize,
+        seq0: u32,
+        head: u8,
+        mut px: impl FnMut(usize, usize) -> (u8, u8, u8),
+    ) -> Result<(KVec<KVec<u8>>, u32)> {
+        colour_frame_ep08_variant(geom, width, height, seq0, head, Some(true), &mut px)
+    }
+
+    fn colour_frame_ep08_variant(
+        geom: Geometry,
+        width: usize,
+        height: usize,
+        seq0: u32,
+        head: u8,
+        navarro_ordinary: Option<bool>,
+        px: &mut impl FnMut(usize, usize) -> (u8, u8, u8),
+    ) -> Result<(KVec<KVec<u8>>, u32)> {
+        if width & (geom.strip_w() - 1) != 0 || height & (geom.strip_h() - 1) != 0 {
             return Err(kernel::error::code::EINVAL);
         }
         // Build every strip body (raster order; each strip's natural row1 tail, no echo).
@@ -784,14 +942,19 @@ pub(crate) mod wht {
         while sy < height {
             let mut sx = 0usize;
             while sx < width {
-                let blocks = colour_strip_blocks(sx, sy, &mut px)?;
+                let blocks = colour_strip_blocks(geom, sx, sy, px)?;
                 strips.push(colour_strip(&blocks, sx as u16, sy as u16)?, GFP_KERNEL)?;
-                sx += STRIP_W;
+                sx += geom.strip_w();
             }
-            sy += STRIP_H;
+            sy += geom.strip_h();
         }
         Ok((
-            frame_records(&strips, head, band_parity, interlaced)?,
+            frame_records_with_boundary(
+                geom,
+                &strips,
+                head,
+                navarro_ordinary.filter(|_| strips.len() == 3600),
+            )?,
             seq0.wrapping_add(1),
         ))
     }
@@ -802,13 +965,38 @@ pub(crate) mod wht {
     /// reused, so construction is proportional to the strip grid rather than the pixel count. A
     /// real framebuffer keyframe follows.
     pub(crate) fn black_frame_ep08(
+        geom: Geometry,
         width: usize,
         height: usize,
         head: u8,
-        band_parity: bool,
-        interlaced: bool,
     ) -> Result<KVec<KVec<u8>>> {
-        if width % STRIP_W != 0 || height % STRIP_H != 0 {
+        black_frame_ep08_variant(geom, width, height, head, Some(false))
+    }
+
+    /// Build the ordinary Navarro black carrier which follows the prologue frame.
+    ///
+    /// DLM's ordinary 2560x1440 carriers contain the same 201600 bytes of strip payload as the
+    /// prologue, but split them across 53 image records rather than 52. Its additional boundary is
+    /// after strip 2804, making the complete frame 208624 bytes. Navarro accepts vino's 208608-byte
+    /// second frame and then NAKs the first transfer of frame three, so this distinction is part of
+    /// the producer grammar rather than harmless USB chunking.
+    pub(crate) fn black_frame_ep08_ordinary(
+        geom: Geometry,
+        width: usize,
+        height: usize,
+        head: u8,
+    ) -> Result<KVec<KVec<u8>>> {
+        black_frame_ep08_variant(geom, width, height, head, Some(true))
+    }
+
+    fn black_frame_ep08_variant(
+        geom: Geometry,
+        width: usize,
+        height: usize,
+        head: u8,
+        navarro_ordinary: Option<bool>,
+    ) -> Result<KVec<KVec<u8>>> {
+        if width & (geom.strip_w() - 1) != 0 || height & (geom.strip_h() - 1) != 0 {
             return Err(kernel::error::code::EINVAL);
         }
         let mut blocks: KVec<ColourBlock> = KVec::with_capacity(STRIP_BLOCKS, GFP_KERNEL)?;
@@ -831,11 +1019,11 @@ pub(crate) mod wht {
             let mut sx = 0usize;
             while sx < width {
                 strips.push(colour_strip(&blocks, sx as u16, sy as u16)?, GFP_KERNEL)?;
-                sx += STRIP_W;
+                sx += geom.strip_w();
             }
-            sy += STRIP_H;
+            sy += geom.strip_h();
         }
-        frame_records(&strips, head, band_parity, interlaced)
+        frame_records_with_boundary(geom, &strips, head, navarro_ordinary)
     }
 
     /// Encode ONE 64x16 strip whose top-left output pixel is `(sx, sy)`.
@@ -845,11 +1033,12 @@ pub(crate) mod wht {
     /// and produces its own independent byte vector, sharing no state with any other strip. The
     /// scanout encoder in `drm_sink.rs` fans batches of these across CPUs; see `EncodeChunk`.
     pub(crate) fn colour_strip_at(
+        geom: Geometry,
         sx: usize,
         sy: usize,
         px: &mut impl FnMut(usize, usize) -> (u8, u8, u8),
     ) -> Result<KVec<u8>> {
-        let blocks = colour_strip_blocks(sx, sy, px)?;
+        let blocks = colour_strip_blocks(geom, sx, sy, px)?;
         colour_strip(&blocks, sx as u16, sy as u16)
     }
 
@@ -863,41 +1052,47 @@ pub(crate) mod wht {
     /// A strip is selected when a clip overlaps its 256x64 macro-tile. Every strip in a touched
     /// tile is resent.
     pub(crate) fn damage_strip_coords(
+        geom: Geometry,
         width: usize,
         height: usize,
         clips: &[(usize, usize, usize, usize)],
+    ) -> Result<KVec<(usize, usize)>> {
+        let mut coords: KVec<(usize, usize)> = KVec::new();
+        let (mw, mh) = (geom.macro_w(), geom.macro_h());
+        let mut sy = 0usize;
+        while sy < height {
+            let mut sx = 0usize;
+            while sx < width {
+                let mx = sx & !(mw - 1);
+                let my = sy & !(mh - 1);
+                let hit = clips
+                    .iter()
+                    .any(|&(x0, y0, x1, y1)| mx < x1 && x0 < mx + mw && my < y1 && y0 < my + mh);
+                if hit {
+                    coords.push((sx, sy), GFP_KERNEL)?;
+                }
+                sx += geom.strip_w();
+            }
+            sy += geom.strip_h();
+        }
+        Ok(coords)
+    }
+
+    /// Every strip of a full frame, in the same raster order as [`damage_strip_coords`].
+    pub(crate) fn all_strip_coords(
+        geom: Geometry,
+        width: usize,
+        height: usize,
     ) -> Result<KVec<(usize, usize)>> {
         let mut coords: KVec<(usize, usize)> = KVec::new();
         let mut sy = 0usize;
         while sy < height {
             let mut sx = 0usize;
             while sx < width {
-                let mx = (sx / MACRO_W) * MACRO_W;
-                let my = (sy / MACRO_H) * MACRO_H;
-                let hit = clips.iter().any(|&(x0, y0, x1, y1)| {
-                    mx < x1 && x0 < mx + MACRO_W && my < y1 && y0 < my + MACRO_H
-                });
-                if hit {
-                    coords.push((sx, sy), GFP_KERNEL)?;
-                }
-                sx += STRIP_W;
-            }
-            sy += STRIP_H;
-        }
-        Ok(coords)
-    }
-
-    /// Every strip of a full frame, in the same raster order as [`damage_strip_coords`].
-    pub(crate) fn all_strip_coords(width: usize, height: usize) -> Result<KVec<(usize, usize)>> {
-        let mut coords: KVec<(usize, usize)> = KVec::new();
-        let mut sy = 0usize;
-        while sy < height {
-            let mut sx = 0usize;
-            while sx < width {
                 coords.push((sx, sy), GFP_KERNEL)?;
-                sx += STRIP_W;
+                sx += geom.strip_w();
             }
-            sy += STRIP_H;
+            sy += geom.strip_h();
         }
         Ok(coords)
     }
@@ -908,7 +1103,7 @@ pub(crate) mod wht {
     /// `clips` are `(x0, y0, x1, y1)` half-open rectangles in output/source pixels (identity
     /// rotation only -- the caller sends a full [`colour_frame_ep08`] otherwise). A strip at
     /// `(sx, sy)` is included iff some clip overlaps
-    /// `[sx, sx+STRIP_W) x [sy, sy+STRIP_H)`. Raster iteration keeps strips
+    /// `[sx, sx+strip_w()) x [sy, sy+strip_h())`. Raster iteration keeps strips
     /// x-ordered within each y-band, so [`frame_records`] groups them as the
     /// full-frame path does. Returns an **empty** frame list when no strip is
     /// touched -- the caller must skip the USB write in that case (no-op
@@ -918,25 +1113,24 @@ pub(crate) mod wht {
     /// This function remains out of line for the same stack bound as [`colour_frame_ep08`].
     #[inline(never)]
     pub(crate) fn colour_frame_ep08_damage(
+        geom: Geometry,
         width: usize,
         height: usize,
         seq0: u32,
         head: u8,
         clips: &[(usize, usize, usize, usize)],
-        band_parity: bool,
-        interlaced: bool,
         mut px: impl FnMut(usize, usize) -> (u8, u8, u8),
     ) -> Result<(KVec<KVec<u8>>, u32)> {
-        if width % STRIP_W != 0 || height % STRIP_H != 0 {
+        if width & (geom.strip_w() - 1) != 0 || height & (geom.strip_h() - 1) != 0 {
             return Err(kernel::error::code::EINVAL);
         }
-        let coords = damage_strip_coords(width, height, clips)?;
+        let coords = damage_strip_coords(geom, width, height, clips)?;
         let mut strips: KVec<KVec<u8>> = KVec::with_capacity(coords.len(), GFP_KERNEL)?;
         for &(sx, sy) in coords.iter() {
-            let blocks = colour_strip_blocks(sx, sy, &mut px)?;
+            let blocks = colour_strip_blocks(geom, sx, sy, &mut px)?;
             strips.push(colour_strip(&blocks, sx as u16, sy as u16)?, GFP_KERNEL)?;
         }
-        let records = frame_records(&strips, head, band_parity, interlaced)?;
+        let records = frame_records(geom, &strips, head)?;
         Ok((records, seq0.wrapping_add(1)))
     }
 
@@ -964,11 +1158,70 @@ pub(crate) mod wht {
     /// those fragments directly into persistent 65536-byte URBs, so the internal boundaries are
     /// not USB framing. Complete record strides are limited to 4080 bytes.
     pub(crate) fn frame_records(
+        geom: Geometry,
         strips: &[KVec<u8>],
         head: u8,
-        band_parity_bit: bool,
-        interlaced_bands: bool,
     ) -> Result<KVec<KVec<u8>>> {
+        frame_records_with_boundary(geom, strips, head, None)
+    }
+
+    /// Frame a full live Navarro surface with the ordinary DLM producer order. Other modes and
+    /// damage subsets deliberately fall back to the generic interlaced order: the measured
+    /// permutation and its split-worker boundaries describe exactly 3600 128x8 strips.
+    pub(crate) fn frame_records_navarro_ordinary(
+        geom: Geometry,
+        strips: &[KVec<u8>],
+        head: u8,
+    ) -> Result<KVec<KVec<u8>>> {
+        frame_records_with_boundary(geom, strips, head, (strips.len() == 3600).then_some(true))
+    }
+
+    // Exact producer completion order from DLM's authenticated 2560x1440 cold capture. Navarro
+    // stops draining immediately after vino's first ordering mismatch, at strip 300. Rows alone
+    // encode almost the whole permutation; the handful of split rows below are worker boundaries.
+    const NAVARRO_PROLOGUE_ROWS: &[u8] = &[
+        0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 29, 31, 33, 35, 37,
+        39, 41, 43, 45, 47, 49, 51, 53, 54, 57, 59, 60, 62, 64, 66, 68, 70, 72, 74,
+        76, 78, 80, 82, 84, 86, 88, 90, 92, 94, 96, 98, 100, 1, 3, 5, 7, 9, 11,
+        13, 15, 17, 19, 21, 23, 25, 27, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48,
+        50, 52, 55, 56, 58, 61, 63, 65, 67, 69, 71, 73, 75, 77, 79, 81, 83, 85,
+        87, 89, 91, 93, 95, 97, 99, 101, 102, 103, 110, 112, 114, 116, 118, 120,
+        122, 124, 126, 128, 130, 132, 134, 136, 138, 140, 142, 144, 146, 148, 150,
+        152, 154, 156, 158, 160, 162, 164, 166, 168, 170, 172, 174, 176, 178, 100,
+        104, 105, 106, 107, 108, 109, 111, 113, 115, 117, 119, 121, 123, 125, 127,
+        129, 131, 133, 135, 137, 139, 141, 143, 145, 147, 149, 151, 153, 155, 157,
+        159, 161, 163, 165, 167, 169, 171, 173, 175, 177, 179,
+    ];
+
+    const NAVARRO_ORDINARY_ROWS: &[u8] = &[
+        1, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 29, 31, 33, 35, 37, 39,
+        41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63, 64, 66, 68, 70, 72, 73, 75,
+        77, 79, 81, 83, 85, 87, 89, 91, 93, 95, 97, 99, 0, 3, 5, 7, 9, 11, 13,
+        15, 17, 19, 21, 23, 25, 27, 28, 30, 32, 34, 36, 38, 40, 42, 44, 46, 48,
+        50, 52, 54, 56, 58, 60, 62, 65, 67, 69, 71, 74, 76, 78, 80, 82, 84, 86,
+        88, 90, 92, 94, 96, 98, 100, 102, 99, 101, 102, 103, 105, 107, 109, 111,
+        113, 115, 117, 118, 120, 122, 125, 127, 129, 131, 133, 135, 137, 139, 141,
+        144, 146, 148, 150, 152, 154, 156, 158, 160, 162, 164, 166, 168, 170, 172,
+        174, 176, 178, 101, 104, 106, 108, 110, 112, 114, 116, 119, 121, 123, 124,
+        126, 128, 130, 132, 134, 136, 138, 140, 142, 143, 145, 147, 149, 151, 153,
+        155, 157, 159, 161, 163, 165, 167, 169, 171, 173, 175, 177, 179,
+    ];
+
+    fn frame_records_with_boundary(
+        geom: Geometry,
+        strips: &[KVec<u8>],
+        head: u8,
+        navarro_ordinary: Option<bool>,
+    ) -> Result<KVec<KVec<u8>>> {
+        let Geometry {
+            band_parity_bit,
+            interlaced_bands,
+            ..
+        } = geom;
+        // Both platforms count an image record's 0..15 padding bytes in `aux`. Navarro also uses
+        // `aux` as a subtype on non-image records; its fixed black carriers masked the image rule
+        // because their 4048-byte strides require no padding.
+        let aux_is_pad_count = true;
         const PREFIX: usize = 8;
         const STRIDE_CAP: usize = 0x0ff0;
         // Allocation boundary only, not wire framing.
@@ -977,10 +1230,47 @@ pub(crate) mod wht {
         let mut chunk: KVec<u8> = KVec::new();
         // Interlaced ordering sends even bands before odd bands while preserving x order.
         let mut order: KVec<usize> = KVec::with_capacity(strips.len(), GFP_KERNEL)?;
-        if interlaced_bands {
+        // The rows below are a producer permutation of a 2560x1440 Navarro surface: 20 strips
+        // across x 180 bands, its strips being 128x8. A strip count alone cannot select it --
+        // Ridge at the same resolution is also exactly 3600 strips, 40 across x 90 bands -- and
+        // both black carriers reach here on every dock, so match the layout itself.
+        let navarro_layout =
+            geom.interlaced_bands && geom.strip_w() == STRIP_BLOCKS * DIM && strips.len() == 3600;
+        let navarro_rows = match navarro_ordinary {
+            Some(false) if navarro_layout => Some(NAVARRO_PROLOGUE_ROWS),
+            Some(true) if navarro_layout => Some(NAVARRO_ORDINARY_ROWS),
+            _ => None,
+        };
+        if let Some(rows) = navarro_rows {
+            // 2560 px / 128 px per strip. Guaranteed by `navarro_layout` above.
+            const STRIPS_ACROSS: usize = 20;
+            let ordinary = navarro_ordinary == Some(true);
+            for (run, &y) in rows.iter().enumerate() {
+                let (x0, x1) = if ordinary {
+                    match run {
+                        50 => (0, 8),
+                        101 => (0, 8),
+                        102 => (8, 20),
+                        103 => (0, 4),
+                        104 => (8, 20),
+                        143 => (4, 20),
+                        _ => (0, 20),
+                    }
+                } else {
+                    match run {
+                        51 => (0, 4),
+                        139 => (4, 20),
+                        _ => (0, 20),
+                    }
+                };
+                for x in x0..x1 {
+                    order.push(y as usize * STRIPS_ACROSS + x, GFP_KERNEL)?;
+                }
+            }
+        } else if interlaced_bands {
             for pass in 0..2u16 {
                 for (n, s) in strips.iter().enumerate() {
-                    if (strip_y(s) / STRIP_H as u16) & 1 == pass {
+                    if (strip_y(s) >> geom.strip_h_shift()) & 1 == pass {
                         order.push(n, GFP_KERNEL)?;
                     }
                 }
@@ -998,11 +1288,29 @@ pub(crate) mod wht {
             // profile requires it.
             record.extend_from_slice(&[0u8; 8 + PREFIX], GFP_KERNEL)?;
             record[4..8].copy_from_slice(&4u32.to_le_bytes());
-            let parity = u16::from(band_parity_bit) & ((y0 / STRIP_H as u16) & 1);
-            let sub = head as u16 | (parity << 4);
+            let parity = u16::from(band_parity_bit) & ((y0 >> geom.strip_h_shift()) & 1);
+            let sub = u16::from(geom.head_sub(head)) | (parity << 4);
             record[8..10].copy_from_slice(&sub.to_le_bytes());
             let mut n = 0usize;
-            while i < order.len() && strip_y(&strips[order[i]]) == y0 {
+            // A record ends at a y-band boundary only where the band is part of its identity.
+            // Ridge carries the band parity in `sub`, so a record cannot span two bands; Navarro
+            // does not, and fills each record to the stride cap instead.
+            while i < order.len()
+                && (!band_parity_bit || strip_y(&strips[order[i]]) == y0)
+            {
+                // Preserve DLM's captured producer flushes exactly. They are not a uniform
+                // 1024-strip rule: applying that to the final 1552-strip segment added a record
+                // at 3072 and made the prologue 210064 bytes instead of 210048. The ordinary
+                // carrier also schedules the two 1024-strip producers differently, so it has its
+                // own three boundaries and one extra image record (208624 bytes total).
+                let producer_boundary = match navarro_ordinary {
+                    Some(false) => matches!(i, 1024 | 2048 | 2764),
+                    Some(true) => matches!(i, 2032 | 2048 | 2804),
+                    None => false,
+                };
+                if interlaced_bands && n > 0 && producer_boundary {
+                    break;
+                }
                 let s = &strips[order[i]];
                 let projected = record.len() + 2 + s.len();
                 let projected_aligned = (projected + 15) & !15;
@@ -1014,11 +1322,17 @@ pub(crate) mod wht {
                 n += 1;
                 i += 1;
             }
-            // The wire format pads each complete record stride to 16 bytes and carries that count
-            // in `aux`. There is no additional trailer or inter-record gap: `size` counts from
-            // after the four-byte pad+size prefix, so `stride = size + 4` lands on the next record.
+            // The wire format pads each complete record stride to 16 bytes. There is no
+            // additional trailer or inter-record gap: `size` counts from after the four-byte
+            // pad+size prefix, so `stride = size + 4` lands on the next record.
+            //
+            // Ridge carries the pad count in `aux`. Navarro does not: there `aux` names a record
+            // type, and every one of its image records carries zero, so a pad count written there
+            // would be read as some other kind of record entirely.
             let pad = (16 - (record.len() & 15)) & 15;
-            record[10..12].copy_from_slice(&(pad as u16).to_le_bytes());
+            if aux_is_pad_count {
+                record[10..12].copy_from_slice(&(pad as u16).to_le_bytes());
+            }
             record.extend_from_slice(&[0u8; 15][..pad], GFP_KERNEL)?;
             let size = (record.len() - 4) as u16;
             record[2..4].copy_from_slice(&size.to_le_bytes());
@@ -1035,20 +1349,284 @@ pub(crate) mod wht {
         Ok(frames)
     }
 
-    /// Build the three 32-byte end-of-frame records.
+    /// Bands described by one `kind=0x200f` sub-record, and the row stride of a band's values.
     ///
+    /// Measured: every full sub-record carries eight bands and 256 payload bytes, so a band is a
+    /// fixed 32 bytes regardless of how many strips actually occupy it -- at 2560 wide only the
+    /// first 20 are ever non-zero and bytes 20..32 are zero in all 5760 bytes of every map.
+    ///
+    /// 32 covers any width up to 4096 px, but nothing wider has been captured, so a mode past
+    /// that must not assume the stride still holds.
+    const PARAM_BANDS_PER_TLV: usize = 8;
+    const PARAM_BAND_STRIDE: usize = 32;
+    /// Sub-records in the first of the pair; the rest go in the second. DLM splits 180 bands as
+    /// 120 + 60, which is this many full sub-records and then the remainder.
+    const PARAM_TLVS_PER_RECORD: usize = 15;
+
+    /// A strip's size class, as carried in the `kind=0x200f` map.
+    ///
+    /// The dock needs each strip's length before it parses the strip, because a strip is a
+    /// self-delimiting bitstream whose end it cannot otherwise find. The class is simply the
+    /// length in 512-byte units.
+    ///
+    /// Measured over 68,347 `(strip, map value)` pairs in the authenticated DLM capture
+    /// `~/dlm-today-124144/wire.pcapng`, with **zero** disagreements: value 0 covers 54..510
+    /// bytes, 1 covers 512..1022, 2 covers 1024..1498 and 3 covers 1594..1670. Every boundary
+    /// falls on a multiple of 512.
+    #[inline]
+    fn strip_size_class(len: usize) -> u8 {
+        // The field does not saturate: the corpus only reaches class 3 because its longest strip
+        // is 1670 B, and clamping a live desktop's larger strips to 3 corrupts them.
+        (len >> 9) as u8
+    }
+
+    /// Collect `(x, y, byte length)` for every strip in an already-framed set of image records.
+    ///
+    /// The map is derived from the exact bytes about to go on the wire rather than from the
+    /// encoder's intermediate state, so it cannot drift from what the dock actually receives.
+    /// Each record body holds strips as `[u16 len][body]`, and every strip body opens with the
+    /// codec's `01 28` magic -- which is what terminates the walk when a record's trailing
+    /// padding is reached, since `aux` is a producer lane on this dock and not a pad count.
+    fn framed_strip_extents(frames: &[KVec<u8>]) -> impl Iterator<Item = (usize, usize, usize)> + '_ {
+        frames.iter().flat_map(|chunk| {
+            // Each element of `frames` is an allocation chunk holding several complete records,
+            // not one record, so walk records by their own stride: a record is `[u16 pad][u16
+            // size][12 B header][ (u16 len ++ strip)* ][ 0..15 pad ]` and the next begins
+            // `size + 4` bytes on. Walking strips to the end of a chunk instead stops at the first
+            // inner record boundary, because the next record's zero `pad` reads as a zero length.
+            let mut next_record = 0usize;
+            let mut p = 0usize;
+            let mut record_end = 0usize;
+            core::iter::from_fn(move || loop {
+                if p + 2 > record_end {
+                    // This record is exhausted (or none has started yet): step to the next.
+                    let hdr = chunk.get(next_record..next_record + 16)?;
+                    let stride = usize::from(u16::from_le_bytes([hdr[2], hdr[3]])) + 4;
+                    if stride < 16 || next_record + stride > chunk.len() {
+                        return None;
+                    }
+                    p = next_record + 16;
+                    record_end = next_record + stride;
+                    next_record = record_end;
+                    continue;
+                }
+                let sl = usize::from(u16::from_le_bytes([chunk[p], chunk[p + 1]]));
+                // A length that cannot be a strip is this record's trailing zero padding.
+                if sl < 16 || p + 2 + sl > record_end {
+                    p = record_end;
+                    continue;
+                }
+                let s = &chunk[p + 2..p + 2 + sl];
+                p += 2 + sl;
+                if s[0] != 0x01 || s[1] != 0x28 {
+                    p = record_end;
+                    continue;
+                }
+                let x = usize::from(u16::from_le_bytes([s[2], s[3]]));
+                let y = usize::from(u16::from_le_bytes([s[4], s[5]]));
+                return Some((x, y, sl));
+            })
+        })
+    }
+
+    /// Build the DL7400's per-strip parameter map for one frame, as the pair of `kind=0x200f`
+    /// records DLM sends.
+    ///
+    /// The map covers the whole frame: one byte per strip, `height / strip_h` bands of
+    /// `width / strip_w` strips, each band padded to [`PARAM_BAND_STRIDE`]. At 2560x1440 that is
+    /// 180 bands of 20 strips, which is exactly what every DLM map in
+    /// `captures/navarro-dlm-modeset-20260802-005453` contains, split 120 + 60 across two records.
+    ///
+    /// Values come from [`strip_size_class`] applied to the strips in `frames`. A position this
+    /// frame does not carry stays zero, which is what DLM sends for it.
+    ///
+    /// An all-zero map is not a harmless approximation: it announces every strip as "under 512
+    /// bytes", so the dock mis-parses exactly the detailed strips and renders them as coloured
+    /// noise while flat fills stay perfect.
+    pub(crate) fn navarro_strip_params(
+        geom: Geometry,
+        connector: u8,
+        width: usize,
+        height: usize,
+        frames: &[KVec<u8>],
+        remembered: &mut KVec<u8>,
+    ) -> Result<KVec<u8>> {
+        let bands = height.div_ceil(geom.strip_h());
+        let across = width.div_ceil(geom.strip_w()).min(PARAM_BAND_STRIDE);
+        let sub = u16::from(geom.head_sub(connector));
+        let mut out = KVec::new();
+
+        // One byte per map slot, laid out exactly as the sub-records carry it.
+        //
+        // The map covers the whole surface while a delta frame carries only its damaged strips,
+        // so carry the previous frame's classes forward and overwrite only what this frame sends;
+        // rebuilding from zero would re-declare every untouched strip as class 0. `remembered` is
+        // the caller's per-connector buffer, zeroed by the resize a mode change triggers, which is
+        // correct because the dock's framebuffer is undefined until the keyframe that follows.
+        if remembered.len() != bands * PARAM_BAND_STRIDE {
+            remembered.clear();
+            remembered.resize(bands * PARAM_BAND_STRIDE, 0, GFP_KERNEL)?;
+        }
+        let mut values: KVec<u8> = KVec::new();
+        values.resize(bands * PARAM_BAND_STRIDE, 0, GFP_KERNEL)?;
+        values.copy_from_slice(remembered);
+        let mut described = 0usize;
+        let mut classes = [0usize; 8];
+        let mut longest = 0usize;
+        for (x, y, len) in framed_strip_extents(frames) {
+            let (bx, by) = (x / geom.strip_w(), y / geom.strip_h());
+            if bx >= across || by >= bands {
+                continue;
+            }
+            let class = strip_size_class(len);
+            values[by * PARAM_BAND_STRIDE + bx] = class;
+            if let Some(slot) = classes.get_mut(usize::from(class)) {
+                *slot += 1;
+            }
+            longest = longest.max(len);
+            described += 1;
+        }
+        // A position the walk misses is announced as class 0, so `described` must equal the strip
+        // count of the records handed in, and the histogram distinguishes a map that covers every
+        // strip from one that calls them all class 0.
+        vino_debug!(
+            "vino: connector={connector} strip map {described} strip(s) over {} chunk(s), classes {:?}, longest {longest} B\n",
+            frames.len(),
+            &classes[..4]
+        );
+        remembered.copy_from_slice(&values);
+
+        let mut band = 0usize;
+        let mut record = 0usize;
+        while band < bands {
+            // The first record takes up to PARAM_TLVS_PER_RECORD sub-records, the second the rest.
+            let take_tlvs = if record == 0 {
+                PARAM_TLVS_PER_RECORD
+            } else {
+                bands.div_ceil(PARAM_BANDS_PER_TLV)
+            };
+            let mut body = KVec::new();
+            for _ in 0..take_tlvs {
+                if band >= bands {
+                    break;
+                }
+                let count = PARAM_BANDS_PER_TLV.min(bands - band);
+                let payload = count * PARAM_BAND_STRIDE;
+                body.extend_from_slice(&((6 + payload) as u16).to_le_bytes(), GFP_KERNEL)?;
+                body.extend_from_slice(&0x200fu16.to_le_bytes(), GFP_KERNEL)?;
+                body.extend_from_slice(&(band as u16).to_le_bytes(), GFP_KERNEL)?;
+                body.extend_from_slice(&(count as u16).to_le_bytes(), GFP_KERNEL)?;
+                let from = band * PARAM_BAND_STRIDE;
+                body.extend_from_slice(&values[from..from + payload], GFP_KERNEL)?;
+                band += count;
+            }
+            // DLM pads the first record's body to 3968 bytes and leaves the second exact.
+            if record == 0 && body.len() < 3968 {
+                body.resize(3968, 0, GFP_KERNEL)?;
+            }
+            let size = (body.len() + 12) as u16;
+            let aux: u16 = if record == 0 { 0x0008 } else { 0x0000 };
+            out.extend_from_slice(&0u16.to_le_bytes(), GFP_KERNEL)?;
+            out.extend_from_slice(&size.to_le_bytes(), GFP_KERNEL)?;
+            out.extend_from_slice(&4u32.to_le_bytes(), GFP_KERNEL)?;
+            out.extend_from_slice(&sub.to_le_bytes(), GFP_KERNEL)?;
+            out.extend_from_slice(&aux.to_le_bytes(), GFP_KERNEL)?;
+            out.extend_from_slice(&0u32.to_le_bytes(), GFP_KERNEL)?;
+            out.extend_from_slice(&body, GFP_KERNEL)?;
+            record += 1;
+        }
+        Ok(out)
+    }
+
+    /// A frame's closing records.
+    ///
+    /// The two platforms delimit a frame with a different number of records, so this carries its
+    /// own length and derefs to exactly the bytes that go on the wire.
+    pub(crate) struct FrameTrailer {
+        bytes: [u8; 96],
+        len: usize,
+    }
+
+    impl core::ops::Deref for FrameTrailer {
+        type Target = [u8];
+
+        fn deref(&self) -> &[u8] {
+            &self.bytes[..self.len]
+        }
+    }
+
+    /// The ring slot a frame writes, and the one it writes next.
+    ///
+    /// Both platforms cycle a head's frames through three buffers. Ridge names them by a phase of
+    /// `0`, `2` or `4`; Navarro names the dock-side slot id and address of each.
+    fn ring_phase(seq0: u32) -> (u8, u8) {
+        let phase = ((seq0 % 3) as u8) * 2;
+        (phase, (phase + 2) % 6)
+    }
+
+    /// Build the DL7400 record that opens a non-prologue frame.
+    ///
+    /// Both working transports put a USB-transfer boundary between the `aux=0x0006` close and this
+    /// `aux=0x0004` next-slot record, so the opener belongs to the frame it describes rather than
+    /// to the preceding trailer. This is protocol framing, not cosmetic grouping.
+    pub(crate) fn navarro_frame_opener(geom: Geometry, connector: u8, seq0: u32) -> [u8; 32] {
+        let (phase, _) = ring_phase(seq0);
+        let prev_phase = (phase + 4) % 6;
+        let slot = super::super::cp::navarro_pipe_slot(connector, u16::from(phase));
+        let ring = super::super::cp::navarro_pipe_ring(connector, u16::from(phase)) as u16;
+        let prev_ring =
+            super::super::cp::navarro_pipe_ring(connector, u16::from(prev_phase)) as u16;
+        let sub = u16::from(geom.head_sub(connector));
+
+        let mut out = [0u8; 32];
+        out[2] = 0x1c; // size=28 -> 32-byte record
+        out[4] = 0x04; // type=4
+        out[8..10].copy_from_slice(&sub.to_le_bytes());
+        out[10..12].copy_from_slice(&0x0004u16.to_le_bytes());
+        out[16..19].copy_from_slice(&[0x0a, 0x00, 0x04]);
+        out[19] = slot as u8;
+        out[22..24].copy_from_slice(&ring.to_le_bytes());
+        out[26..28].copy_from_slice(&prev_ring.to_le_bytes());
+        out
+    }
+
+    /// Build the DL7400's closing record for the ring slot this frame filled.
+    ///
+    /// The next slot is announced by [`navarro_frame_opener`] only after this frame's final USB
+    /// transfer has terminated.
+    pub(crate) fn navarro_frame_trailer(geom: Geometry, connector: u8, seq0: u32) -> FrameTrailer {
+        let (phase, _) = ring_phase(seq0);
+        let slot = super::super::cp::navarro_pipe_slot(connector, u16::from(phase));
+        let ring = super::super::cp::navarro_pipe_ring(connector, u16::from(phase)) as u16;
+        let sub = u16::from(geom.head_sub(connector));
+
+        let mut out = [0u8; 96];
+        out[2] = 0x1c; // size=28 -> 32-byte record
+        out[4] = 0x04; // type=4
+        out[8..10].copy_from_slice(&sub.to_le_bytes());
+        out[10..12].copy_from_slice(&0x0006u16.to_le_bytes());
+
+        // Slot complete: its id, its ring address, and this frame's number.
+        out[16..19].copy_from_slice(&[0x08, 0x00, 0x05]);
+        out[19] = slot as u8;
+        out[22..24].copy_from_slice(&ring.to_le_bytes());
+        out[25] = (seq0 as u8).wrapping_add(1);
+
+        FrameTrailer { bytes: out, len: 32 }
+    }
+
     /// They delimit every logical frame, including the ARM-prefixed first frame. The first record
     /// carries a wrapping one-based frame counter; all three carry a three-slot phase (`0,2,4`) and
     /// the selected head.
-    pub(crate) fn frame_trailer(head: u8, seq0: u32) -> [u8; 96] {
-        let phase = ((seq0 % 3) as u8) * 2;
-        let next_phase = (phase + 2) % 6;
+    pub(crate) fn frame_trailer(geom: Geometry, head: u8, seq0: u32) -> FrameTrailer {
+        let (phase, next_phase) = ring_phase(seq0);
         let phase_off = phase * 4;
         let next_off = next_phase * 4;
         let frame_no = (seq0 as u8).wrapping_add(1);
         let mut out = [0u8; 96];
 
-        for (i, head_byte) in [head, head, head | 0x10].into_iter().enumerate() {
+        let h = geom.head_sub(head);
+        for (i, head_byte) in [h, h, h | 0x10].into_iter().enumerate() {
             let o = i * 32;
             out[o + 2] = 0x1c; // size=28 -> 32-byte record
             out[o + 4] = 0x04; // type=4
@@ -1072,6 +1650,9 @@ pub(crate) mod wht {
             out[o + 23] = next_off;
             out[o + 27] = phase_off;
         }
-        out
+        FrameTrailer {
+            bytes: out,
+            len: 96,
+        }
     }
 }

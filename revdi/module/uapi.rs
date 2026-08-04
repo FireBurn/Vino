@@ -94,8 +94,6 @@ const _: () = {
     );
 };
 
-pub(crate) const EVDI_GRABPIX_MODE_RECTS: u32 =
-    kernel::uapi::drm_evdi_grabpix_mode_EVDI_GRABPIX_MODE_RECTS;
 pub(crate) const EVDI_GRABPIX_MODE_DIRTY: u32 =
     kernel::uapi::drm_evdi_grabpix_mode_EVDI_GRABPIX_MODE_DIRTY;
 

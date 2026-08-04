@@ -56,7 +56,9 @@ pub fn parse_reply(key: &[u8; 16], outbound_riv: &[u8; 8], wire: &[u8]) -> Resul
     }
 
     let sequence = u32::from_le_bytes(wire[12..16].try_into().map_err(|_| EPROTO)?);
-    let encrypted = &wire[16..wire.len() - 16];
+    // The whole body, tag included: `open_in` authenticates it before decrypting, which is also
+    // what tells this loop which inbound riv the dock used.
+    let encrypted = &wire[16..];
     for riv in inbound_reply_rivs(outbound_riv) {
         let Ok(plaintext) = kvino::open_in(key, &riv, sequence, encrypted) else {
             continue;

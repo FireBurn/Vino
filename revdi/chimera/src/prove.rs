@@ -83,15 +83,13 @@ fn load_frames() -> Vec<Vec<u8>> {
 /// `ct(content) || tag16`; `stream` bodies are `ct(whole inner)`. AES-CTR is
 /// symmetric so `cp::open_in` (the kernel decrypt) recovers it.
 fn recover(ks: &[u8; 16], riv: &[u8; 8], seq: u32, body: &[u8], livemac: bool) -> Option<Vec<u8>> {
-    let ct = if livemac {
-        if body.len() < 16 {
-            return None;
-        }
-        &body[..body.len() - 16]
+    if livemac {
+        // Tag included: `open_in` verifies the Dl3Cmac, so a candidate that decrypts at all is
+        // the right one.
+        kvino::open_in(ks, riv, seq, body).ok()
     } else {
-        body
-    };
-    kvino::open_in(ks, riv, seq, ct).ok()
+        kvino::open_stream(ks, riv, seq, body).ok()
+    }
 }
 
 /// Find the (ks,riv) whose decrypt yields a sane inner header (known sub, zero

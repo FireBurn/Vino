@@ -46,14 +46,12 @@ pub(crate) fn connect(
         // publish the EDID. The hotplug causes modes to be checked against the new limits.
         let connection = data.events.connect(dev, file)?;
         *file.inner().connection.lock() = Some(connection);
-        data.painter.lock().connected = true;
         data.set_mode_limits(arg.pixel_area_limit, arg.pixel_per_second_limit);
         if !edid.is_empty() {
             data.set_edid(dev, edid);
         }
     } else {
         *file.inner().connection.lock() = None;
-        data.painter.lock().connected = data.events.is_connected();
         // Drop the EDID so the connector reports disconnected until the next CONNECT.
         data.clear_edid(dev);
     }
@@ -90,13 +88,13 @@ pub(crate) fn grabpix(
     arg: &mut uapi::DrmEvdiGrabpix,
     _file: &File,
 ) -> Result<u32> {
-    // XRGB8888: 4 bytes per pixel (the only format the primary plane advertises).
+    // Every format the primary plane advertises is 32 bits per pixel, packed.
     const BPP: usize = 4;
 
-    match arg.mode {
-        uapi::EVDI_GRABPIX_MODE_DIRTY => {}
-        uapi::EVDI_GRABPIX_MODE_RECTS => return Err(EINVAL),
-        _ => return Err(EINVAL),
+    // MODE_RECTS would have the client hand us the rectangles to copy; only MODE_DIRTY, where
+    // the driver reports the damage it accumulated, is implemented.
+    if arg.mode != uapi::EVDI_GRABPIX_MODE_DIRTY {
+        return Err(EINVAL);
     }
     if arg.num_rects < 1 {
         return Err(EINVAL);

@@ -27,12 +27,16 @@ pub(super) fn cp_session_key(ske_ks: &[u8; 16]) -> kernel::crypto::Secret<16> {
     kernel::crypto::Secret::new(key)
 }
 
-/// Derive the AES-CTR content nonce for one video head from the RIV carried by that head's
-/// `SKE_Send_Eks` restatement (`id=0x32`). Video uses `byte7 ^= 0x08 | head`, distinct from the
-/// main control channel's `byte7 ^= 0x04`.
-pub(super) fn video_content_nonce(riv: &[u8; 8], head: u8) -> [u8; 8] {
+/// Derive a stream's AES-CTR content nonce from the RIV its `SKE_Send_Eks` restatement
+/// (`id=0x32`) delivered.
+///
+/// Byte 7 is xored with the stream's content-stream id: the value the stream's
+/// `RepeaterAuth_Stream_Manage` restatement declares, which is also the wire `sub` of that
+/// stream's control records. The control channel is stream `0x04`, Ridge's video streams are
+/// `0x08 | head`, and Navarro's are `(connector << 3) | 7`.
+pub(super) fn stream_content_nonce(riv: &[u8; 8], stream_id: u16) -> [u8; 8] {
     let mut nonce = *riv;
-    nonce[7] ^= 0x08 | head;
+    nonce[7] ^= stream_id as u8;
     nonce
 }
 
@@ -98,6 +102,70 @@ pub(super) fn stream_commit(counter: u16, head: u8) -> Result<KVec<u8>> {
 pub(super) fn device_query_req(counter: u16, sub: u16) -> Result<KVec<u8>> {
     random_tail_msg(0x14, sub, counter)
 }
+
+/// DL7400 post-authentication state query (`id=0x15 sub=0x78`).
+///
+/// The authenticated same-day DLM transcript sends this exactly once after all four per-connector
+/// authentication blocks and before the first `0x16/0x4c` finalizer. Its request has the ordinary
+/// 32-byte random-tail shape; the dock replies `0x14/0x78` with state `2` at offset 22. The
+/// handler's semantic name is not known, so keep the builder descriptive rather than assigning a
+/// guessed protocol meaning to that state.
+pub(super) fn post_auth_state_req(counter: u16) -> Result<KVec<u8>> {
+    random_tail_msg(0x15, 0x0078, counter)
+}
+/// DL7400 real-time-clock synchronization (`id=0x1e sub=0x94`).
+///
+/// The ten-byte payload at offset 22 is a compact broken-down local time:
+/// `[year LE16, month, day, hour, minute, second, weekday, yday LE16]`. The authenticated
+/// A capture carrying Monday as weekday 1 and 214 as the zero-based day of year proves the last
+/// three bytes are calendar fields rather than an opaque random tail.
+pub(super) fn rtc_sync_req(
+    counter: u16,
+    unix_seconds: i64,
+    utc_offset_minutes: i32,
+) -> Result<KVec<u8>> {
+    let local = unix_seconds.saturating_add(i64::from(utc_offset_minutes) * 60);
+    let days = local.div_euclid(86_400);
+    let second_of_day = local.rem_euclid(86_400);
+
+    // Gregorian civil date from days since 1970-01-01 (Howard Hinnant's civil_from_days).
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 }.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let mut year = yoe + era * 400;
+    let doy_march = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy_march + 2) / 153;
+    let day = doy_march - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    if month <= 2 {
+        year += 1;
+    }
+    if !(0..=u16::MAX as i64).contains(&year) {
+        return Err(EINVAL);
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let month_starts = [0u16, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    let mut yday = month_starts[(month - 1) as usize] + day as u16 - 1;
+    if leap && month > 2 {
+        yday += 1;
+    }
+    let weekday = (days + 4).rem_euclid(7) as u8; // 1970-01-01 was Thursday (4).
+
+    let mut b = KVec::with_capacity(32, GFP_KERNEL)?;
+    header(&mut b, 0x001e, 0x0094, counter)?;
+    pad_to(&mut b, 22)?;
+    b.extend_from_slice(&[0u8; 10], GFP_KERNEL)?;
+    b[22..24].copy_from_slice(&(year as u16).to_le_bytes());
+    b[24] = month as u8;
+    b[25] = day as u8;
+    b[26] = (second_of_day / 3_600) as u8;
+    b[27] = ((second_of_day % 3_600) / 60) as u8;
+    b[28] = (second_of_day % 60) as u8;
+    b[29] = weekday;
+    b[30..32].copy_from_slice(&yday.to_le_bytes());
+    Ok(b)
+}
 /// Shared builder for the many CP messages that share one wire shape: the standard 8-byte
 /// `[id][sub][counter][00 00]` header, 14 zero bytes, then a fresh 10-byte host-random tail the
 /// dock treats as an opaque token.
@@ -110,19 +178,23 @@ fn random_tail_msg(id: u16, sub: u16, counter: u16) -> Result<KVec<u8>> {
     b.extend_from_slice(&tail, GFP_KERNEL)?;
     Ok(b)
 }
-/// OUT `id=0x16 sub=0x0023` downstream-sink engage request. Offsets 22 and 23 both carry the head
-/// selector; the remaining bytes are an opaque token.
-pub(super) fn edid_engage_req(counter: u16, head: u8) -> Result<KVec<u8>> {
-    // Both selector bytes are required by the sink-engage handler.
+/// OUT `id=0x16 sub=0x0023` downstream-sink state request. Offset 22 selects the head and offset
+/// 23 carries the state. Navarro's cold transcript uses `0xff` to tear the sink down, then the
+/// head selector itself (`0` or `1`) to re-engage it.
+pub(super) fn edid_sink_state(counter: u16, head: u8, state: u8) -> Result<KVec<u8>> {
     let mut b = KVec::with_capacity(32, GFP_KERNEL)?;
     header(&mut b, 0x16, 0x0023, counter)?;
     pad_to(&mut b, 22)?;
-    b.push(head, GFP_KERNEL)?;
-    b.push(head, GFP_KERNEL)?;
+    b.extend_from_slice(&[head, state], GFP_KERNEL)?;
     let mut tail = [0u8; 8];
     rng::fill(&mut tail);
     b.extend_from_slice(&tail, GFP_KERNEL)?;
     Ok(b)
+}
+
+/// Engage one downstream sink after its EDID exchange.
+pub(super) fn edid_engage_req(counter: u16, head: u8) -> Result<KVec<u8>> {
+    edid_sink_state(counter, head, head)
 }
 /// OUT `id=0x15 sub=0x0053` post-EDID capability query. Offset 22 carries a one-based head index.
 pub(super) fn post_edid_query(counter: u16, head: u8) -> Result<KVec<u8>> {
@@ -135,17 +207,22 @@ pub(super) fn post_edid_query(counter: u16, head: u8) -> Result<KVec<u8>> {
     b.extend_from_slice(&tail, GFP_KERNEL)?;
     Ok(b)
 }
-/// OUT `id=0x16 sub=0x004b` downstream EDID-read kick.
-pub(super) fn edid_readiness_kick(counter: u16, head: u8) -> Result<KVec<u8>> {
+/// OUT `id=0x16 sub=0x004b` downstream EDID-reader state request.
+pub(super) fn edid_readiness_state(counter: u16, head: u8, state: u8) -> Result<KVec<u8>> {
     let mut b = KVec::with_capacity(32, GFP_KERNEL)?;
     header(&mut b, 0x16, 0x4b, counter)?;
     pad_to(&mut b, 22)?;
-    // Offset 22 selects the downstream head and offset 23 starts the read.
-    b.extend_from_slice(&[head, 0x01], GFP_KERNEL)?;
+    // Offset 22 selects the downstream head and offset 23 stops/starts the reader.
+    b.extend_from_slice(&[head, state], GFP_KERNEL)?;
     let mut tail = [0u8; 8];
     rng::fill(&mut tail);
     b.extend_from_slice(&tail, GFP_KERNEL)?;
     Ok(b)
+}
+
+/// Start one downstream EDID read.
+pub(super) fn edid_readiness_kick(counter: u16, head: u8) -> Result<KVec<u8>> {
+    edid_readiness_state(counter, head, 1)
 }
 /// OUT get-EDID request (`id=0x15 sub=0x21`). A `sub=0x20` probe must precede each fetch attempt.
 /// The dock may initially return an internal placeholder, so callers retry until a downstream EDID
@@ -178,12 +255,44 @@ pub(super) struct Timing {
     pub vsync_front: u16,
     pub vsync_width: u16,
     pub refresh_hz: u16,
-    /// Pixel clock in 10 kHz units, serialized at offset 70.
-    pub pixel_clock_10khz: u16,
+    /// Pixel clock in 10 kHz units, serialized as a `u32` at offsets 70 through 73.
+    ///
+    /// It is a full 32-bit field. No Ridge capture
+    /// could show that, because Ridge is never driven above 497.75 MHz and the high half is
+    /// always zero there -- but the DL7400 sends `0x0001113d` (699.49 MHz) for 2560x1440p165,
+    /// so the upper word is real. Truncating to `u16` made every mode past 655.35 MHz fail the
+    /// conversion and never reach the dock at all.
+    pub pixel_clock_10khz: u32,
     /// Link configuration word at offset 42, selected by [`mode_profile`].
     pub field42: u16,
+    /// Word at offset 46. Resolution-keyed and platform-specific; see [`navarro_mode_words`].
+    pub off46: u16,
+    /// Word at offset 48. Resolution-keyed and platform-specific; see [`navarro_mode_words`].
+    pub off48: u16,
     /// Mode-dependent word at offset 66, selected by [`mode_profile`].
     pub off66: u16,
+}
+
+/// Ridge's offset-46 and offset-48 words, which are fixed across its whole decrypted corpus.
+const RIDGE_OFF46: u16 = 0x4000;
+const RIDGE_OFF48: u16 = 0x6000;
+
+/// The DL7400's offset-46 and offset-48 words for `hactive`, or `None` if no capture covers it.
+///
+/// These are *not* Ridge's constants, which vino sent on every DL7400 mode set until this was
+/// measured. Both words track resolution alone: all three decrypted 2560x1440 mode sets carry the
+/// same pair at 60, 120 and 165 Hz, and the one 640x480p60 mode set carries a different pair.
+///
+/// Two samples cannot separate a formula from a lookup. `0x0a80`/`0x0300` are both `hactive +
+/// 128`, and `0x66db`/`0x6800` have no proposed derivation at all, so this deliberately refuses to
+/// extrapolate: an unmeasured resolution gets Ridge's words and a log line naming them, which is
+/// the same discipline [`mode_profile`] applies to offsets 42 and 66.
+fn navarro_mode_words(hactive: u16, vactive: u16) -> Option<(u16, u16)> {
+    match (hactive, vactive) {
+        (2560, 1440) => Some((0x0a80, 0x66db)),
+        (640, 480) => Some((0x0300, 0x6800)),
+        _ => None,
+    }
 }
 
 /// Select the offset-42 downstream link word from the mode's width.
@@ -197,7 +306,7 @@ pub(super) struct Timing {
 /// The 1280x720p60 and 3840x2160p60 values predate the decrypted corpus but fall on the same
 /// ladder.
 ///
-/// ⚠ `vdisplay` tracks `hdisplay` in every sample, so nothing distinguishes a width ladder from
+/// `vdisplay` tracks `hdisplay` in every sample, so nothing distinguishes a width ladder from
 /// an area one; width is chosen because the steps land on standard widths.
 fn link_word_42(hdisplay: u16) -> u16 {
     match hdisplay {
@@ -218,7 +327,7 @@ fn link_word_42(hdisplay: u16) -> u16 {
 /// 2560x1440p60 (`0x0800`) -- same refresh, but the 1440p timing is CVT-RB and carries no VIC, so
 /// refresh alone does not select the base.
 ///
-/// ⚠ `0x2800` is observed in exactly one message and its meaning is undecoded, so treat any mode
+/// `0x2800` is observed in exactly one message and its meaning is undecoded, so treat any mode
 /// that lands on it without a measurement as suspect first if a panel stays dark.
 fn mode_word_66(mode: &kernel::drm::kms::modes::DisplayMode, refresh: u16) -> u16 {
     let vic = u16::from(mode.cea_vic()) & 0x00ff;
@@ -293,6 +402,29 @@ pub(super) fn mode_supported(mode: &kernel::drm::kms::modes::DisplayMode) -> boo
 /// detailed timing record. Offsets 26 through 46 contain geometry, link configuration, refresh and
 /// flags; offset 66 is mode-dependent, offset 68 is fixed, offset 70 contains the pixel clock, and
 /// offsets 74 through 79 contain a fresh token.
+/// Build the mode-set's *teardown* form: the same message with the operation byte at offset 23
+/// set to zero, every timing word zero, and `0x8000` at offset 42.
+///
+/// Offset 23 is an operation code, not the "fixed generation/type value" vino assumed it to be.
+/// DLM sends this form for a connector before it sends that connector's real mode -- in a
+/// same-day keyed capture, two rounds of `(conn 0, conn 1)` teardowns at -3.1 s and -1.2 s and
+/// then the real pair 0.12 s before the first video byte. vino only ever sent the `0x02` form, so
+/// the dock was asked to configure a pipe that had never been torn down.
+pub(super) fn clear_mode(counter: u16, head: u8) -> Result<KVec<u8>> {
+    let mut b = KVec::with_capacity(80, GFP_KERNEL)?;
+    header(&mut b, 0x48, 0x22, counter)?;
+    pad_to(&mut b, 22)?;
+    b.push(head, GFP_KERNEL)?; // off22: connector
+    b.push(0, GFP_KERNEL)?; // off23: operation 0 -- tear down
+    pad_to(&mut b, 42)?;
+    b.extend_from_slice(&0x8000u16.to_le_bytes(), GFP_KERNEL)?; // off42
+    pad_to(&mut b, 74)?;
+    let mut tail = [0u8; 6];
+    rng::fill(&mut tail);
+    b.extend_from_slice(&tail, GFP_KERNEL)?; // off74..79: pad to the AES block
+    Ok(b)
+}
+
 pub(super) fn set_mode(counter: u16, head: u8, t: &Timing) -> Result<KVec<u8>> {
     let mut b = KVec::with_capacity(80, GFP_KERNEL)?;
     header(&mut b, 0x48, 0x22, counter)?;
@@ -311,8 +443,8 @@ pub(super) fn set_mode(counter: u16, head: u8, t: &Timing) -> Result<KVec<u8>> {
         t.vsync_width,
         t.field42,
         t.refresh_hz,
-        0x4000,
-        /* off46 flags */ 0x6000, /* off48 */
+        t.off46,
+        t.off48,
     ] {
         b.extend_from_slice(&v.to_le_bytes(), GFP_KERNEL)?;
     }
@@ -322,7 +454,9 @@ pub(super) fn set_mode(counter: u16, head: u8, t: &Timing) -> Result<KVec<u8>> {
     pad_to(&mut b, 66)?;
     b.extend_from_slice(&t.off66.to_le_bytes(), GFP_KERNEL)?; // off66: see `mode_profile`
     b.extend_from_slice(&0x0200u16.to_le_bytes(), GFP_KERNEL)?; // off68: profile constant
-    b.extend_from_slice(&t.pixel_clock_10khz.to_le_bytes(), GFP_KERNEL)?; // off70: 10 kHz units
+    // off70..73: pixel clock in 10 kHz units, a full u32. Ridge only ever fills the low half, so
+    // this is byte-identical there to the old u16 followed by two zero bytes.
+    b.extend_from_slice(&t.pixel_clock_10khz.to_le_bytes(), GFP_KERNEL)?;
     pad_to(&mut b, 74)?;
     let mut tail = [0u8; 6];
     rng::fill(&mut tail);
@@ -330,7 +464,10 @@ pub(super) fn set_mode(counter: u16, head: u8, t: &Timing) -> Result<KVec<u8>> {
     Ok(b)
 }
 /// Convert a DRM display mode into the dock's set-mode timing representation.
-pub(super) fn timing_from_drm_mode(mode: &kernel::drm::kms::modes::DisplayMode) -> Result<Timing> {
+pub(super) fn timing_from_drm_mode(
+    mode: &kernel::drm::kms::modes::DisplayMode,
+    navarro: bool,
+) -> Result<Timing> {
     let refresh = mode.vrefresh() as u16;
     let sub = |a: u16, b: u16| a.saturating_sub(b);
     let profile = mode_profile(mode).ok_or(EINVAL)?;
@@ -350,7 +487,22 @@ pub(super) fn timing_from_drm_mode(mode: &kernel::drm::kms::modes::DisplayMode) 
             profile.off66
         );
     }
-    let pixel_clock_10khz = u16::try_from((clock as u32) / 10).map_err(|_| EINVAL)?;
+    let pixel_clock_10khz = (clock as u32) / 10;
+    let (off46, off48) = if navarro {
+        navarro_mode_words(mode.hdisplay(), mode.vdisplay()).unwrap_or_else(|| {
+            pr_info!(
+                "vino: {}x{} has no measured DL7400 mode words; sending Ridge's off46={:#06x} \
+                 off48={:#06x}\n",
+                mode.hdisplay(),
+                mode.vdisplay(),
+                RIDGE_OFF46,
+                RIDGE_OFF48
+            );
+            (RIDGE_OFF46, RIDGE_OFF48)
+        })
+    } else {
+        (RIDGE_OFF46, RIDGE_OFF48)
+    };
     Ok(Timing {
         hactive: mode.hdisplay(),
         hblank: sub(mode.htotal(), mode.hdisplay()),
@@ -363,6 +515,8 @@ pub(super) fn timing_from_drm_mode(mode: &kernel::drm::kms::modes::DisplayMode) 
         refresh_hz: refresh,
         pixel_clock_10khz,
         field42: profile.off42,
+        off46,
+        off48,
         off66: profile.off66,
     })
 }
@@ -422,7 +576,7 @@ pub(super) fn decode_any(
         return None;
     }
     let seq = u32::from_le_bytes([wire[12], wire[13], wire[14], wire[15]]);
-    let head = &wire[16..wire.len().min(48)];
+    let body = &wire[16..];
     let rivs = inbound_reply_rivs(out_riv);
     let variants: [(&'static str, [u8; 8]); 4] = [
         ("out/h0", rivs[2]),
@@ -432,7 +586,7 @@ pub(super) fn decode_any(
     ];
     let mut best: Option<(i32, &'static str, u16, u16, u16, [u8; 24])> = None;
     for (tag, riv) in variants {
-        let Ok(pt) = open_in(ks, &riv, seq, head) else {
+        let Ok(pt) = open_in(ks, &riv, seq, body) else {
             continue;
         };
         if pt.len() < 8 {
@@ -478,9 +632,9 @@ pub(super) fn verify_in_ack(
         return None;
     }
     let seq = u32::from_le_bytes([wire[12], wire[13], wire[14], wire[15]]);
-    let head = &wire[16..wire.len().min(32)];
+    let body = &wire[16..];
     for riv in inbound_reply_rivs(out_riv) {
-        let Ok(pt) = open_in(ks, &riv, seq, head) else {
+        let Ok(pt) = open_in(ks, &riv, seq, body) else {
             continue;
         };
         if pt.len() < 8 {
@@ -501,6 +655,69 @@ pub(super) fn verify_in_ack(
 ///
 /// This distinguishes a valid message using a newly observed sub-id from a frame that cannot be
 /// decrypted under any supported RIV variant.
+/// Recover a dock->host frame's inner plaintext, whichever framing it used.
+///
+/// Ridge seals every reply as wire `sub=0x45`. Navarro also pushes frames framed in the clear as
+/// wire `sub=0x25`, with the inner message at offset 16 and nothing to decrypt.
+pub(super) fn inner_plaintext(
+    ks: &[u8; 16],
+    out_riv: &[u8; 8],
+    wire: &[u8],
+) -> Option<KVec<u8>> {
+    if wire.len() <= 16 {
+        return None;
+    }
+    match u16::from_le_bytes([wire[8], wire[9]]) {
+        0x25 => {
+            let mut pt = KVec::with_capacity(wire.len() - 16, GFP_KERNEL).ok()?;
+            pt.extend_from_slice(&wire[16..], GFP_KERNEL).ok()?;
+            Some(pt)
+        }
+        0x45 => {
+            let seq = u32::from_le_bytes([wire[12], wire[13], wire[14], wire[15]]);
+            for riv in inbound_reply_rivs(out_riv) {
+                let Ok(pt) = open_in(ks, &riv, seq, &wire[16..]) else {
+                    continue;
+                };
+                // The verified Dl3Cmac identifies a genuine frame. Inner offsets 6..7 must NOT be
+                // tested as padding: Navarro stores connector selector bits there for the third
+                // and fourth per-connector HDCP bursts, and rejecting on them dropped those
+                // connectors' authentic pushes.
+                if pt.len() >= 8 {
+                    return Some(pt);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// The dock's own log line carried by a `sub=0x0c` push, as printable ASCII.
+///
+/// The dock reports what it is doing, and what it refuses, on this channel. Recovering it costs
+/// one pass over an already-decrypted frame and is the only account of a fault the dock does not
+/// otherwise report.
+pub(super) fn dock_trace_line(inner: &[u8]) -> Option<KVec<u8>> {
+    if inner.len() < 10 || u16::from_le_bytes([inner[2], inner[3]]) != 0x000c {
+        return None;
+    }
+    let mut out = KVec::new();
+    for &b in &inner[8..] {
+        if b == 0 {
+            continue;
+        }
+        if !(0x20..0x7f).contains(&b) {
+            continue;
+        }
+        out.push(b, GFP_KERNEL).ok()?;
+    }
+    if out.len() < 4 {
+        return None;
+    }
+    Some(out)
+}
+
 pub(super) fn decode_in_lenient(
     ks: &[u8; 16],
     out_riv: &[u8; 8],
@@ -510,9 +727,9 @@ pub(super) fn decode_in_lenient(
         return None;
     }
     let seq = u32::from_le_bytes([wire[12], wire[13], wire[14], wire[15]]);
-    let head = &wire[16..wire.len().min(32)];
+    let body = &wire[16..];
     for riv in inbound_reply_rivs(out_riv) {
-        let Ok(pt) = open_in(ks, &riv, seq, head) else {
+        let Ok(pt) = open_in(ks, &riv, seq, body) else {
             continue;
         };
         if pt.len() < 8 {
@@ -521,42 +738,84 @@ pub(super) fn decode_in_lenient(
         let id = u16::from_le_bytes([pt[0], pt[1]]);
         let sub = u16::from_le_bytes([pt[2], pt[3]]);
         let ctr = u16::from_le_bytes([pt[4], pt[5]]);
-        let pad = u16::from_le_bytes([pt[6], pt[7]]);
-        if id < 0x400 && pad == 0 {
-            return Some((id, sub, ctr));
-        }
+        // Navarro's device-log/status replies use session-varying IDs beyond the old catalogued
+        // range (the captured transaction boundary replies with id=0x0405/sub=0x000c). Its
+        // per-connector HDCP pushes also use bytes 4--7 as a one-hot 32-bit selector, so `ctr` is
+        // only an echo counter for actual request/reply classes and bytes 6..7 need not be zero --
+        // `open_in` has already authenticated the whole ciphertext, so no plaintext plausibility
+        // restriction is needed or wanted here.
+        return Some((id, sub, ctr));
     }
     None
 }
-/// Extract the fresh per-head `rrx` from an `AKE_Send_rrx` push.
+/// One decoded downstream-HDCP push carried inside the interactive control session.
 ///
-/// Each per-head repeater authentication supplies a distinct `rrx`. The derived `kd`, encryption
-/// key and `V` must use this value rather than the main-link `rrx`, otherwise repeater
-/// authentication and the downstream DDC path fail.
-pub(super) fn perhead_rrx(ks: &[u8; 16], out_riv: &[u8; 8], wire: &[u8]) -> Option<[u8; 8]> {
-    if wire.len() <= 16 || u16::from_le_bytes([wire[8], wire[9]]) != 0x45 {
+/// The vendor wrapper pads all of the short HDCP messages to a fixed inner size, so callers must
+/// interpret the payload according to `msg_id`; `payload_len` is the available padded region, not
+/// a claim that every byte belongs to the HDCP message.  The largest value needed by the current
+/// authentication verifier is H'/L'/M' (32 bytes).
+#[derive(Clone, Copy)]
+pub(super) struct PerheadHdcpPush {
+    pub msg_id: u8,
+    pub payload: [u8; 38],
+    pub payload_len: usize,
+}
+
+/// Decode a per-head HDCP push from either of the two observed vendor framings.
+///
+/// Ridge can send the inner body directly in `wsub=0x25`; Navarro seals it as `wsub=0x45` with
+/// the live control key.  Keeping this as one parser matters: previously only Rrx was extracted,
+/// while L', ReceiverID/V', receiver-auth status and M' were silently treated as generic traffic.
+pub(super) fn perhead_hdcp_push(
+    ks: &[u8; 16],
+    out_riv: &[u8; 8],
+    wire: &[u8],
+) -> Option<PerheadHdcpPush> {
+    if wire.len() <= 16 {
+        return None;
+    }
+    const SUB_HDCP_RESP: u16 = 0x25;
+    const SUB_SEALED: u16 = 0x45;
+    let wsub = u16::from_le_bytes([wire[8], wire[9]]);
+
+    let copy_push = |inner: &[u8]| -> Option<PerheadHdcpPush> {
+        if inner.len() < 10 {
+            return None;
+        }
+        let sub = u16::from_le_bytes([inner[2], inner[3]]);
+        if sub != 0x84 {
+            return None;
+        }
+        let src = &inner[10..];
+        let n = src.len().min(38);
+        let mut payload = [0u8; 38];
+        payload[..n].copy_from_slice(&src[..n]);
+        Some(PerheadHdcpPush {
+            msg_id: inner[9],
+            payload,
+            payload_len: n,
+        })
+    };
+
+    if wsub == SUB_HDCP_RESP {
+        return copy_push(&wire[16..]);
+    }
+    if wsub != SUB_SEALED {
         return None;
     }
     let seq = u32::from_le_bytes([wire[12], wire[13], wire[14], wire[15]]);
-    let head = &wire[16..wire.len().min(48)];
+    let body = &wire[16..];
     for riv in inbound_reply_rivs(out_riv) {
-        let Ok(pt) = open_in(ks, &riv, seq, head) else {
+        let Ok(inner) = open_in(ks, &riv, seq, body) else {
             continue;
         };
-        if pt.len() < 18 {
-            continue;
-        }
-        let id = u16::from_le_bytes([pt[0], pt[1]]);
-        let sub = u16::from_le_bytes([pt[2], pt[3]]);
-        // id=0x10 sub=0x84 push, inner HDCP msg-id (byte 9) == AKE_SEND_RRX (0x06).
-        if id == 0x10 && sub == 0x84 && pt[9] == 0x06 {
-            let mut rrx = [0u8; 8];
-            rrx.copy_from_slice(&pt[10..18]);
-            return Some(rrx);
+        if let Some(push) = copy_push(&inner) {
+            return Some(push);
         }
     }
     None
 }
+
 // All three cursor messages share one 32-byte inner layout:
 // off0..7 id/sub/counter header
 // off8..21 zero
@@ -741,6 +1000,7 @@ pub(super) fn aux_for_id(id: u16, body_len: usize) -> u16 {
         0x1a => 0x04, // cursor move
         0x1b => 0x03, // cursor create
         0x1c => 0x02, // cursor image
+        0x1e => 0x00, // Navarro RTC synchronization
         0x1f => 0x0f,
         0x22 => 0x0c,
         0x26 => 0x08,
@@ -772,34 +1032,48 @@ pub(super) const CP_SETUP_PER_HEAD: [(u16, u16, usize); 9] = [
 ];
 /// Build a 48-byte `RepeaterAuth_Stream_Manage` restatement for one head.
 ///
-/// Offset 23 contains the one-based head, offset 27 the HDCP message id, offsets 32 and 36 contain
-/// the stream count and sequence, and offsets 40 through 47 contain a fresh token.
-pub(super) fn stream_manage_restatement(counter: u16, head: u8) -> Result<KVec<u8>> {
+/// Offset 27 carries the HDCP message id, offset 32 the stream count and offset 36 the head's
+/// content-stream id, and offsets 40 through 47 a fresh token. `connector_marker` writes the
+/// dock's connector selector into offsets 22 through 25.
+pub(super) fn stream_manage_restatement(
+    counter: u16,
+    head: u8,
+    stream_id: u16,
+    onehot: bool,
+) -> Result<KVec<u8>> {
     let mut b = KVec::from_elem(0u8, 48, GFP_KERNEL)?;
     b[0..2].copy_from_slice(&0x0026u16.to_le_bytes());
     b[2..4].copy_from_slice(&0x0010u16.to_le_bytes());
     b[4..6].copy_from_slice(&counter.to_le_bytes());
-    b[23] = head + 1; // head marker
+    connector_marker(&mut b, head, onehot);
     b[27] = 0x10; // HDCP msg-id (RepeaterAuth_Stream_Manage)
     b[32..36].copy_from_slice(&1u32.to_le_bytes());
-    b[36..40].copy_from_slice(&(head as u32 + 8).to_le_bytes()); // seq: 8 head0 / 9 head1
+    b[36..40].copy_from_slice(&(stream_id as u32).to_le_bytes());
     let mut tail = [0u8; 8];
     rng::fill(&mut tail);
     b[40..48].copy_from_slice(&tail);
     Ok(b)
 }
+
+/// Write a per-head record's connector selector.
+///
+/// Ridge names the connector by a one-based head number at offset 23. Navarro sets a one-hot bit
+/// at offset `22 + head`, which is why it can address four connectors where Ridge addresses two.
+pub(super) fn connector_marker(content: &mut [u8], head: u8, onehot: bool) {
+    if onehot {
+        if let Some(byte) = content.get_mut(22 + head as usize) {
+            *byte = 0x80;
+        }
+    } else if let Some(byte) = content.get_mut(23) {
+        *byte = head + 1;
+    }
+}
 /// Stream-finalization sequence sent after both [`CP_SETUP_PER_HEAD`] blocks.
 ///
 /// Each tuple is `(id, sub, value at offset 22)`. Finalization messages are 32 bytes, use
 /// `0x01` at offset 23 for `sub=0x4c`, and end with a fresh token.
-pub(super) const CP_SETUP_FINALIZE: [(u16, u16, u8); 6] = [
-    (0x0016, 0x004c, 0),
-    (0x0015, 0x004a, 0),
-    (0x0016, 0x004c, 0),
-    (0x0016, 0x004c, 1),
-    (0x0015, 0x004a, 1),
-    (0x0016, 0x004c, 1),
-];
+pub(super) const CP_SETUP_FINALIZE_STEPS: [(u16, u16); 3] =
+    [(0x0016, 0x004c), (0x0015, 0x004a), (0x0016, 0x004c)];
 
 /// Video-channel arm sequence prepended to the first frame on each head's bulk endpoint.
 ///
@@ -862,6 +1136,161 @@ pub(super) fn video_arm_plain_frame(sub: u16, body: &[u8; 16]) -> [u8; 32] {
 }
 
 /// Build a sealed type-4 video-arm frame from its header fields and plaintext content.
+/// The fixed 14-byte stream marker that opens every Navarro video stream record.
+///
+/// It is not a normal CP header. The connector is carried solely by the *wire* sub, never here:
+/// all four connectors send these same fourteen bytes.
+pub(super) const NAVARRO_STREAM_MARKER: [u8; 14] = [
+    0x04, 0x00, 0x08, 0x04, 0x05, 0x00, 0x06, 0x00, 0x07, 0x01, 0x08, 0x02, 0x07, 0x00,
+];
+
+/// Build the 16-byte plaintext of a Navarro video stream-open, sent once per connector on that
+/// connector's video endpoint before any pixels.
+///
+/// The content is [`NAVARRO_STREAM_MARKER`] followed by a two-byte opaque tail. The tail is host
+/// random and differs between observed opens; it is covered by the Dl3Cmac, so its length matters
+/// and its value does not.
+pub(super) fn navarro_stream_open() -> [u8; 16] {
+    let mut open = [0u8; 16];
+    open[..14].copy_from_slice(&NAVARRO_STREAM_MARKER);
+    rng::fill(&mut open[14..]);
+    open
+}
+
+/// Fixed leader of one slot record in a DL7400 pipe descriptor, observed at 2560x1440.
+const NAVARRO_SLOT_HEADER: [u8; 12] = [
+    0x00, 0x10, 0xb4, 0x00, 0x14, 0x00, 0x00, 0x40, 0x01, 0x00, 0x00, 0x00,
+];
+
+/// Fixed trailer of one slot record.
+const NAVARRO_SLOT_TRAILER: [u8; 10] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x50, 0x00, 0x80, 0x01, 0x09];
+
+/// Slot records per connector, and the connector stride in the dock's slot-id space.
+const NAVARRO_SLOTS_PER_CONNECTOR: u16 = 6;
+const NAVARRO_SLOT_STRIDE: u16 = 8;
+
+/// Dock-side addresses each slot record names, as `base - n * step`.
+///
+/// The ring index counts in slot ids, so it skips the two ids each connector leaves unused; the
+/// two plane pools count in allocated slots and do not. Both forms are fixed by twelve records
+/// across two independently keyed connectors.
+const NAVARRO_RING_BASE: u32 = 0x6fcc;
+const NAVARRO_RING_STEP: u32 = 0x21c;
+const NAVARRO_PLANE0_BASE: u32 = 0x71fb_9000;
+const NAVARRO_PLANE0_STEP: u32 = 0x5000;
+const NAVARRO_PLANE1_BASE: u32 = 0x7216_6000;
+const NAVARRO_PLANE1_STEP: u32 = 0x8000;
+
+/// The dock's slot id for one of a connector's pipe buffers.
+pub(super) fn navarro_pipe_slot(connector: u8, index: u16) -> u16 {
+    (connector as u16) * NAVARRO_SLOT_STRIDE + index
+}
+
+/// The ring address a connector's pipe buffer is given.
+pub(super) fn navarro_pipe_ring(connector: u8, index: u16) -> u32 {
+    NAVARRO_RING_BASE - u32::from(navarro_pipe_slot(connector, index)) * NAVARRO_RING_STEP
+}
+
+/// The quiescent body of a DL7400 per-frame stream report, as `[len=0x0052][kind=0x000a]` and
+/// thirty-five `u16` values.
+///
+/// DLM sends one of these on a connector's *stream* sub for every frame it sends on the frame sub
+/// -- 165 and 306 of them across a 4.3 s and a 4.7 s session, a median 9-19 ms apart and never
+/// more than ~1.0 s apart. vino sent none, and the dock tore the link down a few seconds after
+/// its first frame.
+///
+/// The five-value preamble (`1, 1, 0, 64, 64`) and the trailing zero are fixed. The thirty
+/// values between them are three blocks of three `(a, a, b)` triples separated by `(1, 1, 1)`,
+/// where the third triple of each block carries twice the `a` of the first two. These are the
+/// values DLM sends on a quiescent stream, identical on both connectors in both captures; under
+/// load `a` and `b` grow with the frame's cost, but the mapping from a frame to them is not
+/// established, so this reports the quiescent set.
+const NAVARRO_STREAM_REPORT: [u16; 42] = [
+    0x0052, 0x000a, // len, kind
+    1, 1, 0, 64, 64, // fixed preamble
+    16, // per-report scalar: 16 quiescent, larger under load
+    16, 16, 16, 16, 16, 16, 32, 32, 32, // block A
+    1, 1, 1, //
+    16, 16, 4, 16, 16, 4, 32, 32, 8, // block B
+    1, 1, 1, //
+    32, 32, 2, 32, 32, 2, 64, 64, 4, // block C
+    0,
+];
+
+/// Build the 84-byte body shared by both forms of the DL7400 per-frame stream report.
+fn navarro_stream_report_body(out: &mut [u8; 84]) {
+    for (i, v) in NAVARRO_STREAM_REPORT.iter().enumerate() {
+        out[i * 2..i * 2 + 2].copy_from_slice(&v.to_le_bytes());
+    }
+}
+
+/// Build the 96-byte plaintext of the DL7400's ordinary per-frame stream report (`aux=0x000c`).
+///
+/// The report body followed by a 12-byte host-random tail. This is the form DLM sends for all but
+/// a handful of frames: 159 of 164 on one connector, 304 of 306 on the other.
+pub(super) fn navarro_stream_report() -> [u8; 96] {
+    let mut out = [0u8; 96];
+    let mut body = [0u8; 84];
+    navarro_stream_report_body(&mut body);
+    out[..84].copy_from_slice(&body);
+    rng::fill(&mut out[84..]);
+    out
+}
+
+/// Build the 112-byte plaintext of the DL7400's mode-restating stream report (`aux=0x0002`).
+///
+/// The same body, prefixed by the 26-byte mode header that also opens the decoder configuration,
+/// and followed by a two-byte host-random tail. DLM sends this form only a handful of times per
+/// session, around a mode change.
+pub(super) fn navarro_stream_report_mode(mode_header: &[u8; 26]) -> [u8; 112] {
+    let mut out = [0u8; 112];
+    out[..26].copy_from_slice(mode_header);
+    let mut body = [0u8; 84];
+    navarro_stream_report_body(&mut body);
+    out[26..110].copy_from_slice(&body);
+    rng::fill(&mut out[110..]);
+    out
+}
+
+/// Build a DL7400 pipe descriptor for one connector.
+///
+/// The 304-byte plaintext is [`NAVARRO_STREAM_MARKER`] **twice**, then six
+/// `[len=0x002c][kind=0x000e][slot]` records of 40 configuration bytes. Records advance by
+/// `len + 2`. Each configuration names the connector's slot id and the three dock-side addresses
+/// that slot is given. 14 + 14 + 6 * 46 = 304 exactly, so there is no padding and no tail.
+///
+/// The marker count is not a settled constant: one capture has it once followed by the six records
+/// and fourteen unexplained bytes, while a capture taken while DLM was driving both panels has it
+/// twice and no trailing bytes. Both plaintexts are 304 bytes. This follows the capture that was working, and it is the
+/// reason the fourteen bytes must not be dismissed as AES padding for *this* record: in the
+/// working capture they are consumed by a second marker at the front.
+///
+/// Only 2560x1440 has been observed, and the fixed header carries mode-derived bytes, so callers
+/// must not use this for another mode.
+pub(super) fn navarro_pipe_descriptor(connector: u8) -> Result<KVec<u8>> {
+    let mut b = KVec::with_capacity(304, GFP_KERNEL)?;
+    b.extend_from_slice(&NAVARRO_STREAM_MARKER, GFP_KERNEL)?;
+    b.extend_from_slice(&NAVARRO_STREAM_MARKER, GFP_KERNEL)?;
+    for index in 0..NAVARRO_SLOTS_PER_CONNECTOR {
+        let alloc = u32::from((connector as u16) * NAVARRO_SLOTS_PER_CONNECTOR + index);
+        b.extend_from_slice(&0x002cu16.to_le_bytes(), GFP_KERNEL)?;
+        b.extend_from_slice(&0x000eu16.to_le_bytes(), GFP_KERNEL)?;
+        b.extend_from_slice(&navarro_pipe_slot(connector, index).to_le_bytes(), GFP_KERNEL)?;
+        b.extend_from_slice(&NAVARRO_SLOT_HEADER, GFP_KERNEL)?;
+        b.extend_from_slice(&navarro_pipe_ring(connector, index).to_le_bytes(), GFP_KERNEL)?;
+        b.extend_from_slice(&[0, 0], GFP_KERNEL)?;
+        let plane0 = NAVARRO_PLANE0_BASE - alloc * NAVARRO_PLANE0_STEP;
+        b.extend_from_slice(&plane0.to_le_bytes(), GFP_KERNEL)?;
+        b.extend_from_slice(&[0, 0, 0, 0], GFP_KERNEL)?;
+        let plane1 = NAVARRO_PLANE1_BASE - alloc * NAVARRO_PLANE1_STEP;
+        b.extend_from_slice(&plane1.to_le_bytes(), GFP_KERNEL)?;
+        b.extend_from_slice(&NAVARRO_SLOT_TRAILER, GFP_KERNEL)?;
+    }
+    debug_assert_eq!(b.len(), 304);
+    debug_assert_eq!(b.len(), 304);
+    Ok(b)
+}
+
 pub(super) fn seal_video_arm(
     key: &[u8; 16],
     riv: &[u8; 8],
@@ -888,10 +1317,40 @@ pub(super) fn in_riv(out_riv: &[u8; 8]) -> [u8; 8] {
     riv[7] ^= 0x01;
     riv
 }
-/// Decrypt a dock->host CP frame body (AES-CTR, the same keystream as [`seal`] but
-/// keyed with the IN `riv`). `ct` is the ciphertext (wire bytes after the 16-byte
-/// cleartext header); `seq` is the wire counter at wire offset 12.
-pub(super) fn open_in(ks: &[u8; 16], in_riv: &[u8; 8], seq: u32, ct: &[u8]) -> Result<KVec<u8>> {
+/// Authenticate and decrypt a dock->host CP frame body.
+///
+/// `body` is everything after the 16-byte clear wire header: AES-CTR ciphertext followed by the
+/// 16-byte clear Dl3Cmac. Inbound messages use the same encrypt-then-MAC construction as
+/// [`seal_livemac`]. Verifying the tag is important on Navarro because bytes 6--7 of the inner
+/// header are not invariably padding: per-connector HDCP pushes put the high half of their
+/// one-hot selector there (`00 80` / `80 00`). A zero-padding heuristic therefore rejects two
+/// connectors' authentic messages, while accepting arbitrary unauthenticated ciphertext with a
+/// chance plaintext prefix would be unsafe.
+pub(super) fn open_in(
+    ks: &[u8; 16],
+    in_riv: &[u8; 8],
+    seq: u32,
+    body: &[u8],
+) -> Result<KVec<u8>> {
+    // Both platforms authenticate an inbound frame with a trailing Dl3Cmac over the whole body.
+    // Verifying it is what lets callers read the plaintext without also testing it for
+    // plausibility -- and that matters, because Navarro's per-connector HDCP pushes carry a
+    // one-hot selector in inner bytes 6..7 that the old "those bytes are zero padding" heuristic
+    // rejected.
+    if body.len() < 16 {
+        return Err(EINVAL);
+    }
+    let (ct, wire_tag) = body.split_at(body.len() - 16);
+    let expected = dl3cmac_tag(ks, in_riv, seq as u64, ct)?;
+    // Accumulate the difference so a tag mismatch does not reveal the first differing byte.
+    let mut different = 0u8;
+    for (&actual, &want) in wire_tag.iter().zip(expected.iter()) {
+        different |= actual ^ want;
+    }
+    if different != 0 {
+        return Err(EINVAL);
+    }
+
     let cipher = crypto::Aes128::new(ks)?;
     let mut pt = KVec::with_capacity(ct.len(), GFP_KERNEL)?;
     for (i, chunk) in ct.chunks(16).enumerate() {
@@ -940,6 +1399,16 @@ pub(super) fn parse_edid_from_reply(
         // Validate the EDID base-block magic `00 FF FF FF FF FF FF 00`.
         const MAGIC: [u8; 8] = [0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00];
         if edid[..8] != MAGIC {
+            continue;
+        }
+        // ...and its checksum. The magic is only eight bytes and a dock with an empty port can
+        // return a block that carries it, which is enough to be mistaken for a monitor: the head
+        // is then declared connected, a hotplug is raised for a sink that is not there, and the
+        // dock resets. A real base block sums to zero modulo 256.
+        if edid.len() < 128 {
+            continue;
+        }
+        if edid[..128].iter().fold(0u8, |a, b| a.wrapping_add(*b)) != 0 {
             continue;
         }
         let total = ((1 + edid[126] as usize) * 128).min(edid.len());
@@ -998,7 +1467,11 @@ pub(super) fn probe_reply_status(
 ///
 /// Inner offset 26 bit 7 indicates that the downstream DDC read has completed. `None` distinguishes
 /// an unrelated or undecipherable frame from a matching reply that is not ready.
-pub(super) fn edid_poll_ready(ks: &[u8; 16], out_riv: &[u8; 8], wire: &[u8]) -> Option<bool> {
+pub(super) fn edid_poll_ready(
+    ks: &[u8; 16],
+    out_riv: &[u8; 8],
+    wire: &[u8],
+) -> Option<bool> {
     if wire.len() <= 16 || u16::from_le_bytes([wire[8], wire[9]]) != 0x45 {
         return None;
     }
