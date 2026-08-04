@@ -84,11 +84,11 @@ of three costs three calls, not eight idle lanes.
 
 | transform | ns/block | vs scalar |
 |---|---|---|
-| scalar | 98 | — |
-| across-blocks, 8 lanes fed | 91 | 1.07x |
+| scalar | 85 | — |
+| across-blocks, 8 lanes fed | 91 | ~1.0x |
 | across-blocks, encoder's batch of 3 | 266 | **0.36x** |
-| **within-block, FPU per block** | **53** | **1.84x** |
-| **within-block, FPU per strip** | **48** | **2.04x** |
+| **within-block, FPU per block** | **47** | **1.81x** |
+| **within-block, FPU per strip** | **43** | **1.97x** |
 
 ⚠ The FPU section is per block in the current integration, which the table shows costs ~10%.
 Hoisting it to strip level — one section around all 16 blocks — is the obvious next step.
@@ -133,6 +133,38 @@ measurement above — a 2x transform over its share of `colour_block`.
 
 ⇒ Do not compare raw `machine busy` between runs on varying content. Normalise by delivered bytes,
 and alternate the configurations.
+
+## Would AVX-512 add anything? Probably not
+
+Structurally there is only one place it differs, and that place was measured and does not want
+vectorising at all.
+
+| stage | width needed | AVX-512 |
+|---|---|---|
+| level-1 row pass | a row is 8 `i32` = **exactly one `__m256i`** | half the register idle |
+| level-1 column pass | 4 wide (`__m128i`) | three quarters idle |
+| levels 2, 3 | 4x4 and 2x2 | narrower than any vector |
+| output stage | 16-value Morton permute per band | **one `permutexvar`** vs AVX2's 2 permutes + blend |
+
+The output stage is the only structural win — so it was implemented on AVX2 (two
+`permutevar8x32` plus a blend per half) and measured against leaving it scalar. Three runs each:
+
+| output stage | per-strip speedup | mean |
+|---|---|---|
+| vectorised | 172%, 172%, 197% | ~180% |
+| **scalar** | 225%, 202%, 191% | **~206%** |
+
+⛔ **Vectorising it is a regression.** Cross-lane permutes are 3-cycle-latency and the scalar
+loads, shifts and stores pipeline better. So AVX-512's single-instruction version would have to beat
+the *scalar* stage, not AVX2's — a much higher bar than the table suggests.
+
+Everything else is neutral or worse: the row pass would run at half width, and on Intel parts
+sustained 512-bit work can drop the core frequency, which here would also slow the compositor and
+the video decoder sharing that core. AMD Zen 4/5 double-pump 256-bit and have no such licence.
+
+⇒ **Not worth pursuing for this transform.** If it is tried anyway on a machine that has it, watch
+the *scalar* baseline between runs: a licence-induced frequency drop shows up there first, and a
+comparison that ignores it will credit AVX-512 with a slowdown it caused.
 
 ⇒ The transform is worth 2x and about 15% of `colour_block`, and that is the whole of what SIMD can
 reach here. The 72% that is left is the entropy coder, and the lever there is not wider arithmetic
