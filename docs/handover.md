@@ -152,8 +152,16 @@ Windows, delivered frame records fell from 5,462 to 344 over a comparable window
 a 16x drop at three times the nominal rate -- while ep0 control transfers rose from 4 to 1,724, and
 the dock then entered a disconnect/reconnect loop needing a manual power cycle.
 `ChangeDisplaySettingsEx` returned `DISP_CHANGE_SUCCESSFUL` and the mode read back as 180 Hz
-throughout. **Mode acceptance is not evidence of deliverable bandwidth.** Its 714.81 MHz timing is
-above the new clock ceiling, so it is pruned on both tests.
+throughout. **Mode acceptance is not evidence of deliverable bandwidth.**
+
+⚠ **That evidence is about 2560x1440@180 specifically, not about 180 Hz.** The Windows sweep's only
+180 Hz entry is that mode; the highest rate it tried at 1920x1080 was 120. The sweep also held
+1440p@180 for three seconds with no ill effect, while the 23.6 s capture destabilised the dock -- so
+the mechanism is sustained bandwidth. `58e9bca79aa2` therefore bounds the DL7400 by
+`max_head_clock_khz` (699.50 MHz) and `pixel_budget` alone and sets no refresh cap: 1440p@180 is
+714.81 MHz and still pruned, while 1080p@180 (~400 MHz, 373 Mpx/s) is not pruned for a reason
+nothing supports. `max_refresh_hz` remains for Ridge, where DLM clamps by rate regardless of
+resolution.
 
 ### The DL7400's intermittent blank
 
