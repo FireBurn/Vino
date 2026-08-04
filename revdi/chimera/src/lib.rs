@@ -28,6 +28,7 @@ pub mod kvino;
 pub mod prove;
 #[cfg(feature = "revdi")]
 pub mod revdi;
+pub mod scanout;
 #[cfg(feature = "live")]
 pub mod session;
 // `video.rs` reaches for `crate::simd` on x86_64, exactly as it does in the kernel crate.

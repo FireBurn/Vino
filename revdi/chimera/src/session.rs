@@ -42,6 +42,8 @@ pub struct ControlSession {
     inner_counter: u16,
     video_keys: [[u8; 24]; HEADS],
     frame_seq: [u32; HEADS],
+    /// Per-head content shadow and retransmit ledger; see [`crate::scanout`].
+    scanout: [crate::scanout::HeadScanout; HEADS],
 }
 
 impl ControlSession {
@@ -63,6 +65,7 @@ impl ControlSession {
             inner_counter,
             video_keys,
             frame_seq: [0; HEADS],
+            scanout: core::array::from_fn(|_| crate::scanout::HeadScanout::new()),
         })
     }
 
@@ -108,6 +111,14 @@ impl ControlSession {
     /// Borrow the transport for video submission.
     pub fn dock(&self) -> &Dock {
         &self.dock
+    }
+
+    /// Whether `head` still owes strip retransmissions, so the caller must re-present its last
+    /// surface even with nothing new from the compositor. See [`crate::scanout`].
+    pub fn owes_repaint(&self, head: u8) -> bool {
+        self.scanout
+            .get(usize::from(head))
+            .is_some_and(crate::scanout::HeadScanout::owes_retransmission)
     }
 
     /// Return the content key and nonce for `head`.
@@ -205,10 +216,16 @@ impl ControlSession {
                 next_status = Instant::now() + Duration::from_millis(16);
             }
         }
+        // The dock now holds the black training carrier, not a desktop, so the next presented frame
+        // must be a full keyframe whatever the compositor changed.
+        self.scanout[head_index].owe_keyframe();
         Ok(())
     }
 
-    /// Encode and present one padded RGB frame.
+    /// Encode and present one padded RGB frame, sending only what the dock still needs.
+    ///
+    /// A still desktop puts nothing on the wire at all, which is what DLM does and what the dock's
+    /// buffer rotation assumes; see [`crate::scanout`].
     pub fn present_rgb(
         &mut self,
         head: u8,
@@ -217,16 +234,30 @@ impl ControlSession {
         rgb: &[u8],
     ) -> Result<(), String> {
         let head_index = usize::from(head);
-        let sequence = *self
-            .frame_seq
-            .get(head_index)
-            .ok_or_else(|| format!("invalid Vino head {head}"))?;
-        let (frames, next_sequence) =
-            kvino::colour_frame_ep08_head(width, height, rgb, sequence, head)
-                .map_err(build_error("video frame"))?;
-        let stream = prefix_frame(&[], &frames, head, sequence);
-        self.submit_video(head, &stream)?;
-        self.frame_seq[head_index] = next_sequence;
+        if head_index >= HEADS {
+            return Err(format!("invalid Vino head {head}"));
+        }
+        let plan = self.scanout[head_index].plan(width, height, rgb);
+        let Some(frame) = self.scanout[head_index]
+            .encode(&plan, rgb, head)
+            .map_err(build_error("video frame"))?
+        else {
+            // Nothing moved and nothing is owed. DLM puts zero bytes on the wire here.
+            self.poll_status()?;
+            return Ok(());
+        };
+
+        // Each presentation carries the same image with a freshly advanced trailer, whose phase
+        // (`seq % dock_buffers`) is how the dock steps to the next buffer.
+        let sequence = self.frame_seq[head_index];
+        for repeat in 0..frame.presentations {
+            let stream = prefix_frame(&[], &frame.records, head, sequence.wrapping_add(repeat));
+            self.submit_video(head, &stream)?;
+        }
+        self.frame_seq[head_index] = sequence.wrapping_add(frame.presentations);
+        // Published only now: every early return and transport error above deliberately leaves the
+        // previous dock-visible state intact, so the next frame repairs it.
+        self.scanout[head_index].presented(&plan);
         self.poll_status()?;
         Ok(())
     }
@@ -276,6 +307,11 @@ impl ControlSession {
         let padded_height = height.div_ceil(16) * 16;
         let black = kvino::black_frame_ep08(padded_width, padded_height, head)
             .map_err(build_error("black shutdown frame"))?;
+        // Everything below overwrites the dock's buffers with black, so whatever the shadow says
+        // the dock is holding stops being true here.
+        if let Some(state) = self.scanout.get_mut(usize::from(head)) {
+            state.owe_keyframe();
+        }
         let deadline = Instant::now() + Duration::from_millis(120);
         let mut next_status = Instant::now();
         while Instant::now() < deadline {

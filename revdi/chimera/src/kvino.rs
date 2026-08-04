@@ -296,11 +296,31 @@ const NAVARRO: bool = false;
 /// The dock geometry every call below encodes for.
 ///
 /// The driver carries one of these per dock in `profile.rs` and passes it down; the rig drives a
-/// Ridge dock only, so it names Ridge's `DockProfile::geometry()` -- 8 blocks across a strip, no
-/// interlaced bands, band parity in the record `sub`, head in the low bits, stream ids `0x08 |
-/// head`, two dock buffers -- in one place instead of threading a parameter no caller varies.
+/// Ridge dock only, so it names the kernel's own `RIDGE_GEOMETRY` in one place instead of
+/// threading a parameter no caller varies.
 pub(crate) fn geometry() -> video::wht::Geometry {
-    video::wht::Geometry::new(8, false, true, 0, 0x08, 2)
+    video::wht::RIDGE_GEOMETRY
+}
+
+/// How many buffers the dock rotates through as it presents frames.
+///
+/// A keyframe must reach every one of them, so it is presented this many times with an advancing
+/// trailer phase; see [`crate::scanout`].
+pub fn dock_buffers() -> u32 {
+    u32::from(geometry().dock_buffers)
+}
+
+/// How many consecutive frames must carry a strip after its content changes, so that every one of
+/// the dock's buffers receives it. The driver's `damage_repeats()`: the ring depth plus one frame
+/// of margin for a presentation the dock drops or applies to the buffer it just used.
+pub fn damage_repeats() -> u8 {
+    geometry().dock_buffers.saturating_add(1)
+}
+
+/// The strip the codec tiles a surface into: 64x16 px on Ridge.
+pub fn strip_dims() -> (usize, usize) {
+    let geom = geometry();
+    (geom.strip_w(), geom.strip_h())
 }
 
 /// `video::wht::colour` — the Vino integer colour transform
@@ -353,6 +373,51 @@ pub fn colour_frame_ep08_head(
             .collect(),
         seq,
     ))
+}
+
+/// `video::wht::damage_strip_coords` / `all_strip_coords` — the strips a frame carries, raster
+/// ordered.
+///
+/// **The order is load-bearing**: [`frame_records`] groups strips into one record per single-Y
+/// band and requires them x-ordered within each band, so reordering changes the wire format.
+/// `clips` of `None` selects every strip.
+pub fn strip_coords(
+    width: usize,
+    height: usize,
+    clips: Option<&[(usize, usize, usize, usize)]>,
+) -> Result<Vec<(usize, usize)>> {
+    let geom = geometry();
+    let coords = match clips {
+        Some(clips) => video::wht::damage_strip_coords(geom, width, height, clips)?,
+        None => video::wht::all_strip_coords(geom, width, height)?,
+    };
+    Ok(coords.into_vec())
+}
+
+/// `video::wht::colour_strip_at` — encode the one strip whose top-left pixel is `(sx, sy)`.
+pub fn encode_strip(width: usize, rgb: &[u8], sx: usize, sy: usize) -> Result<Vec<u8>> {
+    let mut px = |x: usize, y: usize| {
+        let i = (y * width + x) * 3;
+        (rgb[i], rgb[i + 1], rgb[i + 2])
+    };
+    Ok(video::wht::colour_strip_at(geometry(), sx, sy, &mut px)?.into_vec())
+}
+
+/// `video::wht::frame_records` — frame encoded strip bodies into EP08 records.
+pub fn frame_records(strips: &[Vec<u8>], head: u8) -> Result<Vec<Vec<u8>>> {
+    let owned: Vec<KVec<u8>> = strips
+        .iter()
+        .map(|s| {
+            let mut k = KVec::new();
+            k.extend_from_slice(s, GFP_KERNEL)?;
+            Ok(k)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(video::wht::frame_records(geometry(), &owned, head)?
+        .into_vec()
+        .into_iter()
+        .map(|r| r.into_vec())
+        .collect())
 }
 
 /// `video::wht::frame_trailer` — the 96-byte per-frame trailer the dock expects after each image.

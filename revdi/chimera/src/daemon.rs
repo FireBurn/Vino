@@ -20,6 +20,9 @@ struct Output {
     card: RevdiCard,
     mode: Option<Mode>,
     active: bool,
+    /// The last padded surface presented, kept so owed strip retransmissions can be paid while the
+    /// compositor is producing nothing; see [`crate::scanout::HeadScanout::owes_retransmission`].
+    last_surface: Option<(Vec<u8>, usize, usize)>,
     cursor_hotspot: (i32, i32),
     presence_debounce: u8,
     silent_probes: u8,
@@ -58,6 +61,15 @@ fn run_session() -> Result<(), String> {
                 continue;
             }
             let Some(frame) = output.card.next_frame(FRAME_WAIT) else {
+                // Nothing new to grab. Repeat the last surface while strips still owe a
+                // transmission, so a change made just before the desktop went still reaches every
+                // one of the dock's buffers instead of stranding in one of them.
+                if let (true, Some((padded, padded_width, padded_height))) = (
+                    session.owes_repaint(output.head),
+                    output.last_surface.as_ref(),
+                ) {
+                    session.present_rgb(output.head, *padded_width, *padded_height, padded)?;
+                }
                 continue;
             };
             let width = frame.width;
@@ -74,6 +86,7 @@ fn run_session() -> Result<(), String> {
             }
             let (padded, padded_width, padded_height) = pad_rgb(&rgb, width, height);
             session.present_rgb(output.head, padded_width, padded_height, &padded)?;
+            output.last_surface = Some((padded, padded_width, padded_height));
         }
         if Instant::now() >= next_presence {
             refresh_topology(&mut session, &mut outputs)?;
@@ -106,6 +119,7 @@ fn connect_output(session: &mut ControlSession, slot: &mut Option<Output>, head:
             card,
             mode: None,
             active: false,
+            last_surface: None,
             cursor_hotspot: (0, 0),
             presence_debounce: 0,
             silent_probes: 0,
