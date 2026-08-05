@@ -1,0 +1,29 @@
+﻿2026-08-05 16:07:22.261  === phase mode120 (runbook 7b.2) ===
+2026-08-05 16:07:23.196  CAPTURE started (cap14-mode120)
+2026-08-05 16:07:27.458  HDR     2026-08-05 16:07:26.712  HDR OFF \\.\DISPLAY30  MAG 27CQ6F               ok  enabled False -> False  bpc 8  enc RGB  [5 ms]  mode120: other head stays 60 Hz SDR (control)
+2026-08-05 16:07:28.731  HDR     2026-08-05 16:07:27.978  HDR OFF \\.\DISPLAY29  MAG 27CQ6F               ok  enabled False -> False  bpc 8  enc RGB  [7 ms]  mode120: baseline SDR
+2026-08-05 16:07:28.739  MODE    setting \\.\DISPLAY29 to 60 Hz
+2026-08-05 16:07:30.241    | 16:07:30 attempt 1   \\.\DISPLAY29    2560x1440 @ 60 -> 60 Hz : SUCCESSFUL
+2026-08-05 16:07:30.244    | apply: SUCCESSFUL
+2026-08-05 16:07:34.823  MODE    \\.\DISPLAY29 now 2560x1440 @ 60 Hz
+2026-08-05 16:07:34.825  PLAY    hdr-pattern @ 60 Hz SDR  30 s
+2026-08-05 16:08:07.606  HDR     2026-08-05 16:08:05.883  HDR ON  \\.\DISPLAY29  MAG 27CQ6F               ok  enabled False -> True  bpc 10  enc RGB  [958 ms]  mode120: HDR ON at 60 Hz
+2026-08-05 16:08:37.612  STATE   60 Hz HDR, pattern playing
+2026-08-05 16:08:37.615  MODE    setting \\.\DISPLAY29 to 120 Hz
+2026-08-05 16:08:38.530    | 16:08:38 attempt 1   \\.\DISPLAY29    2560x1440 @ 60 -> 120 Hz : SUCCESSFUL
+2026-08-05 16:08:38.553    | apply: SUCCESSFUL
+2026-08-05 16:08:43.175  MODE    \\.\DISPLAY29 now 2560x1440 @ 120 Hz
+2026-08-05 16:08:45.722  PLAYER  at 120 Hz  {"hi":true,"depth":30,"dpr":1,"paused":false}
+2026-08-05 16:09:17.737  STATE   120 Hz HDR, pattern playing
+2026-08-05 16:09:20.067  HDR     2026-08-05 16:09:18.288  HDR OFF \\.\DISPLAY29  MAG 27CQ6F               ok  enabled True -> False  bpc 8  enc RGB  [961 ms]  mode120: HDR OFF still at 120 Hz
+2026-08-05 16:09:50.071  STATE   120 Hz SDR, pattern playing
+2026-08-05 16:09:50.074  MODE    setting \\.\DISPLAY29 to 60 Hz
+2026-08-05 16:09:51.716    | 16:09:51 attempt 1   \\.\DISPLAY29    2560x1440 @ 120 -> 60 Hz : SUCCESSFUL
+2026-08-05 16:09:51.719    | apply: SUCCESSFUL
+2026-08-05 16:09:56.356  MODE    \\.\DISPLAY29 now 2560x1440 @ 60 Hz
+2026-08-05 16:10:11.373  CAPTURE stop.flag written
+2026-08-05 16:10:14.951  CAPTURE finished
+2026-08-05 16:10:14.956    finished=2026-08-05 16:10:14.835
+2026-08-05 16:10:14.966    C:\Users\Mike\navarro-wincap\out\cap14-mode120-usbpcap1.pcap = 41436715
+2026-08-05 16:10:14.980    C:\Users\Mike\navarro-wincap\out\cap14-mode120-usbpcap2.pcap = 1837
+2026-08-05 16:10:14.995  === phase mode120 complete ===

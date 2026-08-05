@@ -1,0 +1,8 @@
+﻿USBPcap root hub enumeration - 2026-08-02 11:23:43
+
+===== \\.\USBPcap1 =====
+(no output)
+
+===== \\.\USBPcap2 =====
+(no output)
+

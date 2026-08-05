@@ -1,0 +1,18 @@
+﻿2026-08-05 15:55:26.675  === phase probes ===
+2026-08-05 15:55:26.692  head=\\.\DISPLAY29 other=\\.\DISPLAY30 prefix=C:\Users\Mike\navarro-wincap\out\cap11-metadata-probes snaplen=4096 max=280s dryrun=False
+2026-08-05 15:55:27.596  PLAYER  preflight  {"hi":false,"dpr":1,"one":true,"depth":24,"src":"sdr-pattern.webm","err":null,"drop":0}
+2026-08-05 15:55:27.877  CAPTURE started (cap11-metadata-probes)
+2026-08-05 15:55:32.197  HDR     2026-08-05 15:55:31.444  HDR OFF \\.\DISPLAY30  MAG 27CQ6F               ok  enabled False -> False  bpc 8  enc RGB  [6 ms]  probes: other head SDR
+2026-08-05 15:55:34.471  HDR     2026-08-05 15:55:32.733  HDR ON  \\.\DISPLAY29  MAG 27CQ6F               ok  enabled False -> True  bpc 10  enc RGB  [949 ms]  probes: HDR ON for the whole sequence
+2026-08-05 15:55:37.935  PLAYER  before probes  {"hi":true,"dpr":1,"one":true,"depth":30,"src":"sdr-pattern.webm","err":null,"drop":0}
+2026-08-05 15:55:38.451  HEVC    support: {"hevc":"probably","hevc8":"probably"}
+2026-08-05 15:55:38.458  IDLE    idle (pre)             15 s -- video paused on black
+2026-08-05 15:55:54.387  PROBES  sequence started (7 clips, 6.5 s each, 15 s black between)
+2026-08-05 15:58:29.841  PLAYER  after probes  {"hi":true,"dpr":1,"one":true,"depth":30,"src":"probe-G-bt709tag.mp4","err":null,"drop":0}
+2026-08-05 15:58:29.862  IDLE    idle (post)            15 s -- video paused on black
+2026-08-05 15:58:45.313  CAPTURE stop.flag written
+2026-08-05 15:58:48.898  CAPTURE finished
+2026-08-05 15:58:48.905    finished=2026-08-05 15:58:48.751
+2026-08-05 15:58:48.916    C:\Users\Mike\navarro-wincap\out\cap11-metadata-probes-usbpcap1.pcap = 13150761
+2026-08-05 15:58:48.931    C:\Users\Mike\navarro-wincap\out\cap11-metadata-probes-usbpcap2.pcap = 2922
+2026-08-05 15:58:48.947  === phase probes complete ===

@@ -1,10 +1,16 @@
-# HDR on DisplayLink — what the shipped binaries actually show
+# HDR on DisplayLink
 
-Status: **binary survey plus DL7400 wire evidence.** The binary results below are marked ✅ or ⊙ as
-before.  The 2026-08-02 Windows DL7400 captures add a measured *negative* result: toggling HDR does
-not identify an HDR-specific DisplayLink control, stream tag, or bulk-video profile.  This proves
-neither that the host preserves HDR pixels nor how it tone-maps them; it does establish that Vino
-must not invent a dock-side HDR transport from the binary strings alone.
+Status: **the 10-bit wire is decoded.** A DL7400 driving genuinely HDR content was captured on
+2026-08-05 and the difference from SDR is now measured rather than argued: the codec is *unchanged*
+— same records, same strip header, same transform, same quantiser — and the only thing that moves
+is the entropy coder's escape-category ceiling, which follows the sample depth. §0 is that
+measurement; everything from §1 on is the binary survey that preceded it and still explains *why*
+the dock behaves this way.
+
+⛔ **The 2026-08-02 conclusion in §5 is retracted** ("vino must keep its video transport SDR-like
+and must not accept 10-bit primary-plane formats"). It rested on `cap6`/`cap7`, which played the
+*same SDR animation* in both halves, so an identical wire was the expected result either way. The
+retraction is in §5.
 
 Sources on disk:
 
@@ -13,7 +19,153 @@ Sources on disk:
 | `re-binaries/windows/driver/dlidusb3.dll` | **DisplayLink Core Software v12.2.2204.0** | the Windows UMDF **IddCx** driver — current generation, the one that carries DL-7000 HDR |
 | `re-binaries/macos/app/DisplayLink Manager.app/…/DisplayLinkUserAgent` | 16.x | universal x86_64 + arm64 |
 | `/opt/displaylink/DisplayLinkManager` | package 6.8.1.0 | Linux |
-| `captures/navarro-wincap-20260802/out/cap{3,6,7}-*.pcap` | Windows 11 / DL7400 (`17e9:7000`) | per-connector HDR toggle and matched full-payload HDR/SDR traffic |
+| `captures/navarro-wincap-20260802/out/cap{3,6,7}-*.pcap` | Windows 11 / DL7400 (`17e9:7000`) | per-connector HDR toggle and matched full-payload HDR/SDR traffic — **SDR content in both halves** |
+| **`captures/navarro-wincap-20260805/out/cap9-hdr-ab-usbpcap1.pcap`** | Windows 11 / DL7400 | ⭐ **962 MB, full payload.** The same fourteen pictures in PQ/BT.2020 10-bit and then in BT.709 8-bit, one HDR toggle apart, on one connector at one mode. This is what §0 reads. |
+
+---
+
+## 0. ⭐ The 10-bit wire, measured
+
+### 0.1 The codec does not change
+
+`cap9` holds both halves of a controlled A/B: HDR on at `15:41:52.776` (`bitsPerColorChannel`
+8 → 10, `screen.colorDepth` 24 → 30, `matchMedia('(dynamic-range: high)')` true, all read back
+from the API rather than eyeballed), the fourteen-segment pattern and a motion clip, HDR off at
+`15:44:18.156`, then the same pictures again in BT.709 8-bit. Same connector, same 2560x1440p60
+mode, same player.
+
+Comparing a flat 6-second segment from each half, strip for strip:
+
+| | HDR half | SDR half |
+|---|---|---|
+| record types / `sub` / `aux` | `type 4`, `sub 0x0000`, aux `0/4/6/8/c` | identical |
+| strips per frame | 3600 | 3600 |
+| strip magic and header bytes 6..9, 14, 15 | all zero | all zero |
+| flat-field strip length | 58 B | 58 B |
+| the two sub-band offsets at 10 and 12 | present, same meaning | same |
+
+The first thirty bytes of a flat strip — magic, x, y, the sub-band offsets and all sixteen
+significance sync units — are **byte-identical between the two halves**. Only the DC chain differs,
+and it differs in value, not in shape.
+
+⇒ **There is no separate HDR codec, no HDR stream tag, and no HDR record kind.** Anything in vino
+that encodes a strip today encodes a 10-bit strip too.
+
+### 0.2 What does change: the escape-category ceiling
+
+`Bits::esc` codes a magnitude as `unary(c)` where `c` is the value's bit length, and the *maximum*
+category omits the unary 0-terminator — that omission is what makes the code complete. So the
+ceiling is part of the wire format, and it has to be large enough for the largest value the depth
+can produce. A luma DC is four times the sample:
+
+| depth | largest luma DC | category | ceiling |
+|---|---|---|---|
+| 8-bit | 4 × 255 = 1020 | 10 | `SOLID_DC_CMAX = 10` |
+| **10-bit** | 4 × 1023 = 4092 | **12** | **12** |
+
+Measured, not derived. `hdr-content/`'s `pq_ramp` segment is a monotonic 64-step ramp across the
+screen, so the right ceiling is the one under which a row of strips decodes monotonically:
+
+```
+$ tools/codec/depth-probe.py captures/navarro-wincap-20260805/out/cap9-hdr-ab-usbpcap1.pcap \
+      --device 5 --ep 8 --row 720 --since 15:42:54 --until 15:42:55
+  DC cmax 10: luma DC   -899 ..    997   16 inversion(s)
+  DC cmax 11: luma DC  -1659 ..   1096   14 inversion(s)
+  DC cmax 12: luma DC      8 ..   2544   MONOTONIC
+  DC cmax 13: luma DC  -3033 ..   2096    7 inversion(s)
+```
+
+and on the SDR half of the same capture, one ceiling lower and just as unique:
+
+```
+  DC cmax 10: luma DC      0 ..   1020   MONOTONIC
+  DC cmax 11: luma DC  -2034 ..    594    5 inversion(s)
+```
+
+13 fails as well as 11, so this is not "12 or anything above" — the terminator a ceiling of 13
+would put after a category-12 value is measurably absent.
+
+⚠ **This is why nothing looked wrong for a year.** A ceiling that is too low does not throw: it
+eats the next value's first bit as an offset bit and returns plausible rubbish. Read at the 8-bit
+ceiling, the HDR half decodes to *negative* luma — `grey100` came out at −220 — with no exception,
+no length mismatch and no failed strip.
+
+### 0.3 The values are PQ code words, tone-mapped host-side
+
+Sampling the same screen position through the fourteen segments, at the 10-bit ceiling:
+
+| segment | content | wire luma (10-bit) | pure PQ would be |
+|---|---|---|---|
+| `black` | 0 cd/m² | 2 | 0 |
+| `grey100` | 100 cd/m² | 476 | 520 |
+| `grey203` | 203 cd/m² | 549 | 594 |
+| `grey1000` | 1000 cd/m² | 635 | 769 |
+| `grey4000` | 4000 cd/m² | 635 | 923 |
+
+`grey1000` and `grey4000` are **byte-identical strips**, and 635/1023 is PQ code 0.621 ≈ 299 cd/m².
+The sink (an MSI MAG 27CQ6F) declares a peak of **301.8 cd/m²** in its CTA HDR Static Metadata
+block. So Windows tone-maps the content to the sink's declared peak before the codec ever sees it,
+and what reaches the wire is an ordinary PQ-encoded 10-bit RGB surface.
+
+⇒ **the host owns the colour maths.** vino does not need a PQ curve, a BT.2020 matrix or a tone
+mapper: a compositor hands it an HDR framebuffer already encoded, exactly as Windows does here.
+
+### 0.4 The dock is told, and it is told by re-mode-setting
+
+The control plane is sealed on Windows, but framing is not. Each HDR toggle produces a burst
+*identical in shape* to the connector's initial bring-up — and both bursts carry the 112-byte
+message that is the `id=0x48 sub=0x22` set-mode (16 B header + 80 B sealed + 16 B tag):
+
+```
+15:41:35  HDR off (initial)  02/0600:112 x2   + 27 x 64 B
+15:41:52  HDR ON             02/0600:112 x2   + 25 x 64 B     <- bpc 8 -> 10
+15:44:18  HDR OFF            02/0600:112 x3   + 46 x 64 B     <- bpc 10 -> 8
+   between them: nothing but 64 B keepalives every ~10 s
+```
+
+That matches DLM's own strings exactly — `[Profile change] Recreating device`, `Adding 30 bit depth
+to the mode.` (§2b). A depth change is a **profile change that re-issues the mode**, not a per-frame
+flag.
+
+⚠ **Which byte in that message names the depth is NOT established**, and cannot be from a Windows
+capture. §2b's decompilation says off23 is the DMA buffer format, indexing a bytes-per-pixel table
+`{2, 4, 3, 4}`; every capture to date carries `0x02` = 3 bytes = 24 bpp. A 10-bit surface is 4
+bytes per pixel, so it is index **1 or 3** — a two-way choice. `off48` (total rows) also moves,
+because it is the dock's allocation divided by `stride × bytes_per_pixel`, so it **halves relative
+to nothing** — it scales by 3/4. Both are testable on hardware in two runs.
+
+### 0.5 What is NOT established
+
+* ⚠ **The AC ceilings in 10-bit.** Nothing in `cap9` produced a luma AC coefficient above `|273|` —
+  512 of 218,000 sampled coefficients even reached category 9, and none reached the 8-bit ceiling's
+  saturation point. The DC ceiling moved by two categories because a DC is a direct multiple of the
+  sample; whether luma AC goes 9 → 11 and chroma 10 → 12 is a guess until something on the wire
+  needs it. **Settling it needs content whose adjacent pixels swing across most of the 10-bit range
+  *without* being tone-mapped down first — i.e. a brighter sink** (the ~302 cd/m² panel compressed
+  everything above it, which is exactly what killed the contrast).
+  ⭐ Until then the safe choice is to leave the AC ceilings at their 8-bit values: `Bits::esc`
+  already saturates a magnitude whose category exceeds the ceiling, so an under-sized ceiling clips
+  extreme AC detail but **cannot desync the dock**. An over-sized one can.
+* ⚠ **Whether the dock's own capability push (`id=0x78 sub=0x30`) advertises HDR.** Needs Linux and
+  keys.
+* ⚠ **HDR against vino's software CTM/GAMMA_LUT.** `color.rs` works in 8-bit tables; nothing has
+  exercised it at 10 bits.
+* ⛔ HDR10+ and Dolby Vision are out of scope: DisplayLink documents HDR10 only.
+
+### 0.6 Reproducing it
+
+```sh
+cd captures/navarro-wincap-20260805/out
+../../../tools/codec/depth-probe.py cap9-hdr-ab-usbpcap1.pcap \
+    --device 5 --ep 8 --row 720 --since 15:42:54 --until 15:42:55
+../../../tools/codec/navarro-render.py cap9-hdr-ab-usbpcap1.pcap --ep 8 --sub 0 --depth 10
+```
+
+`--device 5` is not optional: a D6000 was on the same bus throughout and also uses endpoint `0x08`.
+Segment boundaries for slicing are in `out/player-log-session2.txt`; phase boundaries in
+`out/cap9-hdr-ab.phaselog.txt`.
+
+---
 
 ---
 
@@ -334,32 +486,63 @@ This corroborates DisplayLink's own support statement that HDR10 requires **DL-7
 
 ## 5. Implementation boundary
 
-The Rust EVDI path now has the safe DRM plumbing needed to expose packed 10-bit scanout:
+The Rust EVDI path has the safe DRM plumbing needed to expose packed 10-bit scanout:
 `XRGB2101010`/related formats, `max bpc` (8–10), `HDR_OUTPUT_METADATA`, and the DP Colorspace
 property. That lets a compositor negotiate the standard KMS state without an unsafe binding or a
 silently ignored property failure.
 
-This is deliberately **not** HDR transport in Vino. The DL7400 evidence is now stronger than an
-absence of decoding: `cap3` toggles HDR one connector at a time on a live link, while `cap6` and
-`cap7` repeat the same shared-endpoint animation with HDR on and off. They retain the normal
-`connector << 3` record tags and differ by only 0.4% in bytes per frame record (40,278 versus
-40,133). No HDR-specific control exchange, metadata payload, or bulk-video framing occurs in those
-captures. The most supportable conclusion is that any HDR conversion/composition is upstream of the
-captured DisplayLink transport, not a Vino-to-dock feature.
+⛔ **The rest of this section is RETRACTED (2026-08-05).** It read:
 
-Consequently Vino must keep its video transport SDR-like and must not accept 10-bit primary-plane
-formats as a claim of end-to-end HDR support. The earlier suggestions of `set_color_profile(0x02)`,
-a CTA InfoFrame payload, a BT.2020 matrix, altered WHT limits, or kernel AVX2/NEON were design
-guesses, not reverse-engineered facts. The EVDI KMS properties remain useful capability plumbing,
-but they do not authorize HDR advertisement by Vino.
+> This is deliberately **not** HDR transport in Vino. […] They retain the normal `connector << 3`
+> record tags and differ by only 0.4% in bytes per frame record (40,278 versus 40,133). No
+> HDR-specific control exchange, metadata payload, or bulk-video framing occurs in those captures.
+> […] Consequently Vino must keep its video transport SDR-like and must not accept 10-bit
+> primary-plane formats as a claim of end-to-end HDR support.
 
-## 6. Verification roadmap
+**The premise was false.** `cap6` (HDR on) and `cap7` (HDR off) played the *same SDR animation*, so
+neither half ever carried an HDR-range or wide-gamut pixel. An identical wire was the expected
+result of that comparison whatever the dock does, and a 0.4% difference in bytes per record is a
+bandwidth observation, not a format one. §0 repeats the experiment with genuinely HDR content and
+finds the depth change plainly.
 
-1. Verify all four SDR connectors and recover the sealed Navarro stream-open/key schedule.
-2. Preserve the completed Windows HDR/SDR A/B as negative transport evidence; repeat it only if a
-   new dock firmware or Windows driver changes the observed control or bulk traffic.
-3. Do not add an HDR Vino wire profile or advertise HDR until a future differential capture shows a
-   distinct, decodable transport change and an end-to-end HDR monitor test corroborates it.
+What survives from the retracted text, and is now better supported: there is **no** HDR-specific
+control exchange, metadata payload or record framing — §0.1 shows the strip header byte-identical
+across the toggle. The colour maths really is host-side (§0.3). Both of those make the feature
+*smaller* than the old text assumed, not out of reach: what the dock needs is a re-mode-set naming
+the depth, and strips whose escape ceiling matches it.
+
+Still design guesses and still not reverse-engineered facts, so do not implement them: a
+`set_color_profile(0x02)` message, a CTA InfoFrame payload, a BT.2020 matrix in the driver, or
+kernel AVX2/NEON for the codec.
+
+## 6. What an HDR path in vino has to do
+
+In dependency order. Only the DL-7000 generation is a candidate — DisplayLink documents HDR10 as
+DL-7000 on Windows 11 23H2+, and the D6000's own head reports `HDR supported = False` (measured,
+`captures/navarro-wincap-20260805/out/NOTES.md`).
+
+1. ✅ **Depth-aware entropy coding.** `SOLID_DC_CMAX` becomes a function of the sample depth: 10 at
+   8-bit, 12 at 10-bit (§0.2). The AC ceilings stay at their 8-bit values until something measures
+   them (§0.5), which is safe because `esc` saturates.
+2. ✅ **A 10-bit pixel path.** `PixelSource` unpacks `XRGB2101010` and the colour transform takes
+   10-bit channels. Nothing else in the codec moves.
+3. **Advertise it.** `XRGB2101010` on the primary plane, `max bpc`, `Colorspace` and
+   `HDR_OUTPUT_METADATA` on the connector — on Navarro connectors only.
+4. ⚠ **Name the depth in the set-mode.** off23's 4-bytes-per-pixel index (1 or 3, §0.4) and the
+   `off48` row count that follows from it. **This is the one field a capture cannot settle**, so it
+   wants a runtime knob and two hardware runs, in the manner of `blank_marker`.
+5. **Drive the profile change.** A depth change re-issues the mode (§0.4); the dock recreates the
+   device around it.
+
+Open experiments worth running, in value order:
+
+1. **A brighter HDR sink** (a UHD HDR TV at ≥600 cd/m², or anything whose declared peak is well
+   above 302). It is the only thing that settles the 10-bit AC ceilings, because Windows tone-maps
+   to the declared peak and that is what flattened the contrast in `cap9` (§0.5).
+2. The dock's `id=0x78 sub=0x30` capability push, on Linux with keys — does the dock say it can do
+   10-bit, and does it say it per connector?
+3. `cap13`'s `ep 0x09`: 32 transfers, 30,720 bytes, present **only** in the capture where two
+   connectors were in different HDR states at once, and never seen on Linux.
 
 ## Provenance
 

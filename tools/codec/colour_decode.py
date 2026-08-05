@@ -36,6 +36,38 @@ AC_CMAX = 9
 # content (the old corpus had none). Decoding chroma with luma's cmax desyncs by one bit on any
 # block holding |q| >= 256 -- which is exactly the thumbnail artifact.
 CHROMA_AC_CMAX = 10
+
+# The escape codebook's ceiling follows the SAMPLE DEPTH, and the constants above are the 8-bit
+# ones. A luma DC is four times the sample, so 8-bit tops out at 1020 (category 10) and 10-bit at
+# 4092 (category 12). Measured on `cap9-hdr-ab` 2026-08-05: with HDR on, the pq_ramp segment's DC
+# chain is monotonic across all twenty strips of a row only at DC_CMAX 12 -- at 10 it inverts at
+# x=512, at 11 at x=768. See `docs/hdr.md`.
+#
+# The AC ceilings are NOT established for 10-bit: nothing in that capture produced a luma AC
+# coefficient above |273|, well inside category 9, because Windows tone-mapped the content down to
+# the sink's ~302 cd/m2 peak before it ever reached the codec. `Depth.ten()` therefore leaves them
+# at the 8-bit values and says so, rather than assuming they scale with the DC.
+class Depth:
+    """One sample depth's escape-codebook ceilings."""
+
+    def __init__(self, bits, dc, luma_ac, chroma_ac, ac_measured):
+        self.bits = bits
+        self.dc = dc
+        self.luma_ac = luma_ac
+        self.chroma_ac = chroma_ac
+        # Whether the AC ceilings are measured or inherited from the 8-bit codebook.
+        self.ac_measured = ac_measured
+
+    @staticmethod
+    def eight():
+        return Depth(8, DC_CMAX, AC_CMAX, CHROMA_AC_CMAX, True)
+
+    @staticmethod
+    def ten():
+        return Depth(10, 12, AC_CMAX, CHROMA_AC_CMAX, False)
+
+    def __repr__(self):
+        return f"Depth({self.bits}-bit dc={self.dc} luma_ac={self.luma_ac} chroma_ac={self.chroma_ac})"
 SCAN4_MORTON = [0, 2, 8, 10, 1, 3, 9, 11, 4, 6, 12, 14, 5, 7, 13, 15]
 
 
@@ -145,8 +177,16 @@ def chroma_ac_step(i):
     return 32
 
 
-def decode_strip(s):
-    """Decode one colour strip body -> list of 16 blocks, each (qcr, qcb, qy)."""
+def decode_strip(s, depth=None):
+    """Decode one colour strip body -> list of 16 blocks, each (qcr, qcb, qy).
+
+    `depth` selects the escape codebook; it defaults to 8-bit, which is every Linux capture and
+    the SDR half of the Windows ones. Pass `Depth.ten()` for a stream captured with the dock in
+    its 10-bit profile -- the framing, the transform and the quantiser are all identical, only
+    the codebook ceiling moves.
+    """
+    if depth is None:
+        depth = Depth.eight()
     if s[0] != 0x01 or s[1] != 0x28:
         raise ValueError("not a vino strip (bad magic)")
     x, y = struct.unpack_from("<H", s, 2)[0], struct.unpack_from("<H", s, 4)[0]
@@ -158,9 +198,9 @@ def decode_strip(s):
     dcs = []
     pcr = pcb = py = 0
     for _ in range(16):
-        pcr += dec_esc(main, DC_CMAX)
-        pcb += dec_esc(main, DC_CMAX)
-        py += dec_esc(main, DC_CMAX)
+        pcr += dec_esc(main, depth.dc)
+        pcb += dec_esc(main, depth.dc)
+        py += dec_esc(main, depth.dc)
         dcs.append((pcr, pcb, py))
 
     blocks = []
@@ -173,9 +213,9 @@ def decode_strip(s):
             qy = [0] * COEFFS
             qcr[0], qcb[0], qy[0] = dcs[k]
             for q, last, cmax in (
-                (qcr, lcr, CHROMA_AC_CMAX),
-                (qcb, lcb, CHROMA_AC_CMAX),
-                (qy, ly, AC_CMAX),
+                (qcr, lcr, depth.chroma_ac),
+                (qcb, lcb, depth.chroma_ac),
+                (qy, ly, depth.luma_ac),
             ):
                 for i in range(1, last + 1):
                     q[i] = dec_esc(r, cmax)

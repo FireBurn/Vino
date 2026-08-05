@@ -10,6 +10,7 @@ is fixed-layout: everything this needs is in the first 27 bytes, and `headerLen`
 transfer-specific suffix adds after that.
 """
 
+import datetime
 import struct
 import sys
 
@@ -21,11 +22,17 @@ USBPCAP_HDR = struct.Struct("<HQIHBHHBBI")
 DLT_USBPCAP = 249
 
 
-def iter_transfers(path, endpoint=None, transfer_type=None, out_only=True):
+def iter_transfers(path, endpoint=None, transfer_type=None, out_only=True,
+                   device=None, since=None, until=None):
     """Yield `(device, endpoint, payload)` for each captured USB transfer carrying data.
 
     `info` bit 0 is USBPCAP_INFO_PDO_TO_FDO -- set on the completion (device->host direction of
     the IRP).  Submissions carry the OUT payload, so that bit must be clear for bulk OUT.
+
+    `since`/`until` are seconds since local midnight, matching how the Windows harness timestamps
+    its phase logs -- a capture of a scripted session is only useful sliced by phase, and the
+    phase boundaries are wall-clock.  `device` filters by USB address: two docks on one bus both
+    use endpoint 0x08, and an endpoint-only filter interleaves their record streams.
     """
     with open(path, "rb") as f:
         head = f.read(PCAP_GLOBAL.size)
@@ -39,13 +46,22 @@ def iter_transfers(path, endpoint=None, transfer_type=None, out_only=True):
             rec = f.read(PCAP_REC.size)
             if len(rec) < PCAP_REC.size:
                 return
-            _ts, _tus, caplen, _origlen = PCAP_REC.unpack(rec)
+            ts, tus, caplen, _origlen = PCAP_REC.unpack(rec)
             pkt = f.read(caplen)
             if len(pkt) < caplen or caplen < USBPCAP_HDR.size:
                 return
-            (hlen, _irp, _status, _func, info, _bus, device,
+            if since is not None or until is not None:
+                lt = datetime.datetime.fromtimestamp(ts + tus / 1e6)
+                secs = lt.hour * 3600 + lt.minute * 60 + lt.second + lt.microsecond / 1e6
+                if since is not None and secs < since:
+                    continue
+                if until is not None and secs > until:
+                    return
+            (hlen, _irp, _status, _func, info, _bus, dev,
              ep, xfer, dlen) = USBPCAP_HDR.unpack_from(pkt, 0)
             if hlen > caplen:
+                continue
+            if device is not None and dev != device:
                 continue
             if out_only and (info & 0x01):
                 continue
@@ -56,7 +72,7 @@ def iter_transfers(path, endpoint=None, transfer_type=None, out_only=True):
             data = pkt[hlen:hlen + dlen]
             if not data:
                 continue
-            yield device, ep, data
+            yield dev, ep, data
 
 
 def main():

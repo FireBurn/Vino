@@ -1,0 +1,22 @@
+﻿2026-08-05 15:59:21.469  === phase axes ===
+2026-08-05 15:59:21.485  head=\\.\DISPLAY29 other=\\.\DISPLAY30 prefix=C:\Users\Mike\navarro-wincap\out\cap12-axes snaplen=4096 max=240s dryrun=False
+2026-08-05 15:59:22.409  PLAYER  preflight  {"hi":true,"dpr":1,"one":true,"depth":30,"src":"probe-G-bt709tag.mp4","err":null,"drop":0}
+2026-08-05 15:59:22.676  CAPTURE started (cap12-axes)
+2026-08-05 15:59:26.972  HDR     2026-08-05 15:59:26.223  HDR OFF \\.\DISPLAY30  MAG 27CQ6F               ok  enabled False -> False  bpc 8  enc RGB  [7 ms]  axes: other head SDR
+2026-08-05 15:59:29.269  HDR     2026-08-05 15:59:27.499  HDR OFF \\.\DISPLAY29  MAG 27CQ6F               ok  enabled True -> False  bpc 8  enc RGB  [954 ms]  axes: start SDR
+2026-08-05 15:59:29.283  IDLE    static desktop, SDR    20 s -- video paused on black
+2026-08-05 15:59:51.378  HDR     2026-08-05 15:59:50.435  HDR ON  \\.\DISPLAY29  MAG 27CQ6F               ok  enabled False -> True  bpc 10  enc RGB  [147 ms]  axes 1: HDR ON, static desktop
+2026-08-05 15:59:51.381  IDLE    static desktop, HDR on 20 s -- video paused on black
+2026-08-05 16:00:13.407  HDR     2026-08-05 16:00:12.496  HDR OFF \\.\DISPLAY29  MAG 27CQ6F               ok  enabled True -> False  bpc 8  enc RGB  [135 ms]  axes 1: HDR OFF, static desktop
+2026-08-05 16:00:13.410  IDLE    static desktop, SDR again 20 s -- video paused on black
+2026-08-05 16:00:35.508  HDR     2026-08-05 16:00:34.569  HDR ON  \\.\DISPLAY29  MAG 27CQ6F               ok  enabled False -> True  bpc 10  enc RGB  [139 ms]  axes 1: HDR ON again (repeatability)
+2026-08-05 16:00:35.512  IDLE    static desktop, HDR on again 20 s -- video paused on black
+2026-08-05 16:00:57.609  HDR     2026-08-05 16:00:56.646  HDR OFF \\.\DISPLAY29  MAG 27CQ6F               ok  enabled True -> False  bpc 8  enc RGB  [152 ms]  axes 1: HDR OFF again
+2026-08-05 16:00:57.612  IDLE    idle (post)            15 s -- video paused on black
+2026-08-05 16:01:13.176  NOTE    SDR-content-brightness slider (7.2) is NOT scripted -- no public API; do by hand
+2026-08-05 16:01:13.180  CAPTURE stop.flag written
+2026-08-05 16:01:16.753  CAPTURE finished
+2026-08-05 16:01:16.760    finished=2026-08-05 16:01:16.498
+2026-08-05 16:01:16.773    C:\Users\Mike\navarro-wincap\out\cap12-axes-usbpcap1.pcap = 7695986
+2026-08-05 16:01:16.790    C:\Users\Mike\navarro-wincap\out\cap12-axes-usbpcap2.pcap = 981
+2026-08-05 16:01:16.809  === phase axes complete ===

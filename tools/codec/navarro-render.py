@@ -95,14 +95,14 @@ def frames_of(blob, sub):
     return frames
 
 
-def compose(strips, width, height, blocks_x=16):
+def compose(strips, width, height, blocks_x=16, depth=None):
     """Decode strips onto an RGB surface. Untouched pixels stay magenta so gaps are visible."""
     surf = [[(255, 0, 255)] * width for _ in range(height)]
     placed = 0
     failed = 0
     for s in strips:
         try:
-            x, y, blocks = cd.decode_strip(s)
+            x, y, blocks = cd.decode_strip(s, depth)
             tile = cd.strip_rgb(blocks, blocks_x=blocks_x)
         except Exception:
             failed += 1
@@ -118,10 +118,17 @@ def compose(strips, width, height, blocks_x=16):
     return surf, placed, failed
 
 
-def save(surf, path):
+def save(surf, path, shift=0):
+    """Write the surface as an 8-bit PNG.
+
+    A 10-bit decode carries values up to 1023, so `shift` brings them back into a byte. It is a
+    shift and not a rescale so a wrong depth stays obvious in the picture rather than being
+    quietly normalised away.
+    """
     h, w = len(surf), len(surf[0])
     im = Image.new("RGB", (w, h))
-    im.putdata([px for row in surf for px in row])
+    im.putdata([tuple(min(255, max(0, c >> shift)) for c in px)
+                for row in surf for px in row])
     im.save(path)
     return im
 
@@ -164,6 +171,8 @@ def main():
     ap.add_argument("--blocks-x", type=int, default=16)
     ap.add_argument("--frame", type=int, default=None, help="frame index; default = most strips")
     ap.add_argument("--ref")
+    ap.add_argument("--depth", type=int, choices=(8, 10), default=8,
+                    help="sample depth of the captured stream; 10 for a dock in its HDR profile")
     ap.add_argument("--out", default="navarro")
     args = ap.parse_args()
 
@@ -182,9 +191,13 @@ def main():
         idx = max(range(len(frames)), key=lambda i: len(frames[i]))
     print(f"decoding frame {idx} ({len(frames[idx])} strips)")
 
-    surf, placed, failed = compose(frames[idx], args.width, args.height, args.blocks_x)
+    depth = cd.Depth.ten() if args.depth == 10 else cd.Depth.eight()
+    if args.depth == 10 and not depth.ac_measured:
+        print("note: the 10-bit AC codebook ceilings are inherited from 8-bit and unmeasured "
+              "(see docs/hdr.md); a strip with a large AC coefficient may decode wrong")
+    surf, placed, failed = compose(frames[idx], args.width, args.height, args.blocks_x, depth)
     print(f"placed {placed} strips, {failed} failed to decode")
-    save(surf, f"{args.out}-decoded.png")
+    save(surf, f"{args.out}-decoded.png", shift=depth.bits - 8)
     print(f"wrote {args.out}-decoded.png")
 
     if args.ref:

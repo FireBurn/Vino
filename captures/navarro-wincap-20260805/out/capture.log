@@ -1,0 +1,9 @@
+﻿=== capture-both ===
+snaplen  : 4096
+started  : 2026-08-05 16:17:38.276
+  \\.\USBPcap1 -> C:\Users\Mike\navarro-wincap\out\cap15-sdrbrightness-usbpcap1.pcap  pid=20932  args=[-d \\.\USBPcap1 -o C:\Users\Mike\navarro-wincap\out\cap15-sdrbrightness-usbpcap1.pcap -s 4096 -b 134217728 -A --inject-descriptors]
+  \\.\USBPcap2 -> C:\Users\Mike\navarro-wincap\out\cap15-sdrbrightness-usbpcap2.pcap  pid=16512  args=[-d \\.\USBPcap2 -o C:\Users\Mike\navarro-wincap\out\cap15-sdrbrightness-usbpcap2.pcap -s 4096 -b 134217728 -A --inject-descriptors]
+stopping : 2026-08-05 16:20:32.246  reason=sentinel
+exited   : 2026-08-05 16:20:35.489
+  C:\Users\Mike\navarro-wincap\out\cap15-sdrbrightness-usbpcap1.pcap : 74874071 bytes
+  C:\Users\Mike\navarro-wincap\out\cap15-sdrbrightness-usbpcap2.pcap : 532733 bytes

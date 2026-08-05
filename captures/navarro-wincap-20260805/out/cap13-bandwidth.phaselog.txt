@@ -1,0 +1,21 @@
+﻿2026-08-05 16:01:22.795  === phase bandwidth ===
+2026-08-05 16:01:22.812  head=\\.\DISPLAY29 other=\\.\DISPLAY30 prefix=C:\Users\Mike\navarro-wincap\out\cap13-bandwidth snaplen=4096 max=240s dryrun=False
+2026-08-05 16:01:23.725  PLAYER  preflight  {"hi":false,"dpr":1,"one":true,"depth":24,"src":"probe-G-bt709tag.mp4","err":null,"drop":0}
+2026-08-05 16:01:24.003  CAPTURE started (cap13-bandwidth)
+2026-08-05 16:01:28.323  HDR     2026-08-05 16:01:27.570  HDR OFF \\.\DISPLAY30  MAG 27CQ6F               ok  enabled False -> False  bpc 8  enc RGB  [7 ms]  bw: both heads SDR to start
+2026-08-05 16:01:29.614  HDR     2026-08-05 16:01:28.852  HDR OFF \\.\DISPLAY29  MAG 27CQ6F               ok  enabled False -> False  bpc 8  enc RGB  [7 ms]  bw: both heads SDR to start
+2026-08-05 16:01:29.622  IDLE    both SDR               15 s -- video paused on black
+2026-08-05 16:01:47.378  HDR     2026-08-05 16:01:45.646  HDR ON  \\.\DISPLAY29  MAG 27CQ6F               ok  enabled False -> True  bpc 10  enc RGB  [943 ms]  bw 1a: HDR on capture head only
+2026-08-05 16:01:47.999  PLAY    hdr-pattern, one head HDR 40 s  src=hdr-pattern.webm
+2026-08-05 16:02:30.276  HDR     2026-08-05 16:02:28.553  HDR ON  \\.\DISPLAY30  MAG 27CQ6F               ok  enabled False -> True  bpc 10  enc RGB  [954 ms]  bw 1b: HDR on BOTH heads
+2026-08-05 16:03:10.289  STATE   both heads HDR, pattern still playing
+2026-08-05 16:03:12.624  HDR     2026-08-05 16:03:10.867  HDR OFF \\.\DISPLAY29  MAG 27CQ6F               ok  enabled True -> False  bpc 8  enc RGB  [956 ms]  bw 1c: HDR on the OTHER head only
+2026-08-05 16:03:52.640  IDLE    settle                 15 s -- video paused on black
+2026-08-05 16:04:10.291  HDR     2026-08-05 16:04:08.568  HDR OFF \\.\DISPLAY30  MAG 27CQ6F               ok  enabled True -> False  bpc 8  enc RGB  [928 ms]  bw: back to both SDR
+2026-08-05 16:04:10.293  NOTE    120 Hz step (7b.2) is run separately -- it changes the mode, see NOTES.md
+2026-08-05 16:04:10.316  CAPTURE stop.flag written
+2026-08-05 16:04:13.901  CAPTURE finished
+2026-08-05 16:04:13.906    finished=2026-08-05 16:04:13.788
+2026-08-05 16:04:13.920    C:\Users\Mike\navarro-wincap\out\cap13-bandwidth-usbpcap1.pcap = 34510484
+2026-08-05 16:04:13.936    C:\Users\Mike\navarro-wincap\out\cap13-bandwidth-usbpcap2.pcap = 5897
+2026-08-05 16:04:13.953  === phase bandwidth complete ===

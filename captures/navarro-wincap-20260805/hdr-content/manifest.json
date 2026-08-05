@@ -1,0 +1,258 @@
+{
+  "width": 2560,
+  "height": 1440,
+  "marker": {
+    "cell_px": 40,
+    "origin": [
+      0,
+      0
+    ],
+    "msb": "left",
+    "lit_nits": 203.0,
+    "pattern_bits": 8,
+    "motion_bits": 16,
+    "sentinel": "one always-lit cell immediately after the last bit"
+  },
+  "hdr": {
+    "transfer": "smpte2084",
+    "primaries": "bt2020",
+    "matrix": "bt2020nc",
+    "range": "limited",
+    "depth": 10
+  },
+  "sdr": {
+    "transfer": "bt709/srgb",
+    "primaries": "bt709",
+    "matrix": "bt709",
+    "range": "limited",
+    "depth": 8,
+    "sdr_white_nits": 203.0
+  },
+  "decoded_refs": {
+    "dir": "ref/decoded",
+    "note": "the pattern segments as a decoder actually produces them; flat interiors match ref/ exactly, edges carry the 4:2:0 chroma blend -- compare wire output against these"
+  },
+  "pattern": {
+    "fps": 10,
+    "segment_seconds": 6,
+    "total_seconds": 84,
+    "segments": [
+      {
+        "index": 0,
+        "name": "black",
+        "description": "full black -- the baseline; nothing on screen",
+        "start_s": 0,
+        "end_s": 6,
+        "ref_hdr": "ref/seg00-black.hdr.png",
+        "ref_sdr": "ref/seg00-black.sdr.png",
+        "peak_nits": 203.0
+      },
+      {
+        "index": 1,
+        "name": "grey100",
+        "description": "flat neutral 100 cd/m2 (traditional SDR white level)",
+        "start_s": 6,
+        "end_s": 12,
+        "ref_hdr": "ref/seg01-grey100.hdr.png",
+        "ref_sdr": "ref/seg01-grey100.sdr.png",
+        "peak_nits": 203.0
+      },
+      {
+        "index": 2,
+        "name": "grey203",
+        "description": "flat neutral 203 cd/m2 (BT.2408 HDR reference white)",
+        "start_s": 12,
+        "end_s": 18,
+        "ref_hdr": "ref/seg02-grey203.hdr.png",
+        "ref_sdr": "ref/seg02-grey203.sdr.png",
+        "peak_nits": 203.0
+      },
+      {
+        "index": 3,
+        "name": "grey1000",
+        "description": "flat neutral 1000 cd/m2 -- unambiguously beyond SDR",
+        "start_s": 18,
+        "end_s": 24,
+        "ref_hdr": "ref/seg03-grey1000.hdr.png",
+        "ref_sdr": "ref/seg03-grey1000.sdr.png",
+        "peak_nits": 1000.0
+      },
+      {
+        "index": 4,
+        "name": "grey4000",
+        "description": "flat neutral 4000 cd/m2 -- extreme, above most panel peaks",
+        "start_s": 24,
+        "end_s": 30,
+        "ref_hdr": "ref/seg04-grey4000.hdr.png",
+        "ref_sdr": "ref/seg04-grey4000.sdr.png",
+        "peak_nits": 4000.0
+      },
+      {
+        "index": 5,
+        "name": "steps8",
+        "description": "8 vertical bars, neutral 0/10/50/100/203/400/1000/4000 cd/m2",
+        "start_s": 30,
+        "end_s": 36,
+        "ref_hdr": "ref/seg05-steps8.hdr.png",
+        "ref_sdr": "ref/seg05-steps8.sdr.png",
+        "peak_nits": 4000.0
+      },
+      {
+        "index": 6,
+        "name": "prim2020_203",
+        "description": "BT.2020 R G B C M Y W black, lit channels at 203 cd/m2",
+        "start_s": 36,
+        "end_s": 42,
+        "ref_hdr": "ref/seg06-prim2020_203.hdr.png",
+        "ref_sdr": "ref/seg06-prim2020_203.sdr.png",
+        "peak_nits": 203.0
+      },
+      {
+        "index": 7,
+        "name": "prim2020_1000",
+        "description": "BT.2020 R G B C M Y W black, lit channels at 1000 cd/m2",
+        "start_s": 42,
+        "end_s": 48,
+        "ref_hdr": "ref/seg07-prim2020_1000.hdr.png",
+        "ref_sdr": "ref/seg07-prim2020_1000.sdr.png",
+        "peak_nits": 1000.0
+      },
+      {
+        "index": 8,
+        "name": "gamut_ab",
+        "description": "left half BT.709 primaries, right half BT.2020, both 203 cd/m2",
+        "start_s": 48,
+        "end_s": 54,
+        "ref_hdr": "ref/seg08-gamut_ab.hdr.png",
+        "ref_sdr": "ref/seg08-gamut_ab.sdr.png",
+        "peak_nits": 203.0
+      },
+      {
+        "index": 9,
+        "name": "pq_ramp",
+        "description": "64-step staircase in PQ code space, 0..1023",
+        "start_s": 54,
+        "end_s": 60,
+        "ref_hdr": "ref/seg09-pq_ramp.hdr.png",
+        "ref_sdr": "ref/seg09-pq_ramp.sdr.png",
+        "peak_nits": 10000.0
+      },
+      {
+        "index": 10,
+        "name": "near_black",
+        "description": "PQ codes 0,4,8..60 -- sub-8-bit near-black steps",
+        "start_s": 60,
+        "end_s": 66,
+        "ref_hdr": "ref/seg10-near_black.hdr.png",
+        "ref_sdr": "ref/seg10-near_black.sdr.png",
+        "peak_nits": 203.0
+      },
+      {
+        "index": 11,
+        "name": "specular",
+        "description": "100 cd/m2 field, 640 px 1000 cd/m2 square, 160 px 4000 cd/m2 core",
+        "start_s": 66,
+        "end_s": 72,
+        "ref_hdr": "ref/seg11-specular.hdr.png",
+        "ref_sdr": "ref/seg11-specular.sdr.png",
+        "peak_nits": 4000.0
+      },
+      {
+        "index": 12,
+        "name": "detail",
+        "description": "16 px 100-vs-1000 cd/m2 checkerboard left, flat 203 cd/m2 right",
+        "start_s": 72,
+        "end_s": 78,
+        "ref_hdr": "ref/seg12-detail.hdr.png",
+        "ref_sdr": "ref/seg12-detail.sdr.png",
+        "peak_nits": 1000.0
+      },
+      {
+        "index": 13,
+        "name": "black_end",
+        "description": "full black -- end marker",
+        "start_s": 78,
+        "end_s": 84,
+        "ref_hdr": "ref/seg13-black_end.hdr.png",
+        "ref_sdr": "ref/seg13-black_end.sdr.png",
+        "peak_nits": 203.0
+      }
+    ]
+  },
+  "motion": {
+    "fps": 30,
+    "seconds": 30,
+    "frames": 900,
+    "note": "frame index is in the 16-bit top-left marker; static reference column x=0..160 is 0/100/203/1000/4000 cd/m2 in 240 px bands from the top"
+  },
+  "metadata_probes": {
+    "picture": "ref/seg11-specular.hdr.png",
+    "seconds_each": 6,
+    "note": "identical coded samples across the whole set; only the HDR10 metadata differs, one axis at a time",
+    "probes": [
+      {
+        "name": "A-baseline",
+        "file": "probes/probe-A-baseline.mp4",
+        "primaries": "bt2020",
+        "transfer": "smpte2084",
+        "master_display": "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(10000000,1)",
+        "max_cll_fall": "1000,400",
+        "description": "BT.2020 / PQ, mastering peak 1000, MaxCLL 1000 MaxFALL 400"
+      },
+      {
+        "name": "B-peak4000",
+        "file": "probes/probe-B-peak4000.mp4",
+        "primaries": "bt2020",
+        "transfer": "smpte2084",
+        "master_display": "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(40000000,50)",
+        "max_cll_fall": "4000,1234",
+        "description": "same but mastering peak 4000 min 0.005, MaxCLL 4000 MaxFALL 1234"
+      },
+      {
+        "name": "C-peak605",
+        "file": "probes/probe-C-peak605.mp4",
+        "primaries": "bt2020",
+        "transfer": "smpte2084",
+        "master_display": "G(8500,39850)B(6550,2300)R(35400,14600)WP(15635,16450)L(6000000,500)",
+        "max_cll_fall": "605,123",
+        "description": "mastering peak 600 min 0.05, MaxCLL 605 MaxFALL 123"
+      },
+      {
+        "name": "D-nometa",
+        "file": "probes/probe-D-nometa.mp4",
+        "primaries": "bt2020",
+        "transfer": "smpte2084",
+        "master_display": null,
+        "max_cll_fall": null,
+        "description": "PQ + BT.2020 tagged, but NO mastering display and NO MaxCLL at all"
+      },
+      {
+        "name": "E-p3prim",
+        "file": "probes/probe-E-p3prim.mp4",
+        "primaries": "bt2020",
+        "transfer": "smpte2084",
+        "master_display": "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)",
+        "max_cll_fall": "1000,400",
+        "description": "baseline with DCI-P3 mastering primaries -- isolates the primaries fields"
+      },
+      {
+        "name": "F-hlg",
+        "file": "probes/probe-F-hlg.mp4",
+        "primaries": "bt2020",
+        "transfer": "arib-std-b67",
+        "master_display": null,
+        "max_cll_fall": null,
+        "description": "HLG transfer instead of PQ -- a different EOTF entirely"
+      },
+      {
+        "name": "G-bt709tag",
+        "file": "probes/probe-G-bt709tag.mp4",
+        "primaries": "bt709",
+        "transfer": "bt709",
+        "master_display": null,
+        "max_cll_fall": null,
+        "description": "SDR tags on byte-identical samples -- isolates tag from pixel data"
+      }
+    ]
+  }
+}

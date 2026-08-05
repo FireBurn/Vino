@@ -1,0 +1,21 @@
+﻿2026-08-05 15:49:19.667  === phase h2 ===
+2026-08-05 15:49:19.680  head=\\.\DISPLAY30 other=\\.\DISPLAY29 prefix=C:\Users\Mike\navarro-wincap\out\cap10-hdr-ab-ep0a snaplen=0 max=300s dryrun=False
+2026-08-05 15:49:20.600  PLAYER  preflight  {"hi":false,"dpr":1,"one":true,"depth":24,"src":"sdr-motion.webm","err":null,"drop":0}
+2026-08-05 15:49:20.872  CAPTURE started (cap10-hdr-ab-ep0a)
+2026-08-05 15:49:25.180  HDR     2026-08-05 15:49:24.422  HDR OFF \\.\DISPLAY29  MAG 27CQ6F               ok  enabled False -> False  bpc 8  enc RGB  [6 ms]  h2 : other head SDR throughout
+2026-08-05 15:49:26.468  HDR     2026-08-05 15:49:25.718  HDR OFF \\.\DISPLAY30  MAG 27CQ6F               ok  enabled False -> False  bpc 8  enc RGB  [6 ms]  h2 : start from SDR
+2026-08-05 15:49:26.474  IDLE    idle (pre)             15 s -- video paused on black
+2026-08-05 15:49:44.227  HDR     2026-08-05 15:49:42.502  HDR ON  \\.\DISPLAY30  MAG 27CQ6F               ok  enabled False -> True  bpc 10  enc RGB  [948 ms]  h2 step 2: HDR ON
+2026-08-05 15:49:47.707  PLAYER  after HDR ON  {"hi":true,"dpr":1,"one":true,"depth":30,"src":"sdr-motion.webm","err":null,"drop":0}
+2026-08-05 15:49:48.178  PLAY    hdr-pattern            92 s  src=hdr-pattern.webm
+2026-08-05 15:51:20.227  IDLE    settle                 15 s -- video paused on black
+2026-08-05 15:51:37.994  HDR     2026-08-05 15:51:36.235  HDR OFF \\.\DISPLAY30  MAG 27CQ6F               ok  enabled True -> False  bpc 8  enc RGB  [940 ms]  h2 step 6: HDR OFF
+2026-08-05 15:51:41.466  PLAYER  after HDR OFF  {"hi":false,"dpr":1,"one":true,"depth":24,"src":"hdr-pattern.webm","err":null,"drop":0}
+2026-08-05 15:51:41.940  PLAY    sdr-pattern            92 s  src=sdr-pattern.webm
+2026-08-05 15:53:13.949  IDLE    idle (post)            15 s -- video paused on black
+2026-08-05 15:53:29.505  CAPTURE stop.flag written
+2026-08-05 15:53:33.088  CAPTURE finished
+2026-08-05 15:53:33.094    finished=2026-08-05 15:53:32.907
+2026-08-05 15:53:33.110    C:\Users\Mike\navarro-wincap\out\cap10-hdr-ab-ep0a-usbpcap1.pcap = 470615452
+2026-08-05 15:53:33.127    C:\Users\Mike\navarro-wincap\out\cap10-hdr-ab-ep0a-usbpcap2.pcap = 981
+2026-08-05 15:53:33.148  === phase h2 complete ===

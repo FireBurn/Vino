@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DL7400 HDR capture player</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; overflow: hidden; height: 100%; }
+  #stage { position: fixed; inset: 0; background: #000; display: grid; place-items: center; }
+  video { display: block; background: #000; image-rendering: pixelated; }
+  .panel {
+    position: fixed; font: 13px/1.45 Consolas, monospace; color: #dcdcdc;
+    background: rgba(0,0,0,.86); border: 1px solid #444; padding: 10px 12px;
+    white-space: pre; z-index: 10; max-height: 90vh; overflow: auto;
+  }
+  #info { top: 12px; right: 12px; }
+  #log  { top: 12px; left: 12px; max-width: 46vw; }
+  #hint { bottom: 12px; left: 12px; color: #888; }
+  .hidden { display: none; }
+  b { color: #fff; }
+  .warn { color: #ff9c5b; }
+  .good { color: #7ddf7d; }
+</style>
+</head>
+<body>
+
+<div id="stage"><video id="v" autoplay loop muted playsinline></video></div>
+
+<div id="info" class="panel hidden"></div>
+<div id="log"  class="panel hidden"></div>
+<div id="hint" class="panel">1-8 source &nbsp; p probe sequence &nbsp; &larr;/&rarr; segment &nbsp; space pause &nbsp; f fullscreen &nbsp; i info &nbsp; l log &nbsp; m mark &nbsp; h hide</div>
+
+<script>
+// Everything the Windows session needs to drive from one page: pick a clip,
+// step through its segments, and keep a timestamped log of what was on screen
+// when -- which is the part that makes a USB capture sliceable afterwards.
+
+const SEGMENT_SECONDS = 6;
+const SEGMENTS = [
+  'black', 'grey100', 'grey203', 'grey1000', 'grey4000', 'steps8',
+  'prim2020_203', 'prim2020_1000', 'gamut_ab', 'pq_ramp', 'near_black',
+  'specular', 'detail', 'black_end'
+];
+
+const SOURCES = [
+  { key: '1', name: 'HDR pattern (webm/VP9)',  src: 'hdr-pattern.webm', seg: true  },
+  { key: '2', name: 'HDR pattern (mp4/HEVC)',  src: 'hdr-pattern.mp4',  seg: true  },
+  { key: '3', name: 'SDR pattern (webm/VP9)',  src: 'sdr-pattern.webm', seg: true  },
+  { key: '4', name: 'SDR pattern (mp4/HEVC)',  src: 'sdr-pattern.mp4',  seg: true  },
+  { key: '5', name: 'HDR motion  (webm/VP9)',  src: 'hdr-motion.webm',  seg: false },
+  { key: '6', name: 'HDR motion  (mp4/HEVC)',  src: 'hdr-motion.mp4',   seg: false },
+  { key: '7', name: 'SDR motion  (webm/VP9)',  src: 'sdr-motion.webm',  seg: false },
+  { key: '8', name: 'SDR motion  (mp4/HEVC)',  src: 'sdr-motion.mp4',   seg: false },
+];
+
+// Phase 6: seven clips whose decoded pixels are byte-identical, differing only
+// in HDR10 metadata. Played by hand that is seven chances to mistime a gap or
+// lose the order, so the page drives it: 6 s of clip, 15 s of black, next.
+const PROBES = [
+  'probes/probe-A-baseline.mp4',
+  'probes/probe-B-peak4000.mp4',
+  'probes/probe-C-peak605.mp4',
+  'probes/probe-D-nometa.mp4',
+  'probes/probe-E-p3prim.mp4',
+  'probes/probe-F-hlg.mp4',
+  'probes/probe-G-bt709tag.mp4',
+];
+const PROBE_GAP_MS = 15000;
+const PROBE_PLAY_MS = 6500;
+
+const v = document.getElementById('v');
+const infoEl = document.getElementById('info');
+const logEl = document.getElementById('log');
+const hintEl = document.getElementById('hint');
+
+let current = SOURCES[0];
+let entries = [];
+
+function stamp() {
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${String(d.getMilliseconds()).padStart(3,'0')}`;
+}
+
+function note(text) {
+  entries.push(`${stamp()}  ${text}`);
+  if (entries.length > 400) entries.shift();
+  renderLog();
+}
+
+function renderLog() {
+  logEl.textContent = 'PHASE LOG  (copy this into out\\NOTES.md)\n'
+    + '-'.repeat(52) + '\n' + entries.slice(-60).join('\n');
+}
+
+function load(s) {
+  current = s;
+  v.src = s.src;
+  v.play().catch(() => {});
+  note(`SOURCE  ${s.name}  [${s.src}]`);
+  fit();
+}
+
+// The video must land on the panel one device pixel per video pixel, or the
+// dock is shown a resampled picture and every decoded value is a blend of two.
+// Windows display scaling makes CSS pixels bigger than device pixels, so undo
+// it explicitly rather than trusting the layout.
+function fit() {
+  const dpr = window.devicePixelRatio || 1;
+  const w = (v.videoWidth || 2560) / dpr;
+  const h = (v.videoHeight || 1440) / dpr;
+  v.style.width = w + 'px';
+  v.style.height = h + 'px';
+}
+
+function segIndex() {
+  return Math.min(SEGMENTS.length - 1, Math.floor(v.currentTime / SEGMENT_SECONDS));
+}
+
+function seekSeg(i) {
+  i = Math.max(0, Math.min(SEGMENTS.length - 1, i));
+  v.currentTime = i * SEGMENT_SECONDS + 0.05;
+  note(`SEGMENT ${String(i).padStart(2, '0')} ${SEGMENTS[i]}`);
+}
+
+function renderInfo() {
+  const dpr = window.devicePixelRatio || 1;
+  const hi = window.matchMedia('(dynamic-range: high)').matches;
+  const vhi = window.matchMedia('(video-dynamic-range: high)').matches;
+  const seg = current.seg ? `${String(segIndex()).padStart(2,'0')} ${SEGMENTS[segIndex()]}` : '(motion)';
+  const q = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : null;
+  const scaled = (v.videoWidth && Math.abs(v.getBoundingClientRect().width * dpr - v.videoWidth) > 1);
+
+  infoEl.innerHTML =
+`<b>source</b>      ${current.name}
+<b>file</b>        ${current.src}
+<b>video</b>       ${v.videoWidth}x${v.videoHeight}  ${v.error ? '<span class="warn">DECODE ERROR '+v.error.code+'</span>' : (v.readyState >= 2 ? '<span class="good">decoding</span>' : 'loading...')}
+<b>time</b>        ${v.currentTime.toFixed(2)} / ${(v.duration||0).toFixed(2)} s
+<b>segment</b>     ${seg}
+<b>frames</b>      ${q ? q.totalVideoFrames + ' dropped ' + q.droppedVideoFrames : 'n/a'}
+
+<b>screen</b>      ${screen.width}x${screen.height}  depth ${screen.colorDepth}
+<b>devicePixelRatio</b> ${dpr}${dpr !== 1 ? ' <span class="warn">-- set display scaling to 100%</span>' : ''}
+<b>1:1 mapping</b> ${scaled ? '<span class="warn">NO -- picture is resampled</span>' : '<span class="good">yes</span>'}
+<b>dynamic-range</b>       ${hi ? '<span class="good">high</span>' : '<span class="warn">standard -- HDR is OFF for this window</span>'}
+<b>video-dynamic-range</b> ${vhi ? '<span class="good">high</span>' : '<span class="warn">standard</span>'}
+<b>fullscreen</b>  ${document.fullscreenElement ? 'yes' : '<span class="warn">no -- press f</span>'}`;
+}
+
+let probeTimer = null;
+
+function stopProbes(why) {
+  if (probeTimer) { clearTimeout(probeTimer); probeTimer = null; note('PROBES  stopped (' + why + ')'); }
+}
+
+function runProbes(i) {
+  if (i >= PROBES.length) { probeTimer = null; note('PROBES  sequence complete'); return; }
+  const src = PROBES[i];
+  const label = src.replace(/^probes\/probe-|\.mp4$/g, '');
+  current = { name: 'probe ' + label, src, seg: false };
+  v.src = src;
+  v.loop = true;
+  v.play().catch(() => {});
+  note(`PROBE   ${label}  START`);
+  probeTimer = setTimeout(() => {
+    v.pause();
+    v.removeAttribute('src');
+    v.load();                       // black screen for the gap
+    note(`PROBE   ${label}  END -- ${PROBE_GAP_MS / 1000} s black`);
+    probeTimer = setTimeout(() => runProbes(i + 1), PROBE_GAP_MS);
+  }, PROBE_PLAY_MS);
+}
+
+addEventListener('keydown', e => {
+  if (e.key === 'p') {
+    if (probeTimer) { stopProbes('keypress'); return; }
+    note(`PROBES  starting sequence: ${PROBES.length} clips, ${PROBE_PLAY_MS / 1000} s each, ${PROBE_GAP_MS / 1000} s black between`);
+    runProbes(0);
+    return;
+  }
+  const s = SOURCES.find(x => x.key === e.key);
+  if (s) { stopProbes('source change'); load(s); return; }
+  switch (e.key) {
+    case 'ArrowRight': seekSeg(segIndex() + 1); break;
+    case 'ArrowLeft':  seekSeg(segIndex() - 1); break;
+    case ' ':
+      e.preventDefault();
+      if (v.paused) { v.play(); note('PLAY'); } else { v.pause(); note('PAUSE at ' + v.currentTime.toFixed(2) + ' s'); }
+      break;
+    case 'f':
+      if (document.fullscreenElement) document.exitFullscreen();
+      else document.documentElement.requestFullscreen();
+      break;
+    case 'i': infoEl.classList.toggle('hidden'); break;
+    case 'l': logEl.classList.toggle('hidden'); break;
+    case 'h':
+      for (const el of [infoEl, logEl, hintEl]) el.classList.add('hidden');
+      break;
+    case 'm': {
+      const what = prompt('mark:');
+      if (what) note('MARK    ' + what);
+      break;
+    }
+  }
+});
+
+v.addEventListener('loadedmetadata', fit);
+v.addEventListener('error', () => note(`ERROR   ${current.src} failed to decode -- try another source`));
+addEventListener('resize', fit);
+setInterval(renderInfo, 200);
+
+// A segment change is worth logging on its own, so a capture can be sliced
+// even if nobody touched the keyboard.
+let lastSeg = -1;
+setInterval(() => {
+  if (!current.seg || v.paused) return;
+  const i = segIndex();
+  if (i !== lastSeg) { lastSeg = i; note(`SEGMENT ${String(i).padStart(2,'0')} ${SEGMENTS[i]}`); }
+}, 100);
+
+load(SOURCES[0]);
+renderInfo();
+renderLog();
+</script>
+</body>
+</html>

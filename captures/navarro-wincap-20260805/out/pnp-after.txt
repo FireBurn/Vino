@@ -1,0 +1,26 @@
+﻿
+
+Status       : OK
+Class        : Display
+FriendlyName : Universal  DP  Quad  Display Docking 16G
+InstanceId   : USB\VID_17E9&PID_7000&MI_00\8&1A147FE9&0&0000
+
+Status       : OK
+Class        : Display
+FriendlyName : Universal  DP  Quad  Display Docking 16G
+InstanceId   : USB\VID_17E9&PID_7000&MI_01\8&1A147FE9&0&0001
+
+Status       : OK
+Class        : MEDIA
+FriendlyName : DL USB Aduio
+InstanceId   : USB\VID_17E9&PID_7000&MI_02\8&1A147FE9&0&0002
+
+Status       : OK
+Class        : USB
+FriendlyName : USB Composite Device
+InstanceId   : USB\VID_17E9&PID_7000\754D3380000000209
+
+
+
+USB\VID_17E9&PID_7000&REV_3922
+USB\VID_17E9&PID_7000
