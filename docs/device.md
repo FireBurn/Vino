@@ -127,19 +127,29 @@ modeless connected connector is mode-set by fbdev before anything can intervene.
 With `CONFIG_DRM_LOAD_EDID_FIRMWARE=y` the blob can instead be named once and
 survive reloads: `drm_kms_helper.edid_firmware=DP-2:edid/<sink>.bin`.
 
-⚠ **An override describes the sink, not the link, and — measured 2026-08-05 —
-that is not enough on its own.** With a Samsung QE75Q60A behind an 8K DP→HDMI
-cable, the override produced the TV's real 54-mode list and a clean 1080p60
-mode-set; the dock took the black training frames (6 presentations, 120 000 B)
-and then **stopped accepting video** — `GET_STATUS=0x0000 halt=0`, first real
-frame `ETIMEDOUT`. Throughout, that connector's probe answered
-`status=0x00271105 present=true` with the **EDID-handler ready bit false**.
+### Measured 2026-08-05: a Samsung QE75Q60A behind an 8K DP→HDMI cable
 
-So the dock's own EDID read is not merely how *vino* learns the sink: it is the
-dock's gate for enabling the downstream sink. A converter that breaks DDC breaks
-the head, and no host-side description substitutes for it. The override remains
-useful for a sink whose EDID is merely *ugly* rather than unreadable, and as the
-instrument that established the above.
+The dock never returns an EDID for it, and that connector's probe answers
+`status=0x00271105 present=true` with the **EDID-handler ready bit false** — with
+the TV awake. Under the override it offers the TV's real 54-mode list, takes a
+clean `1920x1080@60` mode-set, and **a picture appears on the panel**. So a
+host-supplied EDID is enough to bring the downstream sink up; the dock does not
+need to have read it itself.
+
+What then fails is the **first content frame**. The dock accepts the black
+training frames (120 000 B, 6 presentations) and then simply stops draining the
+endpoint — `stopped accepting video: GET_STATUS=0x0000 halt=0`, no halt, first
+real frame `ETIMEDOUT`. Afterwards the control plane wedges, so **cycle the
+module between tests** or the next result is meaningless.
+
+★ The live lead is the **allocator row count**: `navarro_total_rows` has measured
+DL-7400 values for 2560×1440 and 640×480 only, and both modes this TV offers fall
+back to Ridge's `0x6000`. Offset 48 is not derivable, so a wrong value plausibly
+mis-sizes the dock's buffer. The 640×480 control test — a mode with a measured
+value — has not yet been run from a clean cycle.
+
+⚠ **An override describes the sink, not the link.** If the converter cannot carry
+the mode the blob advertises, the screen stays black in exactly the same way.
 
 ## Firmware-specific behavior
 
