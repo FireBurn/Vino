@@ -27,7 +27,7 @@
 
 <div id="info" class="panel hidden"></div>
 <div id="log"  class="panel hidden"></div>
-<div id="hint" class="panel">1-8 source &nbsp; p probe sequence &nbsp; &larr;/&rarr; segment &nbsp; space pause &nbsp; f fullscreen &nbsp; i info &nbsp; l log &nbsp; m mark &nbsp; h hide</div>
+<div id="hint" class="panel">1-8 source &nbsp; 9/0 AC stress &nbsp; p probe sequence &nbsp; &larr;/&rarr; segment &nbsp; space pause &nbsp; f fullscreen &nbsp; i info &nbsp; l log &nbsp; m mark &nbsp; h hide</div>
 
 <script>
 // Everything the Windows session needs to drive from one page: pick a clip,
@@ -41,6 +41,15 @@ const SEGMENTS = [
   'specular', 'detail', 'black_end'
 ];
 
+// The AC-stress clips (hdr-content\ac\) are a different sequence on a different clock, so their
+// segment list travels with them rather than being assumed. Ordered decisive-first: 01-03 are the
+// experiment, the rest corroborate. See tools\make-ac-patterns.py.
+const AC_SEGMENT_SECONDS = 4;
+const AC_SEGMENTS = [
+  'black', 'vlines2_full', 'hlines2_full', 'vlines2_sdr', 'vlines4_full', 'vlines1_full',
+  'check1_full', 'check2_full', 'check8_control', 'noise', 'step_edges', 'black_end'
+];
+
 const SOURCES = [
   { key: '1', name: 'HDR pattern (webm/VP9)',  src: 'hdr-pattern.webm', seg: true  },
   { key: '2', name: 'HDR pattern (mp4/HEVC)',  src: 'hdr-pattern.mp4',  seg: true  },
@@ -50,7 +59,19 @@ const SOURCES = [
   { key: '6', name: 'HDR motion  (mp4/HEVC)',  src: 'hdr-motion.mp4',   seg: false },
   { key: '7', name: 'SDR motion  (webm/VP9)',  src: 'sdr-motion.webm',  seg: false },
   { key: '8', name: 'SDR motion  (mp4/HEVC)',  src: 'sdr-motion.mp4',   seg: false },
+  { key: '9', name: 'AC stress HDR (webm/VP9)', src: 'ac/ac-hdr.webm', seg: true,
+    segs: AC_SEGMENTS, segSeconds: AC_SEGMENT_SECONDS },
+  { key: '0', name: 'AC stress SDR (webm/VP9)', src: 'ac/ac-sdr.webm', seg: true,
+    segs: AC_SEGMENTS, segSeconds: AC_SEGMENT_SECONDS },
+  { key: null, name: 'AC stress HDR (mp4/HEVC)', src: 'ac/ac-hdr.mp4', seg: true,
+    segs: AC_SEGMENTS, segSeconds: AC_SEGMENT_SECONDS },
+  { key: null, name: 'AC stress SDR (mp4/HEVC)', src: 'ac/ac-sdr.mp4', seg: true,
+    segs: AC_SEGMENTS, segSeconds: AC_SEGMENT_SECONDS },
 ];
+
+// Whichever source is loaded decides the segment clock.
+function segList()    { return current.segs || SEGMENTS; }
+function segSeconds() { return current.segSeconds || SEGMENT_SECONDS; }
 
 // Phase 6: seven clips whose decoded pixels are byte-identical, differing only
 // in HDR10 metadata. Played by hand that is seven chances to mistime a gap or
@@ -113,20 +134,20 @@ function fit() {
 }
 
 function segIndex() {
-  return Math.min(SEGMENTS.length - 1, Math.floor(v.currentTime / SEGMENT_SECONDS));
+  return Math.min(segList().length - 1, Math.floor(v.currentTime / segSeconds()));
 }
 
 function seekSeg(i) {
-  i = Math.max(0, Math.min(SEGMENTS.length - 1, i));
-  v.currentTime = i * SEGMENT_SECONDS + 0.05;
-  note(`SEGMENT ${String(i).padStart(2, '0')} ${SEGMENTS[i]}`);
+  i = Math.max(0, Math.min(segList().length - 1, i));
+  v.currentTime = i * segSeconds() + 0.05;
+  note(`SEGMENT ${String(i).padStart(2, '0')} ${segList()[i]}`);
 }
 
 function renderInfo() {
   const dpr = window.devicePixelRatio || 1;
   const hi = window.matchMedia('(dynamic-range: high)').matches;
   const vhi = window.matchMedia('(video-dynamic-range: high)').matches;
-  const seg = current.seg ? `${String(segIndex()).padStart(2,'0')} ${SEGMENTS[segIndex()]}` : '(motion)';
+  const seg = current.seg ? `${String(segIndex()).padStart(2,'0')} ${segList()[segIndex()]}` : '(motion)';
   const q = v.getVideoPlaybackQuality ? v.getVideoPlaybackQuality() : null;
   const scaled = (v.videoWidth && Math.abs(v.getBoundingClientRect().width * dpr - v.videoWidth) > 1);
 
@@ -177,7 +198,7 @@ addEventListener('keydown', e => {
     runProbes(0);
     return;
   }
-  const s = SOURCES.find(x => x.key === e.key);
+  const s = SOURCES.find(x => x.key && x.key === e.key);
   if (s) { stopProbes('source change'); load(s); return; }
   switch (e.key) {
     case 'ArrowRight': seekSeg(segIndex() + 1); break;
@@ -214,7 +235,7 @@ let lastSeg = -1;
 setInterval(() => {
   if (!current.seg || v.paused) return;
   const i = segIndex();
-  if (i !== lastSeg) { lastSeg = i; note(`SEGMENT ${String(i).padStart(2,'0')} ${SEGMENTS[i]}`); }
+  if (i !== lastSeg) { lastSeg = i; note(`SEGMENT ${String(i).padStart(2,'0')} ${segList()[i]}`); }
 }, 100);
 
 load(SOURCES[0]);

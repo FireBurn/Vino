@@ -18,7 +18,7 @@
 #   * the player reports devicePixelRatio 1 and 1:1 mapping
 param(
     [Parameter(Mandatory=$true)]
-    [ValidateSet('h1','h2','probes','axes','bandwidth')]
+    [ValidateSet('h1','h2','probes','axes','bandwidth','ac')]
     [string]$Phase,
 
     [string]$Head  = '\\.\DISPLAY29',   # the head the player is on
@@ -47,6 +47,7 @@ $DEFAULTS = @{
     probes    = @{ Prefix = 'cap11-metadata-probes'; Snaplen = 4096; Max = 220 }
     axes      = @{ Prefix = 'cap12-axes';            Snaplen = 4096; Max = 240 }
     bandwidth = @{ Prefix = 'cap13-bandwidth';       Snaplen = 4096; Max = 240 }
+    ac        = @{ Prefix = 'cap16-ac-ceiling';      Snaplen = 0;    Max = 200 }
 }
 $d = $DEFAULTS[$Phase]
 if (-not $OutPrefix)      { $OutPrefix = Join-Path $out $d.Prefix }
@@ -212,6 +213,37 @@ hevc8:t.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"')});})()
         Hdr $Head $false 'axes 1: HDR OFF again'
         Idle 15 'idle (post)'
         Log 'NOTE    SDR-content-brightness slider (7.2) is NOT scripted -- no public API; do by hand'
+  }
+
+  # ⭐ The AC-ceiling experiment. Structurally the same A/B as h1, but with content that varies
+  # INSIDE the codec's 8x8 block, which the h1 content never did -- its "detail" segment used 16 px
+  # cells, so every block was flat and the whole capture produced zero AC coefficients.
+  #
+  # Full payload is not optional here: the answer is in the strip bytes, not in the framing. Expect
+  # this capture to be LARGE -- these are the worst-case pictures for the codec, and a 4K head
+  # repainting them ten times a second is the most this dock will ever be asked to carry.
+  'ac' {
+        Hdr $Other $false 'ac: other head SDR throughout'
+        Hdr $Head  $false 'ac: start from SDR'
+        Idle 10 'idle (pre)'
+
+        Hdr $Head $true 'ac step 2: HDR ON'
+        Start-Sleep -Seconds 3
+        $c = Check-Player 'after HDR ON'
+        if (-not $c.hi)      { Log '!! WARNING dynamic-range is NOT high -- this capture answers nothing' }
+        if ($c.depth -ne 30) { Log "!! WARNING screen.colorDepth is $($c.depth), expected 30" }
+
+        Play 8 'ac-hdr (12 segments)' 52
+        Idle 10 'settle'
+
+        Hdr $Head $false 'ac step 5: HDR OFF -- the matched 8-bit control'
+        Start-Sleep -Seconds 3
+        [void](Check-Player 'after HDR OFF')
+
+        Play 9 'ac-sdr (same 12 segments)' 52
+        Idle 10 'idle (post)'
+        Log 'NOTE    check8_control (segment 08) must decode with NO AC coefficients.'
+        Log 'NOTE    If it has any, the picture was resampled and the run is void.'
   }
 
   # Two heads at once, then the depth-vs-bandwidth question at 120 Hz.

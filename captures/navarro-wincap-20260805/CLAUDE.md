@@ -1,33 +1,45 @@
 # Navarro Windows capture — session entry point
 
-**Your task this session: execute `HDR-RUNBOOK.md` in this directory, top to bottom.** Read it
-first, then do it. It is written to need no further prompting.
+**Your task this session: execute `TV-RUNBOOK.md` in this directory, top to bottom.** Read it
+first, then do it. It is written to need no further prompting, and it is short — one capture,
+about 25 minutes.
 
-One-line summary: record Windows' DisplayLink driver driving a WAVLINK DL7400 dock (`17e9:7000`,
-four DisplayPort sockets, two monitors) **in HDR, with genuinely HDR content on screen**, so the
-Linux side can work out what an HDR path in `vino` would have to do. Output goes in `out\`.
+One-line summary: a 4K HDR TV is now on the WAVLINK DL7400 dock (`17e9:7000`). Play content that
+varies **inside** the codec's 8×8 block and capture it in HDR and again in SDR, so the Linux side
+can settle the last open number in the 10-bit wire format: the AC escape codebook's ceiling.
 
-## ⛔ Before anything else: the dock is stuck at 180 Hz
+⛔ **`HDR-RUNBOOK.md` is DONE — do not redo it.** Its captures are in `out\` and its result is
+written up on the Linux side. The one thing it could not settle is what `TV-RUNBOOK.md` settles.
 
-2560×1440 @ 180 Hz puts this dock into a reconnect loop — the hub re-enumerates every few seconds
-and the dock screens never settle. Windows persists the refresh rate per monitor, so a reboot does
-not clear it. **Phase 0 of the runbook fixes this, and nothing else works until it is done:**
+## Why the last session could not answer this
+
+Its codec-stress segment used a **16 px** checkerboard. The codec transforms **8 px** blocks, so
+every block sat inside one cell and was perfectly flat: 3181 strips, **zero** AC coefficients.
+
+⛔ It was blamed on the monitors being too dim. That was wrong — a forward model of the codec says
+a 2 px grating demands a category-11 coefficient on any HDR sink, including the 302 cd/m² panels.
+So if the TV fights you, **phase 5 of the TV runbook runs the same experiment on the MSI panels and
+is just as valid.**
+
+## ⚠ Refresh rate
+
+180 Hz on a dock head puts it into a reconnect loop, and Windows persists refresh per monitor. The
+rescue is still here if you need it — run it from the **laptop's own screen**:
 
 ```
 powershell -ExecutionPolicy Bypass -File .\tools\rescue-refresh.ps1 -List
 powershell -ExecutionPolicy Bypass -File .\tools\rescue-refresh.ps1 -Hz 60
 ```
 
-Run it from the **laptop's own screen** (`Win`+`P` → PC screen only if you need to). Leave the dock
-at 60 Hz for the whole session, and leave it there at the end.
-
 ## Read in this order
 
 | file | what it is |
 |---|---|
-| `HDR-RUNBOOK.md` | **the instructions for this session** — phases 0–8, do them in order |
-| `hdr-content\SEGMENTS.md` | what is in the test content and how to read a decoded frame |
-| `RUNBOOK.md` | the **previous** session's runbook (2026-08-02), for context only — do not redo it |
+| `TV-RUNBOOK.md` | **the instructions for this session** — six short phases, do them in order |
+| `hdr-content\ac\manifest.json` | what each of the twelve AC-stress pictures is, and the AC category it demands |
+| `HDR-RUNBOOK.md` | the **previous** session's runbook (2026-08-05 am) — done, for context only |
+| `hdr-content\SEGMENTS.md` | what is in that session's test content |
+| `RUNBOOK.md` | the 2026-08-02 runbook, for context only — do not redo it |
 | `out\NOTES.md` | what that session found. Append to it; never replace it |
 | `NAVARRO-PROTOCOL.md` | what Linux already knows; how to read a video record with no key |
 | `navarro-full.md` | the complete Linux write-up, if you need depth |
@@ -59,6 +71,9 @@ comparison, not a format one, and does not stand.
 - ⚠ **Check `player.html`'s info panel before each HDR capture.** It must say `dynamic-range high`,
   `devicePixelRatio 1` and `1:1 mapping yes`. A capture taken through a window Edge thinks is SDR,
   or of a picture that display scaling resampled, is a wasted run.
+- ⛔ **100% display scaling on the TV.** Windows defaults a 4K set to 300%, and at anything but 100%
+  the 2 px grating this session depends on is resampled into mush. `check8_control` (segment 08) is
+  the built-in detector: delivered 1:1 it makes NO AC coefficients at all.
 - ⚠ **Capture the whole root hub, not one device.** The dock re-enumerates on replug and takes a new
   USB address each time; a device-filtered capture loses exactly the moments worth having.
 - ⚠ **Snaplen matters.** A lit dock streams hundreds of MB/s — 50 GB in three minutes was measured.
@@ -98,6 +113,11 @@ hdr-content\         the test content (generated on Linux, 2026-08-05)
   ref\                 the exact source pictures
   ref\decoded\         the same after the codec -- compare wire output against THESE
   sink-edid\           both dock monitors' EDIDs + decodes, read from Linux 2026-08-05
+  ac\                  ⭐ THIS session: 4K AC-stress content, HDR + pixel-matched SDR twin
+    ac-hdr.{webm,mp4}    12 segments, PQ/BT.2020 10-bit, 3840x2160
+    ac-sdr.{webm,mp4}    the same twelve pictures in BT.709 8-bit
+    manifest.json        per-segment description and expected AC category
+    ref\                 source crops
 tools\
   rescue-refresh.ps1   phase 0: get the dock off 180 Hz
   capture-both.ps1     capture every USBPcap root hub at once
@@ -107,5 +127,13 @@ tools\
   animate.ps1          simple moving-block damage generator
   phase-tags.py        slice a capture by phase
   make-hdr-patterns.py the generator for hdr-content\ (needs Linux + ffmpeg)
+  make-ac-patterns.py  the generator for hdr-content\ac\ -- read its header, it explains the design
+  hdr.ps1              read/set per-display HDR; prints bit depth and colour encoding
+  dpiscale.ps1         read/set per-display scaling -- 100% is mandatory for this session
+  cdp.ps1              drive/interrogate the player over the DevTools protocol
+  choreograph.ps1      run a whole capture phase with every step timestamped (-Phase ac)
+  capture-runner.ps1   one elevated capture process for the session
+  sdr-whitelevel.ps1   poll the SDR-content-brightness level (no public setter)
+  edid.ps1             ⭐ dump every monitor's EDID and decode its declared HDR peak
 out\                 everything you produce, plus the 2026-08-02 captures
 ```
