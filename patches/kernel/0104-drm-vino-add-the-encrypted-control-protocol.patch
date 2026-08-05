@@ -1,4 +1,4 @@
-From 717428a30e70c446564ecf487f1b0d622bf1ff9c Mon Sep 17 00:00:00 2001
+From f3fc5f82427d027ebbeb44d7fa244efe895110bf Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 21:20:52 +0100
 Subject: [PATCH 104/108] drm/vino: add the encrypted control protocol
@@ -34,12 +34,12 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  MAINTAINERS                    |    7 +
  drivers/gpu/drm/vino/ake.rs    |  175 ++++
- drivers/gpu/drm/vino/cp.rs     | 1496 ++++++++++++++++++++++++++++++++
+ drivers/gpu/drm/vino/cp.rs     | 1556 ++++++++++++++++++++++++++++++++
  drivers/gpu/drm/vino/crypto.rs |   35 +
  drivers/gpu/drm/vino/hdcp.rs   |  115 +++
  drivers/gpu/drm/vino/proto.rs  |   71 ++
  drivers/gpu/drm/vino/rng.rs    |    9 +
- 7 files changed, 1908 insertions(+)
+ 7 files changed, 1968 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/ake.rs
  create mode 100644 drivers/gpu/drm/vino/cp.rs
  create mode 100644 drivers/gpu/drm/vino/crypto.rs
@@ -248,10 +248,10 @@ index 000000000000..54d24ca2d096
 +}
 diff --git a/drivers/gpu/drm/vino/cp.rs b/drivers/gpu/drm/vino/cp.rs
 new file mode 100644
-index 000000000000..e66d094d06ce
+index 000000000000..251be84b9f41
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/cp.rs
-@@ -0,0 +1,1496 @@
+@@ -0,0 +1,1556 @@
 +// SPDX-License-Identifier: GPL-2.0
 +//! Encrypted-control-plane message builders (the inner plaintext of the type=4
 +//! sub=0x24 AES-CTR frames) plus the AES-CTR `seal` that encrypts and frames them.
@@ -498,6 +498,12 @@ index 000000000000..e66d094d06ce
 +    Ok(b)
 +}
 +/// A video timing as carried by the `0x48/0x22` set-mode message.
++///
++/// Field names follow the vendor's own vocabulary, which it logs as `hActive hBlanking
++/// hFrontPorch hSyncWidth hSyncInv vActive vBlanking vFrontPorch vSyncWidth vSyncInv vic
++/// pixelClock`. That is this payload in order: eight geometry words at offsets 26 through 40, the
++/// two sync-inversion flags packed into [`Timing::sync_flags`] at offset 42, the CTA VIC in the
++/// low byte of [`Timing::vic_word`] at offset 66, and the pixel clock at offset 70.
 +#[derive(Clone, Copy)]
 +pub(super) struct Timing {
 +    pub hactive: u16,
@@ -517,107 +523,149 @@ index 000000000000..e66d094d06ce
 +    /// so the upper word is real. Truncating to `u16` made every mode past 655.35 MHz fail the
 +    /// conversion and never reach the dock at all.
 +    pub pixel_clock_10khz: u32,
-+    /// Link configuration word at offset 42, selected by [`mode_profile`].
-+    pub field42: u16,
-+    /// Word at offset 46. Resolution-keyed and platform-specific; see [`navarro_mode_words`].
-+    pub off46: u16,
-+    /// Word at offset 48. Resolution-keyed and platform-specific; see [`navarro_mode_words`].
-+    pub off48: u16,
-+    /// Mode-dependent word at offset 66, selected by [`mode_profile`].
-+    pub off66: u16,
++    /// Sync-polarity flags at offset 42; see [`sync_flags`].
++    pub sync_flags: u16,
++    /// Render stride at offset 46, in pixels; see [`render_stride`].
++    pub stride: u16,
++    /// Row count at offset 48; see [`navarro_total_rows`].
++    pub total_rows: u16,
++    /// Picture aspect and CTA VIC at offset 66; see [`vic_word`].
++    pub vic_word: u16,
 +}
 +
-+/// Ridge's offset-46 and offset-48 words, which are fixed across its whole decrypted corpus.
-+const RIDGE_OFF46: u16 = 0x4000;
-+const RIDGE_OFF48: u16 = 0x6000;
++/// Pixel granularity the render stride is quantised to.
++const STRIDE_ALIGN: u32 = 128;
 +
-+/// The DL7400's offset-46 and offset-48 words for `hactive`, or `None` if no capture covers it.
++/// Ridge's fixed stride and row count, which it carries on every mode regardless of timing.
 +///
-+/// These are *not* Ridge's constants, which vino sent on every DL7400 mode set until this was
-+/// measured. Both words track resolution alone: all three decrypted 2560x1440 mode sets carry the
-+/// same pair at 60, 120 and 165 Hz, and the one 640x480p60 mode set carries a different pair.
++/// The protocol has a device-level stride override, and Ridge takes it: the whole decrypted Ridge
++/// corpus carries this pair at 1280x720, 1920x1080 and 2560x1440 alike, where [`render_stride`]
++/// would give a different value per width.
++const RIDGE_STRIDE: u16 = 0x4000;
++const RIDGE_TOTAL_ROWS: u16 = 0x6000;
++
++/// The render stride for `hactive`, in pixels: quantised up to [`STRIDE_ALIGN`], then one whole
++/// unit more.
 +///
-+/// Two samples cannot separate a formula from a lookup. `0x0a80`/`0x0300` are both `hactive +
-+/// 128`, and `0x66db`/`0x6800` have no proposed derivation at all, so this deliberately refuses to
-+/// extrapolate: an unmeasured resolution gets Ridge's words and a log line naming them, which is
-+/// the same discipline [`mode_profile`] applies to offsets 42 and 66.
-+fn navarro_mode_words(hactive: u16, vactive: u16) -> Option<(u16, u16)> {
++/// The trailing unit is added after the quantisation, not as slack for it, so a width that is
++/// already a multiple of 128 still gains 128. Both decrypted DL7400 widths are such multiples,
++/// which is why `0x0a80` at 2560 and `0x0300` at 640 both read as a plain `hactive + 128`.
++pub(super) fn render_stride(hactive: u16) -> u16 {
++    let quantised = (u32::from(hactive) + STRIDE_ALIGN - 1) / STRIDE_ALIGN;
++    (((quantised + 1) * STRIDE_ALIGN) & 0xffff) as u16
++}
++
++/// The DL7400's offset-48 row count for a resolution, or `None` if no capture covers it.
++///
++/// This is the dock's framebuffer allocation divided by one row of [`render_stride`] pixels, so it
++/// is not a function of the timing at all: the numerator is however much the dock's own allocator
++/// handed out. Two captures pin two resolutions and nothing predicts a third, so an unmeasured one
++/// gets Ridge's constant and a log line naming it.
++fn navarro_total_rows(hactive: u16, vactive: u16) -> Option<u16> {
 +    match (hactive, vactive) {
-+        (2560, 1440) => Some((0x0a80, 0x66db)),
-+        (640, 480) => Some((0x0300, 0x6800)),
++        (2560, 1440) => Some(0x66db),
++        (640, 480) => Some(0x6800),
 +        _ => None,
 +    }
 +}
 +
-+/// Select the offset-42 downstream link word from the mode's width.
++/// Base bit of the offset-42 flags word, set in every message the corpus contains.
++const SYNC_FLAGS_BASE: u16 = 0x0400;
++/// `hSyncInv`: horizontal sync is active low.
++const SYNC_FLAG_HSYNC_INV: u16 = 0x0100;
++/// `vSyncInv`: vertical sync is active low.
++const SYNC_FLAG_VSYNC_INV: u16 = 0x0200;
++/// The offset-42 word a teardown carries in place of any polarity.
++const SYNC_FLAGS_TEARDOWN: u16 = 0x8000;
++
++/// Build the offset-42 flags word from the mode's sync polarity.
 +///
-+/// The field is resolution-keyed, not bandwidth-keyed: 2560x1440p60 runs at 241.50 MHz and carries
-+/// `0x0600`, while 1920x1080p120 runs *faster* at 297.00 MHz and carries `0x0400`. That rules out
-+/// reading it as a DP link-bandwidth tier, which `docs/VIDEO.md` had suggested and which would put
-+/// both of those modes inside 4-lane HBR.
++/// This is the vendor's `hSyncInv`/`vSyncInv` pair packed into one word, over a base bit that is
++/// set in every observed message and whose own meaning is unknown. Every decrypted mode set on
++/// both dock generations agrees:
 +///
-+/// Measured: 1920x1080 at 60 and 120 Hz -> `0x0400`; 2560x1440 at 60 and 120 Hz -> `0x0600`.
-+/// The 1280x720p60 and 3840x2160p60 values predate the decrypted corpus but fall on the same
-+/// ladder.
++/// | mode | polarity | off42 |
++/// |---|---|---|
++/// | 1280x720p60, 1920x1080p60/p120 (CTA) | `+h +v` | `0x0400` |
++/// | 2560x1440p60/p120/p165 (CVT-RB) | `+h -v` | `0x0600` |
++/// | 640x480p60 (DMT) | `-h -v` | `0x0700` |
 +///
-+/// `vdisplay` tracks `hdisplay` in every sample, so nothing distinguishes a width ladder from
-+/// an area one; width is chosen because the steps land on standard widths.
-+fn link_word_42(hdisplay: u16) -> u16 {
-+    match hdisplay {
-+        0..=1920 => 0x0400,
-+        1921..=2560 => 0x0600,
-+        _ => 0x0604,
++/// The last row also fixes the assignment within the pair: 2560x1440 is `+h -v` and carries
++/// `0x0600`, so `0x0200` is the vertical flag and swapping the two would predict `0x0500`.
++fn sync_flags(mode: &kernel::drm::kms::modes::DisplayMode) -> u16 {
++    // Named through the same path as the parameter type rather than a `use`: the chimera rig
++    // compiles this file verbatim against a shim where a `use kernel::...` is ambiguous.
++    type ModeFlags = kernel::drm::kms::modes::ModeFlags;
++
++    let flags = mode.flags();
++    let mut word = SYNC_FLAGS_BASE;
++    if flags.contains(ModeFlags::NHSYNC) {
++        word |= SYNC_FLAG_HSYNC_INV;
 +    }
++    if flags.contains(ModeFlags::NVSYNC) {
++        word |= SYNC_FLAG_VSYNC_INV;
++    }
++    word
 +}
 +
-+/// Select the offset-66 mode word: a base in the high byte, the mode's CTA VIC in the low byte.
++/// Picture aspect of CTA VICs 1 through 59, one bit per VIC: set for 16:9, clear for 4:3.
++///
++/// The CTA table pairs most timings, one 4:3 and one 16:9 over the same signal -- VIC 2 and 3 are
++/// both 720x480p60, VIC 6 and 7 both 720x480i60 -- so the aspect cannot be recovered from the
++/// timing and has to be carried per VIC.
++const VIC_ASPECT_16_9: u64 = 0x055_575e_beaa_ed55c;
++
++/// Offset-66 high byte: the mode's picture aspect ratio.
++const ASPECT_16_9: u16 = 0x2800;
++const ASPECT_4_3: u16 = 0x1800;
++/// Sent for a timing with no CTA VIC, which has no CTA aspect to name.
++const ASPECT_NONE: u16 = 0x0800;
++
++/// Build the offset-66 word: the picture aspect in the high byte, the CTA VIC in the low.
 +///
 +/// The low byte is the VIC, or zero for a timing that has none. Measured: `0x10` for 1920x1080p60
-+/// (VIC 16), `0x3f` for 1920x1080p120 (VIC 63), `0x00` for the VIC-less 2560x1440p60 and p120
-+/// CVT-RB timings.
++/// (VIC 16), `0x3f` for 1920x1080p120 (VIC 63), `0x00` for the VIC-less 2560x1440 CVT-RB timings.
 +///
-+/// The base is `0x2800` only for a mode that both has a VIC *and* runs at 60 Hz or below; every
-+/// other measured message uses `0x0800`. That is what separates 1920x1080p60 (`0x2810`) from
-+/// 2560x1440p60 (`0x0800`) -- same refresh, but the 1440p timing is CVT-RB and carries no VIC, so
-+/// refresh alone does not select the base.
-+///
-+/// `0x2800` is observed in exactly one message and its meaning is undecoded, so treat any mode
-+/// that lands on it without a measurement as suspect first if a panel stays dark.
-+fn mode_word_66(mode: &kernel::drm::kms::modes::DisplayMode, refresh: u16) -> u16 {
-+    let vic = u16::from(mode.cea_vic()) & 0x00ff;
-+    let base: u16 = if vic != 0 && refresh <= 60 {
-+        0x2800
-+    } else {
-+        0x0800
++/// The aspect is looked up in [`VIC_ASPECT_16_9`], which covers VICs 1 through 59. A VIC outside
++/// that range gets [`ASPECT_NONE`] rather than being clamped into it -- that is what makes
++/// 1920x1080p120 (VIC 63) carry `0x083f` while 1920x1080p60 (VIC 16) carries `0x2810`.
++pub(super) fn vic_word(vic: u8) -> u16 {
++    let vic = u16::from(vic);
++    let aspect = match vic.checked_sub(1) {
++        Some(bit) if bit < 59 => {
++            if VIC_ASPECT_16_9 & (1u64 << bit) != 0 {
++                ASPECT_16_9
++            } else {
++                ASPECT_4_3
++            }
++        }
++        _ => ASPECT_NONE,
 +    };
-+    base | vic
++    aspect | vic
 +}
 +
 +/// A mode's offset-42 and offset-66 set-mode words, and how they were obtained.
 +pub(super) struct ModeProfile {
-+    pub off42: u16,
-+    pub off66: u16,
++    pub sync_flags: u16,
++    pub vic_word: u16,
 +    /// True when these bytes are reproduced from a decrypted DLM set-mode message.
 +    pub measured: bool,
 +}
 +
 +/// Return the two mode-dependent set-mode words at offsets 42 and 66.
 +///
-+/// Modes that appear in a decrypted DLM message are reproduced byte-exactly. Everything else is
-+/// derived by [`link_word_42`] and [`mode_word_66`], which between them reproduce every measured
-+/// message, so the dock's vocabulary is no longer limited to the handful of timings that happen to
-+/// have been captured. The envelope DLM itself stays inside -- refresh ceiling, per-head clock and
-+/// the shared pixel budget -- is enforced by `drm_sink`'s `mode_valid`, not here.
++/// Both words are derived by [`sync_flags`] and [`vic_word`], which between them reproduce every
++/// decrypted message byte-exactly, so an unsampled timing is driven rather than refused. The
++/// envelope the dock stays inside -- refresh ceiling, per-head clock and the shared pixel budget
++/// -- is enforced by `drm_sink`'s `mode_valid`, not here.
 +pub(super) fn mode_profile(mode: &kernel::drm::kms::modes::DisplayMode) -> Option<ModeProfile> {
 +    let clock = mode.clock();
 +    if clock <= 0 {
 +        return None;
 +    }
-+    let refresh = mode.vrefresh();
-+    if refresh <= 0 {
++    if mode.vrefresh() <= 0 {
 +        return None;
 +    }
-+    let refresh = refresh as u16;
 +
 +    let measured = matches!(
 +        (
@@ -641,8 +689,8 @@ index 000000000000..e66d094d06ce
 +    );
 +
 +    Some(ModeProfile {
-+        off42: link_word_42(mode.hdisplay()),
-+        off66: mode_word_66(mode, refresh),
++        sync_flags: sync_flags(mode),
++        vic_word: vic_word(mode.cea_vic()),
 +        measured,
 +    })
 +}
@@ -652,26 +700,36 @@ index 000000000000..e66d094d06ce
 +    mode_profile(mode).is_some()
 +}
 +
-+/// Set-mode (`id=0x48 sub=0x22`): an 80-byte inner message carrying the target head and a
-+/// detailed timing record. Offsets 26 through 46 contain geometry, link configuration, refresh and
-+/// flags; offset 66 is mode-dependent, offset 68 is fixed, offset 70 contains the pixel clock, and
-+/// offsets 74 through 79 contain a fresh token.
-+/// Build the mode-set's *teardown* form: the same message with the operation byte at offset 23
-+/// set to zero, every timing word zero, and `0x8000` at offset 42.
++/// Offset-68 of the `0x48/0x22` message: the colour depth, in the high byte.
 +///
-+/// Offset 23 is an operation code, not the "fixed generation/type value" vino assumed it to be.
-+/// DLM sends this form for a connector before it sends that connector's real mode -- in a
-+/// same-day keyed capture, two rounds of `(conn 0, conn 1)` teardowns at -3.1 s and -1.2 s and
-+/// then the real pair 0.12 s before the first video byte. vino only ever sent the `0x02` form, so
-+/// the dock was asked to configure a pipe that had never been torn down.
++/// The dock takes a depth enum, not a bit count: 16bpp is 1, 24bpp 2, 30bpp 3, 36bpp 4 and 48bpp
++/// 5, and an unrecognised depth falls back to 24bpp. The low byte is a separate field that every
++/// capture carries as zero. The three values above 24bpp are 10, 12 and 16 bits per channel --
++/// the deep-colour ladder -- and vino drives none of them.
++const COLOUR_DEPTH_24BPP: u16 = 0x0200;
++
++/// Offset-23 of the `0x48/0x22` message: the DMA buffer format the head scans out.
++///
++/// The dock indexes a four-entry table with this, giving 2, 4, 3 and 4 bytes per pixel for formats
++/// 0 through 3, and rejects anything above 3. Vino scans out 24bpp, so it sends format 2. A
++/// teardown writes no timing at all and leaves the field zero.
++const DMA_FORMAT_RGB888: u8 = 2;
++const DMA_FORMAT_NONE: u8 = 0;
++
++/// Build the set-mode message's teardown form: every timing word zero and
++/// [`SYNC_FLAGS_TEARDOWN`] at offset 42.
++///
++/// The dock expects this for a connector before that connector's real mode. DLM sends two rounds
++/// of `(conn 0, conn 1)` teardowns 3.1 s and 1.2 s ahead of the real pair, which itself lands
++/// 0.12 s before the first video byte.
 +pub(super) fn clear_mode(counter: u16, head: u8) -> Result<KVec<u8>> {
 +    let mut b = KVec::with_capacity(80, GFP_KERNEL)?;
 +    header(&mut b, 0x48, 0x22, counter)?;
 +    pad_to(&mut b, 22)?;
 +    b.push(head, GFP_KERNEL)?; // off22: connector
-+    b.push(0, GFP_KERNEL)?; // off23: operation 0 -- tear down
++    b.push(DMA_FORMAT_NONE, GFP_KERNEL)?;
 +    pad_to(&mut b, 42)?;
-+    b.extend_from_slice(&0x8000u16.to_le_bytes(), GFP_KERNEL)?; // off42
++    b.extend_from_slice(&SYNC_FLAGS_TEARDOWN.to_le_bytes(), GFP_KERNEL)?;
 +    pad_to(&mut b, 74)?;
 +    let mut tail = [0u8; 6];
 +    rng::fill(&mut tail);
@@ -679,12 +737,16 @@ index 000000000000..e66d094d06ce
 +    Ok(b)
 +}
 +
++/// Set-mode (`id=0x48 sub=0x22`): an 80-byte inner message carrying the target head and a timing
++/// record. Offsets 26 through 48 hold the geometry, sync flags, refresh and the resolution-keyed
++/// pair; offset 66 carries the VIC word, offset 68 is fixed, offset 70 the pixel clock, and
++/// offsets 74 through 79 a fresh token.
 +pub(super) fn set_mode(counter: u16, head: u8, t: &Timing) -> Result<KVec<u8>> {
 +    let mut b = KVec::with_capacity(80, GFP_KERNEL)?;
 +    header(&mut b, 0x48, 0x22, counter)?;
 +    pad_to(&mut b, 22)?;
 +    b.push(head, GFP_KERNEL)?; // off22: downstream head selector
-+    b.push(2, GFP_KERNEL)?; // off23: fixed generation/type value
++    b.push(DMA_FORMAT_RGB888, GFP_KERNEL)?;
 +    pad_to(&mut b, 26)?; // off24..25 zero; timing begins at off26
 +    for v in [
 +        t.hactive,
@@ -695,10 +757,10 @@ index 000000000000..e66d094d06ce
 +        t.vblank,
 +        t.vsync_front,
 +        t.vsync_width,
-+        t.field42,
++        t.sync_flags,
 +        t.refresh_hz,
-+        t.off46,
-+        t.off48,
++        t.stride,
++        t.total_rows,
 +    ] {
 +        b.extend_from_slice(&v.to_le_bytes(), GFP_KERNEL)?;
 +    }
@@ -706,8 +768,8 @@ index 000000000000..e66d094d06ce
 +    b.extend_from_slice(&0x0080u16.to_le_bytes(), GFP_KERNEL)?; // off58: profile constant
 +    b.extend_from_slice(&0x00ffu16.to_le_bytes(), GFP_KERNEL)?; // off60: profile constant
 +    pad_to(&mut b, 66)?;
-+    b.extend_from_slice(&t.off66.to_le_bytes(), GFP_KERNEL)?; // off66: see `mode_profile`
-+    b.extend_from_slice(&0x0200u16.to_le_bytes(), GFP_KERNEL)?; // off68: profile constant
++    b.extend_from_slice(&t.vic_word.to_le_bytes(), GFP_KERNEL)?; // off66: see `vic_word`
++    b.extend_from_slice(&COLOUR_DEPTH_24BPP.to_le_bytes(), GFP_KERNEL)?;
 +
 +    // off70..73: pixel clock in 10 kHz units, a full u32. Ridge only ever fills the low half, so
 +    // this is byte-identical there to the old u16 followed by two zero bytes.
@@ -734,29 +796,31 @@ index 000000000000..e66d094d06ce
 +    // than anything else in the pipeline, so name them in the log.
 +    if !profile.measured {
 +        pr_info!(
-+            "vino: {}x{}@{} has no decrypted DLM profile; inferring off42={:#06x} off66={:#06x}\n",
++            "vino: {}x{}@{} has no decrypted DLM profile; inferring sync_flags={:#06x} \
++             vic_word={:#06x}\n",
 +            mode.hdisplay(),
 +            mode.vdisplay(),
 +            refresh,
-+            profile.off42,
-+            profile.off66
++            profile.sync_flags,
++            profile.vic_word
 +        );
 +    }
 +    let pixel_clock_10khz = (clock as u32) / 10;
-+    let (off46, off48) = if navarro {
-+        navarro_mode_words(mode.hdisplay(), mode.vdisplay()).unwrap_or_else(|| {
++    // The stride is derived on the DL7400 and overridden to a device constant on Ridge. The row
++    // count follows the dock's own allocator, so an unmeasured resolution has no derivation.
++    let (stride, total_rows) = if navarro {
++        let rows = navarro_total_rows(mode.hdisplay(), mode.vdisplay()).unwrap_or_else(|| {
 +            pr_info!(
-+                "vino: {}x{} has no measured DL7400 mode words; sending Ridge's off46={:#06x} \
-+                 off48={:#06x}\n",
++                "vino: {}x{} has no measured DL7400 row count; sending Ridge's {:#06x}\n",
 +                mode.hdisplay(),
 +                mode.vdisplay(),
-+                RIDGE_OFF46,
-+                RIDGE_OFF48
++                RIDGE_TOTAL_ROWS
 +            );
-+            (RIDGE_OFF46, RIDGE_OFF48)
-+        })
++            RIDGE_TOTAL_ROWS
++        });
++        (render_stride(mode.hdisplay()), rows)
 +    } else {
-+        (RIDGE_OFF46, RIDGE_OFF48)
++        (RIDGE_STRIDE, RIDGE_TOTAL_ROWS)
 +    };
 +    Ok(Timing {
 +        hactive: mode.hdisplay(),
@@ -769,10 +833,10 @@ index 000000000000..e66d094d06ce
 +        vsync_width: sub(mode.vsync_end(), mode.vsync_start()),
 +        refresh_hz: refresh,
 +        pixel_clock_10khz,
-+        field42: profile.off42,
-+        off46,
-+        off48,
-+        off66: profile.off66,
++        sync_flags: profile.sync_flags,
++        stride,
++        total_rows,
++        vic_word: profile.vic_word,
 +    })
 +}
 +/// Known CP `sub` identifiers used to validate a decrypted header.
@@ -1086,21 +1150,24 @@ index 000000000000..e66d094d06ce
 +
 +/// off23 is the cursor's **visible** flag, not a message-kind tag: set to show the cursor, clear to
 +/// hide it. The bitmap-bearing messages carry it clear because an upload is not itself a show.
-+const CURSOR_OFF23_VISIBLE: u8 = 0x01;
-+const CURSOR_OFF23_HIDDEN: u8 = 0x00;
++/// Offset-23 visibility flag of the cursor messages.
++const CURSOR_VISIBLE: u8 = 0x01;
++const CURSOR_HIDDEN: u8 = 0x00;
 +
++/// Common prologue of the cursor messages: the dock-side head id at offset 22 and the visibility
++/// flag at offset 23.
 +fn cursor_header(
 +    b: &mut KVec<u8>,
 +    id: u16,
 +    sub: u16,
 +    counter: u16,
-+    off22: u8,
-+    off23: u8,
++    dock_head: u8,
++    visible: u8,
 +) -> Result {
 +    header(b, id, sub, counter)?;
 +    pad_to(b, 22)?;
-+    b.push(off22, GFP_KERNEL)?;
-+    b.push(off23, GFP_KERNEL)?;
++    b.push(dock_head, GFP_KERNEL)?;
++    b.push(visible, GFP_KERNEL)?;
 +    Ok(())
 +}
 +
@@ -1108,7 +1175,7 @@ index 000000000000..e66d094d06ce
 +pub(super) fn cursor_create(counter: u16, head: u8, w: u16, h: u16) -> Result<KVec<u8>> {
 +    let mut b = KVec::with_capacity(32, GFP_KERNEL)?;
 +    let dock_head = CURSOR_HEAD_IDS.get(head as usize).copied().ok_or(EINVAL)?;
-+    cursor_header(&mut b, 0x1b, 0x42, counter, dock_head, CURSOR_OFF23_HIDDEN)?;
++    cursor_header(&mut b, 0x1b, 0x42, counter, dock_head, CURSOR_HIDDEN)?;
 +    b.extend_from_slice(&w.to_le_bytes(), GFP_KERNEL)?; // off24..25
 +    b.extend_from_slice(&h.to_le_bytes(), GFP_KERNEL)?; // off26..27
 +    pad_to(&mut b, 32)?; // off28..31 reserved
@@ -1124,12 +1191,12 @@ index 000000000000..e66d094d06ce
 +) -> Result<KVec<u8>> {
 +    let mut b = KVec::with_capacity(32, GFP_KERNEL)?;
 +    let dock_head = CURSOR_HEAD_IDS.get(head as usize).copied().ok_or(EINVAL)?;
-+    let off23 = if visible {
-+        CURSOR_OFF23_VISIBLE
++    let visible_flag = if visible {
++        CURSOR_VISIBLE
 +    } else {
-+        CURSOR_OFF23_HIDDEN
++        CURSOR_HIDDEN
 +    };
-+    cursor_header(&mut b, 0x1a, 0x43, counter, dock_head, off23)?;
++    cursor_header(&mut b, 0x1a, 0x43, counter, dock_head, visible_flag)?;
 +    b.extend_from_slice(&x.to_le_bytes(), GFP_KERNEL)?; // off24..25
 +    b.extend_from_slice(&y.to_le_bytes(), GFP_KERNEL)?; // off26..27
 +    pad_to(&mut b, 32)?; // off28..31 reserved
@@ -1158,14 +1225,7 @@ index 000000000000..e66d094d06ce
 +    }
 +    let mut b = KVec::with_capacity(32 + bgra.len(), GFP_KERNEL)?;
 +    let dock_head = CURSOR_HEAD_IDS.get(head as usize).copied().ok_or(EINVAL)?;
-+    cursor_header(
-+        &mut b,
-+        0x401c,
-+        0x41,
-+        counter,
-+        dock_head,
-+        CURSOR_OFF23_HIDDEN,
-+    )?;
++    cursor_header(&mut b, 0x401c, 0x41, counter, dock_head, CURSOR_HIDDEN)?;
 +    pad_to(&mut b, 32)?; // off24..31 zero (no w/h here)
 +    b.extend_from_slice(&[0, 0], GFP_KERNEL)?; // off32..33
 +    b.extend_from_slice(&bgra[..bgra.len() - 2], GFP_KERNEL)?; // pixels @ off34
@@ -1430,14 +1490,14 @@ index 000000000000..e66d094d06ce
 +/// Dock-side addresses each slot record names, as `base - n * step`.
 +///
 +/// The ring index counts in slot ids, so it skips the two ids each connector leaves unused; the
-+/// two plane pools count in allocated slots and do not. Both forms are fixed by twelve records
++/// two CFB pools count in allocated slots and do not. Both forms are fixed by twelve records
 +/// across two independently keyed connectors.
 +const NAVARRO_RING_BASE: u32 = 0x6fcc;
 +const NAVARRO_RING_STEP: u32 = 0x21c;
-+const NAVARRO_PLANE0_BASE: u32 = 0x71fb_9000;
-+const NAVARRO_PLANE0_STEP: u32 = 0x5000;
-+const NAVARRO_PLANE1_BASE: u32 = 0x7216_6000;
-+const NAVARRO_PLANE1_STEP: u32 = 0x8000;
++const NAVARRO_CFB0_BASE: u32 = 0x71fb_9000;
++const NAVARRO_CFB0_STEP: u32 = 0x5000;
++const NAVARRO_CFB1_BASE: u32 = 0x7216_6000;
++const NAVARRO_CFB1_STEP: u32 = 0x8000;
 +
 +/// The dock's slot id for one of a connector's pipe buffers.
 +pub(super) fn navarro_pipe_slot(connector: u8, index: u16) -> u16 {
@@ -1543,11 +1603,11 @@ index 000000000000..e66d094d06ce
 +            GFP_KERNEL,
 +        )?;
 +        b.extend_from_slice(&[0, 0], GFP_KERNEL)?;
-+        let plane0 = NAVARRO_PLANE0_BASE - alloc * NAVARRO_PLANE0_STEP;
-+        b.extend_from_slice(&plane0.to_le_bytes(), GFP_KERNEL)?;
++        let cfb0 = NAVARRO_CFB0_BASE - alloc * NAVARRO_CFB0_STEP;
++        b.extend_from_slice(&cfb0.to_le_bytes(), GFP_KERNEL)?;
 +        b.extend_from_slice(&[0, 0, 0, 0], GFP_KERNEL)?;
-+        let plane1 = NAVARRO_PLANE1_BASE - alloc * NAVARRO_PLANE1_STEP;
-+        b.extend_from_slice(&plane1.to_le_bytes(), GFP_KERNEL)?;
++        let cfb1 = NAVARRO_CFB1_BASE - alloc * NAVARRO_CFB1_STEP;
++        b.extend_from_slice(&cfb1.to_le_bytes(), GFP_KERNEL)?;
 +        b.extend_from_slice(&NAVARRO_SLOT_TRAILER, GFP_KERNEL)?;
 +    }
 +    debug_assert_eq!(b.len(), 304);

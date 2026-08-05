@@ -123,7 +123,7 @@ Five decrypted: 640x480p60 and 2560x1440 at 60, 120 and 165 Hz.
 | off | field | 640x480p60 | 2560x1440p60 | p120 | p165 |
 |---|---|---|---|---|---|
 | 22 | connector | 0 | 0/1 | 1 | 0 |
-| 23 | constant | `0x02` | `0x02` | `0x02` | `0x02` |
+| 23 | DMA buffer format | `0x02` | `0x02` | `0x02` | `0x02` |
 | 26 | hactive | 640 | 2560 | 2560 | 2560 |
 | 28 | hblank | 160 | 160 | 160 | 160 |
 | 30 | hsync front | 16 | 48 | 48 | 48 |
@@ -132,10 +132,10 @@ Five decrypted: 640x480p60 and 2560x1440 at 60, 120 and 165 Hz.
 | 36 | vblank | 45 | 41 | 85 | 119 |
 | 38 | vsync front | 10 | 3 | 3 | 3 |
 | 40 | vsync width | 2 | 5 | 5 | 8 |
-| 42 | link word | `0x0700` | `0x0600` | `0x0600` | `0x0600` |
+| 42 | sync flags | `0x0700` | `0x0600` | `0x0600` | `0x0600` |
 | 44 | refresh (Hz) | 60 | 60 | 120 | 165 |
-| 46 | ⚠ unknown | `0x0300` | `0x0a80` | `0x0a80` | `0x0a80` |
-| 48 | ⚠ unknown | `0x6800` | `0x66db` | `0x66db` | `0x66db` |
+| 46 | render stride (px) | `0x0300` | `0x0a80` | `0x0a80` | `0x0a80` |
+| 48 | total rows | `0x6800` | `0x66db` | `0x66db` | `0x66db` |
 | 58 | constant | `0x0080` | | | |
 | 60 | constant | `0x00ff` | | | |
 | 66 | constant | `0x0800` | `0x0800` | `0x0800` | `0x0800` |
@@ -151,16 +151,77 @@ its high half is always zero. The DL7400 at 1440p165 sends `0x0001113d` = 699.49
 the "off72 is untested and DLM can never settle it" note in `CLAUDE.md` — off72 is simply the high
 half of the clock, and it is used.
 
-⭐ **off66 is constant `0x0800` on Navarro** across 640x480p60 and 1440p at 60/120/165 — it does
-not move with refresh the way Ridge's does.
+⭐ **off66's high byte is the CTA picture aspect ratio**: `0x28` for 16:9, `0x18` for 4:3, and
+`0x08` for a timing with no VIC. It is a per-VIC table lookup covering VICs 1..59, not a refresh
+rule — the CTA table pairs most timings 4:3/16:9 over an identical signal (VIC 2 and 3 are both
+720x480p60), so the aspect cannot come from the geometry. Navarro reads `0x0800` at 640x480p60
+because DLM sent VIC 0 there, not because the byte is constant.
 
-⚠ **off46 and off48 are unresolved.** Both track resolution alone (identical across three
-refresh rates at 1440p). `0x0a80`/`0x0300` are both `hactive + 128`; `0x66db`/`0x6800` have no
-proposed derivation. Two samples cannot separate a formula from a lookup, so
-`cp::navarro_mode_words()` is a measured table that refuses to extrapolate.
+⭐ **off46 is the render stride and off48 the row count**, read out of DLM's own serializer
+rather than fitted (see below). The stride quantises `hactive` up to 128 pixels and then adds one
+whole unit — `((hactive + 127)/128 + 1) * 128` — which both decrypted widths hide, because 2560
+and 640 are already multiples of 128 and so both read as a plain `hactive + 128`. The row count is
+the dock's framebuffer allocation divided by one row of that stride, so it is **not a function of
+the timing at all** and cannot be derived host-side; `cp::navarro_total_rows()` stays a measured
+table.
 
-⚠ **off42 at 640x480 is `0x0700`**, where vino's `link_word_42()` ladder gives `0x0400` for any
-width up to 1920. One sample, on a mode nobody drives — recorded, not acted on.
+⭐ **off42 is the sync polarity**, not a link or resolution word. It is the vendor's own
+`hSyncInv`/`vSyncInv` pair — the macOS agent logs a timing as `hActive hBlanking hFrontPorch
+hSyncWidth hSyncInv vActive vBlanking vFrontPorch vSyncWidth vSyncInv vic pixelClock`, which is
+this message's payload in order — packed as `0x0400 | 0x0100*hSyncInv | 0x0200*vSyncInv`.
+
+640x480p60 is what settles it: DMT 640x480 is `-h -v`, and `0x0700` is exactly both flags over the
+base. A width ladder predicts `0x0400` there. Every other sample is consistent with both readings
+only because the 1440p timings are CVT-RB (`+h -v`) and the 1080p ones are CTA (`+h +v`), so width
+and polarity moved together in the Ridge corpus. The `0x0604` the ladder produced above 2560 wide
+was never measured and is gone.
+
+## 2b. Reading the set-mode serializer out of DLM
+
+The whole message is decoded, not fitted. DLM's obfuscated string store (`@@base64@@`,
+AES-128-CBC, `re-binaries/decode-string-store.py`) holds the literals of one `setupVideo` log line
+as a contiguous run at a fixed 0x38 stride, which is the argument list in source order:
+
+```
+bBufferFormat  depth  PixClk x10KHz  hActive hBlanking hFrontPorch hSyncWidth
+vActive vBlanking vFrontPorch vSyncWidth  acc stride totalRows fill
+hSyncInv vSyncInv  lStartAddress  vic
+```
+
+The blobs are inline in the binary, so their addresses are xref anchors. In DLM 3.4.26 they land
+in one function (file `0x5766b0`), and its tail is the serializer, writing at exactly the offsets
+above:
+
+```c
+param_3 |= (hSyncInv != 0) << 8;              // off42 bit 8
+if (vSyncInv != 0) param_3 |= 0x200;          // off42 bit 9
+msg[0x2a] = param_3;                          // off42
+if (-1 < (short)param_3) {                    // bit 15 set => teardown, write no timing
+    ...geometry at 0x1a..0x28...
+    msg[0x2c] = refresh(block);               // off44 = round(clock*1000 / (htotal*vtotal))
+    stride = align_stride(hactive, cfg);      // ((h+127)/128 + 1) * 128, or a device override
+    rows   = (dev.alloc_hi * dev.alloc_lo) / (stride * bytes_per_pixel[format]);
+    msg[0x2e] = stride;                       // off46
+    msg[0x30] = rows;                         // off48
+    *(u64 *)&msg[0x32] = 0;                   // off50..57
+    *(u32 *)&msg[0x3a] = 0x00ff0080;          // off58 and off60 are ONE u32
+    msg[0x42] = vic;                          // off66 low
+    msg[0x43] = aspect_of_vic();              // off66 high: 0x28 16:9, 0x18 4:3, 0x08 none
+    *(u32 *)&msg[0x46] = clock_khz / 10;      // off70
+}
+```
+
+Three things fall out that no capture could have shown:
+
+- **off23 is the DMA buffer format, not an operation code.** It indexes a four-entry
+  bytes-per-pixel table `{2, 4, 3, 4}` and anything above 3 throws `Unknown DMA format`. The `0x02`
+  every capture carries is 24bpp. A teardown writes no timing, so the field is simply left zero.
+- **The offset-42 teardown bit is a real branch**, not a convention: bit 15 set skips every timing
+  write. That is why the teardown form carries `0x8000` and nothing else.
+- **off58 and off60 are one `u32`** (`0x00ff0080`), not two independent constants.
+
+Still undecoded: off62 (a `u32` DLM fills from a caller argument, zero in every capture), off68's
+two bytes, and the `0x0400` base of the sync word.
 
 ## 3. Video records
 

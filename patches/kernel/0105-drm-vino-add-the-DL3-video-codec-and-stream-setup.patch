@@ -1,4 +1,4 @@
-From a64f8327d7504727e1109562dd9708c8727dd04a Mon Sep 17 00:00:00 2001
+From 2aeeda0f97a78c2a1fea3cecd82ca2274889ddca Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 21:20:58 +0100
 Subject: [PATCH 105/108] drm/vino: add the DL3 video codec and stream setup

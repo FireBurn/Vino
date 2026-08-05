@@ -102,8 +102,8 @@ patch	commit	author	subject
 0101-rust-fpu-add-a-safe-kernel-FPU-section-guard.patch	83994aa299bfeb286a734619935f21f3668d5960	Mike Lothian <mike@fireburn.co.uk>	rust: fpu: add a safe kernel-FPU section guard
 0102-rust-time-add-ktime_get_real_seconds.patch	1106bd374cdaf43ca2e63e8682cd6bcc93c37071	Mike Lothian <mike@fireburn.co.uk>	rust: time: add ktime_get_real_seconds
 0103-drm-evdi-add-the-Rust-virtual-display-driver.patch	c11f6d382f06daa43f8d1f11a2955c1920f5b6e6	Mike Lothian <mike@fireburn.co.uk>	drm/evdi: add the Rust virtual display driver
-0104-drm-vino-add-the-encrypted-control-protocol.patch	717428a30e70c446564ecf487f1b0d622bf1ff9c	Mike Lothian <mike@fireburn.co.uk>	drm/vino: add the encrypted control protocol
-0105-drm-vino-add-the-DL3-video-codec-and-stream-setup.patch	a64f8327d7504727e1109562dd9708c8727dd04a	Mike Lothian <mike@fireburn.co.uk>	drm/vino: add the DL3 video codec and stream setup
-0106-drm-vino-add-the-DRM-KMS-scanout-engine.patch	9ae11afc42f12a7314fdbafef6b27b449f1e0204	Mike Lothian <mike@fireburn.co.uk>	drm/vino: add the DRM/KMS scanout engine
-0107-drm-vino-add-the-DisplayLink-DL3-USB-display-driver.patch	8f22c9b32be4010e5e8dab7d4f961c85abc75320	Mike Lothian <mike@fireburn.co.uk>	drm/vino: add the DisplayLink DL3 USB display driver
-0108-docs-gpu-document-the-Vino-driver.patch	7614ff24714925a661df9bcde40e5a987eb8795a	Mike Lothian <mike@fireburn.co.uk>	docs: gpu: document the Vino driver
+0104-drm-vino-add-the-encrypted-control-protocol.patch	f3fc5f82427d027ebbeb44d7fa244efe895110bf	Mike Lothian <mike@fireburn.co.uk>	drm/vino: add the encrypted control protocol
+0105-drm-vino-add-the-DL3-video-codec-and-stream-setup.patch	2aeeda0f97a78c2a1fea3cecd82ca2274889ddca	Mike Lothian <mike@fireburn.co.uk>	drm/vino: add the DL3 video codec and stream setup
+0106-drm-vino-add-the-DRM-KMS-scanout-engine.patch	40a74b67eef2c028d478b1c5f61ad6a86cf43c1d	Mike Lothian <mike@fireburn.co.uk>	drm/vino: add the DRM/KMS scanout engine
+0107-drm-vino-add-the-DisplayLink-DL3-USB-display-driver.patch	cb5e4f4a9ecccd16b3d997bc609c60b74802062a	Mike Lothian <mike@fireburn.co.uk>	drm/vino: add the DisplayLink DL3 USB display driver
+0108-docs-gpu-document-the-Vino-driver.patch	ea9d7ff8e989a5eb89293876930a2ba7c37f476a	Mike Lothian <mike@fireburn.co.uk>	docs: gpu: document the Vino driver

@@ -1,4 +1,4 @@
-From 9ae11afc42f12a7314fdbafef6b27b449f1e0204 Mon Sep 17 00:00:00 2001
+From 40a74b67eef2c028d478b1c5f61ad6a86cf43c1d Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 21:21:05 +0100
 Subject: [PATCH 106/108] drm/vino: add the DRM/KMS scanout engine
@@ -38,10 +38,10 @@ Assisted-by: Codex:gpt-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/color.rs                 |  271 ++
- drivers/gpu/drm/vino/drm_sink.rs              | 4094 +++++++++++++++++
+ drivers/gpu/drm/vino/drm_sink.rs              | 4096 +++++++++++++++++
  drivers/gpu/drm/vino/drm_sink/mode_objects.rs |  799 ++++
  drivers/gpu/drm/vino/drm_sink/scanout.rs      | 1487 ++++++
- 4 files changed, 6651 insertions(+)
+ 4 files changed, 6653 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/color.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink/mode_objects.rs
@@ -326,10 +326,10 @@ index 000000000000..309a10566069
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink.rs b/drivers/gpu/drm/vino/drm_sink.rs
 new file mode 100644
-index 000000000000..33d0f8b3c105
+index 000000000000..676d2ea9fb3e
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink.rs
-@@ -0,0 +1,4094 @@
+@@ -0,0 +1,4096 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! DRM/KMS integration for Vino.
@@ -386,6 +386,13 @@ index 000000000000..33d0f8b3c105
 +pub(super) use mode_objects::{
 +    PlaneArgs, VblankTimer, VinoConnector, VinoCrtc, VinoEncoder, VinoPlane,
 +};
++
++// Re-exported for the KUnit tests, which drive the rotation mapping and the parallel-encode
++// equivalence check directly rather than through a live commit.
++#[cfg(CONFIG_DRM_VINO_KUNIT_TEST)]
++pub(super) use mode_objects::rot_src;
++#[cfg(CONFIG_DRM_VINO_KUNIT_TEST)]
++pub(super) use scanout::parallel_rotation_matches_serial;
 +use scanout::{read_cursor_bgra, run_pending_scanout, snapshot_to_shadow, src_dims};
 +
 +/// Connector mode used until a downstream EDID is available.
@@ -1622,11 +1629,6 @@ index 000000000000..33d0f8b3c105
 +        self.is_navarro.load(Ordering::Acquire)
 +    }
 +
-+    /// Whether mode sets carry the DL7400's offset-46/48 words.
-+    pub(super) fn navarro_mode_words(&self) -> bool {
-+        self.is_navarro()
-+    }
-+
 +    /// Whether the first frame after a mode set carries the cold ARM burst.
 +    pub(super) fn uses_arm_burst(&self) -> bool {
 +        !self.is_navarro()
@@ -1659,7 +1661,7 @@ index 000000000000..33d0f8b3c105
 +        if head >= self.connector_count() {
 +            return false;
 +        }
-+        if !self.navarro_mode_words() {
++        if !self.is_navarro() {
 +            return true;
 +        }
 +        let address = self.eps.video[head].address();
@@ -2365,9 +2367,9 @@ index 000000000000..33d0f8b3c105
 +            }
 +            let mode_anchor = Instant::<Monotonic>::now();
 +            // Tear the connector's pipe down before configuring it, as DLM does. See
-+            // `cp::clear_mode`: offset 23 is an operation code, and vino only ever sent the
-+            // "set this mode" form.
-+            if self.navarro_mode_words() {
++            // `cp::clear_mode`: the dock expects a connector to be torn down before it is
++            // configured.
++            if self.is_navarro() {
 +                self.send_cp(dev, 0x48, 0, |ctr| super::cp::clear_mode(ctr, head))?;
 +            }
 +            self.send_cp(dev, 0x48, 0, |ctr| super::cp::set_mode(ctr, head, timing))?;
@@ -2492,7 +2494,7 @@ index 000000000000..33d0f8b3c105
 +        let mut sent = 0u32;
 +        let mut started = 0u32;
 +        let timeline = (|| -> Result<(u32, u32)> {
-+            if self.navarro_mode_words() {
++            if self.is_navarro() {
 +                // DLM's first clear pair begins a dock-wide sink reset. The authenticated
 +                // transcript then stops/restarts each EDID reader, disengages/re-engages the
 +                // downstream sinks, and clears each pipe a second time before any real mode.
@@ -2513,7 +2515,7 @@ index 000000000000..33d0f8b3c105
 +                anchor = Instant::<Monotonic>::now();
 +            }
 +
-+            let navarro_counters = if self.navarro_mode_words() {
++            let navarro_counters = if self.is_navarro() {
 +                Some(self.reserve_cp_counters::<NAVARRO_COLD_COUNTERS>()?)
 +            } else {
 +                None
@@ -4426,7 +4428,7 @@ index 000000000000..33d0f8b3c105
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink/mode_objects.rs b/drivers/gpu/drm/vino/drm_sink/mode_objects.rs
 new file mode 100644
-index 000000000000..a94823079503
+index 000000000000..db7b181b6c83
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink/mode_objects.rs
 @@ -0,0 +1,799 @@
@@ -4644,7 +4646,7 @@ index 000000000000..a94823079503
 +        // Whatever this head's sink state was, the enable path re-runs the full bracket and
 +        // mode-set, so any silence from here is the dock's news, not vino's.
 +        data.set_self_blanked(head as usize, false);
-+        let timing = match crate::cp::timing_from_drm_mode(new.mode(), data.navarro_mode_words()) {
++        let timing = match crate::cp::timing_from_drm_mode(new.mode(), data.is_navarro()) {
 +            Ok(timing) => timing,
 +            Err(e) => {
 +                pr_err!(
@@ -5231,7 +5233,7 @@ index 000000000000..a94823079503
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink/scanout.rs b/drivers/gpu/drm/vino/drm_sink/scanout.rs
 new file mode 100644
-index 000000000000..25b5a495ca5b
+index 000000000000..40087da3c8cf
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink/scanout.rs
 @@ -0,0 +1,1487 @@
@@ -5949,7 +5951,7 @@ index 000000000000..25b5a495ca5b
 +/// or dispatch path. The deliberately unaligned output also verifies that both paths produce
 +/// identical black codec padding.
 +#[cfg(CONFIG_DRM_VINO_KUNIT_TEST)]
-+pub(super) fn parallel_rotation_matches_serial(rotation: plane::Rotation) -> Result {
++pub(crate) fn parallel_rotation_matches_serial(rotation: plane::Rotation) -> Result {
 +    let (output_w, output_h) = (500usize, 123usize);
 +    let (w, h) = src_dims(rotation, output_w, output_h);
 +    let len = w

@@ -177,6 +177,37 @@ pub mod kernel {
             pub mod modes {
                 use crate::kshim::bindings::{drm_display_mode, drm_mode_vrefresh};
 
+                /// The `DRM_MODE_FLAG_*` subset `cp.rs` reads, with the same values as UAPI.
+                #[derive(Clone, Copy, Default, PartialEq, Eq)]
+                pub struct ModeFlags(pub u32);
+
+                impl ModeFlags {
+                    pub const PHSYNC: Self = Self(1 << 0);
+                    pub const NHSYNC: Self = Self(1 << 1);
+                    pub const PVSYNC: Self = Self(1 << 2);
+                    pub const NVSYNC: Self = Self(1 << 3);
+
+                    pub fn contains(self, other: Self) -> bool {
+                        self & other == other
+                    }
+                }
+
+                impl core::ops::BitOr for ModeFlags {
+                    type Output = Self;
+
+                    fn bitor(self, rhs: Self) -> Self::Output {
+                        Self(self.0 | rhs.0)
+                    }
+                }
+
+                impl core::ops::BitAnd for ModeFlags {
+                    type Output = Self;
+
+                    fn bitand(self, rhs: Self) -> Self::Output {
+                        Self(self.0 & rhs.0)
+                    }
+                }
+
                 #[derive(Clone, Copy, Default)]
                 pub struct DisplayMode(pub drm_display_mode);
 
@@ -225,6 +256,9 @@ pub mod kernel {
                             (297_000, 1920, 2008, 2052, 2200, 1080, 1084, 1089, 1125) => 63,
                             _ => 0,
                         }
+                    }
+                    pub fn flags(&self) -> ModeFlags {
+                        ModeFlags(self.0.flags)
                     }
                     pub fn vrefresh(&self) -> i32 {
                         // SAFETY: the stub `drm_mode_vrefresh` dereferences nothing.
@@ -381,6 +415,7 @@ pub mod bindings {
         pub vsync_start: u16,
         pub vsync_end: u16,
         pub vtotal: u16,
+        pub flags: u32,
     }
 
     /// Userspace equivalent of `drm_mode_vrefresh` for progressive modes.

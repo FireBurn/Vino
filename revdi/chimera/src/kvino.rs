@@ -448,6 +448,11 @@ pub fn black_frame_ep08(width: usize, height: usize, head: u8) -> Result<Vec<Vec
     )
 }
 
+/// Sync polarity of the CTA timings above: both syncs active high.
+const CTA_SYNC: u32 = 1 | 4;
+/// Sync polarity of the CVT-RB timings above: horizontal high, vertical low.
+const CVT_RB_SYNC: u32 = 1 | 8;
+
 pub fn set_mode_profile(
     counter: u16,
     head: u8,
@@ -466,6 +471,7 @@ pub fn set_mode_profile(
             vsync_start: 725,
             vsync_end: 730,
             vtotal: 750,
+            flags: CTA_SYNC,
         },
         (1920, 1080, 60 | 120) => bindings::drm_display_mode {
             clock: if refresh_hz == 60 { 148_500 } else { 297_000 },
@@ -477,6 +483,7 @@ pub fn set_mode_profile(
             vsync_start: 1084,
             vsync_end: 1089,
             vtotal: 1125,
+            flags: CTA_SYNC,
         },
         (2560, 1440, 60 | 120) => bindings::drm_display_mode {
             clock: if refresh_hz == 60 { 241_500 } else { 497_750 },
@@ -488,6 +495,7 @@ pub fn set_mode_profile(
             vsync_start: 1443,
             vsync_end: 1448,
             vtotal: if refresh_hz == 60 { 1481 } else { 1525 },
+            flags: CVT_RB_SYNC,
         },
         (3840, 2160, 60) => bindings::drm_display_mode {
             clock: 533_120,
@@ -499,6 +507,7 @@ pub fn set_mode_profile(
             vsync_start: 2163,
             vsync_end: 2168,
             vtotal: 2222,
+            flags: CVT_RB_SYNC,
         },
         _ => return Err(kernel::error::code::EOPNOTSUPP),
     };

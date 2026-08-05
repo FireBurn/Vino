@@ -165,7 +165,7 @@ structural reason rather than a hard one — **the D6000 corpus cannot separate 
 
 | word | state on the D6000 | what this device changes |
 |---|---|---|
-| `off42` | resolution-keyed (`0x0600` at 1440p, `0x0400` at 1080p) at every measured refresh — but `VIDEO.md` reads it as a **DP link tier** (1024 = HBR, 1536 = HBR2). Both readings agree on every D6000 mode and disagree on exactly one: 1080p165. That is why 1080p165 is blocked. | two refreshes at **one** resolution separate them: same value ⇒ resolution-keyed, different ⇒ link tier |
+| `off42` | ✅ **RESOLVED — it is the sync polarity.** The vendor's `hSyncInv`/`vSyncInv` pair, packed as `0x0400 \| 0x0100*hSyncInv \| 0x0200*vSyncInv`. The D6000 corpus could not separate it from a resolution ladder or a DP link tier because its 1440p modes are CVT-RB (`+h -v`) and its 1080p modes are CTA (`+h +v`); the DL7400's 640x480p60 (`-h -v` ⇒ `0x0700`) breaks the tie. | nothing further — settled |
 | `off66` | moves with refresh at fixed resolution (`0x2810` at 1080p60, `0x083f` at 1080p120) but 1440p is measured at exactly **one** refresh, so the mapping above 1080p is a guess | a second resolution measured at two refreshes |
 | `off72` | **zero in every capture ever taken.** Believed to be a pixel-clock overflow field; no clock above 655.35 MHz has ever been on the wire, so DLM literally cannot settle it | a DL-7000 part should not clamp to 120 Hz the way DLM clamps the D6000 to its declared 442,368,000 px/s |
 
