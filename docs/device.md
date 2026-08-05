@@ -107,20 +107,39 @@ connected and offers no modes of its own — the two conditions under which the
 probe helper consults the override.
 
 ```sh
+sudo dmesg | grep 'presence reply'                   # which head is actually occupied
 sudo tools/hardware/vino-cycle.sh edid_override=1    # bit N = head N
 sudo tools/hardware/vino-edid-override.sh 0 tools/hardware/edid/<sink>.edid.bin
+sudo tools/hardware/drm-setmode.py --card /dev/dri/card2 --connector DP-2 --mode 1920x1080@60
 ```
 
-The helper writes the connector's debugfs `edid_override` and forces the one
-re-probe that consults it. With `CONFIG_DRM_LOAD_EDID_FIRMWARE=y` the blob can
-instead be named once and survive reloads:
-`drm_kms_helper.edid_firmware=DP-1:edid/<sink>.bin`.
+⛔ **Read the presence line first; do not assume a socket number.** The occupied
+connector index is not stable across dock re-enumerations — it was observed
+moving from head 1 to head 0 with nothing physically touched. Driving video at
+an empty head **resets the dock**, and at 640x480 or 4K60 alike it does so about
+30 ms after the first video write, which reads exactly like a codec or mode
+fault and is not one.
 
-⚠ **An override describes the sink, not the link.** If the converter cannot
-carry the mode the blob advertises, the screen stays black in exactly the same
-way. This substitutes for a broken read; it negotiates nothing. It is equally
-mute on whether the *dock* needs its own EDID read to enable the downstream
-sink — if a head lights under an override, that question is answered no.
+The helper writes the connector's debugfs `edid_override`, then forces the
+connector on (`DRM_FORCE_ON`) — in that order, because the core applies an
+override only to a connector that is connected and produced no modes, and a
+modeless connected connector is mode-set by fbdev before anything can intervene.
+With `CONFIG_DRM_LOAD_EDID_FIRMWARE=y` the blob can instead be named once and
+survive reloads: `drm_kms_helper.edid_firmware=DP-2:edid/<sink>.bin`.
+
+⚠ **An override describes the sink, not the link, and — measured 2026-08-05 —
+that is not enough on its own.** With a Samsung QE75Q60A behind an 8K DP→HDMI
+cable, the override produced the TV's real 54-mode list and a clean 1080p60
+mode-set; the dock took the black training frames (6 presentations, 120 000 B)
+and then **stopped accepting video** — `GET_STATUS=0x0000 halt=0`, first real
+frame `ETIMEDOUT`. Throughout, that connector's probe answered
+`status=0x00271105 present=true` with the **EDID-handler ready bit false**.
+
+So the dock's own EDID read is not merely how *vino* learns the sink: it is the
+dock's gate for enabling the downstream sink. A converter that breaks DDC breaks
+the head, and no host-side description substitutes for it. The override remains
+useful for a sink whose EDID is merely *ugly* rather than unreadable, and as the
+instrument that established the above.
 
 ## Firmware-specific behavior
 

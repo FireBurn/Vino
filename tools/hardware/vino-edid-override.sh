@@ -37,7 +37,9 @@ head -c 8 "$BLOB" | od -An -tx1 | grep -q '00 ff ff ff ff ff ff 00' ||
   die "$BLOB does not start with the EDID header magic -- this is not a raw EDID"
 
 # The card vino owns, and the sysfs connector for this head. vino registers one connector per head
-# in head order and types them DisplayPort, so head N is DP-(N+1) on its own card.
+# in head order and types them DisplayPort -- but the DP type index is NOT 1-based per card: this
+# machine's vino card starts at DP-2, because the connector type ids continue from another device.
+# So take the card's DP connectors in numeric order and index by head, never by arithmetic.
 CARD=""
 for d in /sys/class/drm/card*; do
   [ -e "$d/device/driver" ] || continue
@@ -45,31 +47,36 @@ for d in /sys/class/drm/card*; do
 done
 [ -n "$CARD" ] || die "no DRM card is bound to vino -- is the module loaded and the dock bound?"
 
-CONN="DP-$((HEAD + 1))"
+mapfile -t CONNS < <(
+  for c in /sys/class/drm/"$CARD"-DP-*; do [ -d "$c" ] && basename "$c"; done |
+    sed "s/^$CARD-//" | sort -t- -k2 -n
+)
+[ "${#CONNS[@]}" -gt "$HEAD" ] ||
+  die "$CARD has ${#CONNS[@]} DP connector(s); head $HEAD is not one of them"
+CONN="${CONNS[$HEAD]}"
 SYSFS="/sys/class/drm/$CARD-$CONN"
-[ -d "$SYSFS" ] || die "$SYSFS does not exist (head $HEAD is not a connector on $CARD)"
+say "head $HEAD is $CARD $CONN (of ${CONNS[*]})"
 
 # debugfs indexes DRM devices by device name, not by card number.
 DEVNAME=$(basename "$(readlink -f "/sys/class/drm/$CARD/device")")
 DBG="/sys/kernel/debug/dri/$DEVNAME/$CONN"
 [ -w "$DBG/edid_override" ] || die "$DBG/edid_override is missing -- is debugfs mounted?"
 
-STATUS=$(cat "$SYSFS/status")
-say "$CARD $CONN (head $HEAD) is currently $STATUS"
-if [ "$STATUS" != connected ]; then
-  # The override is a fallback for a CONNECTED connector: the core never consults it otherwise.
-  # vino publishes the head a few seconds after bring-up, on its re-engage retry.
-  printf '\033[1;33mnote:\033[0m the core only applies an override to a CONNECTED connector.\n'
-  printf '      Load with `edid_override=%d` and give the re-engage retry ~5 s, then rerun.\n' \
-    $((1 << HEAD))
-fi
+say "$CARD $CONN (head $HEAD) is currently $(cat "$SYSFS/status")"
 
+# Order matters, and not only for tidiness. The core applies an override to a connector that is
+# CONNECTED and produced NO modes -- and if the override is missing it falls back to adding a
+# 1024x768 mode instead. A modeless connector that goes connected is mode-set by fbdev emulation
+# within milliseconds, and driving the dock at such a default RESETS it, into a re-enumeration
+# loop. So: install the description first, and only force the connector on once it is in place.
 say "writing $SIZE bytes to $DBG/edid_override"
 cat "$BLOB" > "$DBG/edid_override" || die "override write rejected -- the core parsed it as invalid"
 
-# fill_modes() -- the one path that consults the override. A plain re-read of `modes` would not.
-say "forcing a re-probe"
-echo detect > "$SYSFS/status"
+# DRM_FORCE_ON: status becomes connected without consulting the driver's detect(), and fill_modes()
+# runs -- the one path that consults the override. `detect` would merely ask vino again, which has
+# no EDID to report. Restore later with `echo detect > $SYSFS/status`.
+say "forcing $CONN on"
+echo on > "$SYSFS/status"
 
 say "$CONN is now $(cat "$SYSFS/status"), offering:"
 nl -ba "$SYSFS/modes" | head -20
@@ -77,6 +84,15 @@ COUNT=$(wc -l < "$SYSFS/modes")
 if [ "$COUNT" = 0 ]; then
   printf '\033[1;31mno modes:\033[0m the override did not take. Check `dmesg | grep -i edid` and\n'
   printf '          that vino was loaded with edid_override=%d.\n' $((1 << HEAD))
+  # A forced-on connector carrying only the core's 1024x768 consolation mode is exactly the state
+  # that resets this dock. Put it back rather than leave it armed.
+  echo detect > "$SYSFS/status"
+  die "released the force on $CONN rather than leave a modeless connector armed"
+elif [ "$COUNT" -le 2 ] && grep -qx '1024x768' "$SYSFS/modes"; then
+  printf '\033[1;31m1024x768 only:\033[0m that is the core'\''s fallback for a connected connector\n'
+  printf '               with no modes -- the override did NOT take.\n'
+  echo detect > "$SYSFS/status"
+  die "released the force on $CONN rather than drive the dock at a fallback mode"
 else
   say "$COUNT mode(s). Now set one, e.g.:"
   printf '    kscreen-doctor output.%s.mode.0\n' "$CONN"

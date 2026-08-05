@@ -7,6 +7,7 @@ For the manual validation described in
 |---|---|
 | `vino-cycle.sh` | Reload the module without physically unplugging: unbind, wait for clients to let go, unload, load, rebind. |
 | `drm-fd-holders.py` | Lists processes holding a DRM node open. Used by the above; useful alone before any unload. |
+| `drm-setmode.py` | Set a mode on one connector and hold it, with no libdrm, no modetest and no compositor. Answers "does this panel light up" without it becoming a KWin question. |
 | `vino-perf.py` | Per-head frames/s, MB/s, frame-interval distribution and machine CPU, from usbmon URB bursts. |
 | `vino-edid-override.sh` | Describe a head's sink with an EDID read elsewhere, when a converter's broken DDC stops the dock reading it. See [`docs/device.md`](../../docs/device.md#sinks-the-dock-cannot-read). Blobs in `edid/`. |
 
