@@ -27,7 +27,11 @@ param(
     [string]$OutPrefix,
     [int]$Snaplen  = -1,
     [int]$MaxSeconds = 0,
-    [switch]$DryRun                      # walk the steps with no capture, to rehearse timing
+    [switch]$DryRun,                     # walk the steps with no capture, to rehearse timing
+    # Phase 5 of TV-RUNBOOK.md: run the AC experiment on a 1440p panel rather than the 4K TV.
+    # The 4K clips shown on a 1440p panel would be resampled, and a resampled 2 px grating is not
+    # a 2 px grating -- so there is a separate encode and this selects it.
+    [switch]$Ac1440
 )
 
 $ErrorActionPreference = 'Stop'
@@ -223,6 +227,11 @@ hevc8:t.canPlayType('video/mp4; codecs="hvc1.1.6.L93.B0"')});})()
   # this capture to be LARGE -- these are the worst-case pictures for the codec, and a 4K head
   # repainting them ten times a second is the most this dock will ever be asked to carry.
   'ac' {
+        if ($Ac1440) {
+            $r = Cdp "(()=>useAc1440())()"
+            Log "SOURCES switched to the 1440p AC encode: $r"
+            if ($r -notmatch 'ac1440') { throw "the player did not switch to the 1440p sources (got '$r') -- is player.html current?" }
+        }
         Hdr $Other $false 'ac: other head SDR throughout'
         Hdr $Head  $false 'ac: start from SDR'
         Idle 10 'idle (pre)'

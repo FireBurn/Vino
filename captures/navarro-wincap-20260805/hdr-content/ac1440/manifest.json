@@ -1,0 +1,85 @@
+{
+  "size": "1440p",
+  "width": 2560,
+  "height": 1440,
+  "fps": 10,
+  "seconds_per_segment": 4,
+  "block_px": 8,
+  "full_nits": 1000.0,
+  "over_nits": 10000.0,
+  "segments": [
+    {
+      "index": 0,
+      "name": "black",
+      "description": "flat 0 -- DC reference and a clean segment boundary",
+      "expect_max_luma_ac_category_10bit": 0
+    },
+    {
+      "index": 1,
+      "name": "vlines2_full",
+      "description": "2 px vertical grating 0 <-> 1000 cd/m2 -- THE test, level-2 band",
+      "expect_max_luma_ac_category_10bit": 11
+    },
+    {
+      "index": 2,
+      "name": "hlines2_full",
+      "description": "2 px horizontal grating 0 <-> 1000 cd/m2 -- same, vertical frequency",
+      "expect_max_luma_ac_category_10bit": 11
+    },
+    {
+      "index": 3,
+      "name": "vlines2_sdr",
+      "description": "2 px vertical grating 0 <-> 203 cd/m2 -- the matched in-SDR-range control",
+      "expect_max_luma_ac_category_10bit": 9
+    },
+    {
+      "index": 4,
+      "name": "vlines4_full",
+      "description": "4 px vertical grating -- the coarsest AC band (level 3)",
+      "expect_max_luma_ac_category_10bit": 11
+    },
+    {
+      "index": 5,
+      "name": "vlines1_full",
+      "description": "1 px vertical grating -- the finest horizontal band (level 1 HL)",
+      "expect_max_luma_ac_category_10bit": 10
+    },
+    {
+      "index": 6,
+      "name": "check1_full",
+      "description": "1 px checkerboard -- the finest band of all (level 1 HH)",
+      "expect_max_luma_ac_category_10bit": 10
+    },
+    {
+      "index": 7,
+      "name": "check2_full",
+      "description": "2 px checkerboard -- level 2, both directions at once",
+      "expect_max_luma_ac_category_10bit": 10
+    },
+    {
+      "index": 8,
+      "name": "check8_control",
+      "description": "8 px checkerboard ON the block grid -- MUST produce NO AC",
+      "expect_max_luma_ac_category_10bit": 0
+    },
+    {
+      "index": 9,
+      "name": "noise",
+      "description": "fixed-seed per-pixel noise at 1000 cd/m2 -- every sub-band at once",
+      "expect_max_luma_ac_category_10bit": 10
+    },
+    {
+      "index": 10,
+      "name": "step_edges",
+      "description": "8 px edges stepping the whole PQ range -- a spread of magnitudes",
+      "expect_max_luma_ac_category_10bit": 11
+    },
+    {
+      "index": 11,
+      "name": "black_end",
+      "description": "flat 0 -- marks the end of the sequence",
+      "expect_max_luma_ac_category_10bit": 0
+    }
+  ],
+  "note": "Achromatic by design: 4:2:0 subsampling would smear a 1 px colour pattern while luma survives a lossless encode exactly. check8_control must decode with NO AC coefficients; if it has any, the picture is not 1:1 on device pixels."
+}

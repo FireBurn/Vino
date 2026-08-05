@@ -142,9 +142,10 @@ That is the whole thing. It refuses to start if scaling or 1:1 mapping is wrong,
 itself, plays the HDR clip and then the pixel-matched SDR twin, and timestamps every step into
 `out\cap16-ac-ceiling.phaselog.txt`.
 
-⚠ **Full payload, and these are the worst-case pictures for this codec.** Leave **20 GB** free.
-If the disk is tight, `-MaxSeconds 120` still covers both halves of segments 00–05, which includes
-the decisive ones.
+⚠ **Full payload, and these are the worst-case pictures for this codec.** Expect roughly 5–8 GB;
+leave **20 GB** free. The run is about 145 s: 10 s idle, the HDR clip at t≈16–68, a 10 s settle,
+the SDR twin at t≈81–133. `-MaxSeconds 120` still gets the whole HDR half and most of the twin,
+and the decisive segments (01–03) are in the first 20 s of each.
 
 ## Phase 3 — verify before you reboot
 
@@ -175,14 +176,20 @@ The same experiment on an MSI panel at 2560×1440. Worth doing either way — tw
 different declared peaks either agree about the ceiling or they do not, and that is informative.
 **If the TV cannot be made to do HDR at all, do this instead and the session still succeeds.**
 
-The clips are 4K, so on a 1440p panel they would be resampled. Regenerate at the panel's size
-first, on Linux:
+⭐ **No regeneration needed — the 1440p clips are already here**, in `hdr-content\ac1440\`. A 4K
+clip shown on a 1440p panel would be resampled, and a resampled 2 px grating is not a 2 px
+grating, so the fallback ships as its own encode rather than as an instruction to go and make one.
 
-```sh
-scratchpad/venv-np/bin/python tools/make-ac-patterns.py --out hdr-content/ac1440 --size 1440p
+Move the TV's mode back to the panel's, set that display to 100% scaling, then:
+
+```
+powershell -ExecutionPolicy Bypass -File .\tools\choreograph.ps1 -Phase ac ^
+    -Head '\\.\DISPLAYnn' -Other '\\.\DISPLAYmm' ^
+    -OutPrefix .\out\cap17-ac-1440p -Ac1440
 ```
 
-then point the player's sources at `ac1440/` and repeat phase 2 as `-OutPrefix out\cap17-ac-1440p`.
+`-Ac1440` is what switches the player to the 1440p sources; without it the choreographer plays the
+4K clips and the panel resamples them.
 
 ## Phase 6 — leave it tidy
 

@@ -67,7 +67,22 @@ const SOURCES = [
     segs: AC_SEGMENTS, segSeconds: AC_SEGMENT_SECONDS },
   { key: null, name: 'AC stress SDR (mp4/HEVC)', src: 'ac/ac-sdr.mp4', seg: true,
     segs: AC_SEGMENTS, segSeconds: AC_SEGMENT_SECONDS },
+  // The same twelve pictures at 2560x1440, for the MSI panels. A 4K clip shown on a 1440p panel
+  // is RESAMPLED, and a resampled 2 px grating is not a 2 px grating -- so the fallback is its own
+  // encode, not the same file scaled. `useAc1440()` swaps indices 8 and 9 to these.
+  { key: null, name: 'AC stress HDR 1440p (webm/VP9)', src: 'ac1440/ac-hdr.webm', seg: true,
+    segs: AC_SEGMENTS, segSeconds: AC_SEGMENT_SECONDS },
+  { key: null, name: 'AC stress SDR 1440p (webm/VP9)', src: 'ac1440/ac-sdr.webm', seg: true,
+    segs: AC_SEGMENTS, segSeconds: AC_SEGMENT_SECONDS },
 ];
+
+// Phase 5 of TV-RUNBOOK.md: run the AC experiment on a 1440p panel instead of the TV. The
+// choreographer calls this rather than being taught two sets of source indices.
+function useAc1440() {
+  SOURCES[8] = SOURCES[12];
+  SOURCES[9] = SOURCES[13];
+  return SOURCES[8].src + ' + ' + SOURCES[9].src;
+}
 
 // Whichever source is loaded decides the segment clock.
 function segList()    { return current.segs || SEGMENTS; }
