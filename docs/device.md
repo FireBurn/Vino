@@ -57,9 +57,11 @@ not recover arbitrary endpoints from raw pointers in consumer code.
 
 ## Accepted display timings
 
-The dock's set-mode request contains vendor profile words that cannot safely be
-derived from resolution alone. Vino therefore accepts only fully matched timing
-profiles whose wire values are known:
+The dock's set-mode request contains two vendor profile words, at offsets 42 and
+66. Both are now derived — offset 42 is sync polarity, offset 66 is the CTA VIC
+with an aspect flag — and the derivation reproduces every decrypted message in
+the corpus byte-exactly, so an unsampled timing is driven rather than refused.
+These are the timings a capture backs directly:
 
 | Active mode | Refresh | Timing family |
 |---|---:|---|
@@ -71,19 +73,54 @@ profiles whose wire values are known:
 | 2560×1440 | 165 Hz | captured CVT-RB (DL-7400) |
 | 3840×2160 | 60 Hz | captured CVT-RB |
 
-Validation compares the detailed timing, not only width, height, and nominal
-refresh, and then applies the profile's ceilings: the per-head pixel clock, the
+A mode is admitted on the profile's ceilings: the per-head pixel clock, the
 refresh cap where the vendor driver is known to clamp, and the dock-wide
-active-pixel budget when more than one head is enabled.
+active-pixel budget when more than one head is enabled. So a sink's own variant
+of a listed resolution is accepted — a TV's CTA 3840×2160p60 (594.00 MHz,
+htotal 4400) is driven as readily as the captured CVT-RB one (533.12 MHz), even
+though only the latter appears above.
 
 ⚠ The binding limit above 120 Hz is the **clock**, not the refresh rate. The
 DL-7400 accepts 2560×1440@180 and then fails to deliver it; what separates that
 mode from the 165 Hz one it does drive is 714.81 MHz against 699.50 MHz of link
 rate. 1440p180 is known-bad on the vendor stack too.
 
-Unsupported modes are rejected. Approximating an unknown profile in a
-modesetting driver would turn an ordinary userspace choice into an unreviewed
+Modes past those ceilings are rejected. Offering a link rate the dock accepts
+and then fails to deliver turns an ordinary userspace choice into an unreviewed
 hardware experiment.
+
+## Sinks the dock cannot read
+
+The dock reads its own EDID over the downstream link's DDC. A DP→HDMI converter
+that mangles or drops DDC therefore breaks the head at its very first step: the
+presence probe reports the socket **occupied**, but no `id=0x194` EDID ever
+comes back, `reengage_head` returns "no monitor", and the connector stays
+disconnected. Nothing is driven, and no message on the wire says why. It is not
+a malformed EDID — there is no EDID message at all.
+
+Where the monitor is real and its EDID is readable from a working port on
+another machine, that blob can stand in. Vino does not carry a second EDID
+source for this; it hands the head to DRM's own override, which already accepts
+a blob two ways. The `edid_override` parameter is a bitmask of heads, and for
+each named head, while no EDID has been read, vino reports the connector
+connected and offers no modes of its own — the two conditions under which the
+probe helper consults the override.
+
+```sh
+sudo tools/hardware/vino-cycle.sh edid_override=1    # bit N = head N
+sudo tools/hardware/vino-edid-override.sh 0 tools/hardware/edid/<sink>.edid.bin
+```
+
+The helper writes the connector's debugfs `edid_override` and forces the one
+re-probe that consults it. With `CONFIG_DRM_LOAD_EDID_FIRMWARE=y` the blob can
+instead be named once and survive reloads:
+`drm_kms_helper.edid_firmware=DP-1:edid/<sink>.bin`.
+
+⚠ **An override describes the sink, not the link.** If the converter cannot
+carry the mode the blob advertises, the screen stays black in exactly the same
+way. This substitutes for a broken read; it negotiates nothing. It is equally
+mute on whether the *dock* needs its own EDID read to enable the downstream
+sink — if a head lights under an override, that question is answered no.
 
 ## Firmware-specific behavior
 
