@@ -43,6 +43,24 @@ Either answer closes the question. A null result is a result here.
 
 ---
 
+## What the sink actually is — measured 2026-08-05 from Linux
+
+Read off the laptop's own HDMI port with the TV on the AV receiver, so it is the chain this
+session will use. Blobs in `hdr-content\sink-edid\tv-via-avreceiver.edid.*`.
+
+* **256-byte EDID**, base + one CTA block. Base block says `SNY`, product name says `SAMSUNG` —
+  the receiver is merging its own EDID with the set's, which is normal and worth knowing when a
+  capture disagrees with what is written on the bezel.
+* **ST 2084 and Hybrid Log-Gamma both declared**, plus BT2020RGB and BT2020YCC. HDR is available.
+* ⭐ **No luminance bytes at all** — the HDR Static Metadata block declares the EOTFs and static
+  metadata type 1 and stops. So unlike the MSI panels (301.8 cd/m² declared), this sink gives
+  Windows *no peak to tone-map to*. Expect less compression of the content's range, not more,
+  which suits this experiment.
+* **Maximum TMDS character rate 600 MHz** — HDMI 2.0. ⚠ 4K60 at 10-bit does not fit in RGB 4:4:4
+  at that rate, so Windows will use 4:2:0 or 4:2:2 there, or refuse HDR. **If HDR will not enable
+  at 4K60, drop to 4K30**, which fits 10-bit RGB comfortably. This experiment does not care about
+  refresh rate.
+
 ## Phase 0 — physical and preconditions
 
 **Everything in this phase is a gate. Do not start capturing with any of it unresolved.**
