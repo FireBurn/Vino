@@ -134,6 +134,71 @@ bytes per pixel, so it is index **1 or 3** — a two-way choice. `off48` (total 
 because it is the dock's allocation divided by `stride × bytes_per_pixel`, so it **halves relative
 to nothing** — it scales by 3/4. Both are testable on hardware in two runs.
 
+### 0.4a ⭐⭐ The three control-plane fields, read out of DLM's serializer
+
+Settled 2026-08-06, without a capture. §0.4 established that the dock is told by re-issuing
+`id=0x48 sub=0x22`; what it did not say was *which bytes*. All three come out of DLM 3.4.26's own
+`setupVideo` (file `0x5766b0`), and none of them needed the sealed control plane.
+
+**Offset 42 is a flags word, not a polarity field.** DLM decodes every bit of it into its own log
+line, and the bit tests are in the clear at `0x576b26`:
+
+| bit | mask | DLM's string |
+|---|---|---|
+| 0 | `0x0001` | `, Interlace` |
+| 1 | `0x0002` | `, Cross-head synchronized` |
+| 2 | `0x0004` | `, Dual NIVO` |
+| 3 | `0x0008` | `, Just-in-time decode` |
+| 5 | `0x0020` | `, DSC On` / `, DSC Off` |
+| **6** | **`0x0040`** | **`, ST2084 colorspace used (HDR)`** |
+| 7 | `0x0080` | `, SingleDisplayMode enabled` |
+| 8 | `0x0100` | `, Horizontal Sync Inverted` |
+| 9 | `0x0200` | `, Vertical Syncs Inverted` |
+| 12 | `0x1000` | `, ReducedQuantizationRange On` / `Off` |
+| 14 | `0x4000` | `, Enable Timing for Gamma` |
+| 15 | `0x8000` | `, (Disabled)` |
+
+⭐ Bits 8, 9 and 15 land exactly where the decrypted corpus had already put them — sync polarity and
+the teardown branch — which is what makes the rest of the table trustworthy rather than merely
+plausible. Bits 4, 10, 11 and 13 are never logged; bit 10 is the `0x0400` base that is set on every
+message and is still unexplained.
+
+⇒ **The transfer function is offset 42 bit 6.** There is exactly *one* HDR bit: no colour-primaries
+field rides alongside it, so the dock derives the downstream BT.2020 signalling itself. A 1440p
+CVT-RB head in PQ therefore carries `0x0640` where an SDR one carries `0x0600`.
+
+**Offset 23 is the DMA buffer format, and DLM names all four of them.** The helper at `0x62ecb0`
+switches on the same value and returns a plaintext string per arm; the bytes-per-pixel table it is
+paired with sits at `0x8dc320`:
+
+| value | name | bytes/px |
+|---|---|---|
+| 0 | `NM16` | 2 |
+| 1 | `NM32` | 4 |
+| 2 | `NM24` | 3 ← every capture on either dock |
+| **3** | **`NM30`** | **4** |
+
+⇒ **`hdr_dma_format` is settled: it is 3.** The choice between the table's two four-byte entries was
+never decidable from a capture, and it did not have to be — 30 bits packed into four bytes is what
+`NM30` says on the tin, and `NM32` is 8-bit-with-padding.
+
+**Offsets 68 and 69 are two separate bytes.** DLM's `depth` switch maps a bit count to a colour-depth
+code — 16 → 1, 24 → 2, **30 → 3**, 36 → 4, 48 → 5, anything else falling back to 24bpp — and writes
+that code at offset **69**. Offset 68 below it is the "output format conversion" argument, zero on
+every enable observed. So the `0x0200` every capture carries is `(conversion 0, depth-code 2)`, and
+a 10-bit head sends **`0x0300`**.
+
+⛔ This retracts the plan recorded in §0.5 and in the 2026-08-06 handover: **a keyed capture of DLM
+toggling HDR is no longer needed.** Reading the serializer beats collecting samples, and it also
+settles fields that never vary — which no capture can. The method is
+`tools/re/string-store-offsets.py`, which dumps the obfuscated string store *in address order* so a
+function's literal run reads out as its argument list, with the blob addresses doubling as xref
+anchors.
+
+Implemented 2026-08-06: `Timing::st2084` beside `Timing::ten_bit`, fed from the connector's
+`HDR_OUTPUT_METADATA` EOTF in `atomic_enable`, pinned by
+`set_mode_carries_depth_and_transfer_function`.
+
 ### 0.5 What is NOT established
 
 * ⚠ **The AC ceilings in 10-bit.** Nothing in `cap9` produced a luma AC coefficient above `|273|` —
@@ -148,6 +213,11 @@ to nothing** — it scales by 3/4. Both are testable on hardware in two runs.
   extreme AC detail but **cannot desync the dock**. An over-sized one can.
 * ⚠ **Whether the dock's own capability push (`id=0x78 sub=0x30`) advertises HDR.** Needs Linux and
   keys.
+* ⚠⚠ **Whether a panel actually lights in PQ.** Every field is now known and sent, and the SDR wire
+  is byte-identical to before, but nobody has looked at a screen in HDR since. `hdr_advertise`
+  stays 0 until somebody has: turning it on is what makes a compositor re-encode the whole desktop,
+  and the one previous time that happened against a sink still in SDR the result was hours of grey
+  that the wire could not detect. This is an eyes question, not a capture question.
 * ⚠ **HDR against vino's software CTM/GAMMA_LUT.** `color.rs` works in 8-bit tables; nothing has
   exercised it at 10 bits.
 * ⛔ HDR10+ and Dolby Vision are out of scope: DisplayLink documents HDR10 only.

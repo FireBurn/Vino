@@ -220,8 +220,36 @@ Three things fall out that no capture could have shown:
   write. That is why the teardown form carries `0x8000` and nothing else.
 - **off58 and off60 are one `u32`** (`0x00ff0080`), not two independent constants.
 
-Still undecoded: off62 (a `u32` DLM fills from a caller argument, zero in every capture), off68's
-two bytes, and the `0x0400` base of the sync word.
+### off42 is a flags word, and off23/off68/off69 are named (2026-08-06)
+
+The same function settles the rest, and this time from the *log* side rather than the serializer.
+`setupVideo` decodes offset 42 bit by bit into its own message; the tests are at `0x576b26`:
+
+| bit | mask | DLM's string | | bit | mask | DLM's string |
+|---|---|---|---|---|---|---|
+| 0 | `0x0001` | `Interlace` | | 7 | `0x0080` | `SingleDisplayMode enabled` |
+| 1 | `0x0002` | `Cross-head synchronized` | | 8 | `0x0100` | `Horizontal Sync Inverted` |
+| 2 | `0x0004` | `Dual NIVO` | | 9 | `0x0200` | `Vertical Syncs Inverted` |
+| 3 | `0x0008` | `Just-in-time decode` | | 12 | `0x1000` | `ReducedQuantizationRange` |
+| 5 | `0x0020` | `DSC` | | 14 | `0x4000` | `Enable Timing for Gamma` |
+| **6** | **`0x0040`** | **`ST2084 colorspace used (HDR)`** | | 15 | `0x8000` | `(Disabled)` |
+
+Bits 8, 9 and 15 confirm what the corpus already said, which is what makes the rest credible.
+**Bit 6 is the transfer function** — the field that HDR needed and that no capture could reach,
+because Navarro's control plane is sealed and DLM never toggled HDR on Linux. There is only one HDR
+bit: the primaries are not carried here.
+
+The four DMA formats are named by the helper at `0x62ecb0`, whose arms return plaintext `NM16`,
+`NM32`, `NM24`, `NM30` for values 0..3 — lining up exactly with `{2, 4, 3, 4}` bytes per pixel. So
+**off23 = 3 (`NM30`) is 30 bpp**, and the old "1 or 3, no way to tell" is closed.
+
+**off68 and off69 are two bytes, not one word.** DLM's `depth` switch maps 16/24/30/36/48 to codes
+1/2/3/4/5 (anything else falls back to 24bpp) and writes the code at off69; off68 is the
+"output format conversion" argument, zero on every enable. `0x0200` is therefore
+`(conversion 0, depth-code 2)`, and 10-bit sends `0x0300`.
+
+Still undecoded: off62 (a `u32` DLM fills from a caller argument, zero in every capture) and the
+`0x0400` base of the sync word — bit 10, the one bit of that byte DLM does not log.
 
 ## 3. Video records
 
