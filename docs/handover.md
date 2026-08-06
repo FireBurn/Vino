@@ -15,10 +15,10 @@ Last updated 2026-08-06 (second session of the day).
 | DL7400 (Navarro) idle stability | ✅ 4-minute soak: 0 resets, 0 connector teardowns, 0 re-activations, 0 flip timeouts |
 | DL7400 live mode change (incl. 165 Hz) | ✅ applied with both heads lit, no re-enumeration — **one trial** |
 | DL7400 cold plug | ✅ both heads armed from one dual activation, 6.67 s plug-to-pixels |
-| DL7400 across a module reload | ✅ both heads back, **3 consecutive trials** — was 0 of 2 before the latch fix below |
+| DL7400 across a module reload | ✅ both heads back, **4 trials** — was 0 of 2 before the latch fix below |
 | Panels actually lit | ⚠ **still unconfirmed by eye.** See "The trap" below |
 | Hardware cursor | ⚠ on by default, selector fixed, seen working once |
-| HDR | ⭐ **all three wire fields decoded and sent**; still not advertised, pending one look at a screen |
+| HDR | ⭐ **all three wire fields decoded and sent, and now advertised.** KWin reads the dock heads as HDR-capable-but-disabled. Nobody has looked at a panel in PQ |
 | D6000 (Ridge) | untouched this session |
 | Kernel selftests | ✅ `pass:58 fail:0` |
 
@@ -38,9 +38,11 @@ Module as left installed: `a0bec2c96da48b6e`.
    sink absent routinely — that is what `PRESENCE_REMOVE_MS` exists for — so whichever monitor was
    slow at bring-up was latched out and never asked for its EDID again. A negative probe now has to
    outlast the same 5 s window a removal does. See "The reload trap" below.
-3. The SDR wire is **byte-identical** to before: `hdr_advertise` is still 0, nothing offers a
-   10-bit plane format, so `st2084` and `ten_bit` are both false on every mode set vino sends
-   today. The HDR paths are pinned by selftests, not by hardware.
+3. The SDR wire is **byte-identical** to before: nothing offers a 10-bit plane format, so
+   `st2084` and `ten_bit` are both false on every mode set vino sends today. The HDR paths are
+   pinned by selftests, not by hardware.
+4. ⭐ **The experiment switches are gone** — 20 module parameters down to 4. See "Module
+   parameters" below for what survived and why, and for the one that was not inert.
 
 ---
 
@@ -105,7 +107,7 @@ Four changes, and the causal chain matters more than any one of them:
 That loop was the instability, the slow plug-to-pixels, *and* the thing that made a refresh-rate
 change look like a 165 Hz problem. It has to be broken in more than one place at once.
 
-### 1. A mode set is dock-wide (`dock_wide_modeset`, default 1)
+### 1. A mode set is dock-wide
 
 `b17d458c489f`. Reconfiguring one connector while any other is lit re-enumerates the dock about
 100 ms after the next video write. Measured five ways: 120 → 165, 165 → 120 and 120 → 60 on a live
@@ -128,7 +130,7 @@ rounded 69949.
 ⛔ `unanswered id=0x0048 sub=0x0022` after a mode set is **benign** — a single-head change goes
 unanswered too and still works. Same for the `id=0x16 sub=0x2e` after it. Do not chase either.
 
-### 2. Absorb a flap, do not act on it (`flap_repair`, default 1)
+### 2. Absorb a flap, do not act on it
 
 `5d0899e76d74` → reverted by `856dd105649c` → landed properly in `76e6f4b155be`.
 
@@ -185,7 +187,7 @@ both heads armed        +6.67 s     <- plug to pixels
 
 The 4.3 s tail is `activate_dual_wake`'s cold choreography. `NAVARRO_REAL_MODE_H0_MS` is 2978 —
 DLM's captured offset — but DLM's own prelude finishes at **2016 ms**, so ~960 ms is dead air.
-`navarro_mode_offset_ms=2016` should reclaim it; the one attempt to measure that was contaminated
+Setting that constant to 2016 should reclaim it; the one attempt to measure that was contaminated
 (see the bus-migration trap).
 
 **The post-mode-set training window costs 1.07 GB in 12 s** across two heads: `sustain_until` holds
@@ -204,8 +206,10 @@ documented way to destabilise this dock, so never spend it twice.
 1. ⭐⭐ **Check `kscreen-doctor -o` for `HDR:` and `Wide Color Gamut:` before investigating any
    colour or brightness complaint.** KWin persisted a single HDR test toggle onto **both** dock
    outputs and kept it there for hours: it was encoding PQ/BT.2020 into monitors still in SDR, and
-   the whole desktop looked grey. `hdr_advertise=0` now withdraws the properties so it reads
-   `incapable` and cannot recur.
+   the whole desktop looked grey. ⚠ **Vino now advertises HDR unconditionally**, so this can
+   recur and there is no module parameter to withdraw it with — the guard is the persisted
+   `highDynamicRange: false` in `~/.config/kwinoutputconfig.json`, which was verified false on
+   every dock output before the properties were turned on. Check that file, not just the driver.
 2. ⭐ **The dock migrates between USB buses.** It appeared as both `2-1.3` and `1-1.3` in one
    session. Never hard-code the bus — resolve by `idProduct` (`7000`/`6006`) — and remember
    `capture-usbmon-session.py --bus` has to follow it.
@@ -224,17 +228,35 @@ documented way to destabilise this dock, so never spend it twice.
 
 ## Module parameters
 
+Four, and none of them is an experiment:
+
 | Parameter | Default | What it does |
 |---|---|---|
-| `dock_wide_modeset` | 1 | Re-activate every lit head when any head is mode-set |
-| `flap_repair` | 1 | Absorb transient sink drops instead of dropping the connector |
-| `cursor_enabled` | 1 | Publish a cursor plane and send cursor messages |
-| `hdr_advertise` | 0 | Attach `Colorspace` + `HDR_OUTPUT_METADATA`. The wire side is done now; this waits on one look at a screen |
-| `hdr_dma_format` | 0 | Offset-23 DMA format for a 10-bit head (0 ⇒ 3, `NM30`, the value DLM names) |
-| `navarro_mode_offset_ms` | 0 | Cold-timeline offset to the first real mode set (0 ⇒ 2978) |
+| `debug` | 0 | Verbose protocol and scanout diagnostics. ⛔ Do not leave it on |
+| `trace_crypto` | 0 | Disclose session keys for one decryptable capture. ⛔ Never in normal use |
+| `rtc_utc_offset_minutes` | 0 | Local UTC offset for the Navarro RTC message; `vino-cycle.sh` derives it |
+| `edid_override` | 0 | Bitmask of heads described by DRM's EDID override, for a sink the dock cannot read |
 
-Every stability change is behind one of the first three, so any of them can be taken back out on the
-`vino-cycle.sh` command line without a rebuild.
+⭐ **The other sixteen were deleted on 2026-08-06** (`d96a7c8d79e0`). Ten were diagnostics for
+closed questions; `flap_repair`, `dock_wide_modeset` and `cursor_enabled` are now simply how the
+driver behaves; `hdr_dma_format` and `navarro_mode_offset_ms` had values since read out of DLM's
+code; `hdr_advertise` is on permanently. ⇒ **Taking a stability change back out now needs a
+rebuild.** That is the trade: they were how this was debugged, and keeping them is how it stops
+being reviewable.
+
+⚠⚠ **One was not inert, and this is the lesson.** `idle_opens` defaulted *off* and gated a
+cold-activation burst that names the streams vino will not drive. On Navarro `uses_arm_burst()` is
+false, so the body had **never once run** — dropping the gate would have enabled it for the first
+time. It showed up immediately as ~22 scanout submit failures across a bring-up that had been
+clean, and zero after removing the block. Driving a stream at an empty head is a documented way to
+re-enumerate this dock. ⇒ **When deleting a gate, check what the default actually did.** A
+default-off gate around never-executed code is not dead weight; it is the only thing keeping that
+code from running.
+
+⛔ Deleting `simd_transform` orphaned `simd.rs` entirely (nothing else could set `USE_SIMD`), so the
+714-line AVX2 module went with it. Not a loss — it was byte-exact but measured parity-to-slower
+in-kernel, ~18% more CPU on a live encode. The measurement survives in `docs/simd.md` and
+`tools/simd/`; only the unreachable code is gone.
 
 ---
 
@@ -260,17 +282,20 @@ through the new `AtomicState::new_connector_state_for_crtc` binding; `Timing::te
 from the committed framebuffer's fourcc. Both are pinned by
 `set_mode_carries_depth_and_transfer_function`, which also asserts the SDR bytes are unchanged.
 
-**What is left is one experiment, and it needs a person at the machine:**
+**What is left is one experiment, and it needs a person at the machine.** The properties are
+attached now — `kscreen-doctor -o` reads the dock heads as `HDR: disabled` rather than `incapable`,
+and `Color resolution: automatic (10), range: [8; 10]` — so nothing has to be rebuilt to try it:
 
 ```sh
-sudo tools/hardware/vino-cycle.sh hdr_advertise=1
 kscreen-doctor output.DP-4.hdr.enable      # then look at the panel
+kscreen-doctor output.DP-4.hdr.disable     # ...and this is the way back
 ```
 
-⚠ Expect one of three outcomes, and they are told apart by eye, not by the wire: a correct HDR
-picture; a *grey* desktop, which means the sink stayed in SDR while the compositor encoded PQ (the
-2026-08-06 morning failure, and why this is still defaulted off); or a dark panel. `hdr_advertise=0`
-withdraws the properties again with no rebuild.
+⚠ Expect one of three outcomes, told apart by eye and not by the wire: a correct HDR picture; a
+*grey* desktop, meaning the sink stayed in SDR while the compositor encoded PQ (the 2026-08-06
+morning failure); or a dark panel. ⛔ **There is no longer a module parameter to withdraw the
+properties** — if HDR has to go away entirely it is a rebuild. `kscreen-doctor …hdr.disable` is the
+first thing to reach for.
 
 ⚠ Still unsettled, and neither blocks the experiment: the 10-bit **AC** ceilings (leave them at the
 8-bit values — `esc` saturates an over-range magnitude safely, an over-sized ceiling desynchronises
@@ -290,7 +315,8 @@ that outlasts `PRESENCE_REMOVE_MS`, where today the connector still disappears.
 
 ### 4. Reclaim the cold-plug dead air
 
-`navarro_mode_offset_ms=2016`, then re-measure plug-to-pixels with `debug=1`. Expect ~5.7 s.
+Set `NAVARRO_REAL_MODE_H0_MS` to 2016 (it is a constant now, not a parameter), then re-measure
+plug-to-pixels with `debug=1`. Expect ~5.7 s.
 ⚠ Measure across a real enumeration and check the dock did not change bus mid-test.
 
 ### 5. Hardware cursor, second opinion
@@ -299,8 +325,7 @@ The selector was a two-entry table on a four-head dock — every message for soc
 `EINVAL` and `cmd_work` dropped it, so no cursor byte had ever reached this hardware. `head + 1` is
 correct and was seen working once.
 
-⚠ If the pointer ever needs to go back to software, withdraw the **plane** (`cursor_enabled=0`),
-not just the messages: a cursor plane whose commit succeeds stops the compositor drawing its own,
+⚠ If the pointer ever needs to go back to software, withdraw the **plane**, not just the messages: a cursor plane whose commit succeeds stops the compositor drawing its own,
 so starving it loses the pointer entirely.
 
 ⭐ Verifying it without a person at the machine: `/dev/uinput` is not built and KWin exposes no

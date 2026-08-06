@@ -3,7 +3,7 @@
 **Result: the transform vectorises 2x, and that is worth about 15% of the enclosing block encode
 and 7.5% of machine CPU on live video — but only when it is written to vectorise *within* a block.
 The obvious form, across blocks, is a 2.7x regression.** It is in the tree, off by default, behind
-`simd_transform=1`.
+`simd_transform=1` (the parameter, and the module it drove, were deleted on 2026-08-06 — see below).
 
 The ceiling is low and known: the transform is 11% of a strip encode and the bit-serial entropy
 coder is 72%, so no amount of wider arithmetic reaches far. The FPU section — the thing that
@@ -102,7 +102,7 @@ Hoisting it to strip level — one section around all 16 blocks — is the obvio
 
 ### What that is worth to the encoder
 
-`simd_transform=1` puts it in `colour_block`. Measured on a quiesced machine, two runs each, with
+`simd_transform=1` put it in `colour_block`. Measured on a quiesced machine, two runs each, with
 the deterministic strip benchmark:
 
 | | scalar | avx2 | |
@@ -229,3 +229,21 @@ leaves thirteen idle, and the transpose that already dominates the AVX2 case dou
 interesting number is the full-lane row — whether wider lanes beat the transpose — and the licence
 behaviour, since sustained AVX-512 can drop core frequency on some parts and that would show up as
 the *scalar* baseline changing between runs.
+
+---
+
+## ⛔ Outcome: the code is deleted, the measurement is kept (2026-08-06)
+
+`simd.rs` was removed along with the `simd_transform`/`simd_bench` module parameters
+(`linux:vino` `d96a7c8d79e0`). Nothing else could ever set `USE_SIMD`, so with the parameter gone
+`colour_block_transforms` could only return `None` — 714 unreachable lines plus an atomic load per
+block.
+
+That is the right outcome and not a regression: the vectorised transform was byte-exact but
+measured **parity-to-slower in-kernel** once `kernel_fpu_begin`/`end` is paid per block, about
+**18% more CPU** on a live encode. A strip encode is ~72% entropy coder, which is bit-serial, so
+even a free transform caps the whole win near 23%.
+
+The benchmark harness under `tools/simd/` is untouched, so the numbers above remain reproducible
+out of tree. Anyone re-opening this should start from *amortising the FPU section across many
+blocks*, which is the only thing that could change the conclusion.

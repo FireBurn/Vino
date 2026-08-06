@@ -127,12 +127,12 @@ That matches DLM's own strings exactly — `[Profile change] Recreating device`,
 to the mode.` (§2b). A depth change is a **profile change that re-issues the mode**, not a per-frame
 flag.
 
-⚠ **Which byte in that message names the depth is NOT established**, and cannot be from a Windows
-capture. §2b's decompilation says off23 is the DMA buffer format, indexing a bytes-per-pixel table
-`{2, 4, 3, 4}`; every capture to date carries `0x02` = 3 bytes = 24 bpp. A 10-bit surface is 4
-bytes per pixel, so it is index **1 or 3** — a two-way choice. `off48` (total rows) also moves,
-because it is the dock's allocation divided by `stride × bytes_per_pixel`, so it **halves relative
-to nothing** — it scales by 3/4. Both are testable on hardware in two runs.
+⛔ **Superseded by §0.4a below**, which names every byte. This paragraph used to say the depth byte
+was undecidable from a Windows capture and offered a two-way choice between DMA formats 1 and 3.
+That was true of *captures* and false of the problem: DLM names all four formats in its own code.
+Left here because the reasoning is still correct about what a capture can and cannot show, and
+because `off48` (total rows) really does move with the format — it is the dock's allocation divided
+by `stride × bytes_per_pixel`, so it scales by 3/4 rather than halving.
 
 ### 0.4a ⭐⭐ The three control-plane fields, read out of DLM's serializer
 
@@ -178,7 +178,7 @@ paired with sits at `0x8dc320`:
 | 2 | `NM24` | 3 ← every capture on either dock |
 | **3** | **`NM30`** | **4** |
 
-⇒ **`hdr_dma_format` is settled: it is 3.** The choice between the table's two four-byte entries was
+⇒ **The offset-23 format is settled: it is 3.** The choice between the table's two four-byte entries was
 never decidable from a capture, and it did not have to be — 30 bits packed into four bytes is what
 `NM30` says on the tin, and `NM32` is 8-bit-with-padding.
 
@@ -214,10 +214,13 @@ Implemented 2026-08-06: `Timing::st2084` beside `Timing::ten_bit`, fed from the 
 * ⚠ **Whether the dock's own capability push (`id=0x78 sub=0x30`) advertises HDR.** Needs Linux and
   keys.
 * ⚠⚠ **Whether a panel actually lights in PQ.** Every field is now known and sent, and the SDR wire
-  is byte-identical to before, but nobody has looked at a screen in HDR since. `hdr_advertise`
-  stays 0 until somebody has: turning it on is what makes a compositor re-encode the whole desktop,
-  and the one previous time that happened against a sink still in SDR the result was hours of grey
-  that the wire could not detect. This is an eyes question, not a capture question.
+  is byte-identical to before, but nobody has looked at a screen in HDR since. The properties are
+  attached unconditionally as of 2026-08-06 (`hdr_advertise` is gone with the other experiment
+  switches), so `kscreen-doctor -o` reads the dock heads as `HDR: disabled` and one
+  `output.DP-4.hdr.enable` is the whole experiment. ⚠ The failure to watch for is a *grey* desktop
+  — the compositor re-encoding everything in PQ while the sink stays in SDR — which is invisible on
+  the wire, because correct PQ code words is exactly what a capture shows in both cases. This is an
+  eyes question, not a capture question.
 * ⚠ **HDR against vino's software CTM/GAMMA_LUT.** `color.rs` works in 8-bit tables; nothing has
   exercised it at 10 bits.
 * ⛔ HDR10+ and Dolby Vision are out of scope: DisplayLink documents HDR10 only.
