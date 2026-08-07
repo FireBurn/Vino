@@ -333,6 +333,61 @@ pointer-move DBus call, so `kscreen-doctor output.eDP-1.disable` is the way to f
 onto a dock head. Then look for **16448-byte** writes on EP02 (32-byte header + 64×64×4 BGRA +
 seal); everything else on that endpoint is 64 or 112 bytes.
 
+### 6. Idle/Wake Bug (Screens staying on / blanking and reinitializing)
+
+User-confirmed 2026-08-07: the dock panels stay lit when the laptop screen blanks, and re-run a
+bring-up when it comes back. `blank_head()` returns immediately on Navarro (`is_navarro()` early
+return) because replaying Ridge's close bracket re-enumerates the dock seven times out of seven, so
+today vino sends the dock **nothing at all** on DPMS-off — the dock simply keeps showing its last
+frame. When the host wakes and pushes video on the same pipes, the dock rejects the new frames
+(`stopped accepting video`) and recovers only via a presence flap (`id=0x0044`).
+
+⇒ **This is the one open question that genuinely needs a DLM transcript**, and it is what
+`tools/capture/dpms-ports-runbook.sh` step A exists to record: what DLM sends on an output going
+idle, and what it sends to bring it back. Both halves matter — the wake path is why a blank costs a
+full re-activation.
+
+### 7. Ports 3 & 4 — ⭐ the cold timeline is indexed by transcript slot, not by head
+
+**Found by reading, 2026-08-07: this is a driver bug and does not need a capture to explain.**
+`activate_dual_wake` builds `slots`/`remap` (`drm_sink.rs:2295`) and then applies it to
+**`NAVARRO_COLD_PRELUDE` only**. Everything after the prelude still uses the literal head numbers
+of `COLD_NAVARRO`, which was captured with DLM's panels in sockets 1 and 2 and therefore names
+heads 0 and 1 throughout. With monitors in sockets 3 and 4 (heads 2 and 3):
+
+* **no video is ever submitted.** `timeline.video` is `[(0, 122), (0, 124), …, (1, 272), …]`; the
+  loop skips each entry on `sent & (1 << head) == 0`, and `sent` only ever has bits 2 and 3. The
+  cold ARM+carrier never goes out, so the dock never programs its pixel clock — which is exactly
+  the reported symptom.
+* **no stream markers go out**, for the same reason (`sent & (1u32 << head)` at line 2364).
+* **both mode sets take the same reserved counter.** `let slot = if head == 0 { 0 } else { 3 }` —
+  heads 2 and 3 both take slot 3. Navarro NAKs from the first flattened counter onward.
+* **the 757 ms spacing between the two mode sets is skipped**, because it is gated on `head == 1`.
+
+Fix shape: hoist `slots`/`remap` out of the `is_navarro()` block and index the timeline by **slot
+position** (0 = first activating head, 1 = second) everywhere — markers, polls, video, remode,
+`h1_mode` and the counter-slot choice — resolving to a real head only at the point of send. The
+endpoint pairing and `sub = connector << 3` tagging are already right (`PROFILE_DL7400.video_eps`,
+`head_sub_shift: 3`) and were confirmed on the wire in 2026-08-02's `navarro-pair-ports13` capture,
+so **do not start with the queue allocator.**
+
+The DLM ports-3+4 transcript (runbook step B) is then the *check* on that fix, and answers the one
+thing reading cannot: whether DLM's own bring-up for connectors 2 and 3 is the same sequence with
+the indices swapped, or differs in the set-mode allocator rows (`off48`) as well.
+
+### 8. Implement In-Kernel Firmware Flashing (USB DFU)
+
+To perform on-the-fly firmware updates, `vino` needs to:
+1. **Check the Dock Type & Firmware Version:** The standard `bcdDevice` does *not* bump when the firmware updates. Instead, `vino` must read the proprietary DisplayLink **USB descriptor `0x40`** (which DLM calls the "device identity"). 
+   - This 16-byte descriptor contains a 3-byte version tuple at offset 2 (e.g., `0x0b 0x05 0x17` for `11.5.23`, updating to `0x0c 0x02 0x1a` for `12.2.26`).
+   - It also contains the dock family string at offset 8 (e.g., `NavaDock` for Navarro/DL-7400, or `Ridge` for DL-6000).
+2. **Compare against available `.spkg`:** Check `/lib/firmware/vino/` for a matching image (e.g. `navarro-dock-release.spkg` for `NavaDock`). Compare the embedded version.
+3. **Run the Flashing (DFU over EP00):** If the `.spkg` is newer, request the firmware via the kernel's `request_firmware()` API. Then, perform a standard USB Device Firmware Upgrade (DFU) over `EP00`.
+   - The transfer is standard USB DFU class requests (`DETACH`, `DNLOAD`, `GETSTATUS`).
+   - Chunk the `.spkg` file (e.g., in 4096-byte blocks) and upload it using `DFU_DNLOAD` control requests on `EP00`.
+   - After each block, poll using `DFU_GETSTATUS` until the dock transitions from `dfuDNBUSY` to `dfuDNLOAD-IDLE` (and ensure the status is `OK`).
+   - Send a final zero-length `DFU_DNLOAD` request to manifest the image. The dock will then reboot and re-enumerate with the new firmware!
+
 ---
 
 ## ✅ Settled — do not re-chase
@@ -404,6 +459,19 @@ back to a PNG. ⚠ its `--ep` takes a **decimal** int (`10`, not `0x0a`).
 sudo python3 tools/hardware/capture-usbmon-session.py --bus <N> --out cap.mon --snap 65536 --secs 20
 python3 scripts/codec-re/wire-render.py cap.mon 2560 1440 --ep 8 --min-strips 1500 --blocks-x 16
 ```
+
+`tools/capture/capture-portmap.sh` + `tools/capture/dpms-ports-runbook.sh` are the two halves of one
+DLM recording sitting — recorder as root in one terminal, guided steps as the desktop user in
+another, one DLM process and therefore one set of keys for the whole run:
+
+```sh
+sudo tools/capture/capture-portmap.sh --no-reauth --snap 4096 ~/vino-dpms-ports 3600   # terminal 1
+     tools/capture/dpms-ports-runbook.sh ~/vino-dpms-ports                             # terminal 2
+```
+
+⚠ `--no-reauth` because the panels are already lit and a USB re-authorise brings the control plane
+up without relighting them; the runbook records a real dock power-cycle instead. `--snap 4096` keeps
+every CP frame whole and the head of every video URB — full capture has reached 50 GB in one run.
 
 `tools/hardware/vino-cycle.sh` reloads the module and derives `rtc_utc_offset_minutes` from the host
 timezone; trailing arguments are passed through as module parameters.

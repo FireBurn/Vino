@@ -32,11 +32,21 @@ set -uo pipefail
 # control plane up but does NOT light the panels (measured: DLM reads EDID, publishes real modes,
 # and never starts the pixel clock, because a USB re-authorise does not reset the dock). When the
 # panels are already lit, that is worth preserving -- record a real power-cycle instead.
+#
+# --snap N: dumpcap snaplen. 0 (the default) keeps every byte, which is what a codec question needs
+# and what an hours-long session cannot afford -- a lit dock has produced 50 GB in one run. 4096
+# keeps every CP frame complete (they are all under ~480 B) plus the head of each video URB, which
+# is enough for record framing and `sub` tagging, at roughly a sixteenth of the size.
 REAUTH=1
-case "${1:-}" in
-  --no-reauth) REAUTH=0; shift ;;
-esac
-OUT="${1:?usage: sudo tools/capture/capture-portmap.sh [--no-reauth] <outdir> [seconds]}"
+SNAP=0
+while :; do
+  case "${1:-}" in
+    --no-reauth) REAUTH=0; shift ;;
+    --snap) SNAP="${2:?--snap needs a byte count}"; shift 2 ;;
+    *) break ;;
+  esac
+done
+OUT="${1:?usage: sudo tools/capture/capture-portmap.sh [--no-reauth] [--snap N] <outdir> [seconds]}"
 SECS="${2:-1800}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VID=17e9
@@ -124,12 +134,12 @@ say "DLM running by hand (pid $DLMPID), unit masked so udev cannot restart it"
 # ---- recorders ------------------------------------------------------------------------
 # usbmon0 = ALL buses: a dock that re-enumerates can land on a different bus, and following one
 # device number would lose exactly the moment worth having.
-dumpcap -i usbmon0 -s 0 -w "$OUT/wire.pcapng" >"$OUT/dumpcap.log" 2>&1 &
+dumpcap -i usbmon0 -s "$SNAP" -w "$OUT/wire.pcapng" >"$OUT/dumpcap.log" 2>&1 &
 DUMP=$!
 sleep 2
 kill -0 $DUMP 2>/dev/null || { cat "$OUT/dumpcap.log"; die "dumpcap failed to start"; }
 [ -s "$OUT/wire.pcapng" ] || { cat "$OUT/dumpcap.log"; die "dumpcap started but wrote nothing"; }
-say "wire capture live on usbmon0 (pid $DUMP, $(stat -c%s "$OUT/wire.pcapng") bytes)"
+say "wire capture live on usbmon0 (pid $DUMP, snaplen $SNAP, $(stat -c%s "$OUT/wire.pcapng") bytes)"
 
 FRIDA=""
 if [ -n "$FRIDA_PP" ]; then
