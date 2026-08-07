@@ -4,7 +4,9 @@ Single current handover. Replaces the 2026-08-04 one entirely: everything below 
 true or a dead end worth not repeating. Anything the old file said that is not repeated here was
 done, superseded, or retracted.
 
-Last updated 2026-08-06 (second session of the day).
+Last updated 2026-08-07. ⭐ Read the **2026-08-07 (third session)** block at the bottom first:
+the far sockets work now, and the reason they did not invalidates every per-head encoding in the
+corpus.
 
 ---
 
@@ -16,13 +18,13 @@ Last updated 2026-08-06 (second session of the day).
 | DL7400 live mode change (incl. 165 Hz) | ✅ applied with both heads lit, no re-enumeration — **one trial** |
 | DL7400 cold plug | ✅ both heads armed from one dual activation, 6.67 s plug-to-pixels |
 | DL7400 across a module reload | ✅ both heads back, **4 trials** — was 0 of 2 before the latch fix below |
-| Panels actually lit | ⚠ **still unconfirmed by eye.** See "The trap" below |
-| Hardware cursor | ⚠ on by default, selector fixed, seen working once |
+| Panels actually lit | ✅ **user-confirmed by eye 2026-08-07**, sockets 1+2 and sockets 2+3 |
+| Hardware cursor | ✅ user-confirmed on **both** heads 2026-08-07; the selector is `1 << head` |
 | HDR | ⭐ **all three wire fields decoded and sent, and now advertised.** KWin reads the dock heads as HDR-capable-but-disabled. Nobody has looked at a panel in PQ |
 | D6000 (Ridge) | untouched this session |
-| Kernel selftests | ✅ `pass:58 fail:0` |
+| Kernel selftests | ✅ `pass:59 fail:0` |
 
-Module as left installed: `a0bec2c96da48b6e`.
+Module as left installed: `5319a6ac54ac6b7d`.
 
 ### What changed on 2026-08-06 (second session)
 
