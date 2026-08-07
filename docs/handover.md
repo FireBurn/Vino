@@ -344,6 +344,15 @@ today vino sends the dock **nothing at all** on DPMS-off — the dock simply kee
 frame. When the host wakes and pushes video on the same pipes, the dock rejects the new frames
 (`stopped accepting video`) and recovers only via a presence flap (`id=0x0044`).
 
+⚠ **Decoded, implemented, and then deliberately switched back off — read all of this before
+re-enabling it.** The blank is HW-verified: both panels went dark on the two markers and the stream
+stopped. **The wake is not.** Closing the bracket and re-running the cold choreography left both
+panels dark and needed a module reload; that reload then discovered only one head, and a USB
+re-authorise did not recover the second — it took a physical dock power-cycle. So `blank_head`
+returns early again on Navarro (`4d428b9b49f2`), and `close_blank_bracket` stays in place, harmless
+while no bracket is ever opened. ⇒ **Finish the wake before re-enabling the blank**: there is a
+captured vino wake to diff against DLM's, which is the method that found all four socket bugs.
+
 ✅ **Recorded and decoded 2026-08-07** (`~/vino-dpms-ports-1916/`, window `dpms-fast-1`). DLM's
 blank is **four messages and then silence** — per head, `id=0x16 sub=0x2f off23=1` immediately
 followed by `id=0x16 sub=0x2e off23=3`, with `off22` the head selector. Nothing else: no video, no
