@@ -342,10 +342,21 @@ today vino sends the dock **nothing at all** on DPMS-off — the dock simply kee
 frame. When the host wakes and pushes video on the same pipes, the dock rejects the new frames
 (`stopped accepting video`) and recovers only via a presence flap (`id=0x0044`).
 
-⇒ **This is the one open question that genuinely needs a DLM transcript**, and it is what
-`tools/capture/dpms-ports-runbook.sh` step A exists to record: what DLM sends on an output going
-idle, and what it sends to bring it back. Both halves matter — the wake path is why a blank costs a
-full re-activation.
+✅ **Recorded and decoded 2026-08-07** (`~/vino-dpms-ports-1916/`, window `dpms-fast-1`). DLM's
+blank is **four messages and then silence** — per head, `id=0x16 sub=0x2f off23=1` immediately
+followed by `id=0x16 sub=0x2e off23=3`, with `off22` the head selector. Nothing else: no video, no
+mode set, no close bracket, and no further traffic for the whole 20 s the outputs were down.
+
+⚠ That is the *same* pair `modeset_bracket_pre` sends, and pointedly **not** Ridge's close bracket
+(`2f=0`, `2e=0`) — which is the thing measured to re-enumerate this dock seven times out of seven.
+So `blank_head()`'s Navarro early return can be replaced by exactly those two markers.
+
+⭐ **The wake is a full bring-up in DLM too** — EDID probe (`0x15/0x20`), fetch (`0x15/0x21`),
+engage (`0x16/0x23`), set-mode (`0x48/0x22`) and the bracket, ~2.5 s of it. So "the screens do the
+bring-up again when the laptop wakes" is not a vino defect; the vendor pays the same cost.
+
+⛔ Not yet cross-checked against the second and third windows (`dpms-fast-2`, `dpms-idle`) — do that
+before implementing, single trials have been wrong here repeatedly.
 
 ### 7. Ports 3 & 4 — ⭐ the cold timeline is indexed by transcript slot, not by head
 
@@ -364,16 +375,34 @@ heads 0 and 1 throughout. With monitors in sockets 3 and 4 (heads 2 and 3):
   heads 2 and 3 both take slot 3. Navarro NAKs from the first flattened counter onward.
 * **the 757 ms spacing between the two mode sets is skipped**, because it is gated on `head == 1`.
 
-Fix shape: hoist `slots`/`remap` out of the `is_navarro()` block and index the timeline by **slot
-position** (0 = first activating head, 1 = second) everywhere — markers, polls, video, remode,
-`h1_mode` and the counter-slot choice — resolving to a real head only at the point of send. The
-endpoint pairing and `sub = connector << 3` tagging are already right (`PROFILE_DL7400.video_eps`,
-`head_sub_shift: 3`) and were confirmed on the wire in 2026-08-02's `navarro-pair-ports13` capture,
-so **do not start with the queue allocator.**
+✅ **Done** (`5fbd2802ffd2`): `slots`/`remap` are hoisted and the whole timeline is indexed by slot
+position, resolving to a real head only at the point of send. Heads 0 and 1 map to themselves, so
+Ridge and a first-two-sockets Navarro are bit-identical.
 
-The DLM ports-3+4 transcript (runbook step B) is then the *check* on that fix, and answers the one
-thing reading cannot: whether DLM's own bring-up for connectors 2 and 3 is the same sequence with
-the indices swapped, or differs in the set-mode allocator rows (`off48`) as well.
+⭐ **Validated against DLM**, same monitors, same sockets, an hour apart: DLM streams the
+lower-numbered **connector** first whatever endpoint it sits on — ep `0x0a` at +35.641 s then ep
+`0x08` at +35.779 s for sockets 2+3 — and vino now reproduces that, 150 ms apart against DLM's 138.
+
+⛔ **But the panels still do not light on sockets 2+3, and this is now the open problem.** Measured
+2026-08-07 with the fix in:
+
+* Both heads get their full choreography, both EDIDs (`MSI 0x3cd9` on each), both mode sets, and —
+  for the first time — video: **890 MB down ep `0x0a` and 1.79 GB down ep `0x08`** in one session.
+* Forced damage answers with ~45 MB per head and no errors, which is the healthy-dock signature.
+* **User-confirmed by eye: dark.** And user-confirmed that the same build lights sockets 1+2. ⇒ the
+  remaining gate is head-indexed and is *not* the cold timeline, the endpoint pairing, or the
+  interleaving (sockets 2+3 sit on different endpoints, so nothing is multiplexed there).
+* `tools/hardware/vino-bringup-trials.sh` over 4 cold cycles: **3/4** reached sustained video, one
+  hit `stopped accepting video` on both endpoints and never re-armed. So there is a reliability
+  problem *as well*, but it is not what keeps the panels dark.
+
+⇒ **Next step, and everything needed for it is already on disk:** a CP message-by-message diff of
+vino's own bring-up on sockets 2+3 (`~/vino-ports23-selfcap-1949/wire.pcapng`, taken with
+`trace_crypto=1`; the disclosed per-head keys are in the journal at 19:49:54–55) against DLM's on
+the *same two sockets* (`~/vino-dpms-ports-1916/`, window `cold-ports23`). This is the method that
+named the D6000's gate. ⭐ Start with `id=0x16 sub=0x23`, whose **off23 is a head selector, not a
+flag** — DLM's own wake trace sends `off22=0 off23=0` and `off22=1 off23=1`, and a wrong off23 was
+exactly what kept the D6000 dark while every ack said yes.
 
 ### 8. Implement In-Kernel Firmware Flashing (USB DFU)
 
