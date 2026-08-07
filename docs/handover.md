@@ -506,3 +506,29 @@ every CP frame whole and the head of every video URB — full capture has reache
 timezone; trailing arguments are passed through as module parameters.
 `tools/hardware/vino-hold-off.sh <6006|7000>` keeps vino off one dock across re-enumerations.
 `trace_crypto=1` discloses session key material for a decryptable capture — never leave it on.
+
+---
+
+## 2026-08-07 (third session): the far sockets work, and why they never had
+
+⭐ **User-confirmed by eye: sockets 2+3 light, both panels, with the hardware cursor on both.**
+Three bugs, all the same family — a per-head selector that was read from a capture where every
+possible encoding agreed.
+
+| message | was | is | how it was caught |
+|---|---|---|---|
+| the whole cold timeline | transcript head numbers taken literally | indexed by **slot** | reading `activate_dual_wake` (`5fbd2802ffd2`) |
+| `id=0x16 sub=0x23` engage | off22 remapped, **off23 left as the slot** | `edid_sink_state(head, head)`, both bytes | diff vs DLM on the same sockets (`1e351f4f4ab4`) |
+| `id=0x15 sub=0x53` post-EDID | `head + 1` | **`1 << head`** | DLM sends 4 for head 2, not 3 (`1e351f4f4ab4`) |
+| cursor selector | `head + 1` | **`1 << head`** | exactly one head drew a cursor — the one where they agree (`1e139a98fcd7`) |
+
+⛔ **The lesson, and it is worth more than the fixes.** `head`, `head + 1` and `1 << head` are the
+same byte for heads 0 and 1. Every capture in this project's corpus until 2026-08-07 had DLM's two
+panels in the first two sockets, so **no per-head encoding in it is evidence for anything beyond
+head 1.** Treat every remaining `head + 1` as unmeasured: `cp::connector_marker`'s non-onehot
+branch still has one.
+
+⚠ **The dock's `6990d<c>` trace line is a pixel-clock-start oracle for DLM and NOT for vino.** It
+appears per lit connector in DLM's transcript (`6990d0`+`6990d1` on sockets 1+2, `6990d1`+`6990d2`
+on sockets 2+3) and is absent from vino's log **even when the panels are lit** — vino does not
+surface that part of the trace. It was used here to declare a working build dark. Ask a human.
