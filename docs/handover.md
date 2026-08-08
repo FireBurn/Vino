@@ -8,9 +8,17 @@ Last updated 2026-08-08. ⭐ Read the **2026-08-07 (third session)** block at th
 socket pairing works now, and the reason they did not invalidates every per-head encoding in the
 corpus.
 
-The session's work is six patches on `linux:vino`, in this order: socket-numbered logging, the cold
-timeline indexed by slot (with the engage's second selector byte), the post-EDID and cursor
-bitmasks, `Dual NIVO`, the blank/wake sequence, and keeping a blanked head's connector up.
+⭐ **`linux:vino` is now v3, reordered into five contiguous subsystem series** — core (18), crypto
+(2), usb (6), drm (61), vino (6) — regenerated into `patches/v3/`. The reorder applied all 93
+patches with **zero conflicts** and the tree is byte-identical to what it was folded from; the
+driver builds warning-clean and the module hashes the same as the one HW-verified this session
+(`2b55001b6c4027f9`).
+
+⛔ **The driver's 33 patches of development history are now 6.** That history carried a revert pair,
+a module parameter added and later deleted, selftest corrections and fixes to earlier patches in
+the same series. The six introduce the driver in the order it is understood: control protocol,
+codec, KMS engine, USB driver, docs — plus the one KMS binding it needs, moved into the `drm`
+series where it belongs. ⚠ The cover letters are `format-patch` stubs; write them before posting.
 
 ---
 
