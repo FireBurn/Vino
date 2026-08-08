@@ -566,6 +566,22 @@ re-authorise did not recover it.
 ⊙ Still worth a keyed DLM capture in a shared-endpoint configuration — none exists, and it would
 say whether the offset-48 allocator rows change when an endpoint carries two streams.
 
+### ⚠ Cold bring-up is not yet reliable: roughly 8 in 10
+
+Counted with `tools/hardware/vino-bringup-trials.sh` (USB re-authorise, then forced damage, then
+frames per head — never dmesg alone, and never a single trial):
+
+| pairing | result |
+|---|---|
+| sockets 3+4 | 3/3 |
+| sockets 2+3 | 3/4 — one hit `stopped accepting video` on both endpoints and never re-armed |
+| sockets 1+3 | 2/3 — one came up with **both connectors present and no frames at all** |
+
+Two distinct failure shapes, both intermittent, neither yet root-caused. The "no frames" one is the
+more interesting: the connectors are there, the activation runs, and nothing is submitted.
+⭐ The harness now dumps `dmesg` to `$LOGDIR/vino-trial-fail-*.log` on a failure, because it clears
+the log each trial to count frames and these failures are too rare to catch by watching.
+
 ⛔ **The lesson, and it is worth more than the fixes.** `head`, `head + 1` and `1 << head` are the
 same byte for heads 0 and 1. Every capture in this project's corpus until 2026-08-07 had DLM's two
 panels in the first two sockets, so **no per-head encoding in it is evidence for anything beyond
