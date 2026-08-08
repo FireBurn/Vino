@@ -18,7 +18,7 @@ corpus.
 | DL7400 live mode change (incl. 165 Hz) | ✅ applied with both heads lit, no re-enumeration — **one trial** |
 | DL7400 cold plug | ✅ both heads armed from one dual activation, 6.67 s plug-to-pixels |
 | DL7400 across a module reload | ✅ both heads back, **4 trials** — was 0 of 2 before the latch fix below |
-| Panels actually lit | ✅ **user-confirmed by eye 2026-08-07**: sockets 1+2, 2+3, 3+4 **and 2+4** (the shared-endpoint pair) |
+| Panels actually lit | ✅ **user-confirmed by eye 2026-08-07**: **every pairing** — 1+2, 2+3, 3+4 (cross-endpoint) and 2+4, 1+3 (shared endpoint) |
 | Hardware cursor | ✅ user-confirmed on **both** heads 2026-08-07; the selector is `1 << head` |
 | HDR | ⭐ **all three wire fields decoded and sent, and now advertised.** KWin reads the dock heads as HDR-capable-but-disabled. Nobody has looked at a panel in PQ |
 | D6000 (Ridge) | untouched this session |
@@ -551,12 +551,18 @@ capture contains connector 0 *only* — sample the whole file before concluding 
 set it on neither head. `Timing::dual_nivo` + `endpoint_is_shared()` now do (`df39f5673371`), and
 it is inert in every cross-endpoint pairing, so sockets 1+2, 2+3 and 3+4 are byte-identical.
 
-✅ **HW-verified 2026-08-07, user-confirmed by eye: sockets 2+4 both light.** Confirmed on the wire
+✅ **HW-verified, user-confirmed by eye: sockets 2+4 AND sockets 1+3 both light** — that is both
+shared-endpoint pairs, on `0x0a` and on `0x08` respectively. So every pairing of the four sockets
+now works.
+
+⚠ **The flag has to be recomputed at send time** (`b0527949c03b`). Whether an endpoint is shared is
+a property of the *other* head and changes while this head's timing sits cached, so deciding it in
+`atomic_enable` told whichever monitor came up first "not shared" forever — sockets 1+3 lit one
+panel until this landed. Confirmed on the wire
 too — under forced damage endpoint `0x0a` carries image records at **both** `sub=0x08` and
 `sub=0x18`, each with its own stream control (`0x0f`, `0x1f`).
 ⚠ Needed a dock power-cycle to get there: socket 2's sink had dropped out earlier and a USB
 re-authorise did not recover it.
-⊙ Sockets **1+3** (the same pairing on endpoint `0x08`) is untested and symmetric.
 ⊙ Still worth a keyed DLM capture in a shared-endpoint configuration — none exists, and it would
 say whether the offset-48 allocator rows change when an endpoint carries two streams.
 
