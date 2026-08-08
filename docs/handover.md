@@ -24,7 +24,7 @@ corpus.
 | D6000 (Ridge) | untouched this session |
 | Kernel selftests | ✅ `pass:60 fail:0` |
 
-Module as left installed: `aa4a15045c4a55b5`.
+Module as left installed: `895c431249d1426f`.
 
 ### What changed on 2026-08-06 (second session)
 
@@ -361,6 +361,14 @@ mode set, no close bracket, and no further traffic for the whole 20 s the output
 ⚠ That is the *same* pair `modeset_bracket_pre` sends, and pointedly **not** Ridge's close bracket
 (`2f=0`, `2e=0`) — which is the thing measured to re-enumerate this dock seven times out of seven.
 So `blank_head()`'s Navarro early return can be replaced by exactly those two markers.
+
+✅ **No connector teardown across a blank** (`83398b4a5528`). The self-blanked guard covered only a
+*negative* probe, and this dock flaps a blanked sink back to **present**: the positive branch
+re-engaged it and `reengage_head` clears `self_blanked` on entry, so the next sustained negative
+tore the connector down. KWin showed every dock output removed and added again across a DPMS blank
+and re-laid out the session's windows behind it. Nothing the probe says about a blanked head is
+news in *either* direction. Measured after: 0 `presence CLEARED`, 0 `monitor disconnected`, both
+connectors up throughout.
 
 ⭐ **The wake is a full bring-up in DLM too** — EDID probe (`0x15/0x20`), fetch (`0x15/0x21`),
 engage (`0x16/0x23`), set-mode (`0x48/0x22`) and the bracket, ~2.5 s of it. So "the screens do the
