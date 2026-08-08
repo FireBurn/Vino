@@ -22,6 +22,7 @@ TRIALS="${1:-4}"
 SETTLE="${2:-45}"
 [ "$(id -u)" = 0 ] || { echo "run with sudo" >&2; exit 1; }
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOGDIR="${LOGDIR:-/tmp}"
 
 dockpath() { for d in /sys/bus/usb/devices/*/; do [ "$(cat "$d/idProduct" 2>/dev/null)" = 7000 ] && echo "${d%/}"; done; }
 # Run a compositor command as the desktop user; this script is root and kscreen-doctor is not.
@@ -66,6 +67,16 @@ for t in $(seq 1 "$TRIALS"); do
   # `stopped accepting video` is reported separately, not as a failure: it is logged when vino's
   # own URB queue is full, it has been seen once on a bring-up that then streamed for minutes, and
   # the panels were lit through it. Sustained frames on two heads after forced damage is the bar.
-  [ "$ok" -ge 2 ] && { pass=$((pass+1)); echo "  PASS"; } || echo "  FAIL"
+  if [ "$ok" -ge 2 ]; then
+    pass=$((pass+1)); echo "  PASS"
+  else
+    echo "  FAIL"
+    # Keep the evidence. The script clears dmesg each trial to count frames, so without this a
+    # failure is a number with nothing behind it -- and these failures are intermittent, so there
+    # may not be another one for a while.
+    log="${LOGDIR:-/tmp}/vino-trial-fail-$(date +%H%M%S).log"
+    { echo "== trial $t: outputs $outs"; dmesg; } > "$log" 2>&1
+    echo "  log: $log"
+  fi
 done
 printf '\n%d/%d trials passed\n' "$pass" "$TRIALS"
