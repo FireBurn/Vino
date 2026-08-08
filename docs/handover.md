@@ -533,6 +533,29 @@ possible encoding agreed.
 | `id=0x15 sub=0x53` post-EDID | `head + 1` | **`1 << head`** | DLM sends 4 for head 2, not 3 (`1e351f4f4ab4`) |
 | cursor selector | `head + 1` | **`1 << head`** | exactly one head drew a cursor — the one where they agree (`1e139a98fcd7`) |
 
+### The shared-endpoint pair (sockets 1+3 or 2+4) — one panel lights
+
+⭐ **Diagnosed, fixed, HW-unvalidated.** Four connectors are multiplexed onto two video bulk
+endpoints (`0x08` owns {0, 2}, `0x0a` owns {1, 3}), so sockets 2 and 4 put both monitors on `0x0a`.
+Measured on vino's own wire: the tagging is **correct** — `sub=0x08` and `0x18` for connectors 1
+and 3, stream opens `0x0f` and `0x1f`, both streams accepted, ~150 frames each. One panel lit.
+
+⛔ It is not a bandwidth limit and not the multiplexing. The 2026-08-02 reference capture
+(`captures/navarro-pair-ports13-20260802-120220`, connectors 0 and 2 on `0x08`, both lit) carries
+**304,356 records at `sub=0x0000` and 240,011 at `sub=0x0010`** with a stream open for each, so the
+dock plainly does drive two independent streams on one endpoint. ⚠ Note the first 126 MB of that
+capture contains connector 0 *only* — sample the whole file before concluding anything from it.
+
+⭐ **What was missing is a declaration.** DLM's own `setupVideo` flag decode names **offset-42 bit
+2 `Dual NIVO`** — the same name as the `TiledNivoViewer` / "Dual NIVO" strings in its binary. vino
+set it on neither head. `Timing::dual_nivo` + `endpoint_is_shared()` now do (`df39f5673371`), and
+it is inert in every cross-endpoint pairing, so sockets 1+2, 2+3 and 3+4 are byte-identical.
+
+⚠ **Untried on hardware**: socket 2's monitor dropped off the dock before it could be tested and a
+USB re-authorise did not recover it. Next session: two monitors in sockets 2+4, confirm by eye.
+⊙ Also worth a keyed DLM capture in that configuration — no such capture exists, and it would say
+whether the offset-48 allocator rows change when an endpoint carries two streams.
+
 ⛔ **The lesson, and it is worth more than the fixes.** `head`, `head + 1` and `1 << head` are the
 same byte for heads 0 and 1. Every capture in this project's corpus until 2026-08-07 had DLM's two
 panels in the first two sockets, so **no per-head encoding in it is evidence for anything beyond
