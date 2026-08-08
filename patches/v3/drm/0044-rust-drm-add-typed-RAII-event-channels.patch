@@ -1,0 +1,468 @@
+From c5154a4f035518a357c0dcc10f8c9dab10c4b538 Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Wed, 22 Jul 2026 18:54:08 +0100
+Subject: [PATCH 44/61] rust: drm: add typed RAII event channels
+
+Add event delivery for a concrete DRM driver and file pair. A connection
+token owns the logical receiver and disconnects automatically on drop.
+
+Reserve a private pending-event anchor for each connection. DRM
+core clears its file pointer under event_lock during close, so send
+can test and queue under the same lock without retaining an erased
+or dangling drm_file pointer. Validate the event payload layout at
+compile time and bind each channel to its exact DRM device.
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/kernel/drm/event.rs | 424 +++++++++++++++++++++++++++++++++++++++
+ rust/kernel/drm/mod.rs   |   1 +
+ 2 files changed, 425 insertions(+)
+ create mode 100644 rust/kernel/drm/event.rs
+
+diff --git a/rust/kernel/drm/event.rs b/rust/kernel/drm/event.rs
+new file mode 100644
+index 000000000000..caecd2a1b9a5
+--- /dev/null
++++ b/rust/kernel/drm/event.rs
+@@ -0,0 +1,424 @@
++// SPDX-License-Identifier: GPL-2.0 OR MIT
++
++//! DRM event delivery to userspace.
++//!
++//! [`EventChannel`] connects a concrete DRM driver and file type to an asynchronous event sink.
++//! It uses a pending-event anchor so DRM core itself invalidates the connection under
++//! `drm_device::event_lock` before freeing a closing `drm_file`. This means event delivery cannot
++//! race file teardown and no driver-specific close callback is required for safety.
++//!
++//! C header: [`include/drm/drm_file.h`](srctree/include/drm/drm_file.h)
++
++use crate::{
++    bindings,
++    drm::{
++        self,
++        file::{DriverFile, File},
++        Device,
++    },
++    error::to_result,
++    interrupt,
++    prelude::*,
++    sync::{aref::ARef, Arc, Mutex},
++};
++use core::{marker::PhantomData, mem, ptr::NonNull};
++
++/// Common header at the start of every DRM event payload.
++#[repr(C)]
++#[derive(Copy, Clone, Default)]
++pub struct EventHeader {
++    /// Driver-defined event type.
++    pub type_: u32,
++    /// Complete event size in bytes.
++    pub length: u32,
++}
++
++/// Marker implemented by [`declare_drm_event_payload`].
++#[doc(hidden)]
++pub trait EventPayloadSeal {}
++
++/// A driver-defined DRM event payload.
++///
++/// [`EventChannel::send`] fills the leading [`bindings::drm_event`] header's type and length before
++/// copying the payload to userspace.
++pub trait EventPayload: EventPayloadSeal + Copy + 'static {
++    /// The event type written to the leading `drm_event` header.
++    const TYPE: u32;
++}
++
++/// Declare a C-layout DRM event payload.
++///
++/// The payload must have a field named `base` of type [`EventHeader`] as its first field. List the
++/// types of every following field in order. Compile-time size checks reject implicit padding, which
++/// would otherwise copy uninitialized kernel bytes to userspace.
++#[macro_export]
++macro_rules! declare_drm_event_payload {
++    ($type:ty, $event_type:expr, [$($field_type:ty),* $(,)?]) => {
++        const _: fn(&$type) -> &$crate::drm::event::EventHeader = |event| &event.base;
++        const _: () = {
++            assert!(::core::mem::offset_of!($type, base) == 0);
++            assert!(
++                ::core::mem::size_of::<$type>()
++                    == ::core::mem::size_of::<$crate::drm::event::EventHeader>()
++                        $(+ ::core::mem::size_of::<$field_type>())*
++            );
++        };
++
++        impl $crate::drm::event::EventPayloadSeal for $type {}
++
++        impl $crate::drm::event::EventPayload for $type {
++            const TYPE: u32 = $event_type;
++        }
++    };
++}
++
++/// Allocation handed to DRM core for one delivered event.
++///
++/// `pending` must remain the first field because DRM core frees the allocation through that
++/// pointer after delivery or file teardown.
++#[repr(C)]
++struct EventStorage<T: EventPayload> {
++    pending: bindings::drm_pending_event,
++    event: T,
++}
++
++/// A pending event which tracks whether the connected DRM file is still alive.
++///
++/// The anchor is reserved but never delivered. During file teardown, DRM core
++/// clears `pending.file_priv` under `event_lock` before freeing the file. The
++/// channel checks the same field under the same lock before every delivery.
++#[repr(C)]
++struct EventAnchor {
++    pending: bindings::drm_pending_event,
++    event: bindings::drm_event,
++}
++
++struct Connected<D: drm::Driver> {
++    dev: ARef<Device<D>>,
++    anchor: NonNull<EventAnchor>,
++    generation: u64,
++}
++
++// SAFETY: `anchor` is only dereferenced while the channel state mutex is held, and its
++// `pending.file_priv` field is only inspected while the owning device's `event_lock` is also held.
++unsafe impl<D: drm::Driver> Send for Connected<D> {}
++
++struct ChannelState<D: drm::Driver> {
++    connected: Option<Connected<D>>,
++    next_generation: u64,
++}
++
++impl<D: drm::Driver> ChannelState<D> {
++    const fn new() -> Self {
++        Self {
++            connected: None,
++            next_generation: 1,
++        }
++    }
++}
++
++/// A typed event channel for one DRM driver and its concrete per-file type.
++///
++/// A successful [`connect`](Self::connect) returns an [`EventConnection`] token. Keeping the token
++/// keeps the logical connection active; dropping it disconnects automatically. File teardown is
++/// independently safe even if the token is dropped late: DRM core invalidates the channel's anchor
++/// before the raw `drm_file` can be freed.
++#[pin_data(PinnedDrop)]
++pub struct EventChannel<D, F>
++where
++    D: drm::Driver<File = F>,
++    F: DriverFile<Driver = D>,
++{
++    #[pin]
++    state: Mutex<ChannelState<D>>,
++    _file: PhantomData<fn() -> F>,
++}
++
++impl<D, F> EventChannel<D, F>
++where
++    D: drm::Driver<File = F>,
++    F: DriverFile<Driver = D>,
++{
++    /// Allocate a disconnected event channel.
++    pub fn new() -> Result<Arc<Self>> {
++        Arc::pin_init::<Error>(
++            try_pin_init!(Self {
++                state <- crate::new_mutex!(ChannelState::new()),
++                _file: PhantomData,
++            }),
++            GFP_KERNEL,
++        )
++    }
++
++    /// Connect `file` and return the token which owns the logical connection.
++    ///
++    /// Any previous connection is replaced. `file` must belong to `dev`; both the type system and
++    /// a runtime device-instance check enforce that requirement.
++    pub fn connect(
++        self: &Arc<Self>,
++        dev: &Device<D>,
++        file: &File<F>,
++    ) -> Result<EventConnection<D, F>> {
++        if file.device_raw() != dev.as_raw() {
++            return Err(EINVAL);
++        }
++
++        let mut anchor = KBox::new(
++            EventAnchor {
++                pending: bindings::drm_pending_event::default(),
++                event: bindings::drm_event {
++                    type_: 0,
++                    length: mem::size_of::<bindings::drm_event>() as u32,
++                },
++            },
++            GFP_KERNEL,
++        )?;
++        anchor.pending.event = &raw mut anchor.event;
++
++        let mut state = self.state.lock();
++        if let Some(old) = state.connected.take() {
++            // SAFETY: `old.anchor` was successfully reserved by `connect` and ownership remained
++            // with this channel. The helper handles both live and already-closed files.
++            unsafe {
++                bindings::drm_event_cancel_free(old.dev.as_raw(), old.anchor.as_ptr().cast())
++            };
++        }
++
++        let irq = interrupt::local_interrupt_disable();
++        let guard = dev.event_lock().lock_with(&irq);
++        let ret = unsafe {
++            // SAFETY: The device and file are live and belong to each other; `event_lock` is held;
++            // both pointers refer to fields in the live `anchor` allocation.
++            bindings::drm_event_reserve_init_locked(
++                dev.as_raw(),
++                file.as_raw(),
++                &raw mut anchor.pending,
++                &raw mut anchor.event,
++            )
++        };
++        drop(guard);
++        to_result(ret)?;
++
++        let generation = state.next_generation;
++        state.next_generation = state.next_generation.wrapping_add(1).max(1);
++        state.connected = Some(Connected {
++            dev: ARef::from(dev),
++            // SAFETY: `KBox::into_raw` never returns null.
++            anchor: unsafe { NonNull::new_unchecked(KBox::into_raw(anchor)) },
++            generation,
++        });
++
++        Ok(EventConnection {
++            channel: self.clone(),
++            generation,
++        })
++    }
++
++    fn disconnect_generation(&self, generation: u64) {
++        let mut state = self.state.lock();
++        let Some(connected) = state.connected.take() else {
++            return;
++        };
++
++        if connected.generation != generation {
++            state.connected = Some(connected);
++            return;
++        }
++
++        // SAFETY: The anchor was successfully reserved and remained owned by this channel. DRM
++        // core either unlinks it from the live file or observes that close already cleared it.
++        unsafe {
++            bindings::drm_event_cancel_free(
++                connected.dev.as_raw(),
++                connected.anchor.as_ptr().cast(),
++            )
++        };
++    }
++
++    /// Return whether the connection token still names a live DRM file.
++    pub fn is_connected(&self) -> bool {
++        let state = self.state.lock();
++        let Some(connected) = state.connected.as_ref() else {
++            return false;
++        };
++
++        let irq = interrupt::local_interrupt_disable();
++        let _guard = connected.dev.event_lock().lock_with(&irq);
++        // SAFETY: The state mutex keeps the anchor allocated, and `event_lock` serializes this read
++        // with DRM file teardown.
++        !unsafe { (*connected.anchor.as_ptr()).pending.file_priv }.is_null()
++    }
++
++    /// Run `f` with the connected DRM file, if one is still open.
++    ///
++    /// Returns `Ok(None)` when no file is connected or the connected file is closing.
++    ///
++    /// Unlike [`Self::send`], `f` may sleep. That matters because the useful things to do with a
++    /// client's file -- minting a GEM handle for a buffer the driver wants to hand over, for
++    /// instance -- allocate and take mutexes, so they cannot run under `event_lock`.
++    ///
++    /// # Lifetime
++    ///
++    /// DRM files are not refcounted, so holding one across a sleep needs an explicit exclusion
++    /// against teardown. `drm_close_helper()` removes the file from `drm_device::filelist` under
++    /// `filelist_mutex` and only calls `drm_file_free()` **after** dropping it, so a file found on
++    /// that list while the mutex is held cannot be freed until the mutex is released. This walks
++    /// the list under `filelist_mutex` and only hands `f` a file it found there, which also
++    /// rejects the case where a newly opened file reused the closed one's address.
++    pub fn with_connected_file<R>(
++        &self,
++        dev: &Device<D>,
++        f: impl FnOnce(&File<F>) -> Result<R>,
++    ) -> Result<Option<R>> {
++        // Snapshot the receiver under `event_lock`, which is also what tells us the connection is
++        // still live: DRM core clears `file_priv` there during teardown.
++        let receiver = {
++            let state = self.state.lock();
++            let Some(connected) = state.connected.as_ref() else {
++                return Ok(None);
++            };
++            if connected.dev.as_raw() != dev.as_raw() {
++                return Err(EINVAL);
++            }
++            let irq = interrupt::local_interrupt_disable();
++            let _guard = connected.dev.event_lock().lock_with(&irq);
++            // SAFETY: The state mutex keeps the anchor allocated, and `event_lock` serializes this
++            // read against DRM file teardown.
++            unsafe { (*connected.anchor.as_ptr()).pending.file_priv }
++        };
++        if receiver.is_null() {
++            return Ok(None);
++        }
++
++        let raw_dev = dev.as_raw();
++        // SAFETY: `raw_dev` is a valid device by the type invariants of `Device`.
++        let filelist_mutex = unsafe { &raw mut (*raw_dev).filelist_mutex };
++        // SAFETY: `filelist_mutex` is a valid, initialized mutex owned by the device.
++        unsafe { bindings::mutex_lock(filelist_mutex) };
++
++        // SAFETY: The head is valid and the list is stable while `filelist_mutex` is held.
++        let head = unsafe { &raw mut (*raw_dev).filelist };
++        let mut node = unsafe { (*head).next };
++        let mut found = false;
++        while !core::ptr::eq(node, head) {
++            // SAFETY: `node` is a live list node on the device's file list.
++            let file = unsafe {
++                crate::container_of!(node, bindings::drm_file, lhead) as *mut bindings::drm_file
++            };
++            if core::ptr::eq(file, receiver) {
++                found = true;
++                break;
++            }
++            // SAFETY: As above.
++            node = unsafe { (*node).next };
++        }
++
++        let result = if found {
++            // SAFETY: `receiver` is on the device's file list and `filelist_mutex` is held, so
++            // `drm_file_free()` cannot run for it until the mutex is dropped below.
++            f(unsafe { File::<F>::from_raw(receiver) }).map(Some)
++        } else {
++            Ok(None)
++        };
++
++        // SAFETY: Acquired directly above.
++        unsafe { bindings::mutex_unlock(filelist_mutex) };
++        result
++    }
++
++    /// Deliver `payload` to the connected file, or drop it if the file has closed.
++    pub fn send<T: EventPayload>(&self, payload: T) -> Result {
++        let mut storage = KBox::new(
++            EventStorage {
++                pending: bindings::drm_pending_event::default(),
++                event: payload,
++            },
++            GFP_KERNEL,
++        )?;
++
++        // SAFETY: `EventPayload` guarantees that the payload begins with a `drm_event` header.
++        let event: *mut bindings::drm_event = (&raw mut storage.event).cast();
++        // SAFETY: `event` points to the leading live header in `storage`.
++        unsafe {
++            (*event).type_ = T::TYPE;
++            (*event).length = mem::size_of::<T>() as u32;
++        }
++        storage.pending.event = event;
++
++        let state = self.state.lock();
++        let Some(connected) = state.connected.as_ref() else {
++            return Ok(());
++        };
++
++        let irq = interrupt::local_interrupt_disable();
++        let _guard = connected.dev.event_lock().lock_with(&irq);
++        // SAFETY: The state mutex keeps the anchor live, while `event_lock` serializes this read
++        // against DRM core clearing `file_priv` during file teardown.
++        let receiver = unsafe { (*connected.anchor.as_ptr()).pending.file_priv };
++        if receiver.is_null() {
++            return Ok(());
++        }
++
++        // SAFETY: `receiver` is live while `event_lock` is held, and belongs to the exact device
++        // stored in the typed connection. The pending event and payload live in `storage`.
++        let ret = unsafe {
++            bindings::drm_event_reserve_init_locked(
++                connected.dev.as_raw(),
++                receiver,
++                &raw mut storage.pending,
++                event,
++            )
++        };
++        to_result(ret)?;
++
++        // SAFETY: The event was successfully reserved above and `event_lock` remains held. DRM
++        // core assumes ownership of the allocation because `pending` is its first field.
++        unsafe {
++            bindings::drm_send_event_locked(connected.dev.as_raw(), &raw mut storage.pending)
++        };
++        let _ = KBox::into_raw(storage);
++
++        Ok(())
++    }
++}
++
++#[pinned_drop]
++impl<D, F> PinnedDrop for EventChannel<D, F>
++where
++    D: drm::Driver<File = F>,
++    F: DriverFile<Driver = D>,
++{
++    fn drop(self: Pin<&mut Self>) {
++        let this = self.project();
++        if let Some(connected) = this.state.lock().connected.take() {
++            // SAFETY: The reserved anchor remained owned by this channel until now.
++            unsafe {
++                bindings::drm_event_cancel_free(
++                    connected.dev.as_raw(),
++                    connected.anchor.as_ptr().cast(),
++                )
++            };
++        };
++    }
++}
++
++/// RAII ownership of a logical [`EventChannel`] connection.
++#[must_use = "dropping the token immediately disconnects the event channel"]
++pub struct EventConnection<D, F>
++where
++    D: drm::Driver<File = F>,
++    F: DriverFile<Driver = D>,
++{
++    channel: Arc<EventChannel<D, F>>,
++    generation: u64,
++}
++
++impl<D, F> Drop for EventConnection<D, F>
++where
++    D: drm::Driver<File = F>,
++    F: DriverFile<Driver = D>,
++{
++    fn drop(&mut self) {
++        self.channel.disconnect_generation(self.generation);
++    }
++}
+diff --git a/rust/kernel/drm/mod.rs b/rust/kernel/drm/mod.rs
+index 786cd9c1ec07..a17c73c4afb1 100644
+--- a/rust/kernel/drm/mod.rs
++++ b/rust/kernel/drm/mod.rs
+@@ -4,6 +4,7 @@
+ 
+ pub mod device;
+ pub mod driver;
++pub mod event;
+ pub mod file;
+ pub mod fourcc;
+ pub mod gem;
+-- 
+2.55.0
+

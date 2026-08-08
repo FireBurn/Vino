@@ -1,0 +1,48 @@
+From 8d368eb6b70b5a20729b4526c4c6c33300dd68c4 Mon Sep 17 00:00:00 2001
+From: Alice Ryhl <aliceryhl@google.com>
+Date: Thu, 12 Mar 2026 09:23:02 +0000
+Subject: [PATCH 09/18] rust: workqueue: restrict delayed work to global wqs
+
+When a workqueue is shut down, delayed work that is pending but not
+scheduled does not get properly cleaned up, so it's not safe to use
+`enqueue_delayed` on a workqueue that might be destroyed. To fix this,
+restricted `enqueue_delayed` to static queues.
+
+This may be fixed in the future by an approach along the lines of [1].
+
+Cc: stable@vger.kernel.org
+Fixes: 7c098cd5eaae ("workqueue: rust: add delayed work items")
+Reviewed-by: John Hubbard <jhubbard@nvidia.com>
+Reviewed-by: Danilo Krummrich <dakr@kernel.org>
+Reviewed-by: Gary Guo <gary@garyguo.net>
+Link: https://lore.kernel.org/r/20250423-destroy-workqueue-flush-v1-1-3d74820780a5@google.com [1]
+Signed-off-by: Alice Ryhl <aliceryhl@google.com>
+Reviewed-by: Andreas Hindborg <a.hindborg@kernel.org>
+---
+ rust/kernel/workqueue.rs | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/rust/kernel/workqueue.rs b/rust/kernel/workqueue.rs
+index 7e253b6f299c..aa8a472f4547 100644
+--- a/rust/kernel/workqueue.rs
++++ b/rust/kernel/workqueue.rs
+@@ -302,8 +302,15 @@ pub fn enqueue<W, const ID: u64>(&self, w: W) -> W::EnqueueOutput
+     ///
+     /// This may fail if the work item is already enqueued in a workqueue.
+     ///
++    /// This is only valid for global workqueues (with static lifetimes) because those are the only
++    /// ones that outlive all possible delayed work items.
++    ///
+     /// The work item will be submitted using `WORK_CPU_UNBOUND`.
+-    pub fn enqueue_delayed<W, const ID: u64>(&self, w: W, delay: Jiffies) -> W::EnqueueOutput
++    pub fn enqueue_delayed<W, const ID: u64>(
++        &'static self,
++        w: W,
++        delay: Jiffies,
++    ) -> W::EnqueueOutput
+     where
+         W: RawDelayedWorkItem<ID> + Send + 'static,
+     {
+-- 
+2.55.0
+

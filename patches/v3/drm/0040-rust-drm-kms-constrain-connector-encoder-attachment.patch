@@ -1,0 +1,55 @@
+From e85ba1817dfb1c2062f7d800d5a5deafaa686cbf Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Wed, 22 Jul 2026 18:38:17 +0100
+Subject: [PATCH 40/61] rust: drm: kms: constrain connector encoder attachment
+
+drm_connector_attach_encoder() requires both objects to belong to the
+same DRM device. The safe wrapper previously accepted any AsRawEncoder,
+including an encoder from another driver or device.
+
+Accept only an UnregisteredEncoder from the same KMS driver and reject
+a different device instance before entering C.
+
+Fixes: 322a9b8d699b ("rust: drm/kms: Add UnregisteredConnector::attach_encoder()")
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/kernel/drm/kms/connector.rs | 19 +++++++++++++++----
+ 1 file changed, 15 insertions(+), 4 deletions(-)
+
+diff --git a/rust/kernel/drm/kms/connector.rs b/rust/kernel/drm/kms/connector.rs
+index 78b08b94587b..b36d138ae950 100644
+--- a/rust/kernel/drm/kms/connector.rs
++++ b/rust/kernel/drm/kms/connector.rs
+@@ -404,11 +404,22 @@ pub fn new<'a>(
+ 
+     /// Attach an encoder to this [`Connector`].
+     #[must_use]
+-    pub fn attach_encoder(&self, encoder: &impl AsRawEncoder) -> Result {
++    pub fn attach_encoder<E>(&self, encoder: &UnregisteredEncoder<E>) -> Result
++    where
++        E: DriverEncoder<Driver = T::Driver>,
++    {
++        // SAFETY: Both unregistered objects have been initialized, so their parent device
++        // pointers are valid and invariant for their lifetimes.
++        let same_device = unsafe { (*self.as_raw()).dev == (*encoder.as_raw()).dev };
++        if !same_device {
++            return Err(EINVAL);
++        }
++
+         // SAFETY:
+-        // - Both as_raw() calls are guaranteed to return a valid pointer
+-        // - We're guaranteed this connector is not registered via our type invariants, thus this
+-        //   function is safe to call
++        // - Both `as_raw()` calls return valid pointers.
++        // - The generic bound and check above prove that both objects belong to the same driver
++        //   and device.
++        // - `self` is unregistered, as required by the C API.
+         to_result(unsafe {
+             bindings::drm_connector_attach_encoder(self.as_raw(), encoder.as_raw())
+         })
+-- 
+2.55.0
+

@@ -1,0 +1,131 @@
+From fb02b136dce2223a97f206fcce94458863a6e47e Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Sat, 8 Aug 2026 03:43:16 +0100
+Subject: [PATCH 00/61] *** SUBJECT HERE ***
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+*** BLURB HERE ***
+
+Lyude Paul (37):
+  WIP: drm/modes: Fix arg types in drm_set_preferred_mode
+  rust: helpers/drm.c: Split into its own folder
+  rust: drm: Add a small handful of fourcc bindings
+  rust: drm: Add traits for registering KMS devices
+  rust: drm/kms: Introduce the main ModeConfigObject traits
+  rust: drm/kms: Add drm_connector bindings
+  rust: drm/kms: Add drm_plane bindings
+  rust: drm/kms: Add drm_crtc bindings
+  rust: drm/kms: Add drm_encoder bindings
+  rust: drm/kms: Add UnregisteredConnector::attach_encoder()
+  rust: drm/kms: Add DriverConnector::get_mode callback
+  rust: drm/kms: Add ConnectorGuard::add_modes_noedid()
+  rust: drm/kms: Add ConnectorGuard::set_preferred_mode
+  rust: drm/kms: Add RawConnector and RawConnectorState
+  rust: drm/kms: Add RawPlane and RawPlaneState
+  rust: drm/kms: Add OpaqueConnector and OpaqueConnectorState
+  rust: drm/kms: Add OpaqueCrtc and OpaqueCrtcState
+  rust: drm/kms: Add OpaquePlane and OpaquePlaneState
+  rust: drm/kms: Add OpaqueEncoder
+  rust: drm/kms: Add drm_atomic_state bindings
+  rust: drm/kms: Introduce impl_atomic_state_token_ops!
+  rust: drm/kms: Add DriverCrtc::atomic_check()
+  rust: drm/kms: Add DriverPlane::atomic_update()
+  rust: drm/kms: Add DriverPlane::atomic_check()
+  rust: drm/kms: Add DriverPlane::atomic_check()
+  rust: drm/kms: Add RawCrtcState::active()
+  rust: drm/kms: Add RawPlaneState::crtc()
+  rust: drm/kms: Add RawPlaneState::atomic_helper_check()
+  rust: drm/kms: Add drm_framebuffer bindings
+  rust: drm/kms: Add RawPlane::framebuffer()
+  rust: drm/kms: Add DriverCrtc::atomic_begin() and atomic_flush()
+  rust: drm/kms: Add DriverCrtc::atomic_enable() and atomic_disable()
+  rust: drm: Add Device::event_lock()
+  rust: drm/kms: Add Device::num_crtcs()
+  rust: drm/kms: Add VblankSupport
+  rust: drm/kms: Add Kms::atomic_commit_tail
+  WIP: Add very basic bindings for modes
+
+Mike Lothian (24):
+  rust: drm: kms: adapt Lyude's KMS series to current DRM APIs
+  rust: drm: kms: tie mode-object references to their owners
+  rust: drm: kms: constrain connector encoder attachment
+  rust: drm: reject cross-device GEM handle creation
+  drm/tyr: mark the Rust DRM driver as non-KMS
+  rust: drm: kms: add common state and connector helpers
+  rust: drm: add typed RAII event channels
+  rust: drm: expose HDCP 2.2 message identifiers
+  rust: drm: kms: add typed color and rotation properties
+  rust: drm: kms: add connector detect() and mode_valid() hooks
+  rust: drm: kms: add plane damage-clip accessors
+  rust: drm: add private ioctl compat translations
+  rust: drm: framebuffer: add validated shmem scanout views
+  rust: drm: kms: expose checked plane geometry
+  rust: drm: kms: add owned CRTC and vblank references
+  rust: drm: kms: plane: add FB_DAMAGE_CLIPS property support
+  rust: drm: add a safe constructor for owned registration data
+  rust: drm: pin the owner while DRM files remain open
+  rust: drm: kms: add the plane blend-mode property
+  rust: drm: add an owned display mode constructor
+  rust: drm: expose mode flags and CTA VIC matching
+  rust: drm: expose CRTC mode changes
+  rust: drm: kms: add synthesized CVT connector modes
+  rust: drm: kms: read a connector's colorimetry and HDR metadata
+
+ drivers/gpu/drm/drm_modes.c        |    2 +-
+ drivers/gpu/drm/nova/driver.rs     |    3 +
+ drivers/gpu/drm/tyr/driver.rs      |    3 +
+ include/drm/drm_modes.h            |    2 +-
+ rust/bindings/bindings_helper.h    |   17 +
+ rust/helpers/drm/atomic.c          |   33 +
+ rust/helpers/drm/drm.c             |   12 +
+ rust/helpers/drm/framebuffer.c     |   13 +
+ rust/helpers/{drm.c => drm/gem.c}  |   10 -
+ rust/helpers/drm/vblank.c          |    9 +
+ rust/helpers/drm/vma_manager.c     |    9 +
+ rust/helpers/helpers.c             |    2 +-
+ rust/kernel/drm/device.rs          |   74 +-
+ rust/kernel/drm/display.rs         |    5 +
+ rust/kernel/drm/display/hdcp.rs    |   77 ++
+ rust/kernel/drm/driver.rs          |   85 +-
+ rust/kernel/drm/event.rs           |  424 ++++++++
+ rust/kernel/drm/file.rs            |    7 +
+ rust/kernel/drm/fourcc.rs          |   40 +
+ rust/kernel/drm/gem/mod.rs         |   15 +-
+ rust/kernel/drm/gem/shmem.rs       |   13 +-
+ rust/kernel/drm/ioctl.rs           |  202 +++-
+ rust/kernel/drm/kms.rs             |  626 ++++++++++++
+ rust/kernel/drm/kms/atomic.rs      |  922 ++++++++++++++++++
+ rust/kernel/drm/kms/connector.rs   | 1303 +++++++++++++++++++++++++
+ rust/kernel/drm/kms/crtc.rs        | 1365 ++++++++++++++++++++++++++
+ rust/kernel/drm/kms/encoder.rs     |  424 ++++++++
+ rust/kernel/drm/kms/framebuffer.rs |  411 ++++++++
+ rust/kernel/drm/kms/modes.rs       |  284 ++++++
+ rust/kernel/drm/kms/plane.rs       | 1439 ++++++++++++++++++++++++++++
+ rust/kernel/drm/kms/vblank.rs      |  508 ++++++++++
+ rust/kernel/drm/mod.rs             |    4 +
+ 32 files changed, 8316 insertions(+), 27 deletions(-)
+ create mode 100644 rust/helpers/drm/atomic.c
+ create mode 100644 rust/helpers/drm/drm.c
+ create mode 100644 rust/helpers/drm/framebuffer.c
+ rename rust/helpers/{drm.c => drm/gem.c} (88%)
+ create mode 100644 rust/helpers/drm/vblank.c
+ create mode 100644 rust/helpers/drm/vma_manager.c
+ create mode 100644 rust/kernel/drm/display.rs
+ create mode 100644 rust/kernel/drm/display/hdcp.rs
+ create mode 100644 rust/kernel/drm/event.rs
+ create mode 100644 rust/kernel/drm/fourcc.rs
+ create mode 100644 rust/kernel/drm/kms.rs
+ create mode 100644 rust/kernel/drm/kms/atomic.rs
+ create mode 100644 rust/kernel/drm/kms/connector.rs
+ create mode 100644 rust/kernel/drm/kms/crtc.rs
+ create mode 100644 rust/kernel/drm/kms/encoder.rs
+ create mode 100644 rust/kernel/drm/kms/framebuffer.rs
+ create mode 100644 rust/kernel/drm/kms/modes.rs
+ create mode 100644 rust/kernel/drm/kms/plane.rs
+ create mode 100644 rust/kernel/drm/kms/vblank.rs
+
+-- 
+2.55.0
+

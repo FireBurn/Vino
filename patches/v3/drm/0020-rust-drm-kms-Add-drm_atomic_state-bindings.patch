@@ -1,0 +1,931 @@
+From 0ec5e9a4a6376392b6893e52619a3ea1bdb19bc7 Mon Sep 17 00:00:00 2001
+From: Lyude Paul <lyude@redhat.com>
+Date: Thu, 23 May 2024 16:22:44 -0400
+Subject: [PATCH 20/61] rust: drm/kms: Add drm_atomic_state bindings
+
+Next up is introducing bindings that we can use to represent the global DRM
+atomic state, along with all of the various object states contained within.
+We do this by introducing a few new concepts: borrowed states, atomic state
+mutators, and atomic state composers.
+
+To understand these, we need to quickly touch upon the general life of an
+atomic commit. Assuming a driver does its own internal atomic commit, the
+procedure looks something like this:
+
+* Allocate a new atomic state
+* Duplicate the atomic state of each mode object we want to mutate, and add
+  the duplicated state to the new atomic state
+* Check (possibly more then once) the atomic state, possibly modifying it
+  along the way
+* Commit the atomic state to software (we'll call this commit time). At
+  this point no new objects can be added to the state
+* Finish committing the atomic state to hardware asynchronously
+
+With this in mind, we introduce AtomicStateMutator and AtomicStateComposer
+(along with leaky variants intended for uses in FFI calls). An
+AtomicStateMutator allows mutating an atomic state but does not allow for
+adding new objects to the state. Subsequently, an AtomicStateComposer
+allows for both mutating an atomic state and adding new mode objects. We
+control when we expose each of these types in order to implement the
+limitations required by the aforementioned example.
+
+Note as well that AtomicStateComposer is intended to eventually be usable
+directly by drivers. In this scenario, a driver will be able to create an
+AtomicStateComposer (the equivalent of allocating an atomic state in C) and
+then commit it by passing it to our DRM bindings by-value, insuring that
+once the commit process begins it is impossible to keep using the
+AtomicStateComposer.
+
+The next part of this is allowing users to modify the atomic states of all
+of the objects contained within an atomic state. Since it's an extremely
+common usecase for objects to mutate the atomic state of multiple objects
+at once in an unpredictable order, we need a mechanism that will allow us
+to hand out &mut references to each state while ensuring at runtime that we
+do not break rust's data aliasing rules (which disallow us from ever having
+more then one &mut reference to the same piece of data).
+
+We do this by introducing the concept of a "borrowed" state. This is a very
+similar concept to RefCell, where it is ensured during runtime that when a
+&mut reference is taken out another one cannot be created until the
+corresponding Ref object has been dropped. Our equivalent Ref types are
+ConnectorState, BorrowedCrtcState, and BorrowedPlaneStateMutator.
+
+Each one of these types can be used in the same manner as a Ref - no
+additional borrows for an atomic state may be taken until the existing one
+has been dropped. Subsequently, all of these types implement their
+respective AsRaw* and FromRaw* counter-parts - and allow dereferencing to
+each driver-private data structure for fully qualified borrows (like
+CrtcState<'a, CrtcStateMutator<T>>. This allows a pretty clean way of
+mutating multiple states at once without ever breaking rust's mutability
+rules.
+
+We'll use all of these types over the next few commits to begin introducing
+various atomic modeset callbacks to each mode object type.
+
+Signed-off-by: Lyude Paul <lyude@redhat.com>
+
+---
+
+V3:
+* Drop the TODO about printing a kernel error in ConnectorStateMutator
+  I thought this was something we'd want early on in designing this, but
+  since then I'm pretty sure we just want to return None - there are valid
+  cases where we'd get None while doing connector iteration through an
+  atomic state
+* Improve safety comments in ConnectorStateMutator::new()
+* Rename Borrowed*State to *StateMutator
+  I think this makes things a lot clearer, as well - cleanup the
+  documentation regarding this.
+* Drop plane state iterator for now. It's not that we don't need this, it's
+  just that I haven't actually finished writing these up for all types so
+  I'd rather focus on that later now that we've demonstrated it's a thing
+  that is possible. And it at least shouldn't be needed for getting these
+  bindings/rvkms upstream.
+* Drop num_plane() for the time being
+  Without the plane state iterator in this patch series there's no current
+  usecase for this, so just drop the function for the time being and we'll
+  reintroduce it when it's ready.
+
+(cherry picked from commit 8e2858f78093200366ea37ca5a83fdd7bc80bb3a)
+---
+ rust/helpers/drm/atomic.c        |  32 +++
+ rust/helpers/drm/drm.c           |   3 +
+ rust/kernel/drm/kms.rs           |   1 +
+ rust/kernel/drm/kms/atomic.rs    | 359 +++++++++++++++++++++++++++++++
+ rust/kernel/drm/kms/connector.rs | 104 ++++++++-
+ rust/kernel/drm/kms/crtc.rs      | 105 ++++++++-
+ rust/kernel/drm/kms/plane.rs     | 104 ++++++++-
+ 7 files changed, 701 insertions(+), 7 deletions(-)
+ create mode 100644 rust/helpers/drm/atomic.c
+ create mode 100644 rust/kernel/drm/kms/atomic.rs
+
+diff --git a/rust/helpers/drm/atomic.c b/rust/helpers/drm/atomic.c
+new file mode 100644
+index 000000000000..fff70053f694
+--- /dev/null
++++ b/rust/helpers/drm/atomic.c
+@@ -0,0 +1,32 @@
++// SPDX-License-Identifier: GPL-2.0
++
++#include <drm/drm_atomic.h>
++
++void rust_helper_drm_atomic_state_get(struct drm_atomic_state *state)
++{
++	drm_atomic_state_get(state);
++}
++
++void rust_helper_drm_atomic_state_put(struct drm_atomic_state *state)
++{
++	drm_atomic_state_put(state);
++}
++
++// Macros for generating one repetitive atomic state accessors (like drm_atomic_get_new_plane_state)
++#define STATE_FUNC(type, tense)                                                                     \
++	struct drm_ ## type ## _state *rust_helper_drm_atomic_get_ ## tense ## _ ## type ## _state( \
++		const struct drm_atomic_state *state,                                               \
++		struct drm_ ## type *type                                                           \
++	) {                                                                                         \
++		return drm_atomic_get_## tense ## _ ## type ## _state(state, type);                 \
++	}
++#define STATE_FUNCS(type) \
++	STATE_FUNC(type, new); \
++	STATE_FUNC(type, old);
++
++STATE_FUNCS(plane);
++STATE_FUNCS(crtc);
++STATE_FUNCS(connector);
++
++#undef STATE_FUNCS
++#undef STATE_FUNC
+diff --git a/rust/helpers/drm/drm.c b/rust/helpers/drm/drm.c
+index 05ecbf1a0161..35d57db12e4d 100644
+--- a/rust/helpers/drm/drm.c
++++ b/rust/helpers/drm/drm.c
+@@ -1,6 +1,9 @@
+ // SPDX-License-Identifier: GPL-2.0
+ 
+ #ifdef CONFIG_DRM
++#ifdef CONFIG_DRM_KMS_HELPER
++#include "atomic.c"
++#endif
+ #include "gem.c"
+ #include "vma_manager.c"
+ #endif
+diff --git a/rust/kernel/drm/kms.rs b/rust/kernel/drm/kms.rs
+index 84619c40628e..61e726796445 100644
+--- a/rust/kernel/drm/kms.rs
++++ b/rust/kernel/drm/kms.rs
+@@ -2,6 +2,7 @@
+ 
+ //! KMS driver abstractions for rust.
+ 
++pub mod atomic;
+ pub mod connector;
+ pub mod crtc;
+ pub mod encoder;
+diff --git a/rust/kernel/drm/kms/atomic.rs b/rust/kernel/drm/kms/atomic.rs
+new file mode 100644
+index 000000000000..a212b733a4fd
+--- /dev/null
++++ b/rust/kernel/drm/kms/atomic.rs
+@@ -0,0 +1,359 @@
++// SPDX-License-Identifier: GPL-2.0 OR MIT
++
++//! [`struct drm_atomic_state`] related bindings for rust.
++//!
++//! [`struct drm_atomic_state`]: srctree/include/drm/drm_atomic.h
++use super::{connector::*, crtc::*, plane::*, KmsDriver, ModeObject};
++use crate::{
++    bindings,
++    drm::device::Device,
++    error::{from_err_ptr, to_result},
++    prelude::*,
++    types::*,
++};
++use core::{cell::Cell, marker::*, mem::ManuallyDrop, ops::*, ptr::NonNull};
++
++/// The main wrapper around [`struct drm_atomic_state`].
++///
++/// This type is usually embedded within another interface such as an [`AtomicStateMutator`].
++///
++/// # Invariants
++///
++/// - The data layout of this type is identical to [`struct drm_atomic_state`].
++/// - `state` is initialized for as long as this type is exposed to users.
++///
++/// [`struct drm_atomic_state`]: srctree/include/drm/drm_atomic.h
++#[repr(transparent)]
++pub struct AtomicState<T: KmsDriver> {
++    pub(super) state: Opaque<bindings::drm_atomic_state>,
++    _p: PhantomData<T>,
++}
++
++impl<T: KmsDriver> AtomicState<T> {
++    /// Reconstruct an immutable reference to an atomic state from the given pointer
++    ///
++    /// # Safety
++    ///
++    /// `ptr` must point to a valid initialized instance of [`struct drm_atomic_state`].
++    ///
++    /// [`struct drm_atomic_state`]: srctree/include/drm/drm_atomic.h
++    #[allow(dead_code)]
++    pub(super) unsafe fn from_raw<'a>(ptr: *const bindings::drm_atomic_state) -> &'a Self {
++        // SAFETY: Our data layout is identical
++        // INVARIANT: Our safety contract upholds the guarantee that `state` is initialized for as
++        // long as this type is exposed to users.
++        unsafe { &*ptr.cast() }
++    }
++
++    pub(crate) fn as_raw(&self) -> *mut bindings::drm_atomic_state {
++        self.state.get()
++    }
++
++    /// Return the [`Device`] associated with this [`AtomicState`].
++    pub fn drm_dev(&self) -> &Device<T> {
++        // SAFETY:
++        // - `state` is initialized via our type invariants.
++        // - `dev` is invariant throughout the lifetime of `AtomicState`
++        unsafe { Device::from_raw((*self.state.get()).dev) }
++    }
++
++    /// Return the old atomic state for `crtc`, if it is present within this [`AtomicState`].
++    pub fn get_old_crtc_state<C>(&self, crtc: &C) -> Option<&C::State>
++    where
++        C: ModesettableCrtc + ModeObject<Driver = T>,
++    {
++        // SAFETY: This function either returns NULL or a valid pointer to a `drm_crtc_state`
++        unsafe {
++            bindings::drm_atomic_get_old_crtc_state(self.as_raw(), crtc.as_raw())
++                .as_ref()
++                .map(|p| C::State::from_raw(p))
++        }
++    }
++
++    /// Return the old atomic state for `plane`, if it is present within this [`AtomicState`].
++    pub fn get_old_plane_state<P>(&self, plane: &P) -> Option<&P::State>
++    where
++        P: ModesettablePlane + ModeObject<Driver = T>,
++    {
++        // SAFETY: This function either returns NULL or a valid pointer to a `drm_plane_state`
++        unsafe {
++            bindings::drm_atomic_get_old_plane_state(self.as_raw(), plane.as_raw())
++                .as_ref()
++                .map(|p| P::State::from_raw(p))
++        }
++    }
++
++    /// Return the old atomic state for `connector` if it is present within this [`AtomicState`].
++    pub fn get_old_connector_state<C>(&self, connector: &C) -> Option<&C::State>
++    where
++        C: ModesettableConnector + ModeObject<Driver = T>,
++    {
++        // SAFETY: This function either returns NULL or a valid pointer to a `drm_connector_state`.
++        unsafe {
++            bindings::drm_atomic_get_old_connector_state(self.as_raw(), connector.as_raw())
++                .as_ref()
++                .map(|p| C::State::from_raw(p))
++        }
++    }
++}
++
++// SAFETY: DRM atomic state objects are always reference counted and the get/put functions satisfy
++// the requirements.
++unsafe impl<T: KmsDriver> AlwaysRefCounted for AtomicState<T> {
++    fn inc_ref(&self) {
++        // SAFETY: `state` is initialized for as long as this type is exposed to users
++        unsafe { bindings::drm_atomic_state_get(self.state.get()) }
++    }
++
++    unsafe fn dec_ref(obj: NonNull<Self>) {
++        // SAFETY: `obj` contains a valid non-null pointer to an initialized `Self`.
++        unsafe { bindings::drm_atomic_state_put(obj.as_ptr().cast()) }
++    }
++}
++
++/// A smart-pointer for modifying the contents of an atomic state.
++///
++/// As it's not unreasonable for a modesetting driver to want to have references to the state of
++/// multiple modesetting objects at once, along with mutating multiple states for unique modesetting
++/// objects at once, this type provides a mechanism for safely doing both of these things.
++///
++/// To honor Rust's aliasing rules regarding mutable references, this structure ensures only one
++/// mutable reference to a mode object's atomic state may exist at a time - and refuses to provide
++/// another if one has already been taken out using runtime checks.
++pub struct AtomicStateMutator<T: KmsDriver> {
++    /// The state being mutated. Note that the use of `ManuallyDrop` here is because mutators are
++    /// only constructed in FFI callbacks and thus borrow their references to the atomic state from
++    /// DRM. Composers, which make use of mutators internally, can potentially be owned by rust code
++    /// if a driver is performing an atomic commit internally - and thus will call the drop
++    /// implementation here.
++    state: ManuallyDrop<ARef<AtomicState<T>>>,
++
++    /// Bitmask of borrowed CRTC state objects
++    pub(super) borrowed_crtcs: Cell<u32>,
++    /// Bitmask of borrowed plane state objects
++    pub(super) borrowed_planes: Cell<u32>,
++    /// Bitmask of borrowed connector state objects
++    pub(super) borrowed_connectors: Cell<u32>,
++}
++
++impl<T: KmsDriver> AtomicStateMutator<T> {
++    /// Construct a new [`AtomicStateMutator`]
++    ///
++    /// # Safety
++    ///
++    /// `ptr` must point to a valid `drm_atomic_state`
++    #[allow(dead_code)]
++    pub(super) unsafe fn new(ptr: NonNull<bindings::drm_atomic_state>) -> Self {
++        Self {
++            // SAFETY: The data layout of `AtomicState<T>` is identical to drm_atomic_state
++            // We use `ManuallyDrop` because `AtomicStateMutator` is only ever provided to users in
++            // the context of KMS callbacks. As such, skipping ref inc/dec for the atomic state is
++            // convienent for our bindings.
++            state: ManuallyDrop::new(unsafe { ARef::from_raw(ptr.cast()) }),
++            borrowed_planes: Cell::default(),
++            borrowed_crtcs: Cell::default(),
++            borrowed_connectors: Cell::default(),
++        }
++    }
++
++    pub(crate) fn as_raw(&self) -> *mut bindings::drm_atomic_state {
++        self.state.as_raw()
++    }
++
++    /// Return the [`Device`] for this [`AtomicStateMutator`].
++    pub fn drm_dev(&self) -> &Device<T> {
++        self.state.drm_dev()
++    }
++
++    /// Retrieve the last committed atomic state for `crtc` if `crtc` has already been added to the
++    /// atomic state being composed.
++    ///
++    /// Returns `None` otherwise.
++    pub fn get_old_crtc_state<C>(&self, crtc: &C) -> Option<&C::State>
++    where
++        C: ModesettableCrtc + ModeObject<Driver = T>,
++    {
++        self.state.get_old_crtc_state(crtc)
++    }
++
++    /// Retrieve the last committed atomic state for `connector` if `connector` has already been
++    /// added to the atomic state being composed.
++    ///
++    /// Returns `None` otherwise.
++    pub fn get_old_connector_state<C>(&self, connector: &C) -> Option<&C::State>
++    where
++        C: ModesettableConnector + ModeObject<Driver = T>,
++    {
++        self.state.get_old_connector_state(connector)
++    }
++
++    /// Retrieve the last committed atomic state for `plane` if `plane` has already been added to
++    /// the atomic state being composed.
++    ///
++    /// Returns `None` otherwise.
++    pub fn get_old_plane_state<P>(&self, plane: &P) -> Option<&P::State>
++    where
++        P: ModesettablePlane + ModeObject<Driver = T>,
++    {
++        self.state.get_old_plane_state(plane)
++    }
++
++    /// Return a composer for `plane`s new atomic state if it was previously added to the atomic
++    /// state being composed.
++    ///
++    /// Returns `None` otherwise, or if another mutator still exists for this state.
++    pub fn get_new_crtc_state<C>(&self, crtc: &C) -> Option<CrtcStateMutator<'_, C::State>>
++    where
++        C: ModesettableCrtc + ModeObject<Driver = T>,
++    {
++        // SAFETY: DRM either returns NULL or a valid pointer to a `drm_crtc_state`
++        let state =
++            unsafe { bindings::drm_atomic_get_new_crtc_state(self.as_raw(), crtc.as_raw()) };
++
++        CrtcStateMutator::<C::State>::new(self, NonNull::new(state)?)
++    }
++
++    /// Return a composer for `plane`s new atomic state if it was previously added to the atomic
++    /// state being composed.
++    ///
++    /// Returns `None` otherwise, or if another mutator still exists for this state.
++    pub fn get_new_plane_state<P>(&self, plane: &P) -> Option<PlaneStateMutator<'_, P::State>>
++    where
++        P: ModesettablePlane + ModeObject<Driver = T>,
++    {
++        // SAFETY: DRM either returns NULL or a valid pointer to a `drm_plane_state`.
++        let state =
++            unsafe { bindings::drm_atomic_get_new_plane_state(self.as_raw(), plane.as_raw()) };
++
++        PlaneStateMutator::<P::State>::new(self, NonNull::new(state)?)
++    }
++
++    /// Return a composer for `crtc`s new atomic state if it was previously added to the atomic
++    /// state being composed.
++    ///
++    /// Returns `None` otherwise, or if another mutator still exists for this state.
++    pub fn get_new_connector_state<C>(
++        &self,
++        connector: &C,
++    ) -> Option<ConnectorStateMutator<'_, C::State>>
++    where
++        C: ModesettableConnector + ModeObject<Driver = T>,
++    {
++        // SAFETY: DRM either returns NULL or a valid pointer to a `drm_connector_state`
++        let state = unsafe {
++            bindings::drm_atomic_get_new_connector_state(self.as_raw(), connector.as_raw())
++        };
++
++        ConnectorStateMutator::<C::State>::new(self, NonNull::new(state)?)
++    }
++}
++
++/// An [`AtomicStateMutator`] wrapper which is not yet part of any commit operation.
++///
++/// Since it's not yet part of a commit operation, new mode objects may be added to the state. It
++/// also holds a reference to the underlying [`AtomicState`] that will be released when this object
++/// is dropped.
++pub struct AtomicStateComposer<T: KmsDriver>(AtomicStateMutator<T>);
++
++impl<T: KmsDriver> Deref for AtomicStateComposer<T> {
++    type Target = AtomicStateMutator<T>;
++
++    fn deref(&self) -> &Self::Target {
++        &self.0
++    }
++}
++
++impl<T: KmsDriver> Drop for AtomicStateComposer<T> {
++    fn drop(&mut self) {
++        // SAFETY: We're in drop, so this is guaranteed to be the last possible reference
++        unsafe { ManuallyDrop::drop(&mut self.0.state) }
++    }
++}
++
++impl<T: KmsDriver> AtomicStateComposer<T> {
++    /// # Safety
++    ///
++    /// The caller guarantees that `ptr` points to a valid instance of `drm_atomic_state`.
++    #[allow(dead_code)]
++    pub(crate) unsafe fn new(ptr: NonNull<bindings::drm_atomic_state>) -> Self {
++        // SAFETY: see `AtomicStateMutator::from_raw()`
++        Self(unsafe { AtomicStateMutator::new(ptr) })
++    }
++
++    /// Attempt to add the state for `crtc` to the atomic state for this composer if it hasn't
++    /// already been added, and create a mutator for it.
++    ///
++    /// If a composer already exists for this `crtc`, this function returns `Error(EBUSY)`. If
++    /// attempting to add the state fails, another error code will be returned.
++    pub fn add_crtc_state<C>(&self, crtc: &C) -> Result<CrtcStateMutator<'_, C::State>>
++    where
++        C: ModesettableCrtc + ModeObject<Driver = T>,
++    {
++        // SAFETY: DRM will only return a valid pointer to a `drm_crtc_state` - or an error.
++        let state = unsafe {
++            from_err_ptr(bindings::drm_atomic_get_crtc_state(
++                self.as_raw(),
++                crtc.as_raw(),
++            ))
++            .map(|c| NonNull::new_unchecked(c))
++        }?;
++
++        CrtcStateMutator::<C::State>::new(self, state).ok_or(EBUSY)
++    }
++
++    /// Attempt to add the state for `plane` to the atomic state for this composer if it hasn't
++    /// already been added, and create a mutator for it.
++    ///
++    /// If a composer already exists for this `plane`, this function returns `Error(EBUSY)`. If
++    /// attempting to add the state fails, another error code will be returned.
++    pub fn add_plane_state<P>(&self, plane: &P) -> Result<PlaneStateMutator<'_, P::State>>
++    where
++        P: ModesettablePlane + ModeObject<Driver = T>,
++    {
++        // SAFETY: DRM will only return a valid pointer to a `drm_plane_state` - or an error.
++        let state = unsafe {
++            from_err_ptr(bindings::drm_atomic_get_plane_state(
++                self.as_raw(),
++                plane.as_raw(),
++            ))
++            .map(|p| NonNull::new_unchecked(p))
++        }?;
++
++        PlaneStateMutator::<P::State>::new(self, state).ok_or(EBUSY)
++    }
++
++    /// Attempt to add the state for `connector` to the atomic state for this composer if it hasn't
++    /// already been added, and create a mutator for it.
++    ///
++    /// If a composer already exists for this `connector`, this function returns `Error(EBUSY)`. If
++    /// attempting to add the state fails, another error code will be returned.
++    pub fn add_connector_state<C>(
++        &self,
++        connector: &C,
++    ) -> Result<ConnectorStateMutator<'_, C::State>>
++    where
++        C: ModesettableConnector + ModeObject<Driver = T>,
++    {
++        // SAFETY: DRM will only return a valid pointer to a `drm_plane_state` - or an error.
++        let state = unsafe {
++            from_err_ptr(bindings::drm_atomic_get_connector_state(
++                self.as_raw(),
++                connector.as_raw(),
++            ))
++            .map(|c| NonNull::new_unchecked(c))
++        }?;
++
++        ConnectorStateMutator::<C::State>::new(self, state).ok_or(EBUSY)
++    }
++
++    /// Attempt to add any planes affected by changes on `crtc` to this [`AtomicStateComposer`].
++    ///
++    /// Will return an [`Error`] if this fails.
++    pub fn add_affected_planes<C>(&self, crtc: &C) -> Result
++    where
++        C: ModesettableCrtc + ModeObject<Driver = T>,
++    {
++        // SAFETY: Both .as_raw() values are guaranteed to return a valid pointer
++        to_result(unsafe { bindings::drm_atomic_add_affected_planes(self.as_raw(), crtc.as_raw()) })
++    }
++}
+diff --git a/rust/kernel/drm/kms/connector.rs b/rust/kernel/drm/kms/connector.rs
+index 82cd717ebbbd..f7817c5037bd 100644
+--- a/rust/kernel/drm/kms/connector.rs
++++ b/rust/kernel/drm/kms/connector.rs
+@@ -4,7 +4,9 @@
+ //!
+ //! C header: [`include/drm/drm_connector.h`](srctree/include/drm/drm_connector.h)
+ 
+-use super::{encoder::*, KmsDriver, ModeConfigGuard, ModeObject, ModeObjectVtable, Sealed};
++use super::{
++    atomic::*, encoder::*, KmsDriver, ModeConfigGuard, ModeObject, ModeObjectVtable, Sealed
++};
+ use crate::{
+     alloc::KBox,
+     bindings,
+@@ -14,10 +16,11 @@
+     types::{NotThreadSafe, Opaque},
+ };
+ use core::{
++    cell::Cell,
+     marker::*,
+     mem::{self, ManuallyDrop},
+     ops::*,
+-    ptr::null_mut,
++    ptr::{null_mut, NonNull},
+     stringify,
+ };
+ use macros::paste;
+@@ -818,6 +821,103 @@ fn vtable(&self) -> *const Self::Vtable {
+     }
+ }
+ 
++/// An interface for mutating a [`Connector`]s atomic state.
++///
++/// This type is typically returned by an [`AtomicStateMutator`] within contexts where it is
++/// possible to safely mutate a connector's state. In order to uphold rust's data-aliasing rules,
++/// only [`ConnectorStateMutator`] may exist at a time.
++pub struct ConnectorStateMutator<'a, T: FromRawConnectorState> {
++    state: &'a mut T,
++    mask: &'a Cell<u32>,
++}
++
++impl<'a, T: FromRawConnectorState> ConnectorStateMutator<'a, T> {
++    pub(super) fn new<D: KmsDriver>(
++        mutator: &'a AtomicStateMutator<D>,
++        state: NonNull<bindings::drm_connector_state>,
++    ) -> Option<Self> {
++        // SAFETY:
++        // - `connector` is invariant throughout the lifetime of the atomic state.
++        // - `state` is initialized by the time it is passed to this function.
++        // - We're guaranteed that `state` is compatible with `drm_connector` by type invariants.
++        let connector = unsafe { T::Connector::from_raw((*state.as_ptr()).connector) };
++        let conn_mask = connector.mask();
++        let borrowed_mask = mutator.borrowed_connectors.get();
++
++        if borrowed_mask & conn_mask == 0 {
++            mutator.borrowed_connectors.set(borrowed_mask | conn_mask);
++            Some(Self {
++                mask: &mutator.borrowed_connectors,
++                // SAFETY: We're guaranteed `state` is of `T` by type invariance, and we just
++                // confirmed by checking `borrowed_connectors` that no other mutable borrows have
++                // been taken out for `state`
++                state: unsafe { T::from_raw_mut(state.as_ptr()) },
++            })
++        } else {
++            None
++        }
++    }
++}
++
++impl<'a, T: DriverConnectorState> Deref for ConnectorStateMutator<'a, ConnectorState<T>> {
++    type Target = T;
++
++    fn deref(&self) -> &Self::Target {
++        &self.state.inner
++    }
++}
++
++impl<'a, T: DriverConnectorState> DerefMut for ConnectorStateMutator<'a, ConnectorState<T>> {
++    fn deref_mut(&mut self) -> &mut Self::Target {
++        &mut self.state.inner
++    }
++}
++
++impl<'a, T: FromRawConnectorState> Drop for ConnectorStateMutator<'a, T> {
++    fn drop(&mut self) {
++        let mask = self.state.connector().mask();
++        self.mask.set(self.mask.get() & !mask);
++    }
++}
++
++impl<'a, T: FromRawConnectorState> AsRawConnectorState for ConnectorStateMutator<'a, T> {
++    type Connector = T::Connector;
++}
++
++impl<'a, T: FromRawConnectorState> private::AsRawConnectorState for ConnectorStateMutator<'a, T> {
++    fn as_raw(&self) -> &bindings::drm_connector_state {
++        self.state.as_raw()
++    }
++
++    unsafe fn as_raw_mut(&mut self) -> &mut bindings::drm_connector_state {
++        // SAFETY: We're bound by the same safety contract as this function
++        unsafe { self.state.as_raw_mut() }
++    }
++}
++
++// SAFETY: we inherit the safety guarantees of `T`
++unsafe impl<'a, T> ModeObjectVtable for ConnectorStateMutator<'a, T>
++where
++    T: FromRawConnectorState + ModeObjectVtable,
++{
++    type Vtable = T::Vtable;
++
++    fn vtable(&self) -> *const Self::Vtable {
++        self.state.vtable()
++    }
++}
++
++impl<'a, T: DriverConnectorState> ConnectorStateMutator<'a, ConnectorState<T>> {
++    super::impl_from_opaque_mode_obj! {
++        fn <D, C>(ConnectorStateMutator<'a, OpaqueConnectorState<D>>) -> Self
++        where
++            T: DriverConnectorState<Connector = C>;
++        use
++            C as DriverConnector,
++            D as KmsDriver<Connector = ...>
++    }
++}
++
+ unsafe extern "C" fn atomic_duplicate_state_callback<T: DriverConnectorState>(
+     connector: *mut bindings::drm_connector,
+ ) -> *mut bindings::drm_connector_state {
+diff --git a/rust/kernel/drm/kms/crtc.rs b/rust/kernel/drm/kms/crtc.rs
+index 29d4955b8a75..58ac7b92a66e 100644
+--- a/rust/kernel/drm/kms/crtc.rs
++++ b/rust/kernel/drm/kms/crtc.rs
+@@ -4,7 +4,10 @@
+ //!
+ //! C header: [`include/drm/drm_crtc.h`](srctree/include/drm/drm_crtc.h)
+ 
+-use super::{plane::*, KmsDriver, ModeObject, StaticModeObject, ModeObjectVtable, UnregisteredKmsDevice, Sealed};
++use super::{
++    atomic::*, plane::*, KmsDriver, ModeObject, ModeObjectVtable, StaticModeObject,
++    UnregisteredKmsDevice, Sealed,
++};
+ use crate::{
+     alloc::KBox,
+     bindings,
+@@ -14,11 +17,11 @@
+     types::{NotThreadSafe, Opaque},
+ };
+ use core::{
+-    cell::UnsafeCell,
++    cell::{Cell, UnsafeCell},
+     marker::*,
+     mem,
+     ops::{Deref, DerefMut},
+-    ptr::{null, null_mut},
++    ptr::{null, null_mut, NonNull},
+ };
+ use macros::vtable;
+ 
+@@ -657,6 +660,102 @@ fn vtable(&self) -> *const Self::Vtable {
+     }
+ }
+ 
++/// An interface for mutating a [`Crtc`]s atomic state.
++///
++/// This type is typically returned by an [`AtomicStateMutator`] within contexts where it is
++/// possible to safely mutate a plane's state. In order to uphold rust's data-aliasing rules, only
++/// [`CrtcStateMutator`] may exist at a time.
++///
++/// # Invariants
++///
++/// `self.state` always points to a valid instance of a [`FromRawCrtcState`] object.
++pub struct CrtcStateMutator<'a, T: FromRawCrtcState> {
++    state: NonNull<T>,
++    mask: &'a Cell<u32>,
++}
++
++impl<'a, T: FromRawCrtcState> CrtcStateMutator<'a, T> {
++    pub(super) fn new<D: KmsDriver>(
++        mutator: &'a AtomicStateMutator<D>,
++        state: NonNull<bindings::drm_crtc_state>,
++    ) -> Option<Self> {
++        // SAFETY: `crtc` is invariant throughout the lifetime of the atomic state, and always
++        // points to a valid `Crtc<T::Crtc>`
++        let crtc = unsafe { T::Crtc::from_raw((*state.as_ptr()).crtc) };
++        let crtc_mask = crtc.mask();
++        let borrowed_mask = mutator.borrowed_crtcs.get();
++
++        if borrowed_mask & crtc_mask == 0 {
++            mutator.borrowed_crtcs.set(borrowed_mask | crtc_mask);
++            Some(Self {
++                mask: &mutator.borrowed_crtcs,
++                state: state.cast(),
++            })
++        } else {
++            None
++        }
++    }
++}
++
++impl<'a, T: DriverCrtcState> CrtcStateMutator<'a, CrtcState<T>> {
++    super::impl_from_opaque_mode_obj! {
++        fn <D, C>(CrtcStateMutator<'a, OpaqueCrtcState<D>>) -> Self
++        where
++            T: DriverCrtcState<Crtc = C>;
++        use
++            T as DriverCrtc,
++            D as KmsDriver<Crtc = ...>
++    }
++}
++
++impl<'a, T: FromRawCrtcState> Drop for CrtcStateMutator<'a, T> {
++    fn drop(&mut self) {
++        // SAFETY: Our interface is proof that we are the only ones with a reference to this data
++        let mask = unsafe { self.state.as_ref() }.crtc().mask();
++        self.mask.set(self.mask.get() & !mask);
++    }
++}
++
++impl<'a, T: DriverCrtcState> Deref for CrtcStateMutator<'a, CrtcState<T>> {
++    type Target = T;
++
++    fn deref(&self) -> &Self::Target {
++        // SAFETY: Our interface ensures that `self.state.inner` follows rust's data-aliasing rules,
++        // so this is safe
++        unsafe { &*(*self.state.as_ptr()).inner.get() }
++    }
++}
++
++impl<'a, T: DriverCrtcState> DerefMut for CrtcStateMutator<'a, CrtcState<T>> {
++    fn deref_mut(&mut self) -> &mut Self::Target {
++        // SAFETY: Our interface ensures that `self.state.inner` follows rust's data-aliasing rules,
++        // so this is safe
++        unsafe { (*self.state.as_ptr()).inner.get_mut() }
++    }
++}
++
++impl<'a, T: FromRawCrtcState> AsRawCrtcState for CrtcStateMutator<'a, T> {
++    type Crtc = T::Crtc;
++}
++
++impl<'a, T: FromRawCrtcState> private::AsRawCrtcState for CrtcStateMutator<'a, T> {
++    fn as_raw(&self) -> *mut bindings::drm_crtc_state {
++        self.state.as_ptr().cast()
++    }
++}
++
++// SAFETY: Shares the safety guarantees of T::Crtc's ModeObjectVtable impl
++unsafe impl<'a, T: FromRawCrtcState> ModeObjectVtable for CrtcStateMutator<'a, T>
++where
++    T::Crtc: ModeObjectVtable,
++{
++    type Vtable = <T::Crtc as ModeObjectVtable>::Vtable;
++
++    fn vtable(&self) -> *const Self::Vtable {
++        self.crtc().vtable()
++    }
++}
++
+ unsafe extern "C" fn crtc_destroy_callback<T: DriverCrtc>(crtc: *mut bindings::drm_crtc) {
+     // SAFETY: DRM guarantees that `crtc` points to a valid initialized `drm_crtc`.
+     unsafe { bindings::drm_crtc_cleanup(crtc) };
+diff --git a/rust/kernel/drm/kms/plane.rs b/rust/kernel/drm/kms/plane.rs
+index 9406714bb2a2..542e27699f03 100644
+--- a/rust/kernel/drm/kms/plane.rs
++++ b/rust/kernel/drm/kms/plane.rs
+@@ -5,7 +5,8 @@
+ //! C header: [`include/drm/drm_plane.h`](srctree/include/drm/drm_plane.h)
+ 
+ use super::{
+-    KmsDriver, ModeObject, ModeObjectVtable, StaticModeObject, UnregisteredKmsDevice, Sealed
++    atomic::*, KmsDriver, ModeObject, ModeObjectVtable, StaticModeObject, UnregisteredKmsDevice,
++    Sealed
+ };
+ use crate::{
+     alloc::KBox,
+@@ -16,11 +17,12 @@
+     types::{NotThreadSafe, Opaque},
+ };
+ use core::{
++    cell::Cell,
+     marker::*,
+     mem,
+     ops::*,
+     pin::Pin,
+-    ptr::{null, null_mut},
++    ptr::{null, null_mut, NonNull},
+ };
+ 
+ /// The main trait for implementing the [`struct drm_plane`] API for [`Plane`].
+@@ -741,6 +743,104 @@ fn vtable(&self) -> *const Self::Vtable {
+     }
+ }
+ 
++/// An interface for mutating a [`Plane`]s atomic state.
++///
++/// This type is typically returned by an [`AtomicStateMutator`] within contexts where it is
++/// possible to safely mutate a plane's state. In order to uphold rust's data-aliasing rules, only
++/// [`PlaneStateMutator`] may exist at a time.
++pub struct PlaneStateMutator<'a, T: FromRawPlaneState> {
++    state: &'a mut T,
++    mask: &'a Cell<u32>,
++}
++
++impl<'a, T: FromRawPlaneState> PlaneStateMutator<'a, T> {
++    pub(super) fn new<D: KmsDriver>(
++        mutator: &'a AtomicStateMutator<D>,
++        state: NonNull<bindings::drm_plane_state>,
++    ) -> Option<Self> {
++        // SAFETY: `plane` is invariant throughout the lifetime of the atomic state, is
++        // initialized by this point, and we're guaranteed it is of type `AsRawPlane` by type
++        // invariance
++        let plane = unsafe { T::Plane::from_raw((*state.as_ptr()).plane) };
++        let plane_mask = plane.mask();
++        let borrowed_mask = mutator.borrowed_planes.get();
++
++        if borrowed_mask & plane_mask == 0 {
++            mutator.borrowed_planes.set(borrowed_mask | plane_mask);
++            Some(Self {
++                mask: &mutator.borrowed_planes,
++                // SAFETY: We're guaranteed `state` is of `FromRawPlaneState` by type invariance,
++                // and we just confirmed by checking `borrowed_planes` that no other mutable borrows
++                // have been taken out for `state`
++                state: unsafe { T::from_raw_mut(state.as_ptr()) },
++            })
++        } else {
++            None
++        }
++    }
++}
++
++impl<'a, T: FromRawPlaneState> Drop for PlaneStateMutator<'a, T> {
++    fn drop(&mut self) {
++        let mask = self.state.plane().mask();
++        self.mask.set(self.mask.get() & !mask);
++    }
++}
++
++impl<'a, T: FromRawPlaneState> AsRawPlaneState for PlaneStateMutator<'a, T> {
++    type Plane = T::Plane;
++}
++
++impl<'a, T: FromRawPlaneState> private::AsRawPlaneState for PlaneStateMutator<'a, T> {
++    fn as_raw(&self) -> &bindings::drm_plane_state {
++        self.state.as_raw()
++    }
++
++    unsafe fn as_raw_mut(&mut self) -> &mut bindings::drm_plane_state {
++        // SAFETY: This function is bound by the same safety contract as `self.inner.as_raw_mut()`
++        unsafe { self.state.as_raw_mut() }
++    }
++}
++
++impl<'a, T: FromRawPlaneState> Sealed for PlaneStateMutator<'a, T> {}
++
++impl<'a, T: DriverPlaneState> Deref for PlaneStateMutator<'a, PlaneState<T>> {
++    type Target = T;
++
++    fn deref(&self) -> &Self::Target {
++        &self.state.inner
++    }
++}
++
++impl<'a, T: DriverPlaneState> DerefMut for PlaneStateMutator<'a, PlaneState<T>> {
++    fn deref_mut(&mut self) -> &mut Self::Target {
++        &mut self.state.inner
++    }
++}
++
++// SAFETY: Shares the safety guarantees of `T`'s ModeObjectVtable impl
++unsafe impl<'a, T: FromRawPlaneState> ModeObjectVtable for PlaneStateMutator<'a, T>
++where
++    T: FromRawPlaneState + ModeObjectVtable,
++{
++    type Vtable = T::Vtable;
++
++    fn vtable(&self) -> *const Self::Vtable {
++        self.state.vtable()
++    }
++}
++
++impl<'a, T: DriverPlaneState> PlaneStateMutator<'a, PlaneState<T>> {
++    super::impl_from_opaque_mode_obj! {
++        fn <D, P>(PlaneStateMutator<'a, OpaquePlaneState<D>>) -> Self
++        where
++            T: DriverPlaneState<Plane = P>;
++        use
++            P as DriverPlane,
++            D as KmsDriver<Plane = ...>
++    }
++}
++
+ unsafe extern "C" fn plane_destroy_callback<T: DriverPlane>(plane: *mut bindings::drm_plane) {
+     // SAFETY: DRM guarantees that `plane` points to a valid initialized `drm_plane`.
+     unsafe { bindings::drm_plane_cleanup(plane) };
+-- 
+2.55.0
+

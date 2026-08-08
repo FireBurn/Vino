@@ -1,0 +1,28 @@
+From b53b73e06f4d9b848c9a33b78ad45d1c8d6c6848 Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Sat, 8 Aug 2026 03:43:16 +0100
+Subject: [PATCH 0/2] *** SUBJECT HERE ***
+
+*** BLURB HERE ***
+
+Mike Lothian (2):
+  rust: crypto: add AES-128, AES-CMAC, SHA-256, and HMAC bindings
+  rust: crypto: add synchronous RSA akcipher support
+
+ crypto/Kconfig                  |  10 ++
+ lib/crypto/Kconfig              |  19 ++
+ rust/bindings/bindings_helper.h |   4 +
+ rust/helpers/crypto.c           |  64 +++++++
+ rust/helpers/helpers.c          |   1 +
+ rust/kernel/Kconfig.test        |  14 ++
+ rust/kernel/crypto.rs           | 169 ++++++++++++++++++
+ rust/kernel/crypto/akcipher.rs  | 298 ++++++++++++++++++++++++++++++++
+ rust/kernel/lib.rs              |   1 +
+ 9 files changed, 580 insertions(+)
+ create mode 100644 rust/helpers/crypto.c
+ create mode 100644 rust/kernel/crypto.rs
+ create mode 100644 rust/kernel/crypto/akcipher.rs
+
+-- 
+2.55.0
+

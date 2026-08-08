@@ -1,0 +1,70 @@
+From fc7d51dfa7cb2886af25f464ac4d399c6d93712b Mon Sep 17 00:00:00 2001
+From: Lyude Paul <lyude@redhat.com>
+Date: Thu, 23 May 2024 16:52:01 -0400
+Subject: [PATCH 28/61] rust: drm/kms: Add RawPlaneState::atomic_helper_check()
+
+Add a binding for drm_atomic_helper_check_plane_state(). Since we want to
+make sure that the user is passing in the new state for a Crtc instead of
+an old state, we explicitly ask for a reference to a CrtcStateMutator.
+
+Signed-off-by: Lyude Paul <lyude@redhat.com>
+(cherry picked from commit 5ea2c173ab6bf2d7032aa97e8284a892eaeeead1)
+---
+ rust/kernel/drm/kms/crtc.rs  |  2 ++
+ rust/kernel/drm/kms/plane.rs | 27 +++++++++++++++++++++++++++
+ 2 files changed, 29 insertions(+)
+
+diff --git a/rust/kernel/drm/kms/crtc.rs b/rust/kernel/drm/kms/crtc.rs
+index ec565735c5a1..a2bb3722033a 100644
+--- a/rust/kernel/drm/kms/crtc.rs
++++ b/rust/kernel/drm/kms/crtc.rs
+@@ -580,6 +580,8 @@ pub trait AsRawCrtcState {
+     }
+ }
+ 
++pub(super) use private::AsRawCrtcState as AsRawCrtcStatePrivate;
++
+ /// Common methods available on any type which implements [`AsRawCrtcState`].
+ ///
+ /// This is implemented internally by DRM, and provides many of the basic methods for working with
+diff --git a/rust/kernel/drm/kms/plane.rs b/rust/kernel/drm/kms/plane.rs
+index 7eda6b9a2414..91be1a87a924 100644
+--- a/rust/kernel/drm/kms/plane.rs
++++ b/rust/kernel/drm/kms/plane.rs
+@@ -604,6 +604,33 @@ fn crtc<'a, 'b: 'a, D>(&'a self) -> Option<&'b OpaqueCrtc<D>>
+         // SAFETY: This cast is guaranteed safe by `OpaqueCrtc`s invariants.
+         NonNull::new(self.as_raw().crtc).map(|c| unsafe { OpaqueCrtc::from_raw(c.as_ptr()) })
+     }
++
++    /// Run the atomic check helper for this plane and the given CRTC state.
++    fn atomic_helper_check<S, D>(
++        &mut self,
++        crtc_state: &CrtcStateMutator<'_, S>,
++        can_position: bool,
++        can_update_disabled: bool,
++    ) -> Result
++    where
++        D: KmsDriver,
++        S: FromRawCrtcState,
++        S::Crtc: ModesettableCrtc + ModeObject<Driver = D>,
++        Self::Plane: ModeObject<Driver = D>,
++    {
++        // SAFETY: We're passing the mutable reference from `self.as_raw_mut()` directly to DRM,
++        // which is safe.
++        to_result(unsafe {
++            bindings::drm_atomic_helper_check_plane_state(
++                self.as_raw_mut(),
++                crtc_state.as_raw(),
++                bindings::DRM_PLANE_NO_SCALING as _, // TODO: add parameters for scaling
++                bindings::DRM_PLANE_NO_SCALING as _,
++                can_position,
++                can_update_disabled,
++            )
++        })
++    }
+ }
+ impl<T: AsRawPlaneState + ?Sized> RawPlaneState for T {}
+ 
+-- 
+2.55.0
+
