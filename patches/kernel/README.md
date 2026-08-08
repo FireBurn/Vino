@@ -3,7 +3,7 @@
 <!-- The block below is rewritten by ../../tools/regenerate-patches.sh. -->
 ```text
 base: 0755a4e3e809610a14befc9ad28d35e2e460da68
-head: ea9d7ff8e989a5eb89293876930a2ba7c37f476a
+head: 967b85c6581ca8fecac8a859c8e90efe0983563a
 range: integration/base-20260728..vino
 ```
 

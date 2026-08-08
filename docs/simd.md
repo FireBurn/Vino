@@ -235,7 +235,7 @@ the *scalar* baseline changing between runs.
 ## ⛔ Outcome: the code is deleted, the measurement is kept (2026-08-06)
 
 `simd.rs` was removed along with the `simd_transform`/`simd_bench` module parameters
-(`linux:vino` `d96a7c8d79e0`). Nothing else could ever set `USE_SIMD`, so with the parameter gone
+(the module parameters were deleted before v3). Nothing else could ever set `USE_SIMD`, so with the parameter gone
 `colour_block_transforms` could only return `None` — 714 unreachable lines plus an atomic load per
 block.
 

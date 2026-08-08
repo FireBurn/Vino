@@ -123,7 +123,7 @@ change look like a 165 Hz problem. It has to be broken in more than one place at
 
 ### 1. A mode set is dock-wide
 
-`b17d458c489f`. Reconfiguring one connector while any other is lit re-enumerates the dock about
+Reconfiguring one connector while any other is lit re-enumerates the dock about
 100 ms after the next video write. Measured five ways: 120 → 165, 165 → 120 and 120 → 60 on a live
 head; waking a second head one second after the first; and reconfiguring a head whose sibling had
 been lit and idle for three minutes. All reset. The same changes with the sibling **disabled** are
@@ -146,7 +146,8 @@ unanswered too and still works. Same for the `id=0x16 sub=0x2e` after it. Do not
 
 ### 2. Absorb a flap, do not act on it
 
-`5d0899e76d74` → reverted by `856dd105649c` → landed properly in `76e6f4b155be`.
+Folded into *add the DisplayLink DL3 USB display driver*; the branch no longer carries the
+intermediate revert.
 
 The dock reports a **lit** sink absent for 0.11–2.5 s at a time: 29 runs over three minutes idle,
 reaching 2.46 s around a mode change. Vino tore the DRM connector down on each one.
@@ -167,7 +168,7 @@ every 5–15 s. Measured: a permanent re-activation loop, neither panel ever sta
 a drop that outlasts it. `repair_flapped_head()` is kept, unused and `#[expect(dead_code)]`, for the
 sink that stays down — see "Open" below.
 
-### 3. Wait for a late head before publishing (`76e6f4b155be`)
+### 3. Wait for a late head before publishing
 
 On a cold plug this dock can answer a head's `id=0x15` EDID fetch **~4 s** after the control session
 comes up. The initial recovery asked once and gave up in well under one, so bring-up published a
@@ -178,7 +179,7 @@ Now retried to a 6 s deadline, so every monitor lands in the single initial hotp
 built around. Only heads the presence probe has **not** already called empty get there, so an empty
 socket still costs one message.
 
-### 4. Release the compositor's flips on unplug (`dfe084622edf`)
+### 4. Release the compositor's flips on unplug
 
 `shutdown()` stops the software vblank clock with page flips still armed, and DRM only noticed when
 its own deadlines expired: **110 pairs** of `flip_done timed out` / `commit wait timed out` and 73
@@ -251,7 +252,7 @@ Four, and none of them is an experiment:
 | `rtc_utc_offset_minutes` | 0 | Local UTC offset for the Navarro RTC message; `vino-cycle.sh` derives it |
 | `edid_override` | 0 | Bitmask of heads described by DRM's EDID override, for a sink the dock cannot read |
 
-⭐ **The other sixteen were deleted on 2026-08-06** (`d96a7c8d79e0`). Ten were diagnostics for
+⭐ **The other sixteen were deleted on 2026-08-06**. Ten were diagnostics for
 closed questions; `flap_repair`, `dock_wide_modeset` and `cursor_enabled` are now simply how the
 driver behaves; `hdr_dma_format` and `navarro_mode_offset_ms` had values since read out of DLM's
 code; `hdr_advertise` is on permanently. ⇒ **Taking a stability change back out now needs a
@@ -336,8 +337,9 @@ plug-to-pixels with `debug=1`. Expect ~5.7 s.
 ### 5. Hardware cursor, second opinion
 
 The selector was a two-entry table on a four-head dock — every message for sockets 3 and 4 returned
-`EINVAL` and `cmd_work` dropped it, so no cursor byte had ever reached this hardware. `head + 1` is
-correct and was seen working once.
+`EINVAL` and `cmd_work` dropped it, so no cursor byte had ever reached this hardware.
+⛔ **The `head + 1` that replaced the table was also wrong**: the selector is a bitmask, `1 << head`,
+and the two readings agree only for heads 0 and 1. ✅ Fixed and user-confirmed on both heads.
 
 ⚠ If the pointer ever needs to go back to software, withdraw the **plane**, not just the messages: a cursor plane whose commit succeeds stops the compositor drawing its own,
 so starving it loses the pointer entirely.
@@ -361,7 +363,7 @@ re-enabling it.** The blank is HW-verified: both panels went dark on the two mar
 stopped. **The wake is not.** Closing the bracket and re-running the cold choreography left both
 panels dark and needed a module reload; that reload then discovered only one head, and a USB
 re-authorise did not recover the second — it took a physical dock power-cycle. So `blank_head`
-returns early again on Navarro (`4d428b9b49f2`), and `close_blank_bracket` stays in place, harmless
+returns early again on Navarro, and `close_blank_bracket` stays in place, harmless
 while no bracket is ever opened. ⇒ **Finish the wake before re-enabling the blank**: there is a
 captured vino wake to diff against DLM's, which is the method that found all four socket bugs.
 
@@ -374,7 +376,7 @@ mode set, no close bracket, and no further traffic for the whole 20 s the output
 (`2f=0`, `2e=0`) — which is the thing measured to re-enumerate this dock seven times out of seven.
 So `blank_head()`'s Navarro early return can be replaced by exactly those two markers.
 
-✅ **No connector teardown across a blank** (`83398b4a5528`). The self-blanked guard covered only a
+✅ **No connector teardown across a blank** (*add the DisplayLink DL3 USB display driver*). The self-blanked guard covered only a
 *negative* probe, and this dock flaps a blanked sink back to **present**: the positive branch
 re-engaged it and `reengage_head` clears `self_blanked` on entry, so the next sustained negative
 tore the connector down. KWin showed every dock output removed and added again across a DPMS blank
@@ -406,7 +408,7 @@ heads 0 and 1 throughout. With monitors in sockets 3 and 4 (heads 2 and 3):
   heads 2 and 3 both take slot 3. Navarro NAKs from the first flattened counter onward.
 * **the 757 ms spacing between the two mode sets is skipped**, because it is gated on `head == 1`.
 
-✅ **Done** (`5fbd2802ffd2`): `slots`/`remap` are hoisted and the whole timeline is indexed by slot
+✅ **Done** (*add the DRM/KMS scanout engine*): `slots`/`remap` are hoisted and the whole timeline is indexed by slot
 position, resolving to a real head only at the point of send. Heads 0 and 1 map to themselves, so
 Ridge and a first-two-sockets Navarro are bit-identical.
 
@@ -468,7 +470,7 @@ encoder is not the artifact.** Re-confirmed this session: renders of both heads'
 
 ### `kind=0x200f` is a per-strip size class
 
-`e91d77a134b1`. `value == strip_byte_length >> 9`, over 68,347 pairs with zero disagreements.
+`value == strip_byte_length >> 9`, over 68,347 pairs with zero disagreements.
 
 ### The `0x9249` second strip encoding is Windows-only
 
@@ -482,12 +484,16 @@ transfers rose 4 → 1,724, and the dock entered a disconnect/reconnect loop nee
 cycle. `ChangeDisplaySettingsEx` returned success throughout. **Mode acceptance is not evidence of
 deliverable bandwidth.** Its 714.81 MHz timing is above `max_head_clock_khz` and is pruned.
 
-### The DL-7400's blank sequence is unknown
+### The DL-7400's blank sequence — ✅ settled 2026-08-07
 
-`6e8c98d6d8bb`. Replaying Ridge's close bracket makes the dock re-enumerate ~2 s later — seven for
-seven, with and without the sink power-down. `blank_head()` does nothing on Navarro until a
-transcript establishes how DLM disables an output. The scanout has already stopped by then, because
-`atomic_disable` zeroed the head's mode generation first.
+Two markers per head and then silence: `id=0x16 sub=0x2f off23=1` immediately followed by
+`sub=0x2e off23=3`, and nothing at all for as long as the output stays down. It is the same pair
+`modeset_bracket_pre` opens with, so the stream is held rather than torn down. The wake owes the
+matching close — `2f=1`, `2e=0`, then `2f=0`, `2e=0` — before anything re-probes or re-sets.
+
+⛔ It is **not** Ridge's close bracket (`2f=0`, `2e=0`), which re-enumerates this dock ~2 s later,
+seven for seven, with and without the sink power-down. That is why guessing never found it: the
+right answer looks like an *open*.
 
 ---
 
@@ -548,10 +554,10 @@ possible encoding agreed.
 
 | message | was | is | how it was caught |
 |---|---|---|---|
-| the whole cold timeline | transcript head numbers taken literally | indexed by **slot** | reading `activate_dual_wake` (`5fbd2802ffd2`) |
-| `id=0x16 sub=0x23` engage | off22 remapped, **off23 left as the slot** | `edid_sink_state(head, head)`, both bytes | diff vs DLM on the same sockets (`1e351f4f4ab4`) |
-| `id=0x15 sub=0x53` post-EDID | `head + 1` | **`1 << head`** | DLM sends 4 for head 2, not 3 (`1e351f4f4ab4`) |
-| cursor selector | `head + 1` | **`1 << head`** | exactly one head drew a cursor — the one where they agree (`1e139a98fcd7`) |
+| the whole cold timeline | transcript head numbers taken literally | indexed by **slot** | reading `activate_dual_wake` |
+| `id=0x16 sub=0x23` engage | off22 remapped, **off23 left as the slot** | `edid_sink_state(head, head)`, both bytes | diff vs DLM on the same sockets |
+| `id=0x15 sub=0x53` post-EDID | `head + 1` | **`1 << head`** | DLM sends 4 for head 2, not 3 |
+| cursor selector | `head + 1` | **`1 << head`** | exactly one head drew a cursor — the one where they agree |
 
 ### The shared-endpoint pair (sockets 1+3 or 2+4) — one panel lights
 
@@ -568,14 +574,14 @@ capture contains connector 0 *only* — sample the whole file before concluding 
 
 ⭐ **What was missing is a declaration.** DLM's own `setupVideo` flag decode names **offset-42 bit
 2 `Dual NIVO`** — the same name as the `TiledNivoViewer` / "Dual NIVO" strings in its binary. vino
-set it on neither head. `Timing::dual_nivo` + `endpoint_is_shared()` now do (`df39f5673371`), and
+set it on neither head. `Timing::dual_nivo` + `endpoint_is_shared()` now do, and
 it is inert in every cross-endpoint pairing, so sockets 1+2, 2+3 and 3+4 are byte-identical.
 
 ✅ **HW-verified, user-confirmed by eye: sockets 2+4 AND sockets 1+3 both light** — that is both
 shared-endpoint pairs, on `0x0a` and on `0x08` respectively. So every pairing of the four sockets
 now works.
 
-⚠ **The flag has to be recomputed at send time** (`b0527949c03b`). Whether an endpoint is shared is
+⚠ **The flag has to be recomputed at send time**. Whether an endpoint is shared is
 a property of the *other* head and changes while this head's timing sits cached, so deciding it in
 `atomic_enable` told whichever monitor came up first "not shared" forever — sockets 1+3 lit one
 panel until this landed. Confirmed on the wire

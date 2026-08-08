@@ -1,8 +1,26 @@
 # Upstream status and review disposition
 
 Status was rechecked on 2026-07-28 against the public patch threads and the
-available remote branch tips. The series was refolded on 2026-08-04; only v2 has
-been posted, so the next posting is v3.
+available remote branch tips. Only v2 has been posted, so the next posting is v3.
+
+⭐ **v3 is five subsystem series, and the branch is ordered to match** (2026-08-08). They were
+interleaved across twenty runs before, so none could be posted on its own; the reorder applied all
+109 patches with zero conflicts and left the tree byte-identical. `tools/regenerate-patches.sh`
+exports them to `patches/kernel/groups/*.series`:
+
+| group | patches | list |
+|---|---|---|
+| `rust-core` | 34 | rust-for-linux |
+| `rust-crypto` | 2 | linux-crypto + rust-for-linux |
+| `rust-usb` | 6 | linux-usb + rust-for-linux |
+| `rust-drm` | 61 | dri-devel |
+| `vino` | 6 | dri-devel |
+
+⛔ **The driver was 33 patches of development history and is now 6.** That history carried a revert
+pair, a module parameter added and later deleted, selftest corrections and fixes to patches earlier
+in the same series. The six introduce the driver in the order it is understood -- control protocol,
+codec, KMS engine, USB driver, docs -- plus the one KMS binding it needs, which moved into the
+`rust-drm` group where it belongs.
 
 ## Current base
 

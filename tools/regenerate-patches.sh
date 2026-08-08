@@ -61,21 +61,24 @@ write_group() {
     sed -n "${first},${last}p" "$output/series" >"$output/groups/$name.series"
 }
 
-# These are independently reviewable, contiguous dependency groups, given as the
-# first patch of each. The final group runs to the end of the series, so appending
-# a commit to the tip needs no edit here; anything else does.
+# One group per subsystem, each independently reviewable and contiguous, given as
+# the first patch of each. They apply in this order and each depends only on the
+# ones before it: the core Rust bindings, then crypto and USB, then DRM/KMS, then
+# the driver. The final group runs to the end of the series, so appending a commit
+# to the tip needs no edit here; anything else does.
+#
+# The branch is kept in this order deliberately -- the groups were interleaved
+# across twenty runs before 2026-08-08, so none of them could be posted on its own.
 #
 # Only the starts are pinned because a hardcoded total goes stale silently -- the
 # previous "expected 106" guard was three commits behind the branch, so the export
 # had been failing rather than being regenerated. The tiling check below turns any
 # mismatch into an error that names the group instead.
 group_starts=(
-    "interrupt-prerequisites 1"
-    "kms-lyude 19"
-    "drm-crypto-platform 56"
-    "usb 74"
-    "rust-runtime-drm 81"
-    "evdi 103"
+    "rust-core 1"
+    "rust-crypto 35"
+    "rust-usb 37"
+    "rust-drm 43"
     "vino 104"
 )
 total="$(wc -l <"$output/series")"

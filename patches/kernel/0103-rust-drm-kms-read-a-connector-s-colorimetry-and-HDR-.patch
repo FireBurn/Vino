@@ -1,0 +1,146 @@
+From fb02b136dce2223a97f206fcce94458863a6e47e Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Sat, 8 Aug 2026 03:40:28 +0100
+Subject: [PATCH 103/109] rust: drm: kms: read a connector's colorimetry and
+ HDR metadata
+
+A driver that carries a transfer function to its sink needs the connector
+state's colorimetry and HDR_OUTPUT_METADATA, and needs to reach the
+connector state routed to a CRTC from the CRTC's own atomic callback.
+
+Add ConnectorState::hdr_output_eotf() and
+AtomicState::new_connector_state_for_crtc().
+
+Assisted-by: Claude:claude-opus-5 [Claude-Code]
+---
+ rust/kernel/drm/kms/atomic.rs    | 57 ++++++++++++++++++++++++++++++++
+ rust/kernel/drm/kms/connector.rs | 41 +++++++++++++++++++++++
+ 2 files changed, 98 insertions(+)
+
+diff --git a/rust/kernel/drm/kms/atomic.rs b/rust/kernel/drm/kms/atomic.rs
+index 18dc136940f3..cd7921673a97 100644
+--- a/rust/kernel/drm/kms/atomic.rs
++++ b/rust/kernel/drm/kms/atomic.rs
+@@ -96,6 +96,51 @@ pub fn get_old_connector_state<C>(&self, connector: &C) -> Option<&C::State>
+                 .map(|p| C::State::from_raw(p))
+         }
+     }
++
++    /// Return the new state of the first connector routed to `crtc` in this [`AtomicState`], if
++    /// any.
++    ///
++    /// This is the Rust spelling of walking `for_each_new_connector_in_state()` looking for
++    /// `conn_state->crtc == crtc`, which is how a CRTC callback reaches the connector properties
++    /// that describe the signal it is about to drive -- colorimetry, HDR metadata, `max bpc`.
++    /// Those live on the connector state, but the driver decisions they feed are frequently made
++    /// where only the CRTC is in hand.
++    ///
++    /// The state is returned opaquely because the caller is looking across mode objects and has
++    /// no way to name the connector's driver-private state type. A CRTC that clones to several
++    /// connectors gets the first; a driver that cares about the difference should walk the
++    /// connectors itself.
++    pub fn new_connector_state_for_crtc<C>(&self, crtc: &C) -> Option<&OpaqueConnectorState<T>>
++    where
++        C: ModesettableCrtc + ModeObject<Driver = T>,
++    {
++        let crtc_raw = crtc.as_raw();
++        // SAFETY: `state` is initialized via our type invariants, and `connectors` /
++        // `num_connector` are invariant for as long as we hold a reference to it.
++        let (connectors, num) = unsafe {
++            let raw = self.as_raw();
++            ((*raw).connectors, (*raw).num_connector)
++        };
++        if connectors.is_null() || num <= 0 {
++            return None;
++        }
++        for i in 0..num as usize {
++            // SAFETY: `connectors` points to `num_connector` initialized entries.
++            let new_state = unsafe { (*connectors.add(i)).new_state };
++            if new_state.is_null() {
++                continue;
++            }
++            // SAFETY: a non-null `new_state` is a valid `drm_connector_state` for the lifetime of
++            // the atomic state.
++            if unsafe { (*new_state).crtc } != crtc_raw {
++                continue;
++            }
++            // SAFETY: as above, and the returned reference borrows from `self`, so it cannot
++            // outlive the atomic state that owns the connector state.
++            return Some(unsafe { OpaqueConnectorState::<T>::from_raw(new_state) });
++        }
++        None
++    }
+ }
+ 
+ // SAFETY: DRM atomic state objects are always reference counted and the get/put functions satisfy
+@@ -188,6 +233,18 @@ pub fn get_old_connector_state<C>(&self, connector: &C) -> Option<&C::State>
+         self.state.get_old_connector_state(connector)
+     }
+ 
++    /// Return the new state of the first connector routed to `crtc`, if any.
++    ///
++    /// See [`AtomicState::new_connector_state_for_crtc`]. This borrows the connector state rather
++    /// than taking a mutator out for it, so it does not participate in the mutator bookkeeping and
++    /// cannot conflict with [`Self::get_new_connector_state`].
++    pub fn new_connector_state_for_crtc<C>(&self, crtc: &C) -> Option<&OpaqueConnectorState<T>>
++    where
++        C: ModesettableCrtc + ModeObject<Driver = T>,
++    {
++        self.state.new_connector_state_for_crtc(crtc)
++    }
++
+     /// Retrieve the last committed atomic state for `plane` if `plane` has already been added to
+     /// the atomic state being composed.
+     ///
+diff --git a/rust/kernel/drm/kms/connector.rs b/rust/kernel/drm/kms/connector.rs
+index 952c8e02777b..168f72f9bd3c 100644
+--- a/rust/kernel/drm/kms/connector.rs
++++ b/rust/kernel/drm/kms/connector.rs
+@@ -922,6 +922,47 @@ fn connector(&self) -> &Self::Connector {
+         // `self.state.connector` points to a valid instance of a `Connector<T>`
+         unsafe { Self::Connector::from_raw((*self.as_raw()).connector) }
+     }
++
++    /// The colorimetry userspace has requested through the `Colorspace` property, as a
++    /// [`enum drm_colorspace`] value.
++    ///
++    /// Meaningful only on a connector that
++    /// [`UnregisteredConnector::attach_colorspace_property`] was called for; everything else
++    /// leaves it at `DRM_MODE_COLORIMETRY_DEFAULT`.
++    ///
++    /// [`enum drm_colorspace`]: srctree/include/drm/drm_connector.h
++    fn colorspace(&self) -> u32 {
++        // SAFETY: `as_raw()` is a valid `drm_connector_state`.
++        unsafe { (*self.as_raw()).colorspace }
++    }
++
++    /// The electro-optical transfer function from the `HDR_OUTPUT_METADATA` blob, or [`None`] if
++    /// userspace has not set one.
++    ///
++    /// The value is one of the `HDMI_EOTF_*` constants; `HDMI_EOTF_SMPTE_ST2084` is what a
++    /// compositor sets when it drives the output in PQ. This is deliberately just the one byte:
++    /// the rest of the infoframe is mastering-display metadata for the sink, and a driver that
++    /// only needs to know *which curve the pixels are encoded in* should not have to reason about
++    /// the union's other members or their versioning.
++    ///
++    /// [`struct hdr_output_metadata`]: srctree/include/uapi/drm/drm_mode.h
++    fn hdr_output_eotf(&self) -> Option<u8> {
++        // SAFETY: `as_raw()` is a valid `drm_connector_state`.
++        let blob = unsafe { (*self.as_raw()).hdr_output_metadata };
++        if blob.is_null() {
++            return None;
++        }
++        // SAFETY: a non-null `hdr_output_metadata` blob is valid for the state's lifetime.
++        let (data, length) = unsafe { ((*blob).data, (*blob).length) };
++        // DRM validates the blob length when the property is set, but this is the boundary where
++        // a short blob would become an out-of-bounds read.
++        if data.is_null() || length < core::mem::size_of::<bindings::hdr_output_metadata>() {
++            return None;
++        }
++        // SAFETY: the blob is at least a whole `hdr_output_metadata` and lives as long as the
++        // state. `eotf` is the first byte of the only union member DRM defines.
++        Some(unsafe { (*data.cast::<bindings::hdr_output_metadata>()).__bindgen_anon_1.hdmi_metadata_type1.eotf })
++    }
+ }
+ impl<T: AsRawConnectorState> RawConnectorState for T {}
+ 

@@ -130,9 +130,20 @@ only and yields no `.ko` at all.
 [`tools/hardware/`](../tools/hardware/README.md) supports that work:
 
 ```sh
-sudo tools/hardware/vino-cycle.sh      # safe unbind/unload/load/rebind cycle
+sudo tools/hardware/vino-cycle.sh              # safe unbind/unload/load/rebind cycle
 sudo tools/hardware/vino-perf.py --secs 30
+sudo LOGDIR=$HOME tools/hardware/vino-bringup-trials.sh 5   # count cold bring-ups
 ```
+
+⛔ **One trial proves nothing on this dock.** A build confirmed working has come up dark an hour
+later, and a bisect built on one observation per build was contradicted outright by two later ones.
+`vino-bringup-trials.sh` exists so a claim about bring-up is always a count; it stood at 8 in 10 at
+the time of writing.
+
+⛔ **And bytes are not "lit".** This dock will accept a complete, correct frame -- byte-perfect
+against DLM, both CRTCs active, tens of MB flowing under forced damage -- and never start its
+downstream pixel clock. The wire answers "is the picture correct"; only a person answers "is there
+a picture". Ask.
 
 ⚠ Never `modprobe -r` while a DRM file is open — it frees the fops under the
 compositor and hangs the machine. `vino-cycle.sh` refuses instead of forcing.

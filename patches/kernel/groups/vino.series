@@ -1,5 +1,6 @@
-0104-drm-vino-add-the-encrypted-control-protocol.patch
-0105-drm-vino-add-the-DL3-video-codec-and-stream-setup.patch
-0106-drm-vino-add-the-DRM-KMS-scanout-engine.patch
-0107-drm-vino-add-the-DisplayLink-DL3-USB-display-driver.patch
-0108-docs-gpu-document-the-Vino-driver.patch
+0104-drm-evdi-add-the-Rust-virtual-display-driver.patch
+0105-drm-vino-add-the-encrypted-control-protocol.patch
+0106-drm-vino-add-the-DL3-video-codec-and-stream-setup.patch
+0107-drm-vino-add-the-DRM-KMS-scanout-engine.patch
+0108-drm-vino-add-the-DisplayLink-DL3-USB-display-driver.patch
+0109-docs-gpu-document-the-Vino-driver.patch

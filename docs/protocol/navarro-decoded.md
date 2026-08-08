@@ -56,8 +56,8 @@ working capture:   [marker 14][marker 14][6 x 46-byte slot record]  = 304, no ta
 
 Both are 304 bytes. **In the working capture those fourteen bytes are consumed by a second marker
 at the front** — they are not padding. vino emitted one marker and fourteen CSPRNG bytes, which
-also came to 304, which is exactly how a wrong layout survives a length check. Fixed in
-`0db19e6bb3e4`; the marker count is still not a settled constant and the code says so.
+also came to 304, which is exactly how a wrong layout survives a length check. Fixed; the marker
+count is still not a settled constant and the code says so.
 
 ⇒ The general rule in this section still holds — the TLV chain says where a message ends — but
 "whatever is left is padding" does **not** follow from it. Check the leftover against a capture
@@ -250,6 +250,61 @@ The four DMA formats are named by the helper at `0x62ecb0`, whose arms return pl
 
 Still undecoded: off62 (a `u32` DLM fills from a caller argument, zero in every capture) and the
 `0x0400` base of the sync word — bit 10, the one bit of that byte DLM does not log.
+
+## 2c. Per-head selectors, and the trap in every capture before 2026-08-07
+
+⛔⛔ **`head`, `head + 1` and `1 << head` are the same byte for heads 0 and 1.** Every capture in
+this corpus until 2026-08-07 was taken with DLM's two panels in the **first two sockets**, so none
+of it is evidence for any per-head encoding beyond head 1. Four encodings were read wrong on that
+non-evidence and only separated by recording DLM with a monitor in socket 3.
+
+| message | selector | measured |
+|---|---|---|
+| `id=0x16 sub=0x23` sink engage | **the head, twice** — offset 22 *and* offset 23 | DLM sends `(22=1, 23=1)` and `(22=2, 23=2)` |
+| `id=0x15 sub=0x53` post-EDID capability | **head bitmask** at offset 22 | `2` for head 1, **`4`** for head 2 — a one-based index would send 3 |
+| cursor position/image | **head bitmask** at offset 22 | the original two-entry table `[0x01, 0x02]` is `1 << 0` and `1 << 1` |
+| `ColdTimeline` head numbers | **transcript slots**, not heads | slot 0 is the first head activated, slot 1 the second |
+
+⚠ The dock **acknowledges a mismatched engage** and then simply never enables the downstream sink,
+so nothing on the wire says no. This is the same failure, in the same message, that kept the D6000
+dark for weeks over its offset-23 byte.
+
+## 2d. Output disable and wake
+
+Measured from DLM under a real DPMS-off, confirmed byte-identical on a second window.
+
+**Disable** is two markers per head and then silence — no video, no mode set, no close bracket, and
+nothing for as long as the output stays down:
+
+```
+id=0x16 sub=0x2f  off22=<head>  off23=1
+id=0x16 sub=0x2e  off22=<head>  off23=3
+```
+
+⛔ It is **not** Ridge's close bracket (`2f=0`, `2e=0`), which re-enumerates this dock about two
+seconds later, seven times out of seven. It is the same pair that *opens* a mode-change bracket:
+the stream is held, not torn down. That shape is why guessing never found it.
+
+**Wake** closes that bracket first, then re-probes and re-sets the mode — DLM's wake is a full
+bring-up, roughly 2.5 s:
+
+```
+id=0x16 sub=0x2f  off22=<head>  off23=1
+id=0x16 sub=0x2e  off22=<head>  off23=0
+id=0x16 sub=0x2f  off22=<head>  off23=0
+id=0x16 sub=0x2e  off22=<head>  off23=0
+... then id=0x15 sub=0x20 probe, sub=0x21 fetch, sub=0x23 engage, id=0x48 sub=0x22 set-mode
+```
+
+## 2e. Two connectors on one video endpoint must declare it
+
+`0x08` owns connectors {0, 2} and `0x0a` owns {1, 3}, so any two monitors in sockets one apart share
+an endpoint. **Both mode sets must set offset-42 bit 2** (`Dual NIVO`, §2b) or the dock drives only
+one of the two streams — however correctly they are tagged, and it acknowledges both.
+
+⛔ Not a bandwidth limit. `captures/navarro-pair-ports13-20260802-120220` has **304,356 records at
+`sub=0x0000` and 240,011 at `sub=0x0010`** on endpoint `0x08` with a stream open for each, both lit.
+⚠ Its first 126 MB contains connector 0 *only* — sample the whole file before concluding from it.
 
 ## 3. Video records
 

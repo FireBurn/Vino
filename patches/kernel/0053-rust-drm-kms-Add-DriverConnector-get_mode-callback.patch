@@ -1,0 +1,301 @@
+From db5ebd9a34405149ccdec028112593ede889e3b9 Mon Sep 17 00:00:00 2001
+From: Lyude Paul <lyude@redhat.com>
+Date: Fri, 17 May 2024 18:49:31 -0400
+Subject: [PATCH 053/109] rust: drm/kms: Add DriverConnector::get_mode callback
+
+Next up is filling out some of the basic connector hotplugging callbacks -
+which we'll need for setting up the fbdev helpers for KMS devices. Note
+that connector hotplugging in DRM follows a BFL scheme: pretty much all
+probing is protected under the mighty drm_device->mode_config.lock, which
+of course is a bit counter-intuitive to rust's locking schemes where data
+is always associated with its lock.
+
+Since that lock is embedded in an FFI type and not a rust type, we need to
+introduce our own wrapper type that acts as a lock acquisition for this.
+This brings us to introducing a few new types:
+
+* ModeConfigGuard - the most basic lock guard, as long as this object is
+  alive we are guaranteed to be holding drm_device->mode_config.lock. This
+  object doesn't do much else on its own currently.
+* ConnectorGuard - an object which corresponds to a specific typed DRM
+  connector. This can only be acquired with a ModeConfigGuard, and will be
+  used to allow calling methods that are only safe to call with
+  drm_device->mode_config.lock held. Since it implements
+  Deref<Target=Connector<T>> as well, it can also be used for any other
+  operations that would normally be available on a DRM connector.
+
+And finally, we add the DriverConnector::get_modes() trait method which
+drivers can use to implement the drm_connector_helper_funcs.get_modes
+callback. Note that while we make this trait method mandatory, we only do
+so for the time being since VKMS doesn't do very much with DRM connectors -
+and as such we have no need yet to implement alternative connector probing
+schemes outside of get_modes().
+
+Signed-off-by: Lyude Paul <lyude@redhat.com>
+
+---
+V4:
+* Use &raw const/mut instead of addr_of_*
+V3:
+* Document uses of ManuallyDrop
+* Use addr_of_mut!() instead of &mut
+* Add some missing invariant comments
+
+(cherry picked from commit 4d84d8d16d2127dd9a0a251d5a0568727069d360)
+---
+ rust/bindings/bindings_helper.h  |  1 +
+ rust/kernel/drm/kms.rs           | 96 +++++++++++++++++++++++++++++++-
+ rust/kernel/drm/kms/connector.rs | 62 +++++++++++++++++++--
+ 3 files changed, 153 insertions(+), 6 deletions(-)
+
+diff --git a/rust/bindings/bindings_helper.h b/rust/bindings/bindings_helper.h
+index 599fdd86d3f1..501c83aa5dcb 100644
+--- a/rust/bindings/bindings_helper.h
++++ b/rust/bindings/bindings_helper.h
+@@ -51,6 +51,7 @@
+ #include <drm/drm_gpuvm.h>
+ #include <drm/drm_ioctl.h>
+ #include <drm/drm_plane.h>
++#include <drm/drm_probe_helper.h>
+ #include <kunit/test.h>
+ #include <linux/auxiliary_bus.h>
+ #include <linux/bitmap.h>
+diff --git a/rust/kernel/drm/kms.rs b/rust/kernel/drm/kms.rs
+index 76f54d3f6f53..4ead23fc1ef4 100644
+--- a/rust/kernel/drm/kms.rs
++++ b/rust/kernel/drm/kms.rs
+@@ -8,14 +8,19 @@
+ pub mod plane;
+ 
+ use crate::{
+-    device,
++    container_of, device,
+     drm::{device::Device, driver::Driver, private::Sealed},
+     error::to_result,
+     prelude::*,
++    sync::{Mutex, MutexGuard},
+     types::*,
+ };
+ use bindings;
+-use core::{marker::PhantomData, ops::Deref, ptr::NonNull};
++use core::{
++    marker::PhantomData,
++    ops::Deref,
++    ptr::{self, addr_of_mut, NonNull},
++};
+ 
+ /// The C vtable for a [`Device`].
+ ///
+@@ -221,6 +226,23 @@ pub struct ModeConfigInfo {
+     pub preferred_fourcc: Option<u32>,
+ }
+ 
++impl<T: KmsDriver> Device<T> {
++    /// Retrieve a pointer to the mode_config mutex
++    #[inline]
++    pub(crate) fn mode_config_mutex(&self) -> &Mutex<()> {
++        // SAFETY: This lock is initialized for as long as `Device<T>` is exposed to users
++        unsafe { Mutex::from_raw(addr_of_mut!((*self.as_raw()).mode_config.mutex)) }
++    }
++
++    /// Acquire the [`mode_config.mutex`] for this [`Device`].
++    #[inline]
++    pub fn mode_config_lock(&self) -> ModeConfigGuard<'_, T> {
++        // INVARIANT: We're locking mode_config.mutex, fulfilling our invariant that this lock is
++        // held throughout ModeConfigGuard's lifetime.
++        ModeConfigGuard(self.mode_config_mutex().lock(), PhantomData)
++    }
++}
++
+ /// A modesetting object in DRM.
+ ///
+ /// This is any type of object where the underlying C object contains a [`struct drm_mode_object`].
+@@ -341,3 +363,73 @@ unsafe fn dec_ref(obj: core::ptr::NonNull<Self>) {
+ }
+ 
+ pub(super) use impl_aref_for_mode_object;
++
++/// A mode config guard.
++///
++/// This is an exclusive primitive that represents when [`drm_device.mode_config.mutex`] is held - as
++/// some modesetting operations (particularly ones related to [`connectors`](connector)) are still
++/// protected under this single lock. The lock will be dropped once this object is dropped.
++///
++/// # Invariants
++///
++/// - `self.0` is contained within a [`struct drm_mode_config`], which is contained within a
++///   [`struct drm_device`].
++/// - The [`KmsDriver`] implementation of that [`struct drm_device`] is always `T`.
++/// - This type proves that [`drm_device.mode_config.mutex`] is acquired.
++///
++/// [`struct drm_mode_config`]: (srctree/include/drm/drm_device.h)
++/// [`drm_device.mode_config.mutex`]: (srctree/include/drm/drm_device.h)
++/// [`struct drm_device`]: (srctree/include/drm/drm_device.h)
++pub struct ModeConfigGuard<'a, T: KmsDriver>(MutexGuard<'a, ()>, PhantomData<T>);
++
++impl<'a, T: KmsDriver> ModeConfigGuard<'a, T> {
++    /// Construct a new [`ModeConfigGuard`].
++    ///
++    /// # Safety
++    ///
++    /// The caller must ensure that [`drm_device.mode_config.mutex`] is acquired.
++    ///
++    /// [`drm_device.mode_config.mutex`]: (srctree/include/drm/drm_device.h)
++    pub(crate) unsafe fn new(drm: &'a Device<T>) -> Self {
++        // SAFETY: Our safety contract fulfills the requirements of `MutexGuard::new()`
++        // INVARIANT: And our safety contract ensures that this type proves that
++        // `drm_device.mode_config.mutex` is acquired.
++        Self(
++            unsafe { MutexGuard::new(drm.mode_config_mutex(), ()) },
++            PhantomData,
++        )
++    }
++
++    /// Return the [`Device`] that this [`ModeConfigGuard`] belongs to.
++    pub fn drm_dev(&self) -> &'a Device<T> {
++        // TODO: We should probably consider just adding some sort of as_raw() function to locks for
++        // situations like this. For now, just do this by hand.
++        // LYUDE SHOULD HAVE DONE THIS BEFORE PATCH SUBMISSION
++        // IF SHE DIDN'T, BUG HER.
++        let lock: *mut bindings::mutex = ptr::from_ref(self.0.lock_ref()).cast_mut().cast();
++
++        // SAFETY:
++        // - `self` is embedded within a `drm_mode_config` via our type invariants
++        // - `self.0.lock` has an equivalent data type to `mutex` via its type invariants.
++        let mode_config = unsafe { container_of!(lock, bindings::drm_mode_config, mutex) };
++
++        // SAFETY: And that `drm_mode_config` lives in a `drm_device` via type invariants.
++        unsafe {
++            Device::from_raw(container_of!(
++                mode_config,
++                bindings::drm_device,
++                mode_config
++            ))
++        }
++    }
++
++    /// Assert that the given device is the owner of this mode config guard.
++    ///
++    /// # Panics
++    ///
++    /// Panics if `dev` is different from the owning device for this mode config guard.
++    #[inline]
++    pub(crate) fn assert_owner(&self, dev: &Device<T>) {
++        assert!(ptr::eq(self.drm_dev(), dev));
++    }
++}
+diff --git a/rust/kernel/drm/kms/connector.rs b/rust/kernel/drm/kms/connector.rs
+index 0fecda8d79ab..035f4c560bf7 100644
+--- a/rust/kernel/drm/kms/connector.rs
++++ b/rust/kernel/drm/kms/connector.rs
+@@ -4,7 +4,7 @@
+ //!
+ //! C header: [`include/drm/drm_connector.h`](srctree/include/drm/drm_connector.h)
+ 
+-use super::{encoder::*, KmsDriver, ModeObject, Sealed};
++use super::{encoder::*, KmsDriver, ModeConfigGuard, ModeObject, Sealed};
+ use crate::{
+     alloc::KBox,
+     bindings,
+@@ -15,7 +15,7 @@
+ };
+ use core::{
+     marker::*,
+-    mem,
++    mem::{self, ManuallyDrop},
+     ops::*,
+     ptr::null_mut,
+     stringify,
+@@ -103,7 +103,7 @@ pub trait DriverConnector: Send + Sync + Sized {
+             destroy: Some(connector_destroy_callback::<Self>),
+             force: None,
+             detect: None,
+-            fill_modes: None,
++            fill_modes: Some(bindings::drm_helper_probe_single_connector_modes),
+             debugfs_init: None,
+             oob_hotplug_event: None,
+             atomic_duplicate_state: Some(atomic_duplicate_state_callback::<Self::State>),
+@@ -111,7 +111,7 @@ pub trait DriverConnector: Send + Sync + Sized {
+         helper_funcs: bindings::drm_connector_helper_funcs {
+             mode_valid: None,
+             atomic_check: None,
+-            get_modes: None,
++            get_modes: Some(get_modes_callback::<Self>),
+             detect_ctx: None,
+             enable_hpd: None,
+             disable_hpd: None,
+@@ -142,6 +142,12 @@ pub trait DriverConnector: Send + Sync + Sized {
+     ///
+     /// Drivers may use this to instantiate their [`DriverConnector`] object.
+     fn new(device: &Device<Self::Driver>, args: Self::Args) -> impl PinInit<Self, Error>;
++
++    /// Retrieve a list of available display modes for this [`Connector`].
++    fn get_modes<'a>(
++        connector: ConnectorGuard<'a, Self>,
++        guard: &ModeConfigGuard<'a, Self::Driver>,
++    ) -> i32;
+ }
+ 
+ /// The generated C vtable for a [`DriverConnector`].
+@@ -190,6 +196,21 @@ fn deref(&self) -> &Self::Target {
+     }
+ }
+ 
++impl<T: DriverConnector> Connector<T> {
++    /// Acquire a [`ConnectorGuard`] for this connector from a [`ModeConfigGuard`].
++    ///
++    /// This verifies using the provided reference that the given guard is actually for the same
++    /// device as this connector's parent.
++    ///
++    /// # Panics
++    ///
++    /// Panics if `guard` is not a [`ModeConfigGuard`] for this connector's parent [`Device`].
++    pub fn guard<'a>(&'a self, guard: &ModeConfigGuard<'a, T::Driver>) -> ConnectorGuard<'a, T> {
++        guard.assert_owner(self.drm_dev());
++        ConnectorGuard(self)
++    }
++}
++
+ /// A trait implemented by any type that acts as a [`struct drm_connector`] interface.
+ ///
+ /// This is implemented internally by DRM.
+@@ -388,6 +409,39 @@ pub fn attach_encoder(&self, encoder: &impl AsRawEncoder) -> Result {
+     drop(unsafe { KBox::from_raw(connector as *mut Connector<T>) });
+ }
+ 
++unsafe extern "C" fn get_modes_callback<T: DriverConnector>(
++    connector: *mut bindings::drm_connector,
++) -> core::ffi::c_int {
++    // SAFETY: This is safe via `DriverConnector`s type invariants.
++    let connector = unsafe { Connector::<T>::from_raw(connector) };
++
++    // SAFETY: This FFI callback is only called while `mode_config.lock` is held
++    // We use ManuallyDrop here to prevent the lock from being released after the callback
++    // completes, as that should be handled by DRM.
++    let guard = ManuallyDrop::new(unsafe { ModeConfigGuard::new(connector.drm_dev()) });
++
++    T::get_modes(connector.guard(&guard), &guard)
++}
++
++/// A privileged [`Connector`] obtained while holding a [`ModeConfigGuard`].
++///
++/// This provides access to various methods for [`Connector`] that must happen under lock, such as
++/// setting resolution preferences and adding display modes.
++///
++/// # Invariants
++///
++/// Shares the invariants of [`ModeConfigGuard`].
++#[derive(Copy, Clone)]
++pub struct ConnectorGuard<'a, T: DriverConnector>(&'a Connector<T>);
++
++impl<T: DriverConnector> Deref for ConnectorGuard<'_, T> {
++    type Target = Connector<T>;
++
++    fn deref(&self) -> &Self::Target {
++        self.0
++    }
++}
++
+ /// A trait implemented by any type which can produce a reference to a
+ /// [`struct drm_connector_state`].
+ ///

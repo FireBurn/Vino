@@ -1,7 +1,7 @@
 From ca4e310832958fc05b889177010fd6f19505860a Mon Sep 17 00:00:00 2001
 From: Boqun Feng <boqun.feng@gmail.com>
 Date: Tue, 26 May 2026 08:21:43 -0700
-Subject: [PATCH 007/108] locking: Switch to _irq_{disable,enable}() variants
+Subject: [PATCH 007/109] locking: Switch to _irq_{disable,enable}() variants
  in cleanup guards
 
 The semantics of various irq disabling guards match what

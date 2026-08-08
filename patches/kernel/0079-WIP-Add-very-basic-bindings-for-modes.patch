@@ -1,0 +1,142 @@
+From 915dabc673570954b935483564920e19586eff60 Mon Sep 17 00:00:00 2001
+From: Lyude Paul <lyude@redhat.com>
+Date: Wed, 29 Oct 2025 15:31:39 -0400
+Subject: [PATCH 079/109] WIP: Add very basic bindings for modes
+
+We ended up needing this to do some calculations in the vblank portion of
+rvkms, so - write some very very basic bindings for DisplayMode.
+
+(cherry picked from commit 306a17b52888a0eeadfa74db5af887ec76a64001)
+---
+ rust/kernel/drm/kms.rs        |  1 +
+ rust/kernel/drm/kms/modes.rs  | 76 +++++++++++++++++++++++++++++++++++
+ rust/kernel/drm/kms/vblank.rs | 14 ++++++-
+ 3 files changed, 90 insertions(+), 1 deletion(-)
+ create mode 100644 rust/kernel/drm/kms/modes.rs
+
+diff --git a/rust/kernel/drm/kms.rs b/rust/kernel/drm/kms.rs
+index a3dd07b47304..820b0df265ff 100644
+--- a/rust/kernel/drm/kms.rs
++++ b/rust/kernel/drm/kms.rs
+@@ -7,6 +7,7 @@
+ pub mod crtc;
+ pub mod encoder;
+ pub mod framebuffer;
++pub mod modes;
+ pub mod plane;
+ pub mod vblank;
+ 
+diff --git a/rust/kernel/drm/kms/modes.rs b/rust/kernel/drm/kms/modes.rs
+new file mode 100644
+index 000000000000..0f29a9c00062
+--- /dev/null
++++ b/rust/kernel/drm/kms/modes.rs
+@@ -0,0 +1,76 @@
++// SPDX-License-Identifier: GPL-2.0
++use bindings;
++
++use crate::{prelude::*, types::Opaque};
++
++/// DRM kernel-internal display mode structure.
++///
++/// This structure contains various resolution and timing information for a given display mode in
++/// DRM.
++///
++/// # Invariants
++///
++/// - The data layout of this structure is guaranteed to be equivalent to that of `struct
++///   drm_display_mode`.
++/// - We ensure through our bindings that rust's data aliasing rules are maintained, ensuring it is
++///   safe to read any fields inside of `self.inner`.
++#[repr(transparent)]
++pub struct DisplayMode {
++    inner: Opaque<bindings::drm_display_mode>,
++}
++
++// SAFETY: Our bindings are thread-safe via our type invariants.
++unsafe impl Send for DisplayMode {}
++// SAFETY: Our bindings are thread-safe via our type invariants.
++unsafe impl Sync for DisplayMode {}
++
++impl DisplayMode {
++    /// Convert a raw pointer to a `struct drm_display_mode` into an immutable [`DisplayMode`] ref.
++    ///
++    /// # SAFETY
++    ///
++    /// - The caller guarantees that `self_ptr` points to a valid initialized `struct
++    ///   drm_display_mode`.
++    /// - The caller must ensure that rust's data aliasing rules will not be broken for the lifetime
++    ///   of `'a`, e.g. no mutable references may exist while immutable references exist to Self.
++    #[inline]
++    pub(crate) unsafe fn as_ref<'a>(self_ptr: *const bindings::drm_display_mode) -> &'a Self {
++        // SAFETY: The pointer is valid via our safety contract, and the data layout of this struct
++        // is equivalent to `Self` via our type invariants.
++        unsafe { &*self_ptr.cast() }
++    }
++
++    /// Return a raw pointer to the `struct drm_display_mode` contained within this [`DisplayMode`].
++    #[inline]
++    pub(crate) fn as_raw(&self) -> *const bindings::drm_display_mode {
++        self.inner.get().cast_const()
++    }
++
++    /// Retrieve the pixel clock for the adjusted display mode in kHz.
++    #[inline]
++    pub fn crtc_clock(&self) -> i32 {
++        // SAFETY: Reading these fields is safe via our type invariants
++        unsafe { (*self.as_raw()).crtc_clock }
++    }
++
++    /// Retrieve the start of the vertical sync period for the adjusted display mode.
++    #[inline]
++    pub fn crtc_vblank_start(&self) -> u16 {
++        unsafe { (*self.as_raw()).crtc_vblank_start }
++    }
++
++    /// Retrieve the end of the vertical sync period for the adjusted display mode.
++    #[inline]
++    pub fn crtc_vblank_end(&self) -> u16 {
++        // SAFETY: Reading these fields is safe via our type invariants
++        unsafe { (*self.as_raw()).crtc_vblank_end }
++    }
++
++    /// Retrieve the number of vertical scanlines for a full scanout frame in this adjusted display
++    /// mode.
++    #[inline]
++    pub fn crtc_vtotal(&self) -> u16 {
++        // SAFETY: Reading these fields is safe via our type invariants
++        unsafe { (*self.as_raw()).crtc_vtotal }
++    }
++}
+diff --git a/rust/kernel/drm/kms/vblank.rs b/rust/kernel/drm/kms/vblank.rs
+index c936c12904ce..dc34e02e8ccb 100644
+--- a/rust/kernel/drm/kms/vblank.rs
++++ b/rust/kernel/drm/kms/vblank.rs
+@@ -4,7 +4,7 @@
+ //!
+ //! C header: [`include/drm/drm_vblank.h`](srcfree/include/drm/drm_vblank.h)
+ 
+-use super::{crtc::*, ModeObject};
++use super::{crtc::*, ModeObject, modes::*, Sealed};
+ use bindings;
+ use core::{
+     marker::*,
+@@ -428,6 +428,18 @@ pub fn frame_duration(&self) -> i32 {
+         // SAFETY: We hold the appropriate lock for this read via our type invariants.
+         unsafe { *self.as_raw() }.framedur_ns
+     }
++
++    /// Return the vblank core's cached copy of the currently set display mode.
++    ///
++    /// If the display is disabled, this will return `None`.
++    pub fn hwmode(&self) -> Option<&DisplayMode> {
++        // SAFETY: We hold the appropriate lock for this read via our type invariants.
++        let ptr = unsafe { &raw const (*self.as_raw()).hwmode };
++
++        // SAFETY: We check here if the cached DisplayMode is Null, which means the only other
++        // possibility is that the pointer points to a valid initialized drm_display_mode.
++        (!ptr.is_null()).then(|| unsafe { DisplayMode::as_ref(ptr) })
++    }
+ }
+ 
+ impl<T: VblankDriverCrtc> Deref for VblankGuard<'_, T> {

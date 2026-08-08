@@ -1,0 +1,126 @@
+From 2ff36325b702d5a9e0d82ce8f6fdd5fcb60ba51a Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Mon, 27 Jul 2026 21:37:16 +0100
+Subject: [PATCH 100/109] rust: drm: expose mode flags and CTA VIC matching
+
+Let Rust DRM drivers construct modes with signal flags, inspect those
+flags, and use the DRM EDID helper to identify the matching CTA-861
+Video Identification Code. This keeps drivers from duplicating the
+canonical HDMI mode table.
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/kernel/drm/kms/modes.rs | 73 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 73 insertions(+)
+
+diff --git a/rust/kernel/drm/kms/modes.rs b/rust/kernel/drm/kms/modes.rs
+index b48a02edfc13..584f20456c07 100644
+--- a/rust/kernel/drm/kms/modes.rs
++++ b/rust/kernel/drm/kms/modes.rs
+@@ -11,6 +11,60 @@
+     types::Opaque,
+ };
+ 
++/// Flags describing signal polarity and scan format for a display mode.
++///
++/// These correspond to the `DRM_MODE_FLAG_*` values accepted by the DRM mode helpers.
++#[derive(Clone, Copy, Default, PartialEq, Eq)]
++pub struct ModeFlags(u32);
++
++impl ModeFlags {
++    /// Horizontal sync is active high.
++    pub const PHSYNC: Self = Self(bindings::DRM_MODE_FLAG_PHSYNC);
++    /// Horizontal sync is active low.
++    pub const NHSYNC: Self = Self(bindings::DRM_MODE_FLAG_NHSYNC);
++    /// Vertical sync is active high.
++    pub const PVSYNC: Self = Self(bindings::DRM_MODE_FLAG_PVSYNC);
++    /// Vertical sync is active low.
++    pub const NVSYNC: Self = Self(bindings::DRM_MODE_FLAG_NVSYNC);
++    /// The mode is interlaced.
++    pub const INTERLACE: Self = Self(bindings::DRM_MODE_FLAG_INTERLACE);
++    /// The mode uses doublescan.
++    pub const DBLSCAN: Self = Self(bindings::DRM_MODE_FLAG_DBLSCAN);
++    /// The mode uses composite sync.
++    pub const CSYNC: Self = Self(bindings::DRM_MODE_FLAG_CSYNC);
++    /// Composite sync is active high.
++    pub const PCSYNC: Self = Self(bindings::DRM_MODE_FLAG_PCSYNC);
++    /// Composite sync is active low.
++    pub const NCSYNC: Self = Self(bindings::DRM_MODE_FLAG_NCSYNC);
++    /// The mode carries a horizontal skew value.
++    pub const HSKEW: Self = Self(bindings::DRM_MODE_FLAG_HSKEW);
++    /// The mode is double-clocked.
++    pub const DBLCLK: Self = Self(bindings::DRM_MODE_FLAG_DBLCLK);
++    /// The mode uses a half-rate clock.
++    pub const CLKDIV2: Self = Self(bindings::DRM_MODE_FLAG_CLKDIV2);
++
++    /// Return whether all flags in `other` are set.
++    pub fn contains(self, other: Self) -> bool {
++        self & other == other
++    }
++}
++
++impl core::ops::BitOr for ModeFlags {
++    type Output = Self;
++
++    fn bitor(self, rhs: Self) -> Self::Output {
++        Self(self.0 | rhs.0)
++    }
++}
++
++impl core::ops::BitAnd for ModeFlags {
++    type Output = Self;
++
++    fn bitand(self, rhs: Self) -> Self::Output {
++        Self(self.0 & rhs.0)
++    }
++}
++
+ /// The essential timing fields of a display mode.
+ #[derive(Clone, Copy)]
+ pub struct ModeTimings {
+@@ -32,6 +86,8 @@ pub struct ModeTimings {
+     pub vsync_end: u16,
+     /// Total vertical lines including blanking.
+     pub vtotal: u16,
++    /// Signal polarity and scan-format flags.
++    pub flags: ModeFlags,
+ }
+ 
+ /// DRM kernel-internal display mode structure.
+@@ -84,6 +140,7 @@ pub fn from_timings(t: ModeTimings) -> Result<Self> {
+         mode.vsync_start = t.vsync_start;
+         mode.vsync_end = t.vsync_end;
+         mode.vtotal = t.vtotal;
++        mode.flags = t.flags.0;
+ 
+         Ok(Self {
+             inner: Opaque::new(mode),
+@@ -202,10 +259,26 @@ pub fn clock(&self) -> i32 {
+         unsafe { (*self.as_raw()).clock }
+     }
+ 
++    /// Return the mode's signal-polarity and scan-format flags.
++    #[inline]
++    pub fn flags(&self) -> ModeFlags {
++        // SAFETY: Reading this field is safe via the type invariants.
++        ModeFlags(unsafe { (*self.as_raw()).flags })
++    }
++
+     /// Return the refresh rate in Hz as computed by DRM.
+     #[inline]
+     pub fn vrefresh(&self) -> i32 {
+         // SAFETY: `drm_mode_vrefresh` only reads this valid display mode.
+         unsafe { bindings::drm_mode_vrefresh(self.as_raw()) }
+     }
++
++    /// Return the CTA-861 Video Identification Code matching this mode.
++    ///
++    /// A return value of zero means the mode is not one of the CTA-861 modes known to DRM.
++    #[inline]
++    pub fn cea_vic(&self) -> u8 {
++        // SAFETY: `drm_match_cea_mode` only reads this valid display mode.
++        unsafe { bindings::drm_match_cea_mode(self.as_raw()) }
++    }
+ }

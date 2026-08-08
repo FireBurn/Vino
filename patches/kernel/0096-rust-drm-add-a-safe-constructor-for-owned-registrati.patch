@@ -1,0 +1,77 @@
+From 909d9ad1f8a26c6457e7a9b06a254a161fe9f9da Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Mon, 27 Jul 2026 17:13:59 +0100
+Subject: [PATCH 096/109] rust: drm: add a safe constructor for owned
+ registration data
+
+drm: add a safe constructor for owned registration data
+
+A DRM registration whose associated data is 'static cannot outlive
+any references held by that data. Add a safe constructor for this
+common case so drivers do not have to promise manually that their
+registration will never be forgotten.
+
+Keep the existing unsafe constructor for registration data which
+genuinely borrows from the bus binding. Convert the Vino and revdi
+users, whose registration data is ().
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/kernel/drm/driver.rs | 28 ++++++++++++++++++++++++++--
+ 1 file changed, 26 insertions(+), 2 deletions(-)
+
+diff --git a/rust/kernel/drm/driver.rs b/rust/kernel/drm/driver.rs
+index a35bfcdb8003..277ccae45a16 100644
+--- a/rust/kernel/drm/driver.rs
++++ b/rust/kernel/drm/driver.rs
+@@ -175,7 +175,8 @@ pub struct Registration<'a, T: Driver> {
+ }
+ 
+ impl<'a, T: Driver> Registration<'a, T> {
+-    /// Register a new [`UnregisteredDevice`](drm::UnregisteredDevice) with userspace.
++    /// Registers a new [`UnregisteredDevice`](drm::UnregisteredDevice) with borrowed
++    /// registration data.
+     ///
+     /// # Safety
+     ///
+@@ -183,7 +184,7 @@ impl<'a, T: Driver> Registration<'a, T> {
+     /// [`Drop`] implementation from running, since the registration data may contain borrowed
+     /// references that become invalid after `'a` ends.
+     pub unsafe fn new<E>(
+-        dev: &'a device::Device<device::Bound>,
++        dev: &device::Device<device::Bound>,
+         drm: drm::UnregisteredDevice<T>,
+         reg_data: impl PinInit<T::RegistrationData<'a>, E>,
+         flags: usize,
+@@ -249,6 +250,29 @@ pub fn device(&self) -> &drm::Device<T> {
+     }
+ }
+ 
++impl<T: Driver> Registration<'static, T> {
++    /// Registers a new [`UnregisteredDevice`](drm::UnregisteredDevice) with owned registration
++    /// data.
++    ///
++    /// Unlike [`Registration::new`], this constructor is safe because its registration
++    /// data cannot contain non-static references. Forgetting the returned registration can leak
++    /// the DRM device and its parent reference, but cannot leave a live registration referring to
++    /// expired data.
++    pub fn new_static<E>(
++        dev: &device::Device<device::Bound>,
++        drm: drm::UnregisteredDevice<T>,
++        reg_data: impl PinInit<T::RegistrationData<'static>, E>,
++        flags: usize,
++    ) -> Result<Self>
++    where
++        Error: From<E>,
++    {
++        // SAFETY: `RegistrationData<'static>` cannot borrow data that expires while a forgotten
++        // registration remains accessible.
++        unsafe { Self::new(dev, drm, reg_data, flags) }
++    }
++}
++
+ // SAFETY: `Registration` doesn't offer any methods or access to fields when shared between
+ // threads, hence it's safe to share it.
+ unsafe impl<T: Driver> Sync for Registration<'_, T> {}
