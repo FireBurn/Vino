@@ -36,6 +36,19 @@ asuser() {
 }
 dockouts() { for c in /sys/class/drm/card*-DP-*/; do [ "$(cat "$c/status" 2>/dev/null)" = connected ] || continue; b=$(basename "$c"); echo "${b#card*-}"; done; }
 
+# ⛔ De-authorising is a two-step edit to global state, and a trial spends four seconds parked in
+# the middle of it. Interrupt the script there -- Ctrl-C, a kill, a timeout -- and the dock is left
+# switched off at the USB level with no device node to switch back on through, which looks exactly
+# like the dock having died. Always restore on the way out.
+restore_dock() {
+  for d in /sys/bus/usb/devices/*/; do
+    [ "$(cat "$d/idProduct" 2>/dev/null)" = 7000 ] || continue
+    [ "$(cat "$d/authorized" 2>/dev/null)" = 0 ] && { echo 1 > "$d/authorized"; echo "restored $d"; }
+  done
+}
+trap 'restore_dock; exit 130' INT TERM
+trap restore_dock EXIT
+
 pass=0
 for t in $(seq 1 "$TRIALS"); do
   printf '\n=== trial %d/%d\n' "$t" "$TRIALS"
