@@ -4,9 +4,13 @@ Single current handover. Replaces the 2026-08-04 one entirely: everything below 
 true or a dead end worth not repeating. Anything the old file said that is not repeated here was
 done, superseded, or retracted.
 
-Last updated 2026-08-07. ⭐ Read the **2026-08-07 (third session)** block at the bottom first:
-the far sockets work now, and the reason they did not invalidates every per-head encoding in the
+Last updated 2026-08-08. ⭐ Read the **2026-08-07 (third session)** block at the bottom first: every
+socket pairing works now, and the reason they did not invalidates every per-head encoding in the
 corpus.
+
+The session's work is six patches on `linux:vino`, in this order: socket-numbered logging, the cold
+timeline indexed by slot (with the engage's second selector byte), the post-EDID and cursor
+bitmasks, `Dual NIVO`, the blank/wake sequence, and keeping a blanked head's connector up.
 
 ---
 
@@ -24,7 +28,7 @@ corpus.
 | D6000 (Ridge) | untouched this session |
 | Kernel selftests | ✅ `pass:60 fail:0` |
 
-Module as left installed: `895c431249d1426f`.
+Module as left installed: `2b55001b6c4027f9`.
 
 ### What changed on 2026-08-06 (second session)
 
