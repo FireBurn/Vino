@@ -1,4 +1,4 @@
-From 7792d6a67b8dbeb4f6c71f6ecece19744a9c299e Mon Sep 17 00:00:00 2001
+From f3cb9772e8b7208f18cd0d2e9ca5620340da5394 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Fri, 6 Sep 2024 13:19:35 -0400
 Subject: [PATCH 078/114] rust: drm/kms: Add VblankSupport

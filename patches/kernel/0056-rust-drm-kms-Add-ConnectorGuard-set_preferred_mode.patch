@@ -1,4 +1,4 @@
-From 7cbfb16996bdaa48bb910ea089bcaeacd7acdcb2 Mon Sep 17 00:00:00 2001
+From 32c96d78bf7ccc498934fdeb1c7fa39ff76b4d0f Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Wed, 22 May 2024 18:53:52 -0400
 Subject: [PATCH 056/114] rust: drm/kms: Add ConnectorGuard::set_preferred_mode

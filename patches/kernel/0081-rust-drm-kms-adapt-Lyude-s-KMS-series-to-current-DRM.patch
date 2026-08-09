@@ -1,4 +1,4 @@
-From c4dd2f0b56fec6635df092753c0d5811b54871f9 Mon Sep 17 00:00:00 2001
+From 6bf4f6b34cd8aa549f718f62be03a1c2da59c143 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:34:28 +0100
 Subject: [PATCH 081/114] rust: drm: kms: adapt Lyude's KMS series to current

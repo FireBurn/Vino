@@ -1,20 +1,18 @@
-From fafc0fb0f8d0d40ec7d60e18c019295f4a0d6e0a Mon Sep 17 00:00:00 2001
+From eeb6837f55c844427a2695e38ef069cb04e6a60f Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 11:41:57 +0100
 Subject: [PATCH 113/114] drm/vino: let userspace push a firmware image to the
  dock
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
 
-The automatic path only writes an image that is strictly newer, which is the
-right default and also refuses the two things a person sometimes needs: a
-re-flash of the version already running, and a downgrade.
+The automatic path only writes an image that is strictly newer, which is
+the right default and also refuses the two things a person sometimes needs:
+a re-flash of the version already running, and a downgrade.
 
 Publish /sys/class/firmware/vino-dock on the dock's DFU interface so an
-image can be written deliberately, whatever version it carries. Three checks
-stand in front of it, because the DFU interface does not support upload --
-the running image cannot be read back and there is nothing to restore from:
+image can be written deliberately, whatever version it carries. Three
+checks stand in front of it, because the DFU interface does not support
+upload -- the running image cannot be read back and there is nothing to
+restore from:
 
   - the ELLA container magic, so a mistyped path is not written at all;
   - the package's own RD tag must name this dock's family, which is what
@@ -23,11 +21,12 @@ the running image cannot be read back and there is nothing to restore from:
     package says RidgeDoc -- so both spellings map to one Family;
   - the version is parsed and logged but deliberately not enforced.
 
-⚠ Only NavaDock has been read off real hardware; the identity spellings for
+Only NavaDock has been read off real hardware; the identity spellings for
 Ridge, Ella and Firefly come from the vendor's platform names and are
 unverified.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/Kconfig     |   1 +
  drivers/gpu/drm/vino/firmware.rs | 113 +++++++++++++++++++++++++++++++
@@ -186,7 +185,7 @@ index 019f8af01279..2522189b2d24 100644
 +    }
 +}
 diff --git a/drivers/gpu/drm/vino/vino.rs b/drivers/gpu/drm/vino/vino.rs
-index 5ff9272c1c78..3b522c37aa56 100644
+index 6b521cd3076c..d65af52a5eca 100644
 --- a/drivers/gpu/drm/vino/vino.rs
 +++ b/drivers/gpu/drm/vino/vino.rs
 @@ -310,6 +310,11 @@ struct VinoBoundData {

@@ -1,4 +1,4 @@
-From cbe7d7e7155f5e574dd59ca2ea62878d68fcf98f Mon Sep 17 00:00:00 2001
+From 4aea44c883aff93464c297595cb31292ad3419b5 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:54:08 +0100
 Subject: [PATCH 087/114] rust: drm: add typed RAII event channels

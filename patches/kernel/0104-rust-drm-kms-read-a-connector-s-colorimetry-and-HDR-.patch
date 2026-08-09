@@ -1,4 +1,4 @@
-From 46304bd07b95786e1ebe5f52949a1afa0dd39544 Mon Sep 17 00:00:00 2001
+From 3a3ee4ef5b471d70b864f9d8a6b4999405ac0507 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 03:40:28 +0100
 Subject: [PATCH 104/114] rust: drm: kms: read a connector's colorimetry and
@@ -11,12 +11,13 @@ connector state routed to a CRTC from the CRTC's own atomic callback.
 Add ConnectorState::hdr_output_eotf() and
 AtomicState::new_connector_state_for_crtc().
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/kernel/drm/kms/atomic.rs    | 104 +++++++++++++++++++++++++++++++
- rust/kernel/drm/kms/connector.rs |  44 +++++++++++++
+ rust/kernel/drm/kms/connector.rs |  77 +++++++++++++++++++++++
  rust/kernel/drm/kms/crtc.rs      |  13 ++++
- 3 files changed, 161 insertions(+)
+ 3 files changed, 194 insertions(+)
 
 diff --git a/rust/kernel/drm/kms/atomic.rs b/rust/kernel/drm/kms/atomic.rs
 index 18dc136940f3..f9f91edc89c3 100644
@@ -141,10 +142,10 @@ index 18dc136940f3..f9f91edc89c3 100644
      /// the atomic state being composed.
      ///
 diff --git a/rust/kernel/drm/kms/connector.rs b/rust/kernel/drm/kms/connector.rs
-index 952c8e02777b..0f2845800aea 100644
+index 952c8e02777b..231857cc1f20 100644
 --- a/rust/kernel/drm/kms/connector.rs
 +++ b/rust/kernel/drm/kms/connector.rs
-@@ -922,6 +922,50 @@ fn connector(&self) -> &Self::Connector {
+@@ -922,7 +922,84 @@ fn connector(&self) -> &Self::Connector {
          // `self.state.connector` points to a valid instance of a `Connector<T>`
          unsafe { Self::Connector::from_raw((*self.as_raw()).connector) }
      }
@@ -164,14 +165,12 @@ index 952c8e02777b..0f2845800aea 100644
 +    /// The electro-optical transfer function from the `HDR_OUTPUT_METADATA` blob, or [`None`] if
 +    /// userspace has not set one.
 +    ///
-+    /// The value is one of the `HDMI_EOTF_*` constants; `HDMI_EOTF_SMPTE_ST2084` is what a
-+    /// compositor sets when it drives the output in PQ. This is deliberately just the one byte:
-+    /// the rest of the infoframe is mastering-display metadata for the sink, and a driver that
-+    /// only needs to know *which curve the pixels are encoded in* should not have to reason about
-+    /// the union's other members or their versioning.
++    /// This is deliberately just the curve: the rest of the infoframe is mastering-display
++    /// metadata for the sink, and a driver that only needs to know *which curve the pixels are
++    /// encoded in* should not have to reason about the union's other members or their versioning.
 +    ///
 +    /// [`struct hdr_output_metadata`]: srctree/include/uapi/drm/drm_mode.h
-+    fn hdr_output_eotf(&self) -> Option<u8> {
++    fn hdr_output_eotf(&self) -> Option<Eotf> {
 +        let blob = self.as_raw().hdr_output_metadata;
 +        if blob.is_null() {
 +            return None;
@@ -185,16 +184,52 @@ index 952c8e02777b..0f2845800aea 100644
 +        }
 +        // SAFETY: the blob is at least a whole `hdr_output_metadata` and lives as long as the
 +        // state. `eotf` is the first byte of the only union member DRM defines.
-+        Some(unsafe {
++        let eotf = unsafe {
 +            (*data.cast::<bindings::hdr_output_metadata>())
 +                .__bindgen_anon_1
 +                .hdmi_metadata_type1
 +                .eotf
-+        })
++        };
++        Some(Eotf::from_raw(eotf))
 +    }
++}
++/// An electro-optical transfer function named by a `HDR_OUTPUT_METADATA` blob.
++///
++/// Mirrors the `HDMI_EOTF_*` values in [`enum hdmi_eotf`]. A driver matches on this rather than
++/// comparing against the raw constants, so the one place that has to agree with the C enum is
++/// [`Eotf::from_raw`].
++///
++/// [`enum hdmi_eotf`]: srctree/include/linux/hdmi.h
++#[derive(Copy, Clone, Debug, PartialEq, Eq)]
++pub enum Eotf {
++    /// Ordinary SDR gamma.
++    TraditionalGammaSdr,
++    /// The traditional HDR gamma curve.
++    TraditionalGammaHdr,
++    /// SMPTE ST 2084, i.e. PQ. What a compositor sets to drive an output in HDR10.
++    SmpteSt2084,
++    /// BT.2100 hybrid log-gamma.
++    Bt2100Hlg,
++    /// A value this kernel does not name, carried through rather than discarded.
++    Other(u8),
  }
++
++impl Eotf {
++    /// Classify the raw `eotf` byte from an infoframe.
++    fn from_raw(eotf: u8) -> Self {
++        match u32::from(eotf) {
++            bindings::hdmi_eotf_HDMI_EOTF_TRADITIONAL_GAMMA_SDR => Self::TraditionalGammaSdr,
++            bindings::hdmi_eotf_HDMI_EOTF_TRADITIONAL_GAMMA_HDR => Self::TraditionalGammaHdr,
++            bindings::hdmi_eotf_HDMI_EOTF_SMPTE_ST2084 => Self::SmpteSt2084,
++            bindings::hdmi_eotf_HDMI_EOTF_BT_2100_HLG => Self::Bt2100Hlg,
++            _ => Self::Other(eotf),
++        }
++    }
++}
++
  impl<T: AsRawConnectorState> RawConnectorState for T {}
  
+ /// The main interface for a [`struct drm_connector_state`].
 diff --git a/rust/kernel/drm/kms/crtc.rs b/rust/kernel/drm/kms/crtc.rs
 index 9e888c4e2f68..ec01ae0430f7 100644
 --- a/rust/kernel/drm/kms/crtc.rs

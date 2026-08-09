@@ -1,4 +1,4 @@
-From 8cbed1d2165eeb84c5a83093b11ce0709de2344d Mon Sep 17 00:00:00 2001
+From 6327a1c08820429a011910138843e6725531fdc5 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sun, 9 Aug 2026 19:21:53 +0100
 Subject: [PATCH 114/114] drm/vino: bind the display function, and place docks
@@ -6,9 +6,9 @@ Subject: [PATCH 114/114] drm/vino: bind the display function, and place docks
 
 The driver matched two product IDs and took everything else -- endpoints,
 strip geometry, connector count, link limits -- from a table keyed by those
-IDs. That cannot describe hardware nobody has tested, and a dock missing from
-the table is not merely unsupported but invisible: it is never offered to the
-driver at all.
+IDs. That cannot describe hardware nobody has tested, and a dock missing
+from the table is not merely unsupported but invisible: it is never offered
+to the driver at all.
 
 Bind the *function* instead. DisplayLink's own udev rules match vendor 17e9
 and then trigger on the interface, with no product test anywhere; reverse
@@ -19,30 +19,30 @@ subclass 0 / protocol 0x03 plus the DFU interface offers every DisplayLink
 dock to the driver, including ones that do not exist yet.
 
 What makes that acceptable is that the dock can be asked what it is. The
-identity descriptor read for the firmware check names the platform, so use it
-to select the profile too, and decline by name when it names a family this
-driver cannot drive -- a guessed profile is worse than no driver, because the
-way a dock rejects a guess is to reset itself. A device whose identity cannot
-be *read* falls back to a small product-ID quirk table, so a transient
-descriptor failure does not cost a known dock its displays.
+identity descriptor read for the firmware check names the platform, so use
+it to select the profile too, and decline by name when it names a family
+this driver cannot drive -- a guessed profile is worse than no driver,
+because the way a dock rejects a guess is to reset itself. A device whose
+identity cannot be *read* falls back to a small product-ID quirk table, so
+a transient descriptor failure does not cost a known dock its displays.
 
 The connector count now follows the video endpoints the device actually
 exposes, bounded by the profile, so a dock in a known family with fewer
 outputs is driven with the outputs it has rather than failing endpoint
 resolution outright.
 
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
 ---
  Documentation/gpu/vino.rst       |  37 +++++-
  drivers/gpu/drm/vino/profile.rs  |  34 ++++-
- drivers/gpu/drm/vino/tests.rs    |  64 ++++++---
+ drivers/gpu/drm/vino/tests.rs    |  80 ++++++++---
  drivers/gpu/drm/vino/usb_link.rs |  35 +++--
  drivers/gpu/drm/vino/vino.rs     | 221 ++++++++++++++++++++-----------
- 5 files changed, 284 insertions(+), 107 deletions(-)
+ 5 files changed, 300 insertions(+), 107 deletions(-)
 
 diff --git a/Documentation/gpu/vino.rst b/Documentation/gpu/vino.rst
-index 0d6e7c0c2b26..370020a3c586 100644
+index 3ff6798e24f5..1dd21e89e0d7 100644
 --- a/Documentation/gpu/vino.rst
 +++ b/Documentation/gpu/vino.rst
 @@ -5,11 +5,38 @@ Vino DisplayLink DL3 driver
@@ -149,7 +149,7 @@ index 3678bb72db4a..3cc40ecde5ed 100644
  pub(crate) const EP_CTRL_OUT: u8 = 0x02;
  pub(crate) const EP_CTRL_IN: u8 = 0x84;
 diff --git a/drivers/gpu/drm/vino/tests.rs b/drivers/gpu/drm/vino/tests.rs
-index 6c67b572ceed..6cda101678af 100644
+index 5dcf73795757..7582c8c79992 100644
 --- a/drivers/gpu/drm/vino/tests.rs
 +++ b/drivers/gpu/drm/vino/tests.rs
 @@ -217,7 +217,7 @@ fn g(x: usize, y: usize) -> (u16, u16, u16) {
@@ -157,7 +157,7 @@ index 6c67b572ceed..6cda101678af 100644
          let (w, h) = (512usize, 128usize);
          const STRIPS_PER_MACRO: usize = 16;
 -        let geom = PROFILE_D6000.geometry();
-+        let geom = PROFILE_RIDGE.geometry();
++        let geom = profile::PROFILE_RIDGE.geometry();
          let (full, _) = video::wht::colour_frame_ep08(geom, w, h, 0, 0, g)?;
  
          // A damage clip covering the WHOLE surface selects every strip in the same raster order as
@@ -166,7 +166,7 @@ index 6c67b572ceed..6cda101678af 100644
          // Captured first writes are 205,696 bytes:
          // 2,560-byte arm prefix + 203,040-byte black image + 96-byte frame trailer.
 -        let geom = PROFILE_D6000.geometry();
-+        let geom = PROFILE_RIDGE.geometry();
++        let geom = profile::PROFILE_RIDGE.geometry();
          let frame = video::wht::black_frame_ep08(geom, 2560, 1440, 0)?;
          let image_len = frame.iter().map(|part| part.len()).sum::<usize>();
          assert_eq!(image_len, 203_040);
@@ -175,16 +175,16 @@ index 6c67b572ceed..6cda101678af 100644
          // Each dock's ids come from its own geometry value, so the two cannot interfere --
          // which is the whole reason this is no longer a pair of module-global statics.
 -        let ridge = PROFILE_D6000.geometry();
-+        let ridge = PROFILE_RIDGE.geometry();
++        let ridge = profile::PROFILE_RIDGE.geometry();
          assert_eq!(ridge.stream_id(0), 0x0008);
          assert_eq!(ridge.stream_id(1), 0x0009);
  
 -        let navarro = PROFILE_DL7400.geometry();
-+        let navarro = PROFILE_NAVARRO.geometry();
++        let navarro = profile::PROFILE_NAVARRO.geometry();
          assert_eq!(navarro.stream_id(0), 0x0007);
          assert_eq!(navarro.stream_id(1), 0x000f);
          assert_eq!(navarro.stream_id(2), 0x0017);
-@@ -856,6 +856,40 @@ fn the_first_real_mode_follows_the_prelude_rather_than_the_capture() {
+@@ -857,6 +857,40 @@ fn the_first_real_mode_follows_the_prelude_rather_than_the_capture() {
          assert!(drm_sink::NAVARRO_REAL_MODE_H0_MS - last <= 100);
      }
  
@@ -200,11 +200,11 @@ index 6c67b572ceed..6cda101678af 100644
 +
 +        assert!(core::ptr::eq(
 +            profile::for_family(Family::Navarro).unwrap(),
-+            &PROFILE_NAVARRO
++            &profile::PROFILE_NAVARRO
 +        ));
 +        assert!(core::ptr::eq(
 +            profile::for_family(Family::Ridge).unwrap(),
-+            &PROFILE_RIDGE
++            &profile::PROFILE_RIDGE
 +        ));
 +        assert!(profile::for_family(Family::Ella).is_none());
 +        assert!(profile::for_family(Family::Firefly).is_none());
@@ -213,11 +213,11 @@ index 6c67b572ceed..6cda101678af 100644
 +        // product missing here is still driven if its identity descriptor can be read.
 +        assert!(core::ptr::eq(
 +            profile::for_product(0x6006).unwrap(),
-+            &PROFILE_RIDGE
++            &profile::PROFILE_RIDGE
 +        ));
 +        assert!(core::ptr::eq(
 +            profile::for_product(0x7000).unwrap(),
-+            &PROFILE_NAVARRO
++            &profile::PROFILE_NAVARRO
 +        ));
 +        assert!(profile::for_product(0x6015).is_none());
 +    }
@@ -225,60 +225,76 @@ index 6c67b572ceed..6cda101678af 100644
      /// The boundary cases matter most: each must pass by **equality**. A `<` would prune a dock's
      /// working configuration and dark its panels.
      #[test]
-@@ -865,29 +899,29 @@ fn mode_ceilings_bound_bandwidth_not_refresh() {
+@@ -866,29 +900,45 @@ fn mode_ceilings_bound_bandwidth_not_refresh() {
  
          // Ridge is clamped by refresh regardless of resolution: DLM puts 119.998 Hz on the wire
          // for a 180 Hz request and the 59.95 Hz CVT-RB timing for an 85 Hz one.
 -        assert_eq!(PROFILE_D6000.max_refresh_hz, 120);
 -        assert!(refresh_ok(&PROFILE_D6000, 120) && !refresh_ok(&PROFILE_D6000, 165));
-+        assert_eq!(PROFILE_RIDGE.max_refresh_hz, 120);
-+        assert!(refresh_ok(&PROFILE_RIDGE, 120) && !refresh_ok(&PROFILE_RIDGE, 165));
++        assert_eq!(profile::PROFILE_RIDGE.max_refresh_hz, 120);
++        assert!(
++            refresh_ok(&profile::PROFILE_RIDGE, 120) && !refresh_ok(&profile::PROFILE_RIDGE, 165)
++        );
  
          // The DL7400 has no such clamp -- DLM drives it at 2560x1440@164.96 -- so its modes are
          // bounded by link rate alone.
 -        assert!(refresh_ok(&PROFILE_DL7400, 180) && refresh_ok(&PROFILE_DL7400, 240));
-+        assert!(refresh_ok(&PROFILE_NAVARRO, 180) && refresh_ok(&PROFILE_NAVARRO, 240));
++        assert!(
++            refresh_ok(&profile::PROFILE_NAVARRO, 180)
++                && refresh_ok(&profile::PROFILE_NAVARRO, 240)
++        );
  
          // 2560x1440: p165 is 699.50 MHz and carried; p180 is 714.81 MHz and is the mode the dock
          // accepts and then fails to deliver.
 -        assert!(clock_ok(&PROFILE_DL7400, 699_500));
 -        assert!(!clock_ok(&PROFILE_DL7400, 714_810));
-+        assert!(clock_ok(&PROFILE_NAVARRO, 699_500));
-+        assert!(!clock_ok(&PROFILE_NAVARRO, 714_810));
++        assert!(clock_ok(&profile::PROFILE_NAVARRO, 699_500));
++        assert!(!clock_ok(&profile::PROFILE_NAVARRO, 714_810));
          // Ridge cannot express the high half of the offset-70 u32 in any capture taken.
 -        assert!(clock_ok(&PROFILE_D6000, 655_350) && !clock_ok(&PROFILE_D6000, 699_500));
-+        assert!(clock_ok(&PROFILE_RIDGE, 655_350) && !clock_ok(&PROFILE_RIDGE, 699_500));
++        assert!(
++            clock_ok(&profile::PROFILE_RIDGE, 655_350)
++                && !clock_ok(&profile::PROFILE_RIDGE, 699_500)
++        );
  
          // A degenerate mode reports 0 Hz and carries no rate information; a signed refresh must
          // never be read as a huge unsigned one.
 -        assert!(refresh_ok(&PROFILE_DL7400, 0) && refresh_ok(&PROFILE_DL7400, -1));
-+        assert!(refresh_ok(&PROFILE_NAVARRO, 0) && refresh_ok(&PROFILE_NAVARRO, -1));
++        assert!(
++            refresh_ok(&profile::PROFILE_NAVARRO, 0) && refresh_ok(&profile::PROFILE_NAVARRO, -1)
++        );
  
          // Each budget admits its own dual-head configuration and nothing beyond it.
          let rate = drm_sink::active_pixel_rate;
          assert_eq!(rate(2560, 1440, 120), 442_368_000);
 -        assert_eq!(PROFILE_D6000.pixel_budget, 2 * rate(2560, 1440, 120));
 -        assert_eq!(PROFILE_DL7400.pixel_budget, 2 * rate(2560, 1440, 165));
-+        assert_eq!(PROFILE_RIDGE.pixel_budget, 2 * rate(2560, 1440, 120));
-+        assert_eq!(PROFILE_NAVARRO.pixel_budget, 2 * rate(2560, 1440, 165));
++        assert_eq!(
++            profile::PROFILE_RIDGE.pixel_budget,
++            2 * rate(2560, 1440, 120)
++        );
++        assert_eq!(
++            profile::PROFILE_NAVARRO.pixel_budget,
++            2 * rate(2560, 1440, 165)
++        );
          assert_eq!(rate(65535, 65535, 65535), u32::MAX); // saturates, never wraps small
          assert_eq!(rate(2560, 1440, -1), 0);
      }
-@@ -1134,7 +1168,7 @@ fn unmeasured_mode_is_accepted_with_a_derived_profile() -> Result {
+@@ -1135,7 +1185,7 @@ fn unmeasured_mode_is_accepted_with_a_derived_profile() -> Result {
          // Inside the DL7400's envelope, and exactly at its clock ceiling: the monitor's EDID DTD
          // says 699.50 MHz where DLM's wire value rounds to its 10 kHz unit (699.49), so a ceiling
          // taken from DLM's rounding would prune this mode by 10 kHz. It must not.
 -        assert!(mode.clock() as u32 <= PROFILE_DL7400.max_head_clock_khz);
-+        assert!(mode.clock() as u32 <= PROFILE_NAVARRO.max_head_clock_khz);
++        assert!(mode.clock() as u32 <= profile::PROFILE_NAVARRO.max_head_clock_khz);
          // The clock field itself carries it fine: offsets 70..73 are a u32, as the DL7400's
          // 2560x1440p165 mode set proves (0x0001113d = 699.49 MHz). Admission is the refresh
          // limit's job, not a silent conversion failure.
-@@ -1684,7 +1718,7 @@ fn stream_marker_routes_the_selected_head() -> Result {
+@@ -1685,7 +1735,7 @@ fn stream_marker_routes_the_selected_head() -> Result {
  
      #[test]
      fn video_frame_trailer_matches_dlm_cycle_and_head() {
 -        let geom = PROFILE_D6000.geometry();
-+        let geom = PROFILE_RIDGE.geometry();
++        let geom = profile::PROFILE_RIDGE.geometry();
          let t0 = video::wht::frame_trailer(geom, 0, 0);
          assert_eq!(
              &t0[..32],
@@ -337,7 +353,7 @@ index 2086b0c51975..6680dedf6b2b 100644
  }
  
 diff --git a/drivers/gpu/drm/vino/vino.rs b/drivers/gpu/drm/vino/vino.rs
-index 3b522c37aa56..6b965a5d440e 100644
+index d65af52a5eca..bef40251be4b 100644
 --- a/drivers/gpu/drm/vino/vino.rs
 +++ b/drivers/gpu/drm/vino/vino.rs
 @@ -68,7 +68,7 @@ macro_rules! vino_dev_debug {
@@ -345,7 +361,7 @@ index 3b522c37aa56..6b965a5d440e 100644
  mod usb_link;
  
 -pub(crate) use profile::{DockProfile, EP_CTRL_IN, EP_CTRL_OUT, PROFILE_D6000, PROFILE_DL7400};
-+pub(crate) use profile::{DockProfile, EP_CTRL_IN, EP_CTRL_OUT, PROFILE_NAVARRO, PROFILE_RIDGE};
++pub(crate) use profile::{DockProfile, EP_CTRL_IN, EP_CTRL_OUT};
  pub(crate) use usb_link::{Endpoints, UsbLink, EP84_BUF};
  
  /// USB transfer timeout used during session setup.

@@ -1,17 +1,18 @@
-From 65ded1647bcd9e49f6e39bdb632a5acc324153c2 Mon Sep 17 00:00:00 2001
+From 2b2e085bcc471c7790108e6df3a525391a97c8fa Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 03:40:39 +0100
 Subject: [PATCH 107/114] drm/vino: add the DL3 video codec and stream setup
 
 The dock decodes a proprietary wavelet-ish codec: 128x8 or 64x16 strips, a
-Walsh-Hadamard transform, per-plane significance trees and a unary VLC, with
-a per-strip parameter map the dock reads to size its own allocations.
+Walsh-Hadamard transform, per-plane significance trees and a unary VLC,
+with a per-strip parameter map the dock reads to size its own allocations.
 
 Add the encoder, the record framing the dock's DMA requires -- 4096-byte
 records, 16-byte aligned, with the pad count carried in the header -- and
 the stream-open descriptors, parallelised across CPUs.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/video.rs     | 1754 +++++++++++++++++++++++++++++
  drivers/gpu/drm/vino/video_arm.rs |  121 ++

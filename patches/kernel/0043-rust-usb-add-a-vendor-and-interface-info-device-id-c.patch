@@ -1,17 +1,19 @@
-From 689c0ac083f427a4a3c3cdb423a5732465f59251 Mon Sep 17 00:00:00 2001
+From a971c3008183d8bb9ab19cbdb04f72676954d579 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sun, 9 Aug 2026 19:17:41 +0100
 Subject: [PATCH 043/114] rust: usb: add a vendor-and-interface-info device id
  constructor
 
-`USB_VENDOR_AND_INTERFACE_INFO` is the C macro a driver uses to bind to a
-function rather than to a list of product IDs: one vendor, plus an interface
-class, subclass and protocol, matching every product that exposes it. The
-existing constructors cover `USB_DEVICE_INFO` and `USB_INTERFACE_INFO`, which
-between them can express "any device of this class" or "any interface of this
-class from any vendor", but not the combination -- and the combination is what
-a vendor-specific function needs, because class `0xff` means nothing without
-the vendor beside it.
+`USB_VENDOR_AND_INTERFACE_INFO` is the C macro a driver uses to bind to
+a function rather than to a list of product IDs: one vendor, plus an
+interface class, subclass and protocol, matching every product that
+exposes it.
+
+The existing constructors cover `USB_DEVICE_INFO` and
+`USB_INTERFACE_INFO`, which between them can express "any device of this
+class" or "any interface of this class from any vendor", but not the
+combination -- and the combination is what a vendor-specific function
+needs, because class `0xff` means nothing without the vendor beside it.
 
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---

@@ -1,4 +1,4 @@
-From 4e7a37644f3aff05e2b35e2cdc93be6747a41513 Mon Sep 17 00:00:00 2001
+From 8f4ce94b69188ba3a35ddab192027f6c6849c861 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 23 May 2024 16:00:07 -0400
 Subject: [PATCH 057/114] rust: drm/kms: Add RawConnector and RawConnectorState

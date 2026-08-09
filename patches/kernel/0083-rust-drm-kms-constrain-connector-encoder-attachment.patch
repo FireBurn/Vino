@@ -1,15 +1,15 @@
-From 9ecda22067a82f0f87304cc37929cc71c415c281 Mon Sep 17 00:00:00 2001
+From 656966ddb3db6a2df78886e6637a0c0f0a83d139 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:38:17 +0100
 Subject: [PATCH 083/114] rust: drm: kms: constrain connector encoder
  attachment
 
-drm_connector_attach_encoder() requires both objects to belong to the
-same DRM device. The safe wrapper previously accepted any AsRawEncoder,
+drm_connector_attach_encoder() requires both objects to belong to the same
+DRM device. The safe wrapper previously accepted any AsRawEncoder,
 including an encoder from another driver or device.
 
-Accept only an UnregisteredEncoder from the same KMS driver and reject
-a different device instance before entering C.
+Accept only an UnregisteredEncoder from the same KMS driver and reject a
+different device instance before entering C.
 
 Fixes: 322a9b8d699b ("rust: drm/kms: Add UnregisteredConnector::attach_encoder()")
 

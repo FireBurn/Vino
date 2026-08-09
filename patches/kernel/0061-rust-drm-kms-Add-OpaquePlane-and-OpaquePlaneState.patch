@@ -1,4 +1,4 @@
-From c0d03a218eba4bd5ebac8c12ccb7e9c5b261aed9 Mon Sep 17 00:00:00 2001
+From 96eb85d94e7b85163d72339345fe2fbcd9739900 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 23 May 2024 15:57:41 -0400
 Subject: [PATCH 061/114] rust: drm/kms: Add OpaquePlane and OpaquePlaneState

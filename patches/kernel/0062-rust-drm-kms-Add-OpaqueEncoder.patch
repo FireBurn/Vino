@@ -1,4 +1,4 @@
-From d3c571126515198046294076476def19a95cec10 Mon Sep 17 00:00:00 2001
+From a0e341342038d1513f08312cd8b926fd794effde Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 23 May 2024 16:18:26 -0400
 Subject: [PATCH 062/114] rust: drm/kms: Add OpaqueEncoder

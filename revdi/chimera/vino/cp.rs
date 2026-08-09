@@ -579,7 +579,8 @@ pub(super) fn set_mode(counter: u16, head: u8, t: &Timing) -> Result<KVec<u8>> {
         GFP_KERNEL,
     )?;
     pad_to(&mut b, 26)?; // off24..25 zero; timing begins at off26
-                         // The transfer function rides in the same word as the sync polarity; see `SYNC_FLAG_ST2084`.
+                         // The transfer function rides in the same word as the sync polarity; see
+                         // `SYNC_FLAG_ST2084`.
     let flags = t.sync_flags
         | if t.st2084 { SYNC_FLAG_ST2084 } else { 0 }
         | if t.dual_nivo { SYNC_FLAG_DUAL_NIVO } else { 0 };

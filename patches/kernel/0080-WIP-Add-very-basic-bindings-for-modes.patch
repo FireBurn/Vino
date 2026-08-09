@@ -1,4 +1,4 @@
-From 6c5e0d8c4a8e3435939e5127796ca295cb1c7ecc Mon Sep 17 00:00:00 2001
+From 742eccc5e64144d34bd4585dd4f01f8528e7c3a0 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Wed, 29 Oct 2025 15:31:39 -0400
 Subject: [PATCH 080/114] WIP: Add very basic bindings for modes

@@ -1,13 +1,14 @@
-From 8d87205310fd457034f5b65a00ad5e985a42007c Mon Sep 17 00:00:00 2001
+From a2a01cd2f388231fb19ce23a3dfee041026dbb12 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 03:40:50 +0100
 Subject: [PATCH 110/114] docs: gpu: document the Vino driver
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  Documentation/gpu/drivers.rst |   1 +
- Documentation/gpu/vino.rst    | 176 ++++++++++++++++++++++++++++++++++
- 2 files changed, 177 insertions(+)
+ Documentation/gpu/vino.rst    | 172 ++++++++++++++++++++++++++++++++++
+ 2 files changed, 173 insertions(+)
  create mode 100644 Documentation/gpu/vino.rst
 
 diff --git a/Documentation/gpu/drivers.rst b/Documentation/gpu/drivers.rst
@@ -24,10 +25,10 @@ index 20d2c454aa1d..b630bd67e182 100644
     xe/index
 diff --git a/Documentation/gpu/vino.rst b/Documentation/gpu/vino.rst
 new file mode 100644
-index 000000000000..0d6e7c0c2b26
+index 000000000000..3ff6798e24f5
 --- /dev/null
 +++ b/Documentation/gpu/vino.rst
-@@ -0,0 +1,176 @@
+@@ -0,0 +1,172 @@
 +.. SPDX-License-Identifier: GPL-2.0-only
 +
 +==========================
@@ -62,10 +63,6 @@ index 000000000000..0d6e7c0c2b26
 +
 +Errors, connection changes, and session state remain visible without this
 +parameter.
-+
-+On x86-64 the encoder can use an AVX2 block transform instead of the scalar
-+one. It is byte-exact against the scalar path, which remains the default and
-+the reference, and is enabled with ``simd_transform=1``.
 +
 +The optional ``CONFIG_DRM_VINO_KUNIT_TEST`` setting builds the driver's KUnit
 +suite. It is intended for development kernels and is disabled by default.

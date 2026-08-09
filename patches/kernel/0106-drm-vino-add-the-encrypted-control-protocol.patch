@@ -1,4 +1,4 @@
-From 9b7a00e683e47c376849e93d2e5277cf551069dc Mon Sep 17 00:00:00 2001
+From 19948b6023eb7cbbd70c484bd8502c62d457857f Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 03:40:28 +0100
 Subject: [PATCH 106/114] drm/vino: add the encrypted control protocol
@@ -11,15 +11,16 @@ Add the protocol layer -- the AKE and its KDFs, the seal and its two
 distinct nonces, the message builders for mode set, EDID fetch, downstream
 sink engage, stream markers and the cursor -- with no I/O of its own.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/ake.rs    |  175 ++++
- drivers/gpu/drm/vino/cp.rs     | 1701 ++++++++++++++++++++++++++++++++
+ drivers/gpu/drm/vino/cp.rs     | 1702 ++++++++++++++++++++++++++++++++
  drivers/gpu/drm/vino/crypto.rs |   35 +
  drivers/gpu/drm/vino/hdcp.rs   |  115 +++
  drivers/gpu/drm/vino/proto.rs  |   71 ++
  drivers/gpu/drm/vino/rng.rs    |    9 +
- 6 files changed, 2106 insertions(+)
+ 6 files changed, 2107 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/ake.rs
  create mode 100644 drivers/gpu/drm/vino/cp.rs
  create mode 100644 drivers/gpu/drm/vino/crypto.rs
@@ -210,10 +211,10 @@ index 000000000000..54d24ca2d096
 +}
 diff --git a/drivers/gpu/drm/vino/cp.rs b/drivers/gpu/drm/vino/cp.rs
 new file mode 100644
-index 000000000000..5e2cd9d65cf6
+index 000000000000..6278225482d8
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/cp.rs
-@@ -0,0 +1,1701 @@
+@@ -0,0 +1,1702 @@
 +// SPDX-License-Identifier: GPL-2.0
 +//! Encrypted-control-plane message builders (the inner plaintext of the type=4
 +//! sub=0x24 AES-CTR frames) plus the AES-CTR `seal` that encrypts and frames them.
@@ -795,7 +796,8 @@ index 000000000000..5e2cd9d65cf6
 +        GFP_KERNEL,
 +    )?;
 +    pad_to(&mut b, 26)?; // off24..25 zero; timing begins at off26
-+                         // The transfer function rides in the same word as the sync polarity; see `SYNC_FLAG_ST2084`.
++                         // The transfer function rides in the same word as the sync polarity; see
++                         // `SYNC_FLAG_ST2084`.
 +    let flags = t.sync_flags
 +        | if t.st2084 { SYNC_FLAG_ST2084 } else { 0 }
 +        | if t.dual_nivo { SYNC_FLAG_DUAL_NIVO } else { 0 };

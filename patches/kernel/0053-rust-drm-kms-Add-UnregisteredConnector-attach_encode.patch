@@ -1,4 +1,4 @@
-From 63f8015f1c95dea4ac095ad29d86a714d36398f2 Mon Sep 17 00:00:00 2001
+From 4c9bc0f631809c4e17cd1471c89beca873a66431 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 19 Jun 2025 15:44:02 -0400
 Subject: [PATCH 053/114] rust: drm/kms: Add

@@ -1,4 +1,4 @@
-From a359360c9b3779c83a07494a56a5ed88fd5828f8 Mon Sep 17 00:00:00 2001
+From 10a2762e16ebfb03107aaf1931b176517755439d Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Tue, 10 Jun 2025 17:07:25 -0400
 Subject: [PATCH 064/114] rust: drm/kms: Introduce impl_atomic_state_token_ops!

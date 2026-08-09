@@ -1,4 +1,4 @@
-From 4263d7312a0f1cd7d36edf5fd6ef4c6e61337495 Mon Sep 17 00:00:00 2001
+From d5de28a8d34ad20381a0037010fcb7def1a5474a Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Mon, 4 Mar 2024 19:01:10 -0500
 Subject: [PATCH 046/114] rust: drm: Add a small handful of fourcc bindings

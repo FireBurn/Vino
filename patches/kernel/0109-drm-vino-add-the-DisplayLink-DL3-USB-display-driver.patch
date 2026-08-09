@@ -1,4 +1,4 @@
-From a44227b56dbb7b12a56219540f69404c24da04de Mon Sep 17 00:00:00 2001
+From cc746ff696977802278bac2881f77bc3a110bccb Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 03:40:50 +0100
 Subject: [PATCH 109/114] drm/vino: add the DisplayLink DL3 USB display driver
@@ -8,13 +8,14 @@ out-of-tree EVDI module and the closed-source DisplayLinkManager daemon.
 
 Add the USB probe and session bring-up, the per-dock profile that describes
 a device's connector count, video endpoints, mode ceilings and codec
-geometry, the presence and EDID worker, and the KUnit selftests that pin the
-wire format against captured hardware.
+geometry, the presence and EDID worker, and the KUnit selftests that pin
+the wire format against captured hardware.
 
 Two dock generations are supported: Ridge (DL-6xxx, two connectors) and
 Navarro (DL-7400, four connectors multiplexed onto two video endpoints).
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  MAINTAINERS                      |    7 +
  drivers/gpu/drm/Kconfig          |    1 +
@@ -23,10 +24,10 @@ Assisted-by: Claude:claude-opus-5 [Claude-Code]
  drivers/gpu/drm/vino/Makefile    |    2 +
  drivers/gpu/drm/vino/profile.rs  |  195 +++
  drivers/gpu/drm/vino/session.rs  | 2073 ++++++++++++++++++++++++++++++
- drivers/gpu/drm/vino/tests.rs    | 1760 +++++++++++++++++++++++++
+ drivers/gpu/drm/vino/tests.rs    | 1761 +++++++++++++++++++++++++
  drivers/gpu/drm/vino/usb_link.rs |  201 +++
  drivers/gpu/drm/vino/vino.rs     | 1220 ++++++++++++++++++
- 10 files changed, 5497 insertions(+)
+ 10 files changed, 5498 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/Kconfig
  create mode 100644 drivers/gpu/drm/vino/Makefile
  create mode 100644 drivers/gpu/drm/vino/profile.rs
@@ -2410,10 +2411,10 @@ index 000000000000..b052eceb1a84
 +}
 diff --git a/drivers/gpu/drm/vino/tests.rs b/drivers/gpu/drm/vino/tests.rs
 new file mode 100644
-index 000000000000..73b4d9c570bd
+index 000000000000..62a436dd52b0
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/tests.rs
-@@ -0,0 +1,1760 @@
+@@ -0,0 +1,1761 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! KUnit coverage for the parts of the protocol that can be checked without hardware: the CP seal
@@ -3175,8 +3176,9 @@ index 000000000000..73b4d9c570bd
 +        assert_eq!(img.len(), 32 + 64 * 64 * 4);
 +        assert_eq!(&img[0..4], &[0x1c, 0x40, 0x41, 0x00]); // inner id 0x401c, sub 0x41
 +        assert_eq!(img[22], 0x01); // head 0 -> dock head 1
-+                                   // The bitmap begins at off34, not off32: offsets 32..33 are zero and the last pixel is
-+                                   // truncated so the message still measures `32 + w*h*4`.
++                                   // The bitmap begins at off34, not off32: offsets 32..33 are zero
++                                   // and the last pixel is truncated so the message still measures
++                                   // `32 + w*h*4`.
 +        assert_eq!(&img[32..34], &[0x00, 0x00]);
 +        assert_eq!(img[34], 0xab);
 +        assert!(cp::cursor_image(3, 0, 64, 64, &[0u8; 16]).is_err()); // wrong bitmap length
@@ -4383,7 +4385,7 @@ index 000000000000..2086b0c51975
 +pub(crate) const EP84_BUF: usize = 4096;
 diff --git a/drivers/gpu/drm/vino/vino.rs b/drivers/gpu/drm/vino/vino.rs
 new file mode 100644
-index 000000000000..f09706262885
+index 000000000000..2d6b1bf88551
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/vino.rs
 @@ -0,0 +1,1220 @@
@@ -5264,9 +5266,9 @@ index 000000000000..f09706262885
 +                        // The probe has spoken for this connector, so the blind re-engage retry
 +                        // above stands down for it -- but only a *positive* answer is authoritative
 +                        // straight away. A negative one has to outlast `PRESENCE_REMOVE_MS` for the
-+                        // same reason it does above: this probe reports a lit sink absent routinely,
-+                        // and standing the EDID recovery down on one of those blips is what left a
-+                        // head dark for a whole session.
++                        // same reason it does above: this probe reports a lit sink absent
++                        // routinely, and standing the EDID recovery down on one of those blips is
++                        // what left a head dark for a whole session.
 +                        if present {
 +                            head_probed[h] = Some(true);
 +                            // The absent run is cleared below, not here: the "flap healed on its

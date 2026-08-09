@@ -51,34 +51,16 @@ if ! awk 'length($0) > 100 && $0 !~ /"/ {
     exit 1
 fi
 
-# simd.rs is the one exemption, and it is not a bypass: `core::arch` intrinsics
-# are `unsafe fn` by definition and CPU feature bits have no safe accessor, so
-# there is no subsystem API being gone around. Everything the kernel *can* offer
-# safely -- the FPU section -- is taken from `kernel::fpu`. The exemption is paid
-# for by the stricter rule below: every one of its unsafe blocks must justify
-# itself.
+# No exemptions. simd.rs used to be one, on the grounds that `core::arch`
+# intrinsics are `unsafe fn` by definition; it was deleted once the in-kernel
+# AVX2 transform measured at parity, and with it the only reason a driver file
+# here needed to reach past a safe API.
 if rg -n \
     '\bunsafe\s*\{|\bunsafe\s+(fn|impl|trait)|\bbindings::|Arc::into_raw|Arc::from_raw|AtomicPtr' \
     "$kernel_tree/drivers/gpu/drm/vino" \
     "$kernel_tree/drivers/gpu/drm/evdi" \
-    --glob '*.rs' --glob '!simd.rs'; then
+    --glob '*.rs'; then
     echo "error: a DRM consumer bypasses a safe Rust subsystem API" >&2
-    exit 1
-fi
-
-# Every unsafe block in the exempted file states why it is sound, within the
-# three lines above it.
-if ! awk '
-    /SAFETY:/ { safety = NR }
-    /unsafe[[:space:]]*\{/ {
-        if (NR - safety > 3) {
-            printf "%s:%d: unsafe block with no SAFETY comment\n", FILENAME, NR
-            bad = 1
-        }
-    }
-    END { exit bad }
-' "$kernel_tree/drivers/gpu/drm/vino/simd.rs"; then
-    echo "error: an unsafe block in simd.rs is unjustified" >&2
     exit 1
 fi
 

@@ -1,4 +1,4 @@
-From 1c159743fd9f0bcdfbfbf9ae4f8b16083c8184de Mon Sep 17 00:00:00 2001
+From b25881b7317c51a222e6d36080a8f661c0a207e6 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 21:52:01 +0100
 Subject: [PATCH 095/114] rust: drm: kms: add owned CRTC and vblank references

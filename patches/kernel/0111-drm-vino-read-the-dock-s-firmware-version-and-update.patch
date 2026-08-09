@@ -1,11 +1,8 @@
-From ad986844662baf491db80d218627a0327c011fc8 Mon Sep 17 00:00:00 2001
+From b3c4195d2a62106dec1cd320272b7f204d19ef5f Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 04:09:46 +0100
 Subject: [PATCH 111/114] drm/vino: read the dock's firmware version, and
  update it over DFU
-MIME-Version: 1.0
-Content-Type: text/plain; charset=UTF-8
-Content-Transfer-Encoding: 8bit
 
 A DisplayLink dock does not advance bcdDevice when its firmware changes, so
 that cannot answer whether an update is due. The version lives in a 16-byte
@@ -14,20 +11,21 @@ name that selects the package targeting the hardware; the shipped
 *-release.spkg packages carry theirs in a tagged table under `VE`, at no
 fixed offset -- 100 in one shipped image and 24574 in another.
 
-Add both parsers, request the matching firmware by the vendor's own filename
-so a distribution can install the package unmodified, and update only when
-the packaged version is strictly newer. A current dock therefore costs one
-descriptor read and no writes, and a missing firmware file is not an error:
-a dock runs on the firmware it shipped with.
+Add both parsers, request the matching firmware by the vendor's own
+filename so a distribution can install the package unmodified, and update
+only when the packaged version is strictly newer. A current dock therefore
+costs one descriptor read and no writes, and a missing firmware file is not
+an error: a dock runs on the firmware it shipped with.
 
-The transfer is USB DFU 1.1 on the dock's DFU interface, matching the vendor
-updater recorded end to end: DFU_DETACH, then the package verbatim in
-4096-byte blocks with an ascending wValue, each followed by DFU_GETSTATUS,
-then a zero-length DFU_DNLOAD to manifest. There is no bus reset between the
-detach and the first block -- the dock takes the download in its runtime
-interface -- and it re-enumerates once the image is manifested.
+The transfer is USB DFU 1.1 on the dock's DFU interface, matching the
+vendor updater recorded end to end: DFU_DETACH, then the package verbatim
+in 4096-byte blocks with an ascending wValue, each followed by
+DFU_GETSTATUS, then a zero-length DFU_DNLOAD to manifest. There is no bus
+reset between the detach and the first block -- the dock takes the download
+in its runtime interface -- and it re-enumerates once the image is
+manifested.
 
-⚠ The functional descriptor clears bitCanUpload, so the running image cannot
+The functional descriptor clears bitCanUpload, so the running image cannot
 be read back and there is no host-side restore path; and it clears
 bitManifestationTolerant. Hence the strictly-newer rule and the package
 magic check before any byte is written.
@@ -35,7 +33,8 @@ magic check before any byte is written.
 The update path needs RUST_FW_LOADER_ABSTRACTIONS, now selected. Without it
 the driver still probes and reports the running version.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/Kconfig     |   2 +
  drivers/gpu/drm/vino/firmware.rs | 407 +++++++++++++++++++++++++++++++
@@ -496,7 +495,7 @@ index b052eceb1a84..bdfa50f90e99 100644
          }
          // A composite driver may only change its own interface.
 diff --git a/drivers/gpu/drm/vino/tests.rs b/drivers/gpu/drm/vino/tests.rs
-index 73b4d9c570bd..6c67b572ceed 100644
+index 62a436dd52b0..5dcf73795757 100644
 --- a/drivers/gpu/drm/vino/tests.rs
 +++ b/drivers/gpu/drm/vino/tests.rs
 @@ -14,6 +14,7 @@
@@ -557,7 +556,7 @@ index 73b4d9c570bd..6c67b572ceed 100644
      fn dual_nivo_rides_the_flags_word() -> Result {
          // Bit 2 of offset 42 declares that this head's video endpoint carries a second connector.
 diff --git a/drivers/gpu/drm/vino/vino.rs b/drivers/gpu/drm/vino/vino.rs
-index f09706262885..5ff9272c1c78 100644
+index 2d6b1bf88551..6b521cd3076c 100644
 --- a/drivers/gpu/drm/vino/vino.rs
 +++ b/drivers/gpu/drm/vino/vino.rs
 @@ -113,6 +113,7 @@ fn hold_until(anchor: Instant<Monotonic>, target_us: i64) {

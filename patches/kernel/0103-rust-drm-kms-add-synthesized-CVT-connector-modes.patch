@@ -1,4 +1,4 @@
-From 49a3112cc057402c74940d8b8d023978f483a7d6 Mon Sep 17 00:00:00 2001
+From feed0aa9c9e8622eb5335c669fd93a99ccf4499d Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 22:52:46 +0100
 Subject: [PATCH 103/114] rust: drm: kms: add synthesized CVT connector modes

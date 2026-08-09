@@ -1,4 +1,4 @@
-From 322f57e3b46645ffe403fc6d2fe79a67e5a2c279 Mon Sep 17 00:00:00 2001
+From 7b5dfb77d4b37ef67fb4a83e6e43635961d07299 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:45:48 +0100
 Subject: [PATCH 086/114] rust: drm: kms: add common state and connector
