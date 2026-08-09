@@ -1,4 +1,4 @@
-From 03f0173bb781e09a60099fe489a372ed584ec472 Mon Sep 17 00:00:00 2001
+From 7df7468da860ee8732a88371832534148a6cda12 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 11:41:57 +0100
 Subject: [PATCH 112/114] rust: firmware: add the firmware upload abstraction
@@ -21,10 +21,10 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  1 file changed, 237 insertions(+)
 
 diff --git a/rust/kernel/firmware.rs b/rust/kernel/firmware.rs
-index 71168d8004e2..e48050ec3e73 100644
+index 6a6b392ffc4e..a6fa565421d7 100644
 --- a/rust/kernel/firmware.rs
 +++ b/rust/kernel/firmware.rs
-@@ -343,3 +343,240 @@ pub const fn build_length(self) -> usize {
+@@ -385,3 +385,240 @@ pub const fn build_length(self) -> usize {
          self.n + 1
      }
  }

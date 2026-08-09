@@ -2,9 +2,9 @@
 
 <!-- The block below is rewritten by ../../tools/regenerate-patches.sh. -->
 ```text
-base: 0755a4e3e809610a14befc9ad28d35e2e460da68
-head: 6327a1c08820429a011910138843e6725531fdc5
-range: integration/base-20260728..vino
+base: 4c9ba407018e8deb06dbc643112bac8f40404f95
+head: b4aaf97dd2432e53f5e6684b4816f49906cc6a55
+range: integration/base-20260809..vino
 ```
 
 Apply the exact integration series in recorded order:

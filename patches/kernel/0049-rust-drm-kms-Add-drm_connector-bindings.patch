@@ -1,4 +1,4 @@
-From 4470d0cf5d3d05353ac78243ccd5383ad55c8cff Mon Sep 17 00:00:00 2001
+From f472dbcd52aec2b62180995546c7d211dedc4353 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 16 May 2024 15:56:14 -0400
 Subject: [PATCH 049/114] rust: drm/kms: Add drm_connector bindings

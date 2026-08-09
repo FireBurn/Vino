@@ -1,4 +1,4 @@
-From 6327a1c08820429a011910138843e6725531fdc5 Mon Sep 17 00:00:00 2001
+From b4aaf97dd2432e53f5e6684b4816f49906cc6a55 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sun, 9 Aug 2026 19:21:53 +0100
 Subject: [PATCH 114/114] drm/vino: bind the display function, and place docks

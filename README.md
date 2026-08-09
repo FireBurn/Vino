@@ -16,16 +16,17 @@ than kept beside it, and the pre-fold branch is retained as
 
 | Item | Revision |
 |---|---|
-| `drm-next` parent checked 2026-07-28 | `ea97ab2759506d9a818ffed1009bde01062b4091` |
-| `drm-rust-next` parent checked 2026-07-28 | `93b9511a3bba7f31d95502e5f912f0a476b0cf4a` |
-| integration base | `0755a4e3e809610a14befc9ad28d35e2e460da68` |
+| `drm-next` parent checked 2026-08-09 | `ea97ab2759506d9a818ffed1009bde01062b4091` |
+| `drm-rust-next` tip checked 2026-08-09 | `4c9ba407018e8deb06dbc643112bac8f40404f95` |
+| integration base | `4c9ba407018e8deb06dbc643112bac8f40404f95` |
 | imported `drm-v3` Vino tip | `19a91f95f35785f5f15ba57c6efffc855c47cc76` |
 | kernel review branch | `vino` |
-| kernel review head | `7614ff24714925a661df9bcde40e5a987eb8795a` |
+| kernel review head | `b4aaf97dd2432e53f5e6684b4816f49906cc6a55` |
 
-The integration base is the existing `drm-rust-next` merge of the current
-`drm-next` parent. The series does not create an artificial merge or pretend
-that unmerged Rust DRM dependencies are already in `drm-next`.
+The integration base is the `drm-rust-next` tip itself, which already carries
+the current `drm-next` parent through the tree's own merge. The series does not
+create an artificial merge or pretend that unmerged Rust DRM dependencies are
+already in `drm-next`.
 
 ## Layout
 

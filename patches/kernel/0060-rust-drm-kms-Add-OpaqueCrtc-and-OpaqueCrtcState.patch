@@ -1,4 +1,4 @@
-From 8883e6e5e51fd1032a1aefd6f438c73dfb7bb4c6 Mon Sep 17 00:00:00 2001
+From 35fd607b84364623818fd5da2c526d403240e430 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 23 May 2024 15:54:17 -0400
 Subject: [PATCH 060/114] rust: drm/kms: Add OpaqueCrtc and OpaqueCrtcState

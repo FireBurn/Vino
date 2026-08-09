@@ -1,4 +1,4 @@
-From 92de7c02c47b2530b91e69a137afdec30b3d8124 Mon Sep 17 00:00:00 2001
+From 719c7a67bd639143157d6d71d4709b056fc1413a Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 23:40:48 +0100
 Subject: [PATCH 042/114] rust: usb: add topology lookup and removal

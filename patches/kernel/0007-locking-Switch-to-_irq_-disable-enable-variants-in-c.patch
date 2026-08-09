@@ -1,4 +1,4 @@
-From ca4e310832958fc05b889177010fd6f19505860a Mon Sep 17 00:00:00 2001
+From 071cb6b46553e46c07e15f7b15648c89e7aba044 Mon Sep 17 00:00:00 2001
 From: Boqun Feng <boqun.feng@gmail.com>
 Date: Tue, 26 May 2026 08:21:43 -0700
 Subject: [PATCH 007/114] locking: Switch to _irq_{disable,enable}() variants

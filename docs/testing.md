@@ -15,7 +15,7 @@ To reproduce from another kernel checkout:
 
 ```sh
 KERNEL_TREE=/work/linux \
-KERNEL_BASE=integration/base-20260728 \
+KERNEL_BASE=integration/base-20260809 \
 KERNEL_HEAD=vino \
 ./tools/regenerate-patches.sh
 ```

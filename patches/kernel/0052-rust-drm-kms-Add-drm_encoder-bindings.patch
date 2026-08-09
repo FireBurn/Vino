@@ -1,4 +1,4 @@
-From fdc9a33dc167b6b936096b78068279312fa687cb Mon Sep 17 00:00:00 2001
+From 4bb04a324772fa6c6abb0a32d7e58d8e80fade3c Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Fri, 17 May 2024 17:40:32 -0400
 Subject: [PATCH 052/114] rust: drm/kms: Add drm_encoder bindings

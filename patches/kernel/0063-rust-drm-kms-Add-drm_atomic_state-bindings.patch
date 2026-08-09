@@ -1,4 +1,4 @@
-From ff7dc0874eb5e1e9c5029bf6466bafcfa4e60aed Mon Sep 17 00:00:00 2001
+From 594fe8b56e5f57ac6910128181948c021ab1194b Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 23 May 2024 16:22:44 -0400
 Subject: [PATCH 063/114] rust: drm/kms: Add drm_atomic_state bindings

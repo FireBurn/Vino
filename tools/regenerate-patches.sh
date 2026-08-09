@@ -7,7 +7,7 @@ set -euo pipefail
 
 workspace="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 kernel_tree="${KERNEL_TREE:-$workspace/linux}"
-kernel_base="${KERNEL_BASE:-integration/base-20260728}"
+kernel_base="${KERNEL_BASE:-integration/base-20260809}"
 kernel_head="${KERNEL_HEAD:-vino}"
 output="$workspace/patches/kernel"
 

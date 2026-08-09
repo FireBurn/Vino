@@ -1,4 +1,4 @@
-From 51f09a3edf91f577bc36b1e90b351247a7cfcb27 Mon Sep 17 00:00:00 2001
+From e2a0e2b06bf43523796094d014e8dafc551b1a90 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 21:49:17 +0100
 Subject: [PATCH 021/114] rust: sync: completion: add single-shot and timed

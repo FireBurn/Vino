@@ -1,4 +1,4 @@
-From dfc8930d351ad761e7ce92b196880476f489f6f6 Mon Sep 17 00:00:00 2001
+From 6856b777c9fd6f56aa7e1d12a5513e621c8c1683 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 07:10:55 +0100
 Subject: [PATCH 020/114] rust: sysfs: add root-device attribute groups

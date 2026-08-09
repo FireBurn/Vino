@@ -1,4 +1,4 @@
-From 6735eb94c4426f27b517127fad1601b35e45487f Mon Sep 17 00:00:00 2001
+From d8444e6ca83ae1f6fc1a838d5ea7e7d4f748e8d5 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 1 Jul 2026 22:40:29 +0100
 Subject: [PATCH 008/114] sched/fair: stop reading cfsb_guard.flags after the

@@ -1,4 +1,4 @@
-From cc746ff696977802278bac2881f77bc3a110bccb Mon Sep 17 00:00:00 2001
+From 6a5883583f440aa8e6b3654d519a70bebbe17c68 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 03:40:50 +0100
 Subject: [PATCH 109/114] drm/vino: add the DisplayLink DL3 USB display driver

@@ -1,4 +1,4 @@
-From 9a6a707d6bb6dfd92c8f7c72df2c43517d4d915d Mon Sep 17 00:00:00 2001
+From 5488a3ad36ff81699dbd8016df9456c90a3a3a26 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 17:13:59 +0100
 Subject: [PATCH 097/114] rust: drm: add a safe constructor for owned

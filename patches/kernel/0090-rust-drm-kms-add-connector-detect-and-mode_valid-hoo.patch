@@ -1,4 +1,4 @@
-From a826b5f0bd2f0776ff1faee2d77aefa43be4075a Mon Sep 17 00:00:00 2001
+From 4dad775a13eab73a9e6af16edd8c57550a346fc6 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 16:27:50 +0100
 Subject: [PATCH 090/114] rust: drm: kms: add connector detect() and

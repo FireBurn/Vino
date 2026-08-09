@@ -1,4 +1,4 @@
-From 60927c0d8444b1653b44eb46007a88af929969ea Mon Sep 17 00:00:00 2001
+From 737eb87671443256dfd2091ae31a2ad3a0e2a0c6 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 23 May 2024 17:00:29 -0400
 Subject: [PATCH 072/114] rust: drm/kms: Add drm_framebuffer bindings

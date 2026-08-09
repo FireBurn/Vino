@@ -24,12 +24,83 @@ codec, KMS engine, USB driver, docs -- plus the one KMS binding it needs, which 
 
 ## Current base
 
-- `drm-next` parent: `ea97ab2759506d9a818ffed1009bde01062b4091`;
-- `drm-rust-next` parent: `93b9511a3bba7f31d95502e5f912f0a476b0cf4a`;
-- existing merge used as the series base:
-  `0755a4e3e809610a14befc9ad28d35e2e460da68`;
+Rebased 2026-08-09 onto the `drm-rust-next` tip. The base is now that branch
+head itself rather than the merge commit inside it: `drm-rust-next` has not
+merged a newer `drm-next` since, so the `drm-next` content is unchanged and
+building our own merge would only invent an integration point the DRM Rust
+maintainers do not test.
+
+- series base: `4c9ba407018e8deb06dbc643112bac8f40404f95` (`drm-rust-next`,
+  2026-08-06);
+- `drm-next` parent reached through that tree:
+  `ea97ab2759506d9a818ffed1009bde01062b4091` (unchanged);
+- previous base: `0755a4e3e809610a14befc9ad28d35e2e460da68`, 28 commits back;
 - Lyude Paul's `rvkms-slim`: no newer complete revision was found after the
   imported `25bc8cc7e97fd292bea4b77354aaac7eba6c5385`.
+
+All 114 patches replayed with zero conflicts and `git range-diff` reports no
+patch changed, so the rebase moved the base and nothing else.
+
+⚠ `drm-next` itself has moved on to `e4d41a34eedb808d423d73cae8d8601be32f307e`.
+We deliberately do not follow it directly: the KMS layer this series is built on
+lives only in `drm-rust-next`, and that tree picks up `drm-next` on its own
+schedule.
+
+## 2026-08-09 re-check
+
+Lists and prerequisite trees were rechecked on 2026-08-09.
+
+**No new replies to v1 or v2.** The last message on any of the five posted
+threads is 2026-07-07. Everything on them is already dispositioned below.
+
+**Still not upstream, still carried:** Lyude Paul's KMS layer is not in
+`drm-rust-next` (no `rust/kernel/drm/kms*`), and she has posted no newer Rust
+KMS series, so the 43 imported commits stay. Colin Braun's URB RFC is unchanged
+since its 2026-07-12 v1. Igor Korotin's I2C adapter work is unchanged since
+2026-01-31.
+
+**Superseded, migration pending:** Danilo Krummrich has taken over the workqueue
+work and posted `[PATCH v2 0/6] workqueue: OwnedQueue, ScopedQueue and
+ScopedWork` (2026-08-07). It supersedes three commits we carry — Alice Ryhl's
+three creation patches, our own `rust: workqueue: make OwnedQueue thread-safe`
+(v2 adds `Send + Sync` for `OwnedQueue` directly), and Onur Özkan's `cancel_sync`
+support, which v2 drops in favour of `ScopedWork`.
+
+The swap is not mechanical: Vino calls `Work::cancel_sync()` in seven places
+across `drm_sink.rs` and `vino.rs`, and `ScopedWork` replaces that idiom with a
+work item that cancels synchronously on drop. It is the better fit for what our
+teardown does by hand, but it is a driver change that needs hardware validation.
+The series is also still moving — Danilo self-reported fixes to v2 4/6 (wrong
+default flag, `WQ_PERCPU` vs `WQ_UNBOUND`) and 6/6 (a missing `drop_in_place`)
+within a day of posting, so a v3 is likely. Take it when v3 lands, in one commit
+that swaps the prerequisites and migrates the call sites together.
+
+**Watch, do not act yet:** Alvin Sun's `[PATCH v9 00/10] Fix missing fops.owner
+in Rust DRM/misc abstractions` fixes the same bug as our `rust: drm: pin the
+owner while DRM files remain open`, from the other end: it gives
+`ModuleMetadata` a `THIS_MODULE` const and drops the `module!` static, rather
+than threading an owning module through `UnregisteredDevice::new()` the way we
+do. It is at v9 and being reviewed by Petr Pavlu, Miguel Ojeda and Gary Guo, but
+it is not in `drm-rust-next` — upstream `UnregisteredDevice::new()` still takes
+no module — so our patch is still load-bearing. Drop ours when theirs lands; do
+not post ours into the same area meanwhile.
+
+Joel Fernandes / John Hubbard's
+`rust: sync: completion: add wait_for_completion_timeout()` (2026-08-07, patch
+1/17 of a nova-core interrupt series) adds the same API as our
+`rust: sync: completion: add single-shot and timed operations`. Unmerged, and
+inside a series about something else; drop ours if and when theirs lands.
+
+`rust: firmware: add request_into_buf()` reached `drm-rust-next` this cycle and
+is *not* a duplicate of our firmware-upload abstraction — that binds
+`firmware_upload_register()`, the push direction, which upstream still lacks.
+
+**Nothing else is coming this cycle.** Danilo's `[GIT PULL] DRM Rust changes for
+v7.3-rc1` (2026-08-08) is exactly the base we rebased onto: `RegistrationData`
+and `RegistrationGuard`, TLV firmware and GSP consolidation for nova-core, and
+firmware/MCU boot for Tyr. It mentions no KMS, workqueue, completion or
+`fops.owner` work at all, so none of the four collisions above resolve
+themselves in v7.3-rc1.
 
 The full integration branch is not a proposed single-list posting. Its group
 manifests separate existing work and independently owned subsystem APIs from

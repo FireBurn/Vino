@@ -1,4 +1,4 @@
-From 85ffaac1c2bf6733e0015e76e428aaaf30d57820 Mon Sep 17 00:00:00 2001
+From 7e0e33071fef51e5e7bb6f78b8903a9a9d77e397 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 16:54:31 +0100
 Subject: [PATCH 030/114] rust: io: add checked offset copy helpers

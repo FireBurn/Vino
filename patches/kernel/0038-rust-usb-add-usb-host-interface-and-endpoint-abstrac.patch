@@ -1,4 +1,4 @@
-From d8d1b33dcf44d87ed64bcc067050c4a88bef43da Mon Sep 17 00:00:00 2001
+From 7cdef00d1cedd2a9ab9a199758cfd8d2fed75abf Mon Sep 17 00:00:00 2001
 From: Colin Braun <colinbrauncl@gmail.com>
 Date: Sun, 12 Jul 2026 16:07:59 -0500
 Subject: [PATCH 038/114] rust: usb: add usb host interface and endpoint

@@ -1,4 +1,4 @@
-From c982691f9b42341e921e7b93cd46fa787eb43f5e Mon Sep 17 00:00:00 2001
+From 92cb22d1fa74c461d1a7f51364211fd158a05549 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 23 May 2024 16:50:22 -0400
 Subject: [PATCH 070/114] rust: drm/kms: Add RawPlaneState::crtc()

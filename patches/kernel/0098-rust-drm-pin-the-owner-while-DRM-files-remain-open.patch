@@ -1,4 +1,4 @@
-From e3ed2cc456cf0d8936664c766e9d53c3fba12f32 Mon Sep 17 00:00:00 2001
+From f43d6c08a6eb9f4907f68976b2c1d2d7466f640b Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 22:51:17 +0100
 Subject: [PATCH 098/114] rust: drm: pin the owner while DRM files remain open

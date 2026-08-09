@@ -1,4 +1,4 @@
-From 19948b6023eb7cbbd70c484bd8502c62d457857f Mon Sep 17 00:00:00 2001
+From 5783fd208769c4fca6097d544db11c0b4fac8e65 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 03:40:28 +0100
 Subject: [PATCH 106/114] drm/vino: add the encrypted control protocol

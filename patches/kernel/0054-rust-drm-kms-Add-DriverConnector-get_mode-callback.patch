@@ -1,4 +1,4 @@
-From 9612651b9dccc2712c9f80ab5673b5eb6cc0da52 Mon Sep 17 00:00:00 2001
+From 68bc9e5fb008bb379e4bab09b8eaaa99c293926f Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Fri, 17 May 2024 18:49:31 -0400
 Subject: [PATCH 054/114] rust: drm/kms: Add DriverConnector::get_mode callback

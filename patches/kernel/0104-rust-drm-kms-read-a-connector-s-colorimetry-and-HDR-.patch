@@ -1,4 +1,4 @@
-From 3a3ee4ef5b471d70b864f9d8a6b4999405ac0507 Mon Sep 17 00:00:00 2001
+From 02432b17c97f5bb30dfa0d39f943105e1e5623fa Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 03:40:28 +0100
 Subject: [PATCH 104/114] rust: drm: kms: read a connector's colorimetry and

@@ -1,4 +1,4 @@
-From 1b871907ae4c695d18af02b2786124f9244b1ec3 Mon Sep 17 00:00:00 2001
+From 7f83a9d44e8045d14f1e5fee779ef45dba01fa67 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 23 May 2024 16:48:56 -0400
 Subject: [PATCH 067/114] rust: drm/kms: Add DriverPlane::atomic_check()

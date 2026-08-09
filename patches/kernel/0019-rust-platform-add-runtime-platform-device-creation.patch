@@ -1,4 +1,4 @@
-From e494b57197004ce8eed1fad15218316df639932f Mon Sep 17 00:00:00 2001
+From daee4ee582fefb726993846beeb3dd45d8b603e3 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 06:19:08 +0100
 Subject: [PATCH 019/114] rust: platform: add runtime platform device creation

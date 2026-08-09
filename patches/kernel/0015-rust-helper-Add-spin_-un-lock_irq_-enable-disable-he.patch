@@ -1,4 +1,4 @@
-From fed80e2abb776da975ec58f7a6cb9f690f01bf82 Mon Sep 17 00:00:00 2001
+From aca5c078d7aa15e069c9f67c6b748b7af3827e60 Mon Sep 17 00:00:00 2001
 From: Boqun Feng <boqun.feng@gmail.com>
 Date: Mon, 2 Mar 2026 18:16:45 -0500
 Subject: [PATCH 015/114] rust: helper: Add

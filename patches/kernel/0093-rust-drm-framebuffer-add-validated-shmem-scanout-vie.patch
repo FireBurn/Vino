@@ -1,4 +1,4 @@
-From 62b57033adadd5ccbed9d1479c80a9ef8cdbf726 Mon Sep 17 00:00:00 2001
+From 0fec46c22863597ff110287ad25cee84b21f3550 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 19:15:31 +0100
 Subject: [PATCH 093/114] rust: drm: framebuffer: add validated shmem scanout

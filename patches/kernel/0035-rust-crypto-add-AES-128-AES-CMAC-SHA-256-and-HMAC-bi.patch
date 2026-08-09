@@ -1,4 +1,4 @@
-From 5c2350ec6e14275ffafa8f29e6600af909bdaa81 Mon Sep 17 00:00:00 2001
+From afd579f0fc64f4f137281a31b0965d9bbf91f7fe Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 3 Jun 2026 22:04:46 +0100
 Subject: [PATCH 035/114] rust: crypto: add AES-128, AES-CMAC, SHA-256, and

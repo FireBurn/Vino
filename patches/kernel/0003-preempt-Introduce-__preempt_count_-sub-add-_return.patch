@@ -1,4 +1,4 @@
-From f52387e8ecfaba9451075c9550d07435dd634f6c Mon Sep 17 00:00:00 2001
+From 61de601b5689330bd4334b1cbd4bcee5ab6d68f6 Mon Sep 17 00:00:00 2001
 From: Boqun Feng <boqun.feng@gmail.com>
 Date: Tue, 26 May 2026 08:21:39 -0700
 Subject: [PATCH 003/114] preempt: Introduce __preempt_count_{sub,

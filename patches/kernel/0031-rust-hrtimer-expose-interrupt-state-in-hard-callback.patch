@@ -1,4 +1,4 @@
-From ea09523ac0f7b37b80b8a199dc94c436239e2417 Mon Sep 17 00:00:00 2001
+From b78fc3e4b7827f798e857a0fdff3ed6298cacdff Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 16:54:31 +0100
 Subject: [PATCH 031/114] rust: hrtimer: expose interrupt state in hard

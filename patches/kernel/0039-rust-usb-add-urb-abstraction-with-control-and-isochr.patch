@@ -1,4 +1,4 @@
-From 21352248b2a4bde558d212ae69ab3dba31c2d3f8 Mon Sep 17 00:00:00 2001
+From 3b6710bf96b48af59d434f67312c0fd7ca5bf845 Mon Sep 17 00:00:00 2001
 From: Colin Braun <colinbrauncl@gmail.com>
 Date: Sun, 12 Jul 2026 16:08:00 -0500
 Subject: [PATCH 039/114] rust: usb: add urb abstraction with control and

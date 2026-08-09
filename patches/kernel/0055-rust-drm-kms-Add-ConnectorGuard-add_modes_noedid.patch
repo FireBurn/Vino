@@ -1,4 +1,4 @@
-From 123586421af53bc9b06470b2b307bdea393226cd Mon Sep 17 00:00:00 2001
+From 8a715dfdecdb25a71a6db22e33bfd9ef57d04d9a Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Mon, 30 Sep 2024 16:38:37 -0400
 Subject: [PATCH 055/114] rust: drm/kms: Add ConnectorGuard::add_modes_noedid()

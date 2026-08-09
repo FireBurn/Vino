@@ -1,4 +1,4 @@
-From f2cda3bb577934d9c08c12a1fc55cf6817a8fb77 Mon Sep 17 00:00:00 2001
+From 2ec377b6994c88fc8e1d2e30153591c621c3d31d Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 06:19:08 +0100
 Subject: [PATCH 092/114] rust: drm: add private ioctl compat translations

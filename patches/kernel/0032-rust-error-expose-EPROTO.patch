@@ -1,4 +1,4 @@
-From 6b10fb2821165f2559b14f244fa13befa598fd3f Mon Sep 17 00:00:00 2001
+From f9b12254f264807825a7bbf80e2a848c8c41d636 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 21:18:39 +0100
 Subject: [PATCH 032/114] rust: error: expose EPROTO

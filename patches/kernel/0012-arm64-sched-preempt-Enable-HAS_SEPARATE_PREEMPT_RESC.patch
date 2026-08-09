@@ -1,4 +1,4 @@
-From 3f8336b357c6f400ecf8b902329d4ab2208b203e Mon Sep 17 00:00:00 2001
+From 5fb1c7ca82cddbb7c3b611db367e8f06e9072679 Mon Sep 17 00:00:00 2001
 From: Boqun Feng <boqun@kernel.org>
 Date: Tue, 26 May 2026 08:21:47 -0700
 Subject: [PATCH 012/114] arm64: sched/preempt: Enable

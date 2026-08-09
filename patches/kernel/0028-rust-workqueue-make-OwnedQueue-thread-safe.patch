@@ -1,4 +1,4 @@
-From 77320ae495236f267ae55b612b865df71f0afe10 Mon Sep 17 00:00:00 2001
+From 6e4721dd1de1df4cdfcf9a9a7be0b7ee7acf2e59 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 22:04:19 +0100
 Subject: [PATCH 028/114] rust: workqueue: make OwnedQueue thread-safe
