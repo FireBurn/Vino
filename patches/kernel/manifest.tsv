@@ -104,12 +104,12 @@ patch	commit	author	subject
 0103-rust-drm-kms-add-synthesized-CVT-connector-modes.patch	eac2af9cba7688bfcaba3d7780a9c804cd7b0120	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: add synthesized CVT connector modes
 0104-rust-drm-kms-read-a-connector-s-colorimetry-and-HDR-.patch	25466fa7ec18a3938228065b4c2189c6a54201c8	Mike Lothian <mike@fireburn.co.uk>	rust: drm: kms: read a connector's colorimetry and HDR metadata
 0105-drm-evdi-add-the-Rust-virtual-display-driver.patch	6624bbbbf14a7b91be938027c794225b50d780e0	Mike Lothian <mike@fireburn.co.uk>	drm/evdi: add the Rust virtual display driver
-0106-drm-vino-add-the-encrypted-control-protocol.patch	0793d0c905e492dc73873ad2aa095a5dccbebe80	Mike Lothian <mike@fireburn.co.uk>	drm/vino: add the encrypted control protocol
-0107-drm-vino-add-the-DL3-video-codec-and-stream-setup.patch	724bde4c82f57234e57de7f2c1311e706566bb11	Mike Lothian <mike@fireburn.co.uk>	drm/vino: add the DL3 video codec and stream setup
-0108-drm-vino-add-the-DRM-KMS-scanout-engine.patch	cc2ee662322572d5062f1ebcc7c807b1cf99bb49	Mike Lothian <mike@fireburn.co.uk>	drm/vino: add the DRM/KMS scanout engine
-0109-drm-vino-add-the-DisplayLink-DL3-USB-display-driver.patch	bc5e00baeecb2a12796972b50ca03e89aba939c2	Mike Lothian <mike@fireburn.co.uk>	drm/vino: add the DisplayLink DL3 USB display driver
-0110-Documentation-gpu-document-the-Vino-driver.patch	494d21d8f2f62bb663f0820edf9e3f0fa706186d	Mike Lothian <mike@fireburn.co.uk>	Documentation/gpu: document the Vino driver
-0111-drm-vino-read-the-dock-s-firmware-version-and-update.patch	8cda63b5e23aa42a9dd9d2a79c8faf89b5d48067	Mike Lothian <mike@fireburn.co.uk>	drm/vino: read the dock's firmware version, and update it over DFU
-0112-rust-firmware-add-the-firmware-upload-abstraction.patch	4af5b36317ae023038412eee60055e086ef9dee4	Mike Lothian <mike@fireburn.co.uk>	rust: firmware: add the firmware upload abstraction
-0113-drm-vino-let-userspace-push-a-firmware-image-to-the-.patch	e1414ff15cba7ae19257f1c71a7ba6696e09a9c4	Mike Lothian <mike@fireburn.co.uk>	drm/vino: let userspace push a firmware image to the dock
-0114-drm-vino-bind-the-display-function-and-place-docks-b.patch	78bedbe6845471b380f0c66191f082ce2ba19c79	Mike Lothian <mike@fireburn.co.uk>	drm/vino: bind the display function, and place docks by family
+0106-drm-vino-add-the-encrypted-control-protocol.patch	a310f88317175d1d08775fb2d4b7aba4674e29ac	Mike Lothian <mike@fireburn.co.uk>	drm/vino: add the encrypted control protocol
+0107-drm-vino-add-the-DL3-video-codec-and-stream-setup.patch	254ade6daddc84111ed4f3747f319ea1200693e4	Mike Lothian <mike@fireburn.co.uk>	drm/vino: add the DL3 video codec and stream setup
+0108-drm-vino-add-the-DRM-KMS-scanout-engine.patch	0579c622ddb9db276c50077c30df57ffee111e6c	Mike Lothian <mike@fireburn.co.uk>	drm/vino: add the DRM/KMS scanout engine
+0109-drm-vino-add-the-DisplayLink-DL3-USB-display-driver.patch	98f81aec1562bca77502e70bc36a75a95176b9dc	Mike Lothian <mike@fireburn.co.uk>	drm/vino: add the DisplayLink DL3 USB display driver
+0110-Documentation-gpu-document-the-Vino-driver.patch	80355512deeaadeead783a56a33cd221044622b7	Mike Lothian <mike@fireburn.co.uk>	Documentation/gpu: document the Vino driver
+0111-drm-vino-read-the-dock-s-firmware-version-and-update.patch	de8e3b3beffd5c7f41e97bf958bc1e7172920642	Mike Lothian <mike@fireburn.co.uk>	drm/vino: read the dock's firmware version, and update it over DFU
+0112-rust-firmware-add-the-firmware-upload-abstraction.patch	a7e767eb9ae8b2175ed3e3c8b46c8903266934f6	Mike Lothian <mike@fireburn.co.uk>	rust: firmware: add the firmware upload abstraction
+0113-drm-vino-let-userspace-push-a-firmware-image-to-the-.patch	9d4d45d2ff505a30165ab93f90472445f4e83578	Mike Lothian <mike@fireburn.co.uk>	drm/vino: let userspace push a firmware image to the dock
+0114-drm-vino-bind-the-display-function-and-place-docks-b.patch	bebe3029d79e1983706edfd260da176341dfa7c7	Mike Lothian <mike@fireburn.co.uk>	drm/vino: bind the display function, and place docks by family

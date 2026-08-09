@@ -1,4 +1,4 @@
-From 0793d0c905e492dc73873ad2aa095a5dccbebe80 Mon Sep 17 00:00:00 2001
+From a310f88317175d1d08775fb2d4b7aba4674e29ac Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 03:40:28 +0100
 Subject: [PATCH 106/114] drm/vino: add the encrypted control protocol
@@ -211,7 +211,7 @@ index 000000000000..54d24ca2d096
 +}
 diff --git a/drivers/gpu/drm/vino/cp.rs b/drivers/gpu/drm/vino/cp.rs
 new file mode 100644
-index 000000000000..243c8db30572
+index 000000000000..2615be2ef779
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/cp.rs
 @@ -0,0 +1,1693 @@
@@ -855,7 +855,7 @@ index 000000000000..243c8db30572
 +    // A dark panel on a mode with no decrypted message is far more likely to be these two words
 +    // than anything else in the pipeline, so name them in the log.
 +    if !profile.measured {
-+        pr_info!(
++        vino_debug!(
 +            "vino: {}x{}@{} has no decrypted DLM profile; inferring sync_flags={:#06x} \
 +             vic_word={:#06x}\n",
 +            mode.hdisplay(),
@@ -870,7 +870,7 @@ index 000000000000..243c8db30572
 +    // count follows the dock's own allocator, so an unmeasured resolution has no derivation.
 +    let (stride, total_rows) = if navarro {
 +        let rows = navarro_total_rows(mode.hdisplay(), mode.vdisplay()).unwrap_or_else(|| {
-+            pr_info!(
++            vino_debug!(
 +                "vino: {}x{} has no measured DL7400 row count; sending Ridge's {:#06x}\n",
 +                mode.hdisplay(),
 +                mode.vdisplay(),
@@ -1795,7 +1795,7 @@ index 000000000000..243c8db30572
 +        // sink that answered with a block this rejected and of one that never answered at all,
 +        // and those want opposite fixes.
 +        if crate::debug_enabled() {
-+            pr_info!(
++            vino_debug!(
 +                "vino: EDID reply candidate: inner {} B, payload {} B, first 8 {:02x?}\n",
 +                inner.len(),
 +                edid.len(),
@@ -1806,7 +1806,7 @@ index 000000000000..243c8db30572
 +        const MAGIC: [u8; 8] = [0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00];
 +        if edid[..8] != MAGIC {
 +            if crate::debug_enabled() {
-+                pr_info!("vino: EDID reply rejected: bad base-block magic\n");
++                vino_debug!("vino: EDID reply rejected: bad base-block magic\n");
 +            }
 +            continue;
 +        }
@@ -1819,12 +1819,12 @@ index 000000000000..243c8db30572
 +        }
 +        if edid[..128].iter().fold(0u8, |a, b| a.wrapping_add(*b)) != 0 {
 +            if crate::debug_enabled() {
-+                pr_info!("vino: EDID reply rejected: base block checksum\n");
++                vino_debug!("vino: EDID reply rejected: base block checksum\n");
 +            }
 +            continue;
 +        }
 +        if crate::debug_enabled() {
-+            pr_info!(
++            vino_debug!(
 +                "vino: EDID base block accepted: {} extension block(s) declared, {} B available\n",
 +                edid[126],
 +                edid.len()

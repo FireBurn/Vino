@@ -1,4 +1,4 @@
-From cc2ee662322572d5062f1ebcc7c807b1cf99bb49 Mon Sep 17 00:00:00 2001
+From 0579c622ddb9db276c50077c30df57ffee111e6c Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 03:40:39 +0100
 Subject: [PATCH 108/114] drm/vino: add the DRM/KMS scanout engine
@@ -18,10 +18,10 @@ Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/color.rs                 |  271 +
- drivers/gpu/drm/vino/drm_sink.rs              | 4902 +++++++++++++++++
+ drivers/gpu/drm/vino/drm_sink.rs              | 4900 +++++++++++++++++
  drivers/gpu/drm/vino/drm_sink/mode_objects.rs |  862 +++
  drivers/gpu/drm/vino/drm_sink/scanout.rs      | 1528 +++++
- 4 files changed, 7563 insertions(+)
+ 4 files changed, 7561 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/color.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink/mode_objects.rs
@@ -306,10 +306,10 @@ index 000000000000..2bae62d86c5f
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink.rs b/drivers/gpu/drm/vino/drm_sink.rs
 new file mode 100644
-index 000000000000..593ec4465d86
+index 000000000000..a6277ac57525
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink.rs
-@@ -0,0 +1,4902 @@
+@@ -0,0 +1,4900 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! DRM/KMS integration for Vino.
@@ -1948,7 +1948,7 @@ index 000000000000..593ec4465d86
 +            }
 +            self.set_disconnected(head);
 +            dropped = true;
-+            pr_info!(
++            pr_warn!(
 +                "vino: socket {socket} dropped with the control session\n",
 +                socket = head + 1
 +            );
@@ -3799,13 +3799,11 @@ index 000000000000..593ec4465d86
 +        if head >= HEADS {
 +            return;
 +        }
-+        // Tagged with the dock's connector count (Navarro 4, Ridge 2). With both docks bound only
-+        // one ever ends up with a `connected` DRM connector, and vino logs
-+        // `head 0 monitor connected` for the loser on a path that does call `set_connected` --
-+        // so something clears it afterwards and this says which dock, and when.
++        // Tagged with the dock's connector count, which is what tells two bound docks apart in a
++        // single log.
 +        if self.heads_present.load(Ordering::Acquire) & (1u32 << head) != 0 {
-+            pr_info!(
-+                "vino: [{}conn] socket {socket} presence CLEARED (connector goes disconnected)\n",
++            vino_debug!(
++                "vino: {}-connector dock: socket {socket} presence cleared\n",
 +                self.connector_count()
 +            );
 +        }
@@ -3868,7 +3866,7 @@ index 000000000000..593ec4465d86
 +                        b'@' + ((m >> 5) & 0x1f) as u8,
 +                        b'@' + (m & 0x1f) as u8,
 +                    ];
-+                    pr_info!(
++                    vino_debug!(
 +                        "vino: socket {socket} EDID {n} B, vendor {}{}{} product {:#06x}\n",
 +                        vendor[0] as char,
 +                        vendor[1] as char,
@@ -3886,7 +3884,7 @@ index 000000000000..593ec4465d86
 +                // a 25 s re-enumeration loop. The head stays disconnected until userspace has
 +                // supplied the description AND forced the connector on; see `edid_from_userspace`.
 +                if self.edid_from_userspace(head as usize) {
-+                    pr_info!(
++                    pr_warn!(
 +                        "vino: socket {socket} has no EDID from the dock and is waiting for one from \
 +                         userspace (edid_override); it stays disconnected until then\n"
 +                    );
@@ -4120,7 +4118,7 @@ index 000000000000..593ec4465d86
 +            );
 +            queued += 1;
 +        }
-+        pr_info!("vino: head {flapped} sink flap -- re-driving {queued} lit head(s) together\n");
++        pr_warn!("vino: head {flapped} sink flap -- re-driving {queued} lit head(s) together\n");
 +        queued
 +    }
 +

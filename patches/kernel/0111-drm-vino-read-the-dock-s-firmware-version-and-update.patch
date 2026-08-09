@@ -1,4 +1,4 @@
-From 8cda63b5e23aa42a9dd9d2a79c8faf89b5d48067 Mon Sep 17 00:00:00 2001
+From de8e3b3beffd5c7f41e97bf958bc1e7172920642 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 04:09:46 +0100
 Subject: [PATCH 111/114] drm/vino: read the dock's firmware version, and
@@ -37,11 +37,11 @@ Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/Kconfig     |   2 +
- drivers/gpu/drm/vino/firmware.rs | 407 +++++++++++++++++++++++++++++++
+ drivers/gpu/drm/vino/firmware.rs | 402 +++++++++++++++++++++++++++++++
  drivers/gpu/drm/vino/session.rs  |  13 +-
  drivers/gpu/drm/vino/tests.rs    |  43 ++++
  drivers/gpu/drm/vino/vino.rs     |  23 ++
- 5 files changed, 485 insertions(+), 3 deletions(-)
+ 5 files changed, 480 insertions(+), 3 deletions(-)
  create mode 100644 drivers/gpu/drm/vino/firmware.rs
 
 diff --git a/drivers/gpu/drm/vino/Kconfig b/drivers/gpu/drm/vino/Kconfig
@@ -59,10 +59,10 @@ index cbe92828c14e..39c502778c80 100644
  	  Universal Dock D6000 (USB ID 17e9:6006, DL-6xxx silicon) and the
 diff --git a/drivers/gpu/drm/vino/firmware.rs b/drivers/gpu/drm/vino/firmware.rs
 new file mode 100644
-index 000000000000..db680921d61e
+index 000000000000..9acc2a1e3f9e
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/firmware.rs
-@@ -0,0 +1,407 @@
+@@ -0,0 +1,402 @@
 +// SPDX-License-Identifier: GPL-2.0
 +//! Dock firmware: identity, package parsing, and the USB DFU update.
 +//!
@@ -420,9 +420,9 @@ index 000000000000..db680921d61e
 +    _iface: u16,
 +    _force: bool,
 +) -> Result {
-+    dev_info!(
++    vino_dev_debug!(
 +        dev,
-+        "vino: dock firmware {}; updates need CONFIG_RUST_FW_LOADER_ABSTRACTIONS\n",
++        "dock firmware {}; updates need CONFIG_RUST_FW_LOADER_ABSTRACTIONS\n",
 +        identity.version
 +    );
 +    Ok(())
@@ -440,30 +440,25 @@ index 000000000000..db680921d61e
 +        return Ok(());
 +    };
 +    let Ok(fw) = Firmware::request_nowarn(name, dev) else {
-+        dev_info!(
++        vino_dev_debug!(
 +            dev,
-+            "vino: no {} available; leaving the dock on {}\n",
++            "no {} available; leaving the dock on {}\n",
 +            name,
 +            identity.version
 +        );
 +        return Ok(());
 +    };
 +    let Some(packaged) = package_version(fw.data()) else {
-+        dev_warn!(dev, "vino: {} carries no version tag; ignoring it\n", name);
++        dev_warn!(dev, "{} carries no version tag; ignoring it\n", name);
 +        return Ok(());
 +    };
 +    if packaged <= identity.version && !force {
-+        dev_info!(
-+            dev,
-+            "vino: firmware is current ({} offers {})\n",
-+            name,
-+            packaged
-+        );
++        vino_dev_debug!(dev, "firmware is current ({} offers {})\n", name, packaged);
 +        return Ok(());
 +    }
 +    dev_info!(
 +        dev,
-+        "vino: updating dock firmware {} -> {}{}\n",
++        "updating dock firmware {} -> {}{}\n",
 +        identity.version,
 +        packaged,
 +        if force { " (forced)" } else { "" }
@@ -471,7 +466,7 @@ index 000000000000..db680921d61e
 +    flash(io, iface, fw.data())
 +}
 diff --git a/drivers/gpu/drm/vino/session.rs b/drivers/gpu/drm/vino/session.rs
-index c7eda19a393a..bcdf8e497004 100644
+index aea08afccb2a..30d3badcd6d3 100644
 --- a/drivers/gpu/drm/vino/session.rs
 +++ b/drivers/gpu/drm/vino/session.rs
 @@ -29,9 +29,16 @@ pub(super) fn bring_up(dev: &UsbLink<'_>, profile: &DockProfile) -> Result {
@@ -495,7 +490,7 @@ index c7eda19a393a..bcdf8e497004 100644
          }
          // A composite driver may only change its own interface.
 diff --git a/drivers/gpu/drm/vino/tests.rs b/drivers/gpu/drm/vino/tests.rs
-index d1e04628f10b..cee44fdb842c 100644
+index afb90c8c8313..cdb47dfa2ab2 100644
 --- a/drivers/gpu/drm/vino/tests.rs
 +++ b/drivers/gpu/drm/vino/tests.rs
 @@ -14,6 +14,7 @@
@@ -506,7 +501,7 @@ index d1e04628f10b..cee44fdb842c 100644
  
      /// S31.32 sign-magnitude constants: 1.0, +0.5, and -0.5 as sign bit + magnitude.
      const CTM_ONE: u64 = 1 << 32;
-@@ -604,6 +605,48 @@ fn edid_engage_req_matches_dlm_wire_shape() -> Result {
+@@ -618,6 +619,48 @@ fn edid_engage_req_matches_dlm_wire_shape() -> Result {
          Ok(())
      }
  
@@ -556,10 +551,10 @@ index d1e04628f10b..cee44fdb842c 100644
      fn dual_nivo_rides_the_flags_word() -> Result {
          // Bit 2 of offset 42 declares that this head's video endpoint carries a second connector.
 diff --git a/drivers/gpu/drm/vino/vino.rs b/drivers/gpu/drm/vino/vino.rs
-index 174ed11ff383..ed7a0a82e74e 100644
+index 0b5ba517e96c..5c9e7bb39d0c 100644
 --- a/drivers/gpu/drm/vino/vino.rs
 +++ b/drivers/gpu/drm/vino/vino.rs
-@@ -113,6 +113,7 @@ fn hold_until(anchor: Instant<Monotonic>, target_us: i64) {
+@@ -128,6 +128,7 @@ fn hold_until(anchor: Instant<Monotonic>, target_us: i64) {
  mod color;
  mod cp;
  mod crypto;
@@ -567,7 +562,7 @@ index 174ed11ff383..ed7a0a82e74e 100644
  mod hdcp;
  mod proto;
  mod rng;
-@@ -1046,6 +1047,24 @@ fn probe<'bound>(
+@@ -1054,6 +1055,24 @@ fn probe<'bound>(
                  info.hdr_capable
              );
          }
@@ -582,17 +577,17 @@ index 174ed11ff383..ed7a0a82e74e 100644
 +            // perfectly well on the firmware it shipped with.
 +            match io.enter().and_then(|link| {
 +                let id = firmware::read_identity(&link)?;
-+                dev_info!(cdev, "vino: {id} running firmware {}\n", id.version);
++                dev_info!(cdev, "{id} running firmware {}\n", id.version);
 +                firmware::update_if_newer(&link, cdev, &id, u16::from(ifnum), force)
 +            }) {
 +                Ok(()) => {}
-+                Err(e) => dev_info!(cdev, "vino: dock firmware check skipped ({e:?})\n"),
++                Err(e) => dev_info!(cdev, "dock firmware check skipped ({e:?})\n"),
 +            }
 +        }
          if ifnum != 0 {
              // Keep the app-specific interface paired with the display function. Let the audio
              // (2-4) and Ethernet (5-6) interfaces fall through to their class drivers. Returning
-@@ -1201,6 +1220,10 @@ fn disconnect<'bound>(intf: &'bound usb::Interface<Core<'_>>, data: Pin<&VinoBou
+@@ -1203,6 +1222,10 @@ fn disconnect<'bound>(intf: &'bound usb::Interface<Core<'_>>, data: Pin<&VinoBou
              default: 0,
              description: "Local UTC offset used by Navarro RTC synchronization (minutes east of UTC)",
          },

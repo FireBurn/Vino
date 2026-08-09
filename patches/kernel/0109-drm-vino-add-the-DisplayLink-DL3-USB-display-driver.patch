@@ -1,4 +1,4 @@
-From bc5e00baeecb2a12796972b50ca03e89aba939c2 Mon Sep 17 00:00:00 2001
+From 98f81aec1562bca77502e70bc36a75a95176b9dc Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 03:40:50 +0100
 Subject: [PATCH 109/114] drm/vino: add the DisplayLink DL3 USB display driver
@@ -24,10 +24,10 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  drivers/gpu/drm/vino/Makefile    |    2 +
  drivers/gpu/drm/vino/profile.rs  |  190 +++
  drivers/gpu/drm/vino/session.rs  | 2072 ++++++++++++++++++++++++++++++
- drivers/gpu/drm/vino/tests.rs    | 1757 +++++++++++++++++++++++++
+ drivers/gpu/drm/vino/tests.rs    | 1771 +++++++++++++++++++++++++
  drivers/gpu/drm/vino/usb_link.rs |  201 +++
- drivers/gpu/drm/vino/vino.rs     | 1216 ++++++++++++++++++
- 10 files changed, 5484 insertions(+)
+ drivers/gpu/drm/vino/vino.rs     | 1218 ++++++++++++++++++
+ 10 files changed, 5500 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/Kconfig
  create mode 100644 drivers/gpu/drm/vino/Makefile
  create mode 100644 drivers/gpu/drm/vino/profile.rs
@@ -327,7 +327,7 @@ index 000000000000..e40f5ffe9345
 +pub(crate) const EP_CTRL_IN: u8 = 0x84;
 diff --git a/drivers/gpu/drm/vino/session.rs b/drivers/gpu/drm/vino/session.rs
 new file mode 100644
-index 000000000000..c7eda19a393a
+index 000000000000..aea08afccb2a
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/session.rs
 @@ -0,0 +1,2072 @@
@@ -862,7 +862,7 @@ index 000000000000..c7eda19a393a
 +            // loop further down is the *unqueued* fallback and does not run, which is why
 +            // instrumenting it said nothing.
 +            Some(queue) => queue.send(dev.io(), frame, timeout()).inspect_err(|e| {
-+                pr_info!(
++                pr_err!(
 +                    "vino: EP02 queued submit of {} B failed ({e:?})\n",
 +                    frame.len()
 +                );
@@ -1024,7 +1024,7 @@ index 000000000000..c7eda19a393a
 +                            last_err = e;
 +                            if !nak_reported {
 +                                nak_reported = true;
-+                                pr_info!(
++                                vino_debug!(
 +                                    "vino: EP02 NAKed a {} B control frame (cp_ctr={cp_ctr}, wseq={wseq}); retrying up to {TRIES}x\n",
 +                                    frame.len()
 +                                );
@@ -1044,7 +1044,7 @@ index 000000000000..c7eda19a393a
 +                    }
 +                }
 +                if !accepted {
-+                    pr_info!(
++                    pr_err!(
 +                        "vino: EP02 refused {TRIES} submissions of a {} B frame (cp_ctr={cp_ctr}, wseq={wseq}) -- giving up\n",
 +                        frame.len()
 +                    );
@@ -1208,7 +1208,7 @@ index 000000000000..c7eda19a393a
 +                        // whole dock down whenever a single connector was empty, so a two-head
 +                        // dock with one monitor never came up at all, and a dock with none was
 +                        // unreachable even for EDID and hotplug.
-+                        pr_info!(
++                        vino_debug!(
 +                            "vino: socket {socket} has no downstream sink (no AKE_Send_Rrx); skipping its authentication\n"
 +                        );
 +                        continue 'per_head;
@@ -1408,7 +1408,7 @@ index 000000000000..c7eda19a393a
 +                    let Some(rrx_h) = fresh_rrx else {
 +                        cp_ctr += 1;
 +                        wseq += ((content_len + 15) / 16) as u32;
-+                        pr_info!(
++                        vino_debug!(
 +                            "vino: socket {socket} has no downstream sink (no AKE_Send_Rrx); skipping its authentication\n"
 +                        );
 +                        continue 'per_head;
@@ -1575,7 +1575,7 @@ index 000000000000..c7eda19a393a
 +            head_ok[head] = true;
 +            heads_authenticated += 1;
 +        }
-+        pr_info!(
++        vino_debug!(
 +            "vino: {heads_authenticated}/{} head(s) authenticated\n",
 +            connector_count
 +        );
@@ -1655,7 +1655,7 @@ index 000000000000..c7eda19a393a
 +            // and the session is otherwise complete. A dock with an empty connector never drains
 +            // that connector's last EP02 write, which would otherwise fail the whole setup.
 +            if let Err(e) = queue.flush(dev.io(), timeout()) {
-+                pr_info!(
++                vino_debug!(
 +                    "vino: EP02 queue flush timed out ({e:?}); session already acknowledged, continuing\n"
 +                );
 +            }
@@ -2405,10 +2405,10 @@ index 000000000000..c7eda19a393a
 +}
 diff --git a/drivers/gpu/drm/vino/tests.rs b/drivers/gpu/drm/vino/tests.rs
 new file mode 100644
-index 000000000000..d1e04628f10b
+index 000000000000..afb90c8c8313
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/tests.rs
-@@ -0,0 +1,1757 @@
+@@ -0,0 +1,1771 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! KUnit coverage for the parts of the protocol that can be checked without hardware: the CP seal
@@ -2445,6 +2445,20 @@ index 000000000000..d1e04628f10b
 +            let _ = v.push(kernel::drm::kms::crtc::ColorLut::new(h, h, h), GFP_KERNEL);
 +        }
 +        v
++    }
++
++    #[test]
++    fn an_endpoint_list_logs_on_one_line() -> Result {
++        // A log line has to be one line. `{:#04x?}` on an array compiles and reads fine in source
++        // but asks the derived `Debug` to pretty-print, putting each endpoint on its own line in
++        // dmesg; nothing but rendering it catches that.
++        let rendered = kernel::str::CString::try_from_fmt(kernel::prelude::fmt!(
++            "{}",
++            crate::HexList(&profile::PROFILE_NAVARRO.video_eps)
++        ))?;
++        assert_eq!(rendered.to_bytes(), b"08 0a 08 0a");
++        assert!(!rendered.to_bytes().contains(&b'\n'));
++        Ok(())
 +    }
 +
 +    #[test]
@@ -4375,10 +4389,10 @@ index 000000000000..2086b0c51975
 +pub(crate) const EP84_BUF: usize = 4096;
 diff --git a/drivers/gpu/drm/vino/vino.rs b/drivers/gpu/drm/vino/vino.rs
 new file mode 100644
-index 000000000000..174ed11ff383
+index 000000000000..0b5ba517e96c
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/vino.rs
-@@ -0,0 +1,1216 @@
+@@ -0,0 +1,1218 @@
 +// SPDX-License-Identifier: GPL-2.0
 +// SPDX-FileCopyrightText: Copyright (C) 2026 Mike Lothian
 +
@@ -4434,6 +4448,21 @@ index 000000000000..174ed11ff383
 +            kernel::dev_info!($dev, $($arg)*);
 +        }
 +    };
++}
++
++/// A byte slice on one line, as `08 0a 08 0a`.
++///
++/// `{:#04x?}` renders an array one element per line: the alternate flag asks the derived `Debug`
++/// for pretty output, which in a log line is unreadable.
++pub(crate) struct HexList<'a>(pub(crate) &'a [u8]);
++
++impl kernel::fmt::Display for HexList<'_> {
++    fn fmt(&self, f: &mut kernel::fmt::Formatter<'_>) -> kernel::fmt::Result {
++        for (i, byte) in self.0.iter().enumerate() {
++            write!(f, "{}{byte:02x}", if i == 0 { "" } else { " " })?;
++        }
++        Ok(())
++    }
 +}
 +
 +/// DisplayLink vendor id.
@@ -4629,10 +4658,9 @@ index 000000000000..174ed11ff383
 +        let pid = dev.product_id();
 +        let bcd = dev.bcd_device();
 +        let usb_bcd = dev.bcd_usb();
-+        dev_info!(
++        vino_dev_debug!(
 +            cdev,
-+            "vino: USB {vid:04x}:{pid:04x} firmware (bcdDevice) {:x}.{:02x} \
-+             bcdUSB {:x}.{:02x} speed {}\n",
++            "USB {vid:04x}:{pid:04x} bcdDevice {:x}.{:02x} bcdUSB {:x}.{:02x} speed {}\n",
 +            bcd >> 8,
 +            bcd & 0xff,
 +            usb_bcd >> 8,
@@ -4641,10 +4669,10 @@ index 000000000000..174ed11ff383
 +        );
 +        // The USB core only caches these when the device answered the string requests.
 +        match (dev.manufacturer(), dev.product()) {
-+            (Some(m), Some(p)) => dev_info!(cdev, "vino: {m} {p}\n"),
-+            (None, Some(p)) => dev_info!(cdev, "vino: {p}\n"),
-+            (Some(m), None) => dev_info!(cdev, "vino: {m} (no product string)\n"),
-+            (None, None) => dev_info!(cdev, "vino: no manufacturer/product strings\n"),
++            (Some(m), Some(p)) => vino_dev_debug!(cdev, "{m} {p}\n"),
++            (None, Some(p)) => vino_dev_debug!(cdev, "{p}\n"),
++            (Some(m), None) => vino_dev_debug!(cdev, "{m} (no product string)\n"),
++            (None, None) => vino_dev_debug!(cdev, "no manufacturer/product strings\n"),
 +        }
 +    }
 +    for ep in intf.cur_altsetting().endpoints() {
@@ -4664,11 +4692,7 @@ index 000000000000..174ed11ff383
 +                kernel::usb::ch9::Direction::In => 0x80,
 +                kernel::usb::ch9::Direction::Out => 0,
 +            };
-+        dev_info!(
-+            cdev,
-+            "vino:   ep {addr:#04x} {kind}-{dir} maxp {}\n",
-+            ep.maxp()
-+        );
++        vino_dev_debug!(cdev, "  ep {addr:#04x} {kind}-{dir} maxp {}\n", ep.maxp());
 +    }
 +}
 +
@@ -4752,9 +4776,9 @@ index 000000000000..174ed11ff383
 +            }
 +            let result = (|| -> Result {
 +                VinoDriver::bring_up(dev, profile)?;
-+                vino_dev_debug!(cdev, "vino: plaintext session initialized\n");
++                vino_dev_debug!(cdev, "plaintext session initialized\n");
 +                let mut session = VinoDriver::run_ake(dev)?;
-+                vino_dev_debug!(cdev, "vino: HDCP AKE + LC + SKE complete\n");
++                vino_dev_debug!(cdev, "HDCP AKE + LC + SKE complete\n");
 +
 +                let mut edid_out: Option<KVec<u8>> = None;
 +                let mut edid_heads: [Option<KVec<u8>>; VinoDriver::CP_SETUP_HEADS] =
@@ -4772,10 +4796,7 @@ index 000000000000..174ed11ff383
 +                    &mut heads_present,
 +                    &mut discovery_deferred,
 +                )?;
-+                vino_dev_debug!(
-+                    cdev,
-+                    "vino: encrypted control setup complete ({n} messages)\n"
-+                );
++                vino_dev_debug!(cdev, "encrypted control setup complete ({n} messages)\n");
 +
 +                // `send_cp_setup` only returns after an authenticated reply proves that the dock
 +                // engaged the session. Publish it before connector state so runtime recovery can
@@ -4800,9 +4821,9 @@ index 000000000000..174ed11ff383
 +                // it. `cap` is the socket's DISPLAY-CAP push, `edid` its raw EDID; the pair
 +                // distinguishes an empty socket from one whose sink cannot be read.
 +                for head in 0..usize::from(profile.connectors) {
-+                    dev_info!(
++                    vino_dev_debug!(
 +                        cdev,
-+                        "vino: socket {} -- cap:{} edid:{} deferred:{} driven:{}\n",
++                        "socket {} -- cap:{} edid:{} deferred:{} driven:{}\n",
 +                        head + 1,
 +                        if heads_present[head] { "yes" } else { "no " },
 +                        if edid_heads[head].is_some() {
@@ -4840,7 +4861,7 @@ index 000000000000..174ed11ff383
 +                        data.set_edid(head, blob);
 +                        vino_dev_debug!(
 +                            cdev,
-+                            "vino: cached socket {socket} EDID ({n} bytes)\n",
++                            "cached socket {socket} EDID ({n} bytes)\n",
 +                            socket = head + 1
 +                        );
 +                    }
@@ -4851,7 +4872,7 @@ index 000000000000..174ed11ff383
 +                        data.set_connected(head);
 +                        dev_info!(
 +                            cdev,
-+                            "vino: socket {socket} monitor connected\n",
++                            "socket {socket} monitor connected\n",
 +                            socket = head + 1
 +                        );
 +                    }
@@ -4907,9 +4928,9 @@ index 000000000000..174ed11ff383
 +                            if let Ok(true) = data.reengage_head(dev, head as u8) {
 +                                data.set_connected(head);
 +                                pending[head] = false;
-+                                dev_info!(
++                                vino_dev_debug!(
 +                                    cdev,
-+                                    "vino: socket {socket} monitor connected during initial \
++                                    "socket {socket} monitor connected during initial \
 +                                     recovery (pass {pass})\n",
 +                                    socket = head + 1
 +                                );
@@ -4925,9 +4946,9 @@ index 000000000000..174ed11ff383
 +                    let waited = (Instant::<Monotonic>::now() - started).as_millis();
 +                    for head in 0..VinoDriver::CP_SETUP_HEADS {
 +                        if pending[head] {
-+                            dev_info!(
++                            dev_warn!(
 +                                cdev,
-+                                "vino: socket {socket} never answered its EDID fetch \
++                                "socket {socket} never answered its EDID fetch \
 +                                 ({pass} passes over {waited} ms); publishing without it\n",
 +                                socket = head + 1
 +                            );
@@ -4946,14 +4967,14 @@ index 000000000000..174ed11ff383
 +                    let backoff = 250i64 << (attempt - 1).min(5);
 +                    dev_warn!(
 +                        cdev,
-+                        "vino: control-session attempt {attempt}/{SESSION_ATTEMPTS} failed \
++                        "control-session attempt {attempt}/{SESSION_ATTEMPTS} failed \
 +                         ({e:?}); retrying in {backoff} ms\n"
 +                    );
 +                    fsleep(Delta::from_millis(backoff));
 +                }
 +                Err(e) => dev_err!(
 +                    cdev,
-+                    "vino: control session failed after {SESSION_ATTEMPTS} attempts ({e:?})\n"
++                    "control session failed after {SESSION_ATTEMPTS} attempts ({e:?})\n"
 +                ),
 +            }
 +        }
@@ -4975,17 +4996,17 @@ index 000000000000..174ed11ff383
 +                    polls += 1;
 +                    fsleep(Delta::from_millis(15));
 +                }
-+                vino_dev_debug!(cdev, "vino: link ready after {polls} status polls\n");
++                vino_dev_debug!(cdev, "link ready after {polls} status polls\n");
 +            }
 +            if data.is_navarro() {
 +                data.hold_cp_for_initial_modeset();
 +            }
 +            drm_dev.hotplug_event();
-+            dev_info!(cdev, "vino: encrypted control session ready\n");
++            vino_dev_debug!(cdev, "encrypted control session ready\n");
 +
 +            // The dock requires a continuous control dialogue for the lifetime of the session.
 +            let data: &drm_sink::VinoDrmData = drm_dev;
-+            vino_dev_debug!(cdev, "vino: starting control keepalive\n");
++            vino_dev_debug!(cdev, "starting control keepalive\n");
 +            let mut sent = 0u32;
 +            // Heartbeats have an independent fixed cadence alongside the status queries.
 +            const HEARTBEAT_PERIOD: Delta = Delta::from_secs(3);
@@ -5091,7 +5112,7 @@ index 000000000000..174ed11ff383
 +                        data.release_initial_modeset_quiet();
 +                        vino_dev_debug!(
 +                            cdev,
-+                            "vino: no initial mode set after {INITIAL_MODESET_QUIET_LIMIT} ms; \
++                            "no initial mode set after {INITIAL_MODESET_QUIET_LIMIT} ms; \
 +                             releasing control keepalive\n"
 +                        );
 +                    } else {
@@ -5183,7 +5204,7 @@ index 000000000000..174ed11ff383
 +                        head_absent_since[h] = None;
 +                        vino_dev_debug!(
 +                            cdev,
-+                            "vino: socket {socket} absent -- retrying the sink re-engage\n"
++                            "socket {socket} absent -- retrying the sink re-engage\n"
 +                        );
 +                        // A valid EDID proves presence even while the generic status reply still
 +                        // reflects an unengaged EDID handler.
@@ -5193,9 +5214,9 @@ index 000000000000..174ed11ff383
 +                                head_known[h] = true;
 +                                head_debounce[h] = 0;
 +                                presence_grace[h] = Instant::<Monotonic>::now() + PRESENCE_GRACE;
-+                                dev_info!(
++                                vino_dev_debug!(
 +                                    cdev,
-+                                    "vino: socket {socket} monitor connected after sink re-engagement\n"
++                                    "socket {socket} monitor connected after sink re-engagement\n"
 +                                );
 +                                hotplug_due = Some(Instant::<Monotonic>::now() + HOTPLUG_COALESCE);
 +                            }
@@ -5203,7 +5224,7 @@ index 000000000000..174ed11ff383
 +                            Err(e) => {
 +                                vino_dev_debug!(
 +                                    cdev,
-+                                    "vino: socket {socket} sink re-engagement failed ({e:?})\n"
++                                    "socket {socket} sink re-engagement failed ({e:?})\n"
 +                                )
 +                            }
 +                        }
@@ -5280,7 +5301,7 @@ index 000000000000..174ed11ff383
 +                            if present && head_absent_since[h].take().is_some() {
 +                                vino_dev_debug!(
 +                                    cdev,
-+                                    "vino: socket {socket} sink flap healed on its own\n"
++                                    "socket {socket} sink flap healed on its own\n"
 +                                );
 +                            }
 +                            continue;
@@ -5324,7 +5345,7 @@ index 000000000000..174ed11ff383
 +                                Err(e) => {
 +                                    vino_dev_debug!(
 +                                        cdev,
-+                                        "vino: socket {socket} sink re-engagement failed ({e:?})\n"
++                                        "socket {socket} sink re-engagement failed ({e:?})\n"
 +                                    );
 +                                    next_reengage[h] = Instant::<Monotonic>::now() + REENGAGE_RETRY;
 +                                    continue;
@@ -5334,7 +5355,7 @@ index 000000000000..174ed11ff383
 +                            head_known[h] = true;
 +                            next_reengage[h] = Instant::<Monotonic>::now() + REENGAGE_RETRY;
 +                            presence_grace[h] = Instant::<Monotonic>::now() + PRESENCE_GRACE;
-+                            dev_info!(cdev, "vino: socket {socket} monitor connected\n");
++                            dev_info!(cdev, "socket {socket} monitor connected\n");
 +                            // Same downstream readiness wait as a fresh bring-up before notifying
 +                            // userspace, so KWin's mode-set lands on a settled downstream link.
 +                            let rs = Instant::<Monotonic>::now();
@@ -5350,7 +5371,7 @@ index 000000000000..174ed11ff383
 +                            head_known[h] = false;
 +                            next_reengage[h] = Instant::<Monotonic>::now() + REENGAGE_RETRY;
 +                            data.set_disconnected(h);
-+                            dev_info!(cdev, "vino: socket {socket} monitor disconnected\n");
++                            dev_info!(cdev, "socket {socket} monitor disconnected\n");
 +                            // This event also covers any arrival still waiting out its window.
 +                            hotplug_due = None;
 +                            drm_dev.hotplug_event();
@@ -5371,7 +5392,7 @@ index 000000000000..174ed11ff383
 +                data.send_video_keepalive(dev);
 +                fsleep(Delta::from_millis(13));
 +            }
-+            vino_dev_debug!(cdev, "vino: CP keepalive finished ({sent} polls)\n");
++            vino_dev_debug!(cdev, "CP keepalive finished ({sent} polls)\n");
 +        }
 +    }
 +}
@@ -5416,14 +5437,15 @@ index 000000000000..174ed11ff383
 +        let ifnum = intf.number().ok_or(ENODEV)?;
 +        log_device_identity(cdev, intf, ifnum);
 +        if ifnum == 0 {
-+            // Which profile matched, and the endpoints it implies. On unfamiliar hardware this one
-+            // line is what says whether the driver recognised the dock or fell back to a stranger's
-+            // endpoint map, and needing a debug build to see it costs a whole test round trip.
-+            dev_info!(
++            // One line per bind, naming the hardware the driver decided it is holding. On
++            // unfamiliar hardware this is what says whether the dock was recognised or fell back
++            // to a stranger's profile, so it stays out of the debug gate. The endpoint map that
++            // follows from it is a debug detail.
++            dev_info!(cdev, "{}\n", info.name);
++            vino_dev_debug!(
 +                cdev,
-+                "vino: matched profile \"{}\", video endpoints {:#04x?}, 10-bit capable {}\n",
-+                info.name,
-+                info.video_eps,
++                "video endpoints {}, 10-bit capable {}\n",
++                HexList(&info.video_eps),
 +                info.hdr_capable
 +            );
 +        }
@@ -5432,23 +5454,17 @@ index 000000000000..174ed11ff383
 +            // (2-4) and Ethernet (5-6) interfaces fall through to their class drivers. Returning
 +            // ENODEV tells usbcore that this driver does not handle the interface.
 +            if ifnum != 1 {
-+                dev_info!(
-+                    cdev,
-+                    "vino: declining interface {ifnum} (left to its class driver)\n"
-+                );
++                vino_dev_debug!(cdev, "declining interface {ifnum} (left to its class driver)\n");
 +                return Err(ENODEV);
 +            }
-+            dev_info!(
-+                cdev,
-+                "vino: bound interface {ifnum} (idle -- control is iface 0)\n"
-+            );
++            vino_dev_debug!(cdev, "bound interface {ifnum} (idle -- control is iface 0)\n");
 +            return Ok(VinoBoundData {
 +                _intf: intf.into(),
 +                registration: None,
 +                bringup: KBox::pin_init(new_mutex!(None), GFP_KERNEL)?,
 +            });
 +        }
-+        dev_info!(cdev, "vino: bound DisplayLink control interface\n");
++        vino_dev_debug!(cdev, "bound DisplayLink control interface\n");
 +        // Register the DRM/KMS device on the control interface. Keep a refcounted interface handle
 +        // in the bound data while the DRM device retains the I/O window used by its workers.
 +        let intf_ref: ARef<usb::Interface> = intf.into();
@@ -5475,7 +5491,7 @@ index 000000000000..174ed11ff383
 +        let parent: &device::Device<device::Bound> = bound_intf.as_ref();
 +        let registration = drm::Registration::new_static(parent, unreg, (), 0)?;
 +        let ddev: ARef<drm_sink::VinoDrmDevice> = registration.device().into();
-+        dev_info!(cdev, "vino: DRM/KMS device registered\n");
++        vino_dev_debug!(cdev, "DRM/KMS device registered\n");
 +
 +        // The session preamble, HDCP authentication and control setup use blocking USB transfers.
 +        // Run them on the device's ordered session queue so probe can return immediately. The work
@@ -5559,7 +5575,7 @@ index 000000000000..174ed11ff383
 +            let drm_data: &drm_sink::VinoDrmData = reg.device();
 +            drm_data.shutdown();
 +        }
-+        dev_info!(dev, "vino: disconnected\n");
++        dev_info!(dev, "disconnected\n");
 +    }
 +}
 +

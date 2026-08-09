@@ -1,4 +1,4 @@
-From e1414ff15cba7ae19257f1c71a7ba6696e09a9c4 Mon Sep 17 00:00:00 2001
+From 9d4d45d2ff505a30165ab93f90472445f4e83578 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 11:41:57 +0100
 Subject: [PATCH 113/114] drm/vino: let userspace push a firmware image to the
@@ -46,7 +46,7 @@ index 39c502778c80..7251a0941383 100644
  	  Open in-kernel Rust driver for DisplayLink DL3 docks: the Dell
  	  Universal Dock D6000 (USB ID 17e9:6006, DL-6xxx silicon) and the
 diff --git a/drivers/gpu/drm/vino/firmware.rs b/drivers/gpu/drm/vino/firmware.rs
-index db680921d61e..38d1745c118c 100644
+index 9acc2a1e3f9e..41fa48b77284 100644
 --- a/drivers/gpu/drm/vino/firmware.rs
 +++ b/drivers/gpu/drm/vino/firmware.rs
 @@ -6,10 +6,12 @@
@@ -88,7 +88,7 @@ index db680921d61e..38d1745c118c 100644
  }
  
  /// Standard `GET_DESCRIPTOR` for the configuration descriptor, which the identity blob rides in.
-@@ -405,3 +426,95 @@ pub(crate) fn update_if_newer(
+@@ -400,3 +421,95 @@ pub(crate) fn update_if_newer(
      );
      flash(io, iface, fw.data())
  }
@@ -185,10 +185,10 @@ index db680921d61e..38d1745c118c 100644
 +    }
 +}
 diff --git a/drivers/gpu/drm/vino/vino.rs b/drivers/gpu/drm/vino/vino.rs
-index ed7a0a82e74e..09d7859966ee 100644
+index 5c9e7bb39d0c..4f3977ffdb18 100644
 --- a/drivers/gpu/drm/vino/vino.rs
 +++ b/drivers/gpu/drm/vino/vino.rs
-@@ -310,6 +310,11 @@ struct VinoBoundData {
+@@ -320,6 +320,11 @@ struct VinoBoundData {
      /// the option under the mutex before synchronously cancelling the work and unplugging DRM.
      /// The mutex itself is heap-pinned because kernel locks must not move after initialization.
      bringup: Pin<KBox<Mutex<Option<Arc<BringUp>>>>>,
@@ -200,7 +200,7 @@ index ed7a0a82e74e..09d7859966ee 100644
  }
  
  /// Deferred bring-up work item.
-@@ -1051,6 +1056,7 @@ fn probe<'bound>(
+@@ -1059,6 +1064,7 @@ fn probe<'bound>(
          // not support upload, so there is no way to read the running image back and nothing to
          // restore from if the write goes wrong.
          let force = *crate::module_parameters::force_flash.value() != 0;
@@ -208,16 +208,16 @@ index ed7a0a82e74e..09d7859966ee 100644
          if ifnum == firmware::DFU_INTERFACE {
              // The dock's DFU interface, which is also the one every DFU request is addressed to.
              // Reading the identity here costs one standard control transfer and is what says
-@@ -1058,6 +1064,7 @@ fn probe<'bound>(
+@@ -1066,6 +1072,7 @@ fn probe<'bound>(
              // perfectly well on the firmware it shipped with.
              match io.enter().and_then(|link| {
                  let id = firmware::read_identity(&link)?;
 +                identity_family = id.family();
-                 dev_info!(cdev, "vino: {id} running firmware {}\n", id.version);
+                 dev_info!(cdev, "{id} running firmware {}\n", id.version);
                  firmware::update_if_newer(&link, cdev, &id, u16::from(ifnum), force)
              }) {
-@@ -1065,6 +1072,45 @@ fn probe<'bound>(
-                 Err(e) => dev_info!(cdev, "vino: dock firmware check skipped ({e:?})\n"),
+@@ -1073,6 +1080,45 @@ fn probe<'bound>(
+                 Err(e) => dev_info!(cdev, "dock firmware check skipped ({e:?})\n"),
              }
          }
 +        // The manual path: userspace writes an image and vino flashes it, whatever version it is.
@@ -242,14 +242,14 @@ index ed7a0a82e74e..09d7859966ee 100644
 +                        ctx,
 +                    ) {
 +                        Ok(reg) => {
-+                            dev_info!(
++                            vino_dev_debug!(
 +                                cdev,
-+                                "vino: firmware upload available at /sys/class/firmware/vino-dock\n"
++                                "firmware upload available at /sys/class/firmware/vino-dock\n"
 +                            );
 +                            Some(reg)
 +                        }
 +                        Err(e) => {
-+                            dev_info!(cdev, "vino: no firmware upload interface ({e:?})\n");
++                            vino_dev_debug!(cdev, "no firmware upload interface ({e:?})\n");
 +                            None
 +                        }
 +                    }
@@ -262,15 +262,15 @@ index ed7a0a82e74e..09d7859966ee 100644
          if ifnum != 0 {
              // Keep the app-specific interface paired with the display function. Let the audio
              // (2-4) and Ethernet (5-6) interfaces fall through to their class drivers. Returning
-@@ -1084,6 +1130,7 @@ fn probe<'bound>(
+@@ -1086,6 +1132,7 @@ fn probe<'bound>(
                  _intf: intf.into(),
                  registration: None,
                  bringup: KBox::pin_init(new_mutex!(None), GFP_KERNEL)?,
 +                _fw_upload: fw_upload,
              });
          }
-         dev_info!(cdev, "vino: bound DisplayLink control interface\n");
-@@ -1155,6 +1202,8 @@ fn probe<'bound>(
+         vino_dev_debug!(cdev, "bound DisplayLink control interface\n");
+@@ -1157,6 +1204,8 @@ fn probe<'bound>(
              _intf: intf_ref,
              registration: Some(registration),
              bringup: bringup_slot,
