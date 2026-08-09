@@ -12,6 +12,7 @@ become mixed with kernel API design or build instructions.
 | [`protocol/hdcp.md`](protocol/hdcp.md) | HDCP 2.2 message flow and verified key derivations |
 | [`protocol/navarro-decoded.md`](protocol/navarro-decoded.md) | The DL-7400 wire, decoded end to end: per-connector keys, stream open, mode set, strip parameter map |
 | [`protocol/video.md`](protocol/video.md) | Video arm, codec, records, damage, and submission |
+| [`adding-a-device.md`](adding-a-device.md) | **★ Start here for new hardware**: why product IDs are not how devices are identified, what the identity descriptor is, and what to send instead of a patch |
 | [`new-device-capture.md`](new-device-capture.md) | Onboarding DisplayLink hardware vino cannot yet drive: descriptor triage, the gen-1 `init_4` divergence, and a capture procedure built to record a firmware update |
 | [`new-device-day.md`](new-device-day.md) | **★ Runbook for the WAVLINK DL7400 (Navarro / DL-7000)**: the DFU shape predicted from descriptors, phase-by-phase commands, and what each capture closes |
 | [`hdr.md`](hdr.md) | HDR/deep colour: the shared `NM30`/`YU10`/`FP16` format enum found in all three host binaries, the BT.2020 conversion path, and what vino would need |
