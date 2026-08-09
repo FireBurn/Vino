@@ -128,3 +128,35 @@ make sync KSRC=../linux
 
 `check-sync` is read-only. `sync` copies only the explicit Rust sources;
 standalone Kbuild, userspace DDC/CI, and Cargo glue remain local.
+
+It also checks one thing that is not a copy: `drivers/gpu/drm/{vino,evdi}/color.rs` are the same
+software colour pipeline and are byte-identical by intent. Neither driver may include the other's
+source, so nothing but this check enforces it, and a fix to one has to be ported to the other.
+
+⚠ Vendored copies drifting is not theoretical. The 2026-08-09 sync pulled in two changes chimera
+had been running without for days: the **per-head selector bitmask** (`1 << head`, not `head + 1`,
+which is the same byte for heads 0 and 1 and wrong for every socket past them) and the **10-bit
+codec depth**. Run `make check-sync` before trusting a chimera result.
+
+## What chimera and vino share, and what they do not
+
+Both are driven from the same sources wherever the sources can be shared, so this list is about
+what is *structurally* different rather than what someone forgot to copy.
+
+| | vino | chimera |
+|---|---|---|
+| CP seal, HDCP, codec, record framing | `drivers/gpu/drm/vino/*.rs` | the same files, vendored and compiled verbatim |
+| Device identification | interface match → identity → family → profile | the same, in `vino-driver::profile` |
+| Connector count | from the video endpoints the device exposes | the same |
+| Cursor, damage/retransmit | yes | yes |
+| Software gamma/CTM | `vino/color.rs` | `evdi/color.rs`, byte-identical |
+| Firmware read and DFU update | yes | no, and deliberately: one thing should be able to flash a dock |
+| HDR / 10-bit scanout | yes | codec yes, plumbing no -- chimera's frame feeder is 8-bit packed RGB |
+| Navarro cold activation | yes | **no** |
+
+The last row is the real gap. Navarro's cold prelude, its dock-wide mode transaction and the
+first-video choreography live in `drm_sink.rs`, which is DRM-specific and cannot be vendored into
+userspace the way `cp.rs` and `video.rs` are. Chimera therefore speaks the Navarro protocol but
+cannot bring a DL-7400 up from cold. Closing it means either extracting the choreography into a
+vendorable module or reimplementing it in `chimera/src/session.rs`; the first is better and is not
+a small change.

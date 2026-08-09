@@ -42,3 +42,6 @@ __pycache__/
 !/captures/**/*.md
 !/captures/**/*.tsv
 !/captures/**/*.json
+
+# Local build/verify helpers, not part of the project.
+/scratchpad/

@@ -75,17 +75,36 @@ If the device is one vino cannot drive at all, `docs/new-device-capture.md` is t
 for capturing a working session from the vendor driver. That is what lets us add support for
 hardware nobody here owns.
 
+## What the driver does with all this
+
+The chain is: **interface match → identity → family → profile → connectors**.
+
+1. The USB ID table matches vendor `17e9` plus interface class `0xff` / subclass `0` / protocol
+   `0x03`, and separately the DFU interface (`0xfe`/`1`/`1`). No product IDs. The two modaliases
+   are visible in `modinfo vino`.
+2. `firmware::read_identity` reads the identity descriptor at probe, on either interface.
+3. `Family::from_identity` names the family; `profile::for_family` maps it to a profile.
+4. `Endpoints::resolve` counts how many of the profile's video endpoints the device actually
+   exposes, bounded by the profile's own connector count. A dock in a known family with fewer
+   outputs is driven with the outputs it has.
+
+Two escape hatches, in opposite directions:
+
+- **Identity read, family unknown** → decline, naming the device. A guessed profile is worse than
+  no driver, because the way a dock rejects a guess is to reset itself.
+- **Identity unreadable** → fall back to `profile::for_product`, a small quirk table. This is the
+  only thing product IDs are still used for, and a device missing from it is still driven if it
+  can name its family.
+
+⚠ Only `NavaDock` and `RidgeDoc` map to a profile. `EllaDock` and `FflyMoni` are recognised as
+names but have never been seen here, so they take the decline path.
+
 ## What a good change looks like
 
-Capabilities should come from the device, not from a table keyed by product ID. The number of
-connectors is the clearest example: it varies per dock, and the dock will tell you. A `match` on
+Capabilities should come from the device, not from a table keyed by product ID. A `match` on
 product ID that returns a head count is a table that must be edited for every new device and that
 panics on the ones nobody has seen yet.
 
 Where a table is unavoidable -- genuine quirks, hardware that misreports itself -- it should be
 descriptive: name, family, and the specific thing that is wrong. It should not be the gate that
 decides whether the driver will speak to the device at all.
-
-An unrecognised device should bind, report its identity, and decline cleanly. That way someone with
-new hardware gets a log line naming it rather than silence, and the report they send is enough to
-add support.
