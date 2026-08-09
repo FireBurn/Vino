@@ -1,0 +1,44 @@
+From 6e182d95a24de171f9fe4ee16a1d5cf10653d0d8 Mon Sep 17 00:00:00 2001
+From: Lyude Paul <lyude@redhat.com>
+Date: Thu, 19 Jun 2025 22:29:34 -0400
+Subject: [PATCH 044/114] WIP: drm/modes: Fix arg types in
+ drm_set_preferred_mode
+
+Apparently when turning resolutions into unsigned integers I missed this
+function in the conversion - so, use unsigned integers here too.
+
+TODO: reference the commit I actually did that in
+
+Signed-off-by: Lyude Paul <lyude@redhat.com>
+(cherry picked from commit 0fbf88751e27e1765b6ffd6d20fdf7de6139a4d2)
+---
+ drivers/gpu/drm/drm_modes.c | 2 +-
+ include/drm/drm_modes.h     | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/drm_modes.c b/drivers/gpu/drm/drm_modes.c
+index e1eed13a8e94..701ef53f0f6f 100644
+--- a/drivers/gpu/drm/drm_modes.c
++++ b/drivers/gpu/drm/drm_modes.c
+@@ -2788,7 +2788,7 @@ EXPORT_SYMBOL(drm_mode_is_420);
+  * and @vpref.
+  */
+ void drm_set_preferred_mode(struct drm_connector *connector,
+-			    int hpref, int vpref)
++			    unsigned int hpref, unsigned int vpref)
+ {
+ 	struct drm_display_mode *mode;
+ 
+diff --git a/include/drm/drm_modes.h b/include/drm/drm_modes.h
+index 6e3eccc3c349..11b4d13a98ed 100644
+--- a/include/drm/drm_modes.h
++++ b/include/drm/drm_modes.h
+@@ -469,7 +469,7 @@ bool drm_mode_is_420_also(const struct drm_display_info *display,
+ bool drm_mode_is_420(const struct drm_display_info *display,
+ 		     const struct drm_display_mode *mode);
+ void drm_set_preferred_mode(struct drm_connector *connector,
+-			    int hpref, int vpref);
++			    unsigned int hpref, unsigned int vpref);
+ 
+ struct drm_display_mode *drm_analog_tv_mode(struct drm_device *dev,
+ 					    enum drm_connector_tv_mode mode,

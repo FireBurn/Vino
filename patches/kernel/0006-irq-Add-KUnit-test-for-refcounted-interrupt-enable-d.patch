@@ -1,7 +1,7 @@
 From 58c7fdd2ce44dd9b14ab23b1b1fa5b49196d06a6 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Tue, 26 May 2026 08:21:42 -0700
-Subject: [PATCH 006/109] irq: Add KUnit test for refcounted interrupt
+Subject: [PATCH 006/114] irq: Add KUnit test for refcounted interrupt
  enable/disable
 
 While making changes to the refcounted interrupt patch series, at some

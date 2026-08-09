@@ -1,7 +1,7 @@
-From a59405d6910355c124c0fbd94a3c7558ad2507ac Mon Sep 17 00:00:00 2001
+From 364539a36a1489559a5d4a669302f376efcffe00 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
-Date: Tue, 10 Jun 2025 17:12:14 -0400
-Subject: [PATCH 067/109] rust: drm/kms: Add DriverPlane::atomic_check()
+Date: Thu, 23 May 2024 16:48:56 -0400
+Subject: [PATCH 067/114] rust: drm/kms: Add DriverPlane::atomic_check()
 
 Optional trait method for implementing a plane's atomic_check().
 
@@ -11,73 +11,96 @@ Signed-off-by: Lyude Paul <lyude@redhat.com>
 V3:
 * Document ManuallyDrop uses better
 
-(cherry picked from commit f80329d0c1a39f0b242988952c4daddd1f93e807)
+(cherry picked from commit 9bc7972c40e6d23f12271ec68beb58fabea79328)
 ---
- rust/kernel/drm/kms/plane.rs | 41 +++++++++++++++++++++++-------------
- 1 file changed, 26 insertions(+), 15 deletions(-)
+ rust/kernel/drm/kms/plane.rs | 53 ++++++++++++++++++++++++++++++++++--
+ 1 file changed, 50 insertions(+), 3 deletions(-)
 
 diff --git a/rust/kernel/drm/kms/plane.rs b/rust/kernel/drm/kms/plane.rs
-index 34ce3a727fc6..720862a0a00e 100644
+index e5f9e12309cb..34ce3a727fc6 100644
 --- a/rust/kernel/drm/kms/plane.rs
 +++ b/rust/kernel/drm/kms/plane.rs
-@@ -121,12 +121,7 @@ fn atomic_update(_commit: PlaneAtomicCommit<'_, Self>) {
-     /// result of this function determines whether the atomic check passed or failed.
-     ///
-     /// [`drm_plane_helper_funcs.atomic_check`]: srctree/include/drm/drm_modeset_helper_vtables.h
--    fn atomic_check(
--        _plane: &Plane<Self>,
--        _new_state: PlaneStateMutator<'_, PlaneState<Self::State>>,
--        _old_state: &PlaneState<Self::State>,
--        _state: &AtomicStateComposer<Self::Driver>,
--    ) -> Result {
-+    fn atomic_check(_check: PlaneAtomicCheck<'_, Self>) -> Result {
+@@ -12,14 +12,14 @@
+     alloc::KBox,
+     bindings,
+     drm::{device::Device, fourcc::*},
+-    error::{to_result, Error},
++    error::{from_result, to_result, Error},
+     prelude::*,
+     types::{NotThreadSafe, Opaque},
+ };
+ use core::{
+     cell::Cell,
+     marker::*,
+-    mem,
++    mem::{self, ManuallyDrop},
+     ops::*,
+     pin::Pin,
+     ptr::{null, null_mut, NonNull},
+@@ -67,7 +67,11 @@ pub trait DriverPlane: Send + Sync + Sized {
+             cleanup_fb: None,
+             begin_fb_access: None,
+             end_fb_access: None,
+-            atomic_check: None,
++            atomic_check: if Self::HAS_ATOMIC_CHECK {
++                Some(atomic_check_callback::<Self>)
++            } else {
++                None
++            },
+             atomic_update: if Self::HAS_ATOMIC_UPDATE {
+                 Some(atomic_update_callback::<Self>)
+             } else {
+@@ -110,6 +114,21 @@ pub trait DriverPlane: Send + Sync + Sized {
+     fn atomic_update(_commit: PlaneAtomicCommit<'_, Self>) {
          build_error::build_error("This should not be reachable")
      }
- }
-@@ -874,6 +869,24 @@ fn <D, P>(PlaneStateMutator<'a, OpaquePlaneState<D>>) -> Self
-     }
++
++    /// The optional [`drm_plane_helper_funcs.atomic_check`] hook for this plane.
++    ///
++    /// Drivers may use this to customize the atomic check phase of their [`Plane`] objects. The
++    /// result of this function determines whether the atomic check passed or failed.
++    ///
++    /// [`drm_plane_helper_funcs.atomic_check`]: srctree/include/drm/drm_modeset_helper_vtables.h
++    fn atomic_check(
++        _plane: &Plane<Self>,
++        _new_state: PlaneStateMutator<'_, PlaneState<Self::State>>,
++        _old_state: &PlaneState<Self::State>,
++        _state: &AtomicStateComposer<Self::Driver>,
++    ) -> Result {
++        build_error::build_error("This should not be reachable")
++    }
  }
  
-+/// A token provided during [`atomic_check`] callbacks for accessing the plane, atomic state, and
-+/// the old and new states of the plane.
-+///
-+/// [`atomic_check`]: DriverPlane::atomic_check
-+pub struct PlaneAtomicCheck<'a, T: DriverPlane> {
-+    state: &'a AtomicStateComposer<T::Driver>,
-+    plane: &'a Plane<T>,
-+}
-+
-+impl<'a, T: DriverPlane> PlaneAtomicCheck<'a, T> {
-+    impl_atomic_state_token_ops!(
-+        PlaneAtomicCheck,
-+        AtomicStateComposer,
-+        Plane,
-+        use <'a, T>
-+    );
-+}
-+
- /// A token provided to [`DriverPlane`] callbacks during the atomic commit phase for accessing the
- /// plane, atomic state, new and old states of the plane.
- ///
-@@ -1018,14 +1031,12 @@ impl<'a, T: DriverPlane> PlaneAtomicCommit<'a, T> {
-         AtomicStateComposer::<T::Driver>::new(NonNull::new_unchecked(state))
-     });
+ /// The generated C vtable for a [`DriverPlane`].
+@@ -982,3 +1001,31 @@ impl<'a, T: DriverPlane> PlaneAtomicCommit<'a, T> {
  
--    // SAFETY: We're guaranteed by DRM that both the old and new atomic state are present within
--    // this `drm_atomic_state`
--    let (old_state, new_state) = unsafe {
--        (
--            state.get_old_plane_state(plane).unwrap_unchecked(),
--            state.get_new_plane_state(plane).unwrap_unchecked(),
--        )
--    };
+     T::atomic_update(commit);
+ }
++
++unsafe extern "C" fn atomic_check_callback<T: DriverPlane>(
++    plane: *mut bindings::drm_plane,
++    state: *mut bindings::drm_atomic_state,
++) -> i32 {
 +    // SAFETY:
-+    // - Since we're in the atomic check callback, we're guaranteed by DRM that both the old and
-+    //   new plane state are present in this atomic state
-+    // - We just created the state composer above, so other composers cannot be taken out on the
-+    //   plane state yet.
-+    let check = unsafe { PlaneAtomicCheck::new(plane, &state) };
- 
--    from_result(|| T::atomic_check(plane, new_state, old_state, &state).map(|_| 0))
-+    from_result(|| T::atomic_check(check).map(|_| 0))
- }
++    // - We're guaranteed `plane` is of type `Plane<T>` via type invariants.
++    // - We're guaranteed by DRM that `plane` is pointing to a valid initialized state.
++    let plane = unsafe { Plane::from_raw(plane) };
++
++    // SAFETY: We're guaranteed by DRM that `state` points to a valid instance of `drm_atomic_state`
++    // We use ManuallyDrop here since AtomicStateComposer would otherwise drop a owned reference to
++    // the atomic state upon finishing this callback.
++    let state = ManuallyDrop::new(unsafe {
++        AtomicStateComposer::<T::Driver>::new(NonNull::new_unchecked(state))
++    });
++
++    // SAFETY: We're guaranteed by DRM that both the old and new atomic state are present within
++    // this `drm_atomic_state`
++    let (old_state, new_state) = unsafe {
++        (
++            state.get_old_plane_state(plane).unwrap_unchecked(),
++            state.get_new_plane_state(plane).unwrap_unchecked(),
++        )
++    };
++
++    from_result(|| T::atomic_check(plane, new_state, old_state, &state).map(|_| 0))
++}

@@ -1,7 +1,7 @@
-From d7b5f7c4bd262b32f3e4872ae50d3b6cad943090 Mon Sep 17 00:00:00 2001
+From 92de7c02c47b2530b91e69a137afdec30b3d8124 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 23:40:48 +0100
-Subject: [PATCH 042/109] rust: usb: add topology lookup and removal
+Subject: [PATCH 042/114] rust: usb: add topology lookup and removal
  notification
 
 Expose an owned root-first bus/port path for a USB device and a safe
@@ -20,10 +20,10 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  1 file changed, 240 insertions(+)
 
 diff --git a/rust/kernel/usb.rs b/rust/kernel/usb.rs
-index 4fc8f63986b6..8b02fef2e9e2 100644
+index ad40c814616a..5b2dc97e1a75 100644
 --- a/rust/kernel/usb.rs
 +++ b/rust/kernel/usb.rs
-@@ -1414,6 +1414,7 @@ fn is_active(&self) -> bool {
+@@ -1430,6 +1430,7 @@ fn is_active(&self) -> bool {
          matches!(self.urb, Some(QueueUrb::Active(_)))
      }
  
@@ -31,7 +31,7 @@ index 4fc8f63986b6..8b02fef2e9e2 100644
      fn wait(&self, timeout: Delta) -> bool {
          let millis = timeout.as_millis();
          let millis = if millis <= 0 {
-@@ -1425,6 +1426,7 @@ fn wait(&self, timeout: Delta) -> bool {
+@@ -1441,6 +1442,7 @@ fn wait(&self, timeout: Delta) -> bool {
              .wait_for_completion_timeout(crate::time::msecs_to_jiffies(millis))
      }
  
@@ -39,7 +39,7 @@ index 4fc8f63986b6..8b02fef2e9e2 100644
      fn finish(&mut self) -> Result<(i32, usize)> {
          let state = self.urb.take().ok_or(EIO)?;
          let active = match state {
-@@ -1684,6 +1686,34 @@ fn reap(&mut self, i: usize, timeout: Delta) -> Result<bool> {
+@@ -1700,6 +1702,34 @@ fn reap(&mut self, i: usize, timeout: Delta) -> Result<bool> {
          Ok(true)
      }
  
@@ -74,7 +74,7 @@ index 4fc8f63986b6..8b02fef2e9e2 100644
      /// Submits `data` as a bulk OUT transfer without waiting for it to complete.
      ///
      /// If the slot about to be reused still has a transfer outstanding, this blocks up to
-@@ -2610,6 +2640,72 @@ fn inner(&self) -> &bindings::usb_device {
+@@ -2626,6 +2656,72 @@ fn inner(&self) -> &bindings::usb_device {
      fn devnum(&self) -> u32 {
          self.inner().devnum as u32
      }
@@ -147,7 +147,7 @@ index 4fc8f63986b6..8b02fef2e9e2 100644
  }
  
  impl Device<device::Bound> {
-@@ -2671,6 +2767,150 @@ pub fn control_msg(
+@@ -2687,6 +2783,150 @@ pub fn control_msg(
      }
  }
  

@@ -1,7 +1,7 @@
 From d328ce6cf897ac5bb125c9adff9e7d0077dc0646 Mon Sep 17 00:00:00 2001
 From: Boqun Feng <boqun@kernel.org>
 Date: Tue, 26 May 2026 08:21:46 -0700
-Subject: [PATCH 011/109] preempt: Introduce HAS_SEPARATE_PREEMPT_RESCHED_BITS
+Subject: [PATCH 011/114] preempt: Introduce HAS_SEPARATE_PREEMPT_RESCHED_BITS
 
 With the changes that enable preempt count to tracking irq disabling
 nesting, we don't have enough bits in 32bit preempt count

@@ -1,7 +1,7 @@
 From e494b57197004ce8eed1fad15218316df639932f Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 06:19:08 +0100
-Subject: [PATCH 019/109] rust: platform: add runtime platform device creation
+Subject: [PATCH 019/114] rust: platform: add runtime platform device creation
 
 Add the provider side of the Rust platform abstraction for virtual
 drivers that create devices at runtime.

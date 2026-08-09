@@ -1,7 +1,7 @@
 From 60b664eda92810dc2b9ae46f73da4579b654df74 Mon Sep 17 00:00:00 2001
 From: Boqun Feng <boqun@kernel.org>
 Date: Tue, 26 May 2026 08:21:45 -0700
-Subject: [PATCH 010/109] sched: Avoid signed comparison of preempt_count() in
+Subject: [PATCH 010/114] sched: Avoid signed comparison of preempt_count() in
  __cant_migrate()
 
 Currently preempt_count() is always a non-negative int on all archs

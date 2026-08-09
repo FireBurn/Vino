@@ -1,7 +1,7 @@
 From 85ffaac1c2bf6733e0015e76e428aaaf30d57820 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 16:54:31 +0100
-Subject: [PATCH 030/109] rust: io: add checked offset copy helpers
+Subject: [PATCH 030/114] rust: io: add checked offset copy helpers
 
 I/O mappings often need to copy a bounded byte range rather than
 the complete mapping. Add checked helpers that project the requested

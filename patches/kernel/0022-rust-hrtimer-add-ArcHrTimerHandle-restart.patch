@@ -1,7 +1,7 @@
 From f09650ed5da85beead441dd77a2430ada5ae7e72 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 21:52:22 +0100
-Subject: [PATCH 022/109] rust: hrtimer: add ArcHrTimerHandle::restart
+Subject: [PATCH 022/114] rust: hrtimer: add ArcHrTimerHandle::restart
 
 Restarting an already-started timer through the safe API means dropping
 its handle and calling `HrTimerPointer::start()` again. Dropping the

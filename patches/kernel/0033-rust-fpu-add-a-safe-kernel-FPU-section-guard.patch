@@ -1,7 +1,7 @@
 From f79ef891c6db25b98db7d201df1f29e134529725 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 4 Aug 2026 21:08:32 +0100
-Subject: [PATCH 033/109] rust: fpu: add a safe kernel-FPU section guard
+Subject: [PATCH 033/114] rust: fpu: add a safe kernel-FPU section guard
 
 Code that wants the FPU or the vector registers in the kernel has to say
 so: the kernel does not preserve that state across context switches, and

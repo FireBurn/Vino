@@ -1,7 +1,7 @@
 From 48a9182e0283041d9752417840475824752d64f2 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 21:43:53 +0100
-Subject: [PATCH 023/109] rust: random: add a safe get_random_bytes wrapper
+Subject: [PATCH 023/114] rust: random: add a safe get_random_bytes wrapper
 
 Expose a slice-based wrapper around get_random_bytes() so Rust callers
 can fill key, nonce, and other random buffers without touching raw

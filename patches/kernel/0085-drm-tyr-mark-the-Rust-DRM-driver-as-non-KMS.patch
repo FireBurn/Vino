@@ -1,0 +1,36 @@
+From 1831c6996284fb81b103372380ddc7ae33d76719 Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Wed, 22 Jul 2026 18:40:02 +0100
+Subject: [PATCH 085/114] drm/tyr: mark the Rust DRM driver as non-KMS
+
+The KMS registration trait adds a required Kms associated type. Tyr is
+a render-only driver, so select the non-KMS PhantomData implementation
+just as Nova does.
+
+Assisted-by: Claude:claude-opus-5-0
+Assisted-by: Codex:gpt-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ drivers/gpu/drm/tyr/driver.rs | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/drivers/gpu/drm/tyr/driver.rs b/drivers/gpu/drm/tyr/driver.rs
+index 8348c6cd3929..15952e379c99 100644
+--- a/drivers/gpu/drm/tyr/driver.rs
++++ b/drivers/gpu/drm/tyr/driver.rs
+@@ -1,5 +1,7 @@
+ // SPDX-License-Identifier: GPL-2.0 or MIT
+ 
++use core::marker::PhantomData;
++
+ use kernel::{
+     clk::{
+         Clk,
+@@ -189,6 +191,7 @@ impl drm::Driver for TyrDrmDriver {
+     type File = TyrDrmFileData;
+     type Object = drm::gem::shmem::Object<BoData>;
+     type ParentDevice<Ctx: DeviceContext> = platform::Device<Ctx>;
++    type Kms = PhantomData<Self>;
+ 
+     const INFO: drm::DriverInfo = INFO;
+     const FEAT_RENDER: bool = true;

@@ -1,7 +1,7 @@
 From 6b10fb2821165f2559b14f244fa13befa598fd3f Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 21:18:39 +0100
-Subject: [PATCH 032/109] rust: error: expose EPROTO
+Subject: [PATCH 032/114] rust: error: expose EPROTO
 
 Add the named protocol-error constant so Rust protocol drivers
 can return the same specific errno as their C counterparts without
