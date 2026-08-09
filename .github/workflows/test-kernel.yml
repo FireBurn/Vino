@@ -1,0 +1,105 @@
+name: test kernel
+
+on:
+  push:
+    paths:
+      - linux
+      - .github/workflows/test-kernel.yml
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a pre-release
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+env:
+  LLVM_SUFFIX: "-18"
+  RUST_VERSION: "1.97.1"
+  BINDGEN_VERSION: "0.72.1"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Reclaim runner disk
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+          large-packages: false
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison flex libelf-dev libssl-dev debhelper rsync kmod cpio \
+            rpm clang${LLVM_SUFFIX} lld${LLVM_SUFFIX} llvm${LLVM_SUFFIX}
+          rustup toolchain install "$RUST_VERSION" --component rust-src
+          rustup default "$RUST_VERSION"
+          cargo install --locked bindgen-cli --version "$BINDGEN_VERSION"
+
+      - name: Configure
+        id: cfg
+        working-directory: linux
+        run: |
+          make LLVM=$LLVM_SUFFIX rustavailable
+
+          zcat /proc/config.gz 2>/dev/null > .config || cp /boot/config-$(uname -r) .config
+          scripts/config \
+            --enable RUST \
+            --module DRM_VINO \
+            --module DRM_EVDI \
+            --enable EXPERT \
+            --disable MODVERSIONS \
+            --disable DEBUG_INFO_BTF \
+            --set-val CONFIG_DEBUG_INFO_NONE y \
+            --disable MODULE_SIG_ALL \
+            --disable SYSTEM_TRUSTED_KEYS \
+            --disable SYSTEM_REVOCATION_KEYS \
+            --set-str LOCALVERSION "-vino-$(date -u +%Y%m%d)"
+          make LLVM=$LLVM_SUFFIX olddefconfig
+
+          # olddefconfig silently drops anything whose dependencies are unmet, and a kernel
+          # published without the driver in it is worse than a failed build.
+          for opt in CONFIG_RUST=y CONFIG_DRM_VINO=m; do
+            grep -qx "$opt" .config || { echo "::error::$opt did not survive olddefconfig"; exit 1; }
+          done
+
+          echo "release=$(make -s LLVM=$LLVM_SUFFIX kernelrelease)" >> "$GITHUB_OUTPUT"
+          echo "base=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
+
+      - name: Build packages
+        working-directory: linux
+        run: |
+          make LLVM=$LLVM_SUFFIX -j"$(nproc)" bindeb-pkg binrpm-pkg
+          mkdir -p ../out
+          find .. ~/rpmbuild/RPMS -name '*.deb' -o -name '*.rpm' | grep -v dbg | xargs -r cp -t ../out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ steps.cfg.outputs.release }}
+          path: out/*
+
+      - name: Publish pre-release
+        if: github.event_name == 'push' || inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE: ${{ steps.cfg.outputs.release }}
+          BASE: ${{ steps.cfg.outputs.base }}
+        run: |
+          {
+            echo "Kernel \`$RELEASE\`, built from \`$BASE\` at \`${GITHUB_SHA:0:12}\`."
+            echo
+            cat .github/RELEASE_NOTES.md
+          } > notes.md
+          gh release create "$RELEASE" out/* \
+            --prerelease \
+            --title "Vino test kernel $RELEASE" \
+            --notes-file notes.md
