@@ -17,6 +17,9 @@ permissions:
 
 env:
   LLVM_SUFFIX: "-18"
+  # setlocalversion appends "+" unless LOCALVERSION is set, which would put a "+" in every
+  # package name and kernel release. Set it, empty: the version comes from CONFIG_LOCALVERSION.
+  LOCALVERSION: ""
   RUST_VERSION: "1.97.1"
   BINDGEN_VERSION: "0.72.1"
 
@@ -38,10 +41,15 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
+          # build-essential and libdw-dev are what dpkg-checkbuilddeps demands for bindeb-pkg;
+          # the rest are the kernel's own.
           sudo apt-get install -y --no-install-recommends \
-            bc bison flex libelf-dev libssl-dev debhelper rsync kmod cpio \
-            rpm clang${LLVM_SUFFIX} lld${LLVM_SUFFIX} llvm${LLVM_SUFFIX}
-          rustup toolchain install "$RUST_VERSION" --component rust-src
+            build-essential bc bison flex libdw-dev libelf-dev libssl-dev \
+            debhelper rsync kmod cpio rpm \
+            clang${LLVM_SUFFIX} lld${LLVM_SUFFIX} llvm${LLVM_SUFFIX}
+          # rustfmt is not optional in practice: bindgen shells out to it for the generated
+          # bindings and complains on every invocation without it.
+          rustup toolchain install "$RUST_VERSION" --component rust-src --component rustfmt
           rustup default "$RUST_VERSION"
           cargo install --locked bindgen-cli --version "$BINDGEN_VERSION"
 
@@ -75,12 +83,26 @@ jobs:
           echo "release=$(make -s LLVM=$LLVM_SUFFIX kernelrelease)" >> "$GITHUB_OUTPUT"
           echo "base=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
 
-      - name: Build packages
+      - name: Build the kernel
         working-directory: linux
+        run: make LLVM=$LLVM_SUFFIX -j"$(nproc)" all
+
+      # One package format per step. Given both targets at once make runs them concurrently, so a
+      # failure in either is reported two hours later against whichever finished last.
+      - name: Build the deb
+        working-directory: linux
+        run: make LLVM=$LLVM_SUFFIX -j"$(nproc)" bindeb-pkg
+
+      - name: Build the rpm
+        working-directory: linux
+        run: make LLVM=$LLVM_SUFFIX -j"$(nproc)" binrpm-pkg
+
+      - name: Collect the packages
         run: |
-          make LLVM=$LLVM_SUFFIX -j"$(nproc)" bindeb-pkg binrpm-pkg
-          mkdir -p ../out
-          find .. ~/rpmbuild/RPMS -name '*.deb' -o -name '*.rpm' | grep -v dbg | xargs -r cp -t ../out
+          mkdir -p out
+          find . -name '*.deb' -o -name '*.rpm' \
+            | grep -vE 'dbg|debuginfo' | xargs -r cp -t out
+          ls -la out
 
       - uses: actions/upload-artifact@v4
         with:
