@@ -1,4 +1,4 @@
-From 313b2091b327b198b70503307efe43537ba0540e Mon Sep 17 00:00:00 2001
+From 42dee25653cc8081bcb02e6bf16109ff56fc4b7d Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 23:40:36 +0100
 Subject: [PATCH 041/114] rust: usb: add reusable URBs and persistent bulk
@@ -19,8 +19,7 @@ This lets streaming drivers reuse the common USB abstraction instead
 of carrying private URB allocation, completion, cancellation, and
 teardown code.
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/helpers/usb.c |  17 ++

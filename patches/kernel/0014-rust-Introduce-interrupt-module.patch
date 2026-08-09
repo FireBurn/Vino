@@ -1,4 +1,4 @@
-From cd3ee3a3cbd58a976e247b94c897ac9d7b01de45 Mon Sep 17 00:00:00 2001
+From a95d7a3d002d26fd634698315556d758ffd693ec Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Mon, 2 Mar 2026 18:16:44 -0500
 Subject: [PATCH 014/114] rust: Introduce interrupt module

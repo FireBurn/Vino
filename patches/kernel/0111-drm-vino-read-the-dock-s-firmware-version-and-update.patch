@@ -1,4 +1,4 @@
-From 0b032893ad1c1f28d165b2e6303c8e706dcc4f89 Mon Sep 17 00:00:00 2001
+From 8cda63b5e23aa42a9dd9d2a79c8faf89b5d48067 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 04:09:46 +0100
 Subject: [PATCH 111/114] drm/vino: read the dock's firmware version, and
@@ -59,7 +59,7 @@ index cbe92828c14e..39c502778c80 100644
  	  Universal Dock D6000 (USB ID 17e9:6006, DL-6xxx silicon) and the
 diff --git a/drivers/gpu/drm/vino/firmware.rs b/drivers/gpu/drm/vino/firmware.rs
 new file mode 100644
-index 000000000000..019f8af01279
+index 000000000000..db680921d61e
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/firmware.rs
 @@ -0,0 +1,407 @@
@@ -84,7 +84,7 @@ index 000000000000..019f8af01279
 +
 +/// Vendor descriptor carrying the platform name and running firmware version.
 +///
-+/// `bcdDevice` does **not** change when a dock is updated, so it cannot answer "is an update due".
++/// `bcdDevice` does not change when a dock is updated, so it cannot answer "is an update due".
 +/// This descriptor can: it is 16 bytes, `[len, 0x40, major, minor, patch, ..., name(8)]`, and the
 +/// name selects the package that targets this hardware.
 +pub(crate) const DESCRIPTOR_IDENTITY: u8 = 0x40;
@@ -168,8 +168,8 @@ index 000000000000..019f8af01279
 +
 +/// A dock family: the hardware a firmware package targets.
 +///
-+/// ⚠ Only `NavaDock` has been read off real hardware; the identity spellings for the other three
-+/// come from the vendor's own platform names and are unverified.
++/// Only `NavaDock` has been read off real hardware; the spellings for the other three come from
++/// the vendor's firmware packages and are unverified.
 +#[derive(Clone, Copy, PartialEq, Eq)]
 +pub(crate) enum Family {
 +    /// DL-7400 quad dock.
@@ -343,7 +343,7 @@ index 000000000000..019f8af01279
 +
 +/// Write `image` to the dock over USB DFU.
 +///
-+/// ⛔ **This is not reversible from the host.** The DFU functional descriptor clears
++/// This is not reversible from the host. The DFU functional descriptor clears
 +/// `bitCanUpload`, so the running firmware cannot be read back and there is nothing to restore
 +/// from; and it sets `bitManifestationTolerant = 0`, so the dock re-enumerates when the image is
 +/// manifested. An interrupted write leaves the dock with a partial image.
@@ -408,7 +408,7 @@ index 000000000000..019f8af01279
 +
 +/// Decide whether `dev` needs an update, and apply one if it does.
 +///
-+/// An update is applied only when the packaged version is **strictly newer** than the one the dock
++/// An update is applied only when the packaged version is strictly newer than the one the dock
 +/// reports, so the ordinary path on a current dock is one descriptor read and no writes at all. A
 +/// missing firmware file is not an error: a dock runs perfectly well on the firmware it shipped
 +/// with, and most systems will never carry the package.
@@ -471,7 +471,7 @@ index 000000000000..019f8af01279
 +    flash(io, iface, fw.data())
 +}
 diff --git a/drivers/gpu/drm/vino/session.rs b/drivers/gpu/drm/vino/session.rs
-index b052eceb1a84..bdfa50f90e99 100644
+index c7eda19a393a..bcdf8e497004 100644
 --- a/drivers/gpu/drm/vino/session.rs
 +++ b/drivers/gpu/drm/vino/session.rs
 @@ -29,9 +29,16 @@ pub(super) fn bring_up(dev: &UsbLink<'_>, profile: &DockProfile) -> Result {
@@ -495,7 +495,7 @@ index b052eceb1a84..bdfa50f90e99 100644
          }
          // A composite driver may only change its own interface.
 diff --git a/drivers/gpu/drm/vino/tests.rs b/drivers/gpu/drm/vino/tests.rs
-index 62a436dd52b0..5dcf73795757 100644
+index d1e04628f10b..cee44fdb842c 100644
 --- a/drivers/gpu/drm/vino/tests.rs
 +++ b/drivers/gpu/drm/vino/tests.rs
 @@ -14,6 +14,7 @@
@@ -506,7 +506,7 @@ index 62a436dd52b0..5dcf73795757 100644
  
      /// S31.32 sign-magnitude constants: 1.0, +0.5, and -0.5 as sign bit + magnitude.
      const CTM_ONE: u64 = 1 << 32;
-@@ -605,6 +606,48 @@ fn edid_engage_req_matches_dlm_wire_shape() -> Result {
+@@ -604,6 +605,48 @@ fn edid_engage_req_matches_dlm_wire_shape() -> Result {
          Ok(())
      }
  
@@ -556,7 +556,7 @@ index 62a436dd52b0..5dcf73795757 100644
      fn dual_nivo_rides_the_flags_word() -> Result {
          // Bit 2 of offset 42 declares that this head's video endpoint carries a second connector.
 diff --git a/drivers/gpu/drm/vino/vino.rs b/drivers/gpu/drm/vino/vino.rs
-index 2d6b1bf88551..6b521cd3076c 100644
+index 174ed11ff383..ed7a0a82e74e 100644
 --- a/drivers/gpu/drm/vino/vino.rs
 +++ b/drivers/gpu/drm/vino/vino.rs
 @@ -113,6 +113,7 @@ fn hold_until(anchor: Instant<Monotonic>, target_us: i64) {
@@ -567,11 +567,11 @@ index 2d6b1bf88551..6b521cd3076c 100644
  mod hdcp;
  mod proto;
  mod rng;
-@@ -1050,6 +1051,24 @@ fn probe<'bound>(
+@@ -1046,6 +1047,24 @@ fn probe<'bound>(
                  info.hdr_capable
              );
          }
-+        // ⛔ Writing firmware the dock does not need is a deliberate act: its DFU interface does
++        // Writing firmware the dock does not need is a deliberate act: its DFU interface does
 +        // not support upload, so there is no way to read the running image back and nothing to
 +        // restore from if the write goes wrong.
 +        let force = *crate::module_parameters::force_flash.value() != 0;
@@ -592,13 +592,13 @@ index 2d6b1bf88551..6b521cd3076c 100644
          if ifnum != 0 {
              // Keep the app-specific interface paired with the display function. Let the audio
              // (2-4) and Ethernet (5-6) interfaces fall through to their class drivers. Returning
-@@ -1205,6 +1224,10 @@ fn disconnect<'bound>(intf: &'bound usb::Interface<Core<'_>>, data: Pin<&VinoBou
+@@ -1201,6 +1220,10 @@ fn disconnect<'bound>(intf: &'bound usb::Interface<Core<'_>>, data: Pin<&VinoBou
              default: 0,
              description: "Local UTC offset used by Navarro RTC synchronization (minutes east of UTC)",
          },
 +        force_flash: u8 {
 +            default: 0,
-+            description: "Write the packaged dock firmware even when the dock already runs that version or newer. ⛔ The dock's DFU interface does not support upload, so the running image cannot be read back and there is no host-side restore path; an interrupted write leaves a partial image. Intended for recovering a dock whose firmware is damaged, not for normal use",
++            description: "Write the packaged dock firmware even when the dock already runs that version or newer. The DFU interface does not support upload, so there is no host-side restore path and an interrupted write leaves a partial image. For recovering a damaged dock, not for normal use",
 +        },
          edid_override: u8 {
              default: 0,

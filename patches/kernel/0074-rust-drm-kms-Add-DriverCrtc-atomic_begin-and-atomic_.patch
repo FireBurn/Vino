@@ -1,4 +1,4 @@
-From 033927de52dfec8724867b0011a5e3d08f82f3b3 Mon Sep 17 00:00:00 2001
+From c4385da1394deeb8c739981ef0598516ef1d44e0 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Fri, 6 Sep 2024 12:50:52 -0400
 Subject: [PATCH 074/114] rust: drm/kms: Add DriverCrtc::atomic_begin() and

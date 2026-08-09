@@ -1,4 +1,4 @@
-From 37815bb4789493d00d61f6930b45499d92bb72f0 Mon Sep 17 00:00:00 2001
+From 0503a00002243e1e0589d650ebbe4467233a33b2 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Fri, 17 May 2024 17:23:18 -0400
 Subject: [PATCH 051/114] rust: drm/kms: Add drm_crtc bindings

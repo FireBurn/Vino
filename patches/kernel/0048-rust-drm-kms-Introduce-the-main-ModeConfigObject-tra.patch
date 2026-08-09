@@ -1,4 +1,4 @@
-From d9130d567a0ca036c7d69ab7cf639e04007dfb07 Mon Sep 17 00:00:00 2001
+From 6bd97adae90366ca1f56ff5d7fe2153a34c9b73f Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 16 May 2024 15:34:48 -0400
 Subject: [PATCH 048/114] rust: drm/kms: Introduce the main ModeConfigObject

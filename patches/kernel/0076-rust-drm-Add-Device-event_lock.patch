@@ -1,4 +1,4 @@
-From b63f1f499c6686a5f3ec1858c8c6fcda35a3f1e1 Mon Sep 17 00:00:00 2001
+From d8603b94e76d0bd605324749000c3b2ddb62480b Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Wed, 31 Jul 2024 17:43:33 -0400
 Subject: [PATCH 076/114] rust: drm: Add Device::event_lock()

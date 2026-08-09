@@ -1,4 +1,4 @@
-From 00a6179eea0eab75c2748cf94853121f0071121a Mon Sep 17 00:00:00 2001
+From 045116a012e356c80633f5d708361574708c13d5 Mon Sep 17 00:00:00 2001
 From: Colin Braun <colinbrauncl@gmail.com>
 Date: Sun, 12 Jul 2026 16:07:58 -0500
 Subject: [PATCH 037/114] rust: usb: add USB ch9 standard descriptors and

@@ -1,4 +1,4 @@
-From cd034cf69d49b88e820fe8d8bbfc448335f129e8 Mon Sep 17 00:00:00 2001
+From 9c945787ea40ca62fd6f0e54a413fb474324fc96 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:45:48 +0100
 Subject: [PATCH 086/114] rust: drm: kms: add common state and connector
@@ -10,8 +10,7 @@ plane destination sizes, and EDID mode enumeration.
 Propagate drm_edid_connector_update() failures and release the
 temporary EDID on every path.
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/kernel/drm/kms.rs           | 18 +++++---

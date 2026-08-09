@@ -1,4 +1,4 @@
-From 7d16d47415ee06249d3c6fd629e7c164860a5adc Mon Sep 17 00:00:00 2001
+From d26f3def094d3adf2e2c901619effaea5f3fc04d Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Fri, 6 Sep 2024 13:09:42 -0400
 Subject: [PATCH 077/114] rust: drm/kms: Add Device::num_crtcs()

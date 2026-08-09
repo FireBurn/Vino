@@ -1,4 +1,4 @@
-From 6856b777c9fd6f56aa7e1d12a5513e621c8c1683 Mon Sep 17 00:00:00 2001
+From 74ce96fc247b7d4f62b7805d35c62b61e88bb42d Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 07:10:55 +0100
 Subject: [PATCH 020/114] rust: sysfs: add root-device attribute groups
@@ -16,8 +16,7 @@ buffers without constructing a slice from a possibly null pointer,
 and cover writer accounting and partial-registration unwind with
 KUnit tests.
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/helpers/device.c |  14 ++

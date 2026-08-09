@@ -1,7 +1,12 @@
-From 9f3d92300d366bdd357a1c48b9dae6a6792fcd24 Mon Sep 17 00:00:00 2001
+From 494d21d8f2f62bb663f0820edf9e3f0fa706186d Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 03:40:50 +0100
-Subject: [PATCH 110/114] docs: gpu: document the Vino driver
+Subject: [PATCH 110/114] Documentation/gpu: document the Vino driver
+
+Describe how a dock is identified and placed by family rather than by
+product ID, what the driver implements in-kernel in place of EVDI and
+DisplayLinkManager, and the module parameters an unfamiliar dock or a
+converter with broken DDC may need.
 
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>

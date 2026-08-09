@@ -1,4 +1,4 @@
-From 97842ffb7ab98451e0f9c11d64badba2fff347eb Mon Sep 17 00:00:00 2001
+From 3290fe89ff6e4193f2bac8800eba28e1221af665 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 23:39:55 +0100
 Subject: [PATCH 040/114] rust: usb: add revocable typed interface I/O
@@ -17,8 +17,7 @@ a sibling interface.
 Add the standard power-management callbacks to the Rust USB driver trait
 and update the sample driver for the I/O capability passed at probe.
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/helpers/usb.c              |  18 +

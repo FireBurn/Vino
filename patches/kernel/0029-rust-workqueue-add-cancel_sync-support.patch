@@ -1,4 +1,4 @@
-From 2d56b57059814a17fd2ca6e1bdfbedcc40ceec7c Mon Sep 17 00:00:00 2001
+From cf6ffc4981e5f5b7a577221d40dcc298e0f3d035 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?Onur=20=C3=96zkan?= <work@onurozkan.dev>
 Date: Wed, 17 Jun 2026 16:17:20 +0300
 Subject: [PATCH 029/114] rust: workqueue: add cancel_sync support

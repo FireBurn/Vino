@@ -1,4 +1,4 @@
-From 4b50043945d4be09387cd3c21c53bd3d67112539 Mon Sep 17 00:00:00 2001
+From 8258d6353bae88c1993977765b6a1c3de94da13e Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:34:28 +0100
 Subject: [PATCH 081/114] rust: drm: kms: adapt Lyude's KMS series to current
@@ -13,8 +13,7 @@ and use the current Rust ARef path and helper annotations. Keep
 callback vtables in static storage so every reference handed to DRM
 core remains valid for the device lifetime.
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/helpers/drm/atomic.c        | 21 ++++++++--------

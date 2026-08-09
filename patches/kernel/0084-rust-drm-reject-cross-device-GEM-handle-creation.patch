@@ -1,4 +1,4 @@
-From 0e664b9b25c3e7e48a26d12548ff0331aff15e4d Mon Sep 17 00:00:00 2001
+From f943e404c7cd95f56c297350ee559a324520fbdb Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:39:04 +0100
 Subject: [PATCH 084/114] rust: drm: reject cross-device GEM handle creation
@@ -13,8 +13,7 @@ EINVAL for a mismatched instance.
 
 Fixes: c284d3e42338 ("rust: drm: gem: Add GEM object abstraction")
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/kernel/drm/file.rs    | 7 +++++++

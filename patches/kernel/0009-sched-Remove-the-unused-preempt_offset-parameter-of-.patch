@@ -1,4 +1,4 @@
-From fc280cb57046f9db31845f9753da9557e058c06c Mon Sep 17 00:00:00 2001
+From a5734541a812c124f24fc2f4035c79c43a3371f4 Mon Sep 17 00:00:00 2001
 From: Boqun Feng <boqun@kernel.org>
 Date: Tue, 26 May 2026 08:21:44 -0700
 Subject: [PATCH 009/114] sched: Remove the unused preempt_offset parameter of

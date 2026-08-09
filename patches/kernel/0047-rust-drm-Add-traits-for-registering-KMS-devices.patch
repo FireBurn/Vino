@@ -1,4 +1,4 @@
-From 044d11bc9f983881267853b320f28a20e78bb6b1 Mon Sep 17 00:00:00 2001
+From d94d38b621a7d1007d7df9c8bcba67a0205f540a Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 16 May 2024 15:26:20 -0400
 Subject: [PATCH 047/114] rust: drm: Add traits for registering KMS devices

@@ -1,4 +1,4 @@
-From 59ca2dd24c5cda4919dd69a2e3cc8bc9b9e01f90 Mon Sep 17 00:00:00 2001
+From e1615378bdcb4387abc5723ef9e376316ac53856 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Fri, 6 Sep 2024 12:52:42 -0400
 Subject: [PATCH 069/114] rust: drm/kms: Add RawCrtcState::active()

@@ -1,4 +1,4 @@
-From b78fc3e4b7827f798e857a0fdff3ed6298cacdff Mon Sep 17 00:00:00 2001
+From aed69979926ebf236e6187f77311adcee2b4d8c6 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 16:54:31 +0100
 Subject: [PATCH 031/114] rust: hrtimer: expose interrupt state in hard
@@ -9,8 +9,7 @@ interrupts disabled. Carry that guarantee through HrTimerCallbackContext
 so users of IRQ-aware locks do not need to assert the callback
 context themselves.
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/kernel/time/hrtimer.rs | 21 ++++++++++++++++++++-

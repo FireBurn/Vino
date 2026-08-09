@@ -1,4 +1,4 @@
-From 6a5883583f440aa8e6b3654d519a70bebbe17c68 Mon Sep 17 00:00:00 2001
+From bc5e00baeecb2a12796972b50ca03e89aba939c2 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 03:40:50 +0100
 Subject: [PATCH 109/114] drm/vino: add the DisplayLink DL3 USB display driver
@@ -22,12 +22,12 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  drivers/gpu/drm/Makefile         |    1 +
  drivers/gpu/drm/vino/Kconfig     |   37 +
  drivers/gpu/drm/vino/Makefile    |    2 +
- drivers/gpu/drm/vino/profile.rs  |  195 +++
- drivers/gpu/drm/vino/session.rs  | 2073 ++++++++++++++++++++++++++++++
- drivers/gpu/drm/vino/tests.rs    | 1761 +++++++++++++++++++++++++
+ drivers/gpu/drm/vino/profile.rs  |  190 +++
+ drivers/gpu/drm/vino/session.rs  | 2072 ++++++++++++++++++++++++++++++
+ drivers/gpu/drm/vino/tests.rs    | 1757 +++++++++++++++++++++++++
  drivers/gpu/drm/vino/usb_link.rs |  201 +++
- drivers/gpu/drm/vino/vino.rs     | 1220 ++++++++++++++++++
- 10 files changed, 5498 insertions(+)
+ drivers/gpu/drm/vino/vino.rs     | 1216 ++++++++++++++++++
+ 10 files changed, 5484 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/Kconfig
  create mode 100644 drivers/gpu/drm/vino/Makefile
  create mode 100644 drivers/gpu/drm/vino/profile.rs
@@ -131,10 +131,10 @@ index 000000000000..6e39668040f3
 +obj-$(CONFIG_DRM_VINO) += vino.o
 diff --git a/drivers/gpu/drm/vino/profile.rs b/drivers/gpu/drm/vino/profile.rs
 new file mode 100644
-index 000000000000..3678bb72db4a
+index 000000000000..e40f5ffe9345
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/profile.rs
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,190 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! What distinguishes one DisplayLink dock from another.
@@ -198,7 +198,7 @@ index 000000000000..3678bb72db4a
 +    pub(crate) interlaced_bands: bool,
 +    /// Number of downstream connectors the dock answers a presence probe for.
 +    ///
-+    /// This is the range of the selector at probe byte 22, and it is **not** the head count: Ridge
++    /// This is the range of the selector at probe byte 22, and it is not the head count: Ridge
 +    /// has two of each, Navarro has four connectors feeding two video endpoints (`0x08` carried
 +    /// connectors 0 then 2, `0x0a` carried 1 then 3, measured across cable moves). Connector index
 +    /// is the physical socket number minus one.
@@ -241,7 +241,7 @@ index 000000000000..3678bb72db4a
 +    /// DisplayLink documents HDR10 as DL-7000 only, and the D6000's own head reports
 +    /// `HDR supported = False` to Windows even with an HDR-capable monitor on it -- so this is a
 +    /// silicon generation property, not a mode one. It says the dock *could* be put in that
-+    /// profile; it does not say vino knows how to ask yet. See `docs/hdr.md` §6.
++    /// profile; it does not say vino knows how to ask yet.
 +    pub(crate) hdr_capable: bool,
 +    /// Outstanding EP84 reads to keep posted.
 +    ///
@@ -279,7 +279,7 @@ index 000000000000..3678bb72db4a
 +    }
 +}
 +
-+/// Dell D6000 and other Ridge-platform docks. HW-verified.
++/// Dell D6000 and other Ridge-platform docks.
 +pub(crate) static PROFILE_D6000: DockProfile = DockProfile {
 +    name: "Dell D6000 (Ridge, DL-6xxx)",
 +    video_eps: [0x08, 0x0b, 0x08, 0x0b],
@@ -308,14 +308,9 @@ index 000000000000..3678bb72db4a
 +    video_eps: [0x08, 0x0a, 0x08, 0x0a],
 +    generation: Generation::Navarro,
 +    head_sub_shift: 3,
-+    // The shared-pipe stream-open is sent before pixels by `build_stream_open_buf()`.  Its
-+    // remaining per-session material is established by the connector authentication sequence.
 +    stream_id_mask: 0x07,
 +    strm2_marker: 0x0c,
 +    band_parity_bit: false,
-+    // The fixed-size black carriers happen to need no padding and therefore show zero here, but
-+    // ordinary compressed image records carry the actual 0..15-byte pad count just like Ridge.
-+    // This only became visible once a non-uniform live framebuffer was compared record-by-record.
 +    strip_blocks_x: 16,
 +    interlaced_bands: true,
 +    connectors: 4,
@@ -332,10 +327,10 @@ index 000000000000..3678bb72db4a
 +pub(crate) const EP_CTRL_IN: u8 = 0x84;
 diff --git a/drivers/gpu/drm/vino/session.rs b/drivers/gpu/drm/vino/session.rs
 new file mode 100644
-index 000000000000..b052eceb1a84
+index 000000000000..c7eda19a393a
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/session.rs
-@@ -0,0 +1,2073 @@
+@@ -0,0 +1,2072 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! Bringing a dock's encrypted control session up.
@@ -1013,11 +1008,10 @@ index 000000000000..b052eceb1a84
 +                const TRIES: usize = 40;
 +                let mut last_err = ETIMEDOUT;
 +                let mut accepted = false;
-+                // Name what the dock is refusing. `control session failed ... (ETIMEDOUT)` is
-+                // returned from here, and until this existed it was indistinguishable from a
-+                // reply that never arrived -- which sent four commits chasing the wrong half of
-+                // the protocol on the D6000. This is the send side: the dock has stopped taking
-+                // EP02 writes.
++                // Name what the dock is refusing. This path returns `control session failed ...
++                // (ETIMEDOUT)`, which is otherwise indistinguishable from a reply that never
++                // arrived; the distinction matters because this is the send side, where the dock
++                // has stopped taking EP02 writes at all.
 +                let mut nak_reported = false;
 +                for _ in 0..TRIES {
 +                    match dev.ctrl_send(&frame, Delta::from_millis(5), GFP_KERNEL) {
@@ -2411,10 +2405,10 @@ index 000000000000..b052eceb1a84
 +}
 diff --git a/drivers/gpu/drm/vino/tests.rs b/drivers/gpu/drm/vino/tests.rs
 new file mode 100644
-index 000000000000..62a436dd52b0
+index 000000000000..d1e04628f10b
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/tests.rs
-@@ -0,0 +1,1761 @@
+@@ -0,0 +1,1757 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! KUnit coverage for the parts of the protocol that can be checked without hardware: the CP seal
@@ -2814,8 +2808,7 @@ index 000000000000..62a436dd52b0
 +
 +    #[test]
 +    fn stream_ids_follow_the_dock_profile() {
-+        // Each dock's ids come from its own geometry value, so the two cannot interfere --
-+        // which is the whole reason this is no longer a pair of module-global statics.
++        // Each dock's ids come from its own geometry value, so two bound docks cannot interfere.
 +        let ridge = PROFILE_D6000.geometry();
 +        assert_eq!(ridge.stream_id(0), 0x0008);
 +        assert_eq!(ridge.stream_id(1), 0x0009);
@@ -3058,7 +3051,7 @@ index 000000000000..62a436dd52b0
 +        let f_plain = u16::from_le_bytes([plain[42], plain[43]]);
 +        let f_shared = u16::from_le_bytes([shared[42], shared[43]]);
 +        assert_eq!(f_shared, f_plain | 0x0004);
-+        // Nothing else in the timing block moves. ⚠ Only up to the end of the timing: this
++        // Nothing else in the timing block moves. Compare only up to the end of the timing: this
 +        // message carries a random tail like every other, so a byte-for-byte comparison of the
 +        // whole thing compares two different random draws and fails for the wrong reason.
 +        assert_eq!(plain[..42], shared[..42]);
@@ -3137,9 +3130,8 @@ index 000000000000..62a436dd52b0
 +    #[test]
 +    fn cursor_messages_structure() -> Result {
 +        // Shared 32-byte cursor layout: the dock's head selector at 22, the visible flag at 23,
-+        // and two little-endian u16 fields at 24 and 26. The selector is one-based -- this test
-+        // used to assert a constant `0x02` marker at offset 22, from before the head encoding was
-+        // measured, and it went on passing only because head 1 happens to select 0x02.
++        // and two little-endian u16 fields at 24 and 26. Check the selector against more than one
++        // head: `1 << head` and a fixed byte agree for a single head and diverge past it.
 +        // Create (head 0): id=0x1b sub=0x42, fields = w,h. An upload is not a show, so hidden.
 +        let c = cp::cursor_create(7, 0, 64, 64)?;
 +        assert_eq!(c.len(), 32);
@@ -3231,7 +3223,7 @@ index 000000000000..62a436dd52b0
 +        assert!(drm_sink::NAVARRO_REAL_MODE_H0_MS - last <= 100);
 +    }
 +
-+    /// The boundary cases matter most: each must pass by **equality**. A `<` would prune a dock's
++    /// The boundary cases matter most: each must pass by equality. A `<` would prune a dock's
 +    /// working configuration and dark its panels.
 +    #[test]
 +    fn mode_ceilings_bound_bandwidth_not_refresh() {
@@ -3615,8 +3607,8 @@ index 000000000000..62a436dd52b0
 +
 +    /// The escape codebook's ceiling is part of the wire format and follows the sample depth.
 +    ///
-+    /// Measured against a DL7400 driven by Windows in its 10-bit profile (`docs/hdr.md` §0.2): a
-+    /// captured PQ ramp decodes monotonically at ceiling 12 and at no other value, and the SDR half
++    /// Measured against a DL7400 driven by Windows in its 10-bit profile: a captured PQ ramp
++    /// decodes monotonically at ceiling 12 and at no other value, and the SDR half
 +    /// of the same capture only at 10. Getting this wrong does not degrade the picture, it
 +    /// desynchronises the dock's decoder -- at the maximum category `esc` omits the unary
 +    /// 0-terminator, so the next value's first bit is read as an offset bit.
@@ -3656,12 +3648,11 @@ index 000000000000..62a436dd52b0
 +        assert_eq!(wht::colour(1023, 0, 0), (64 * (1023 >> 2), 64 * 1023, 0));
 +        // 10-bit white quantises to 4092 at DC, which is why the ceiling has to move.
 +        //
-+        // Through `quantize_dc_round`, which is what the encoder actually applies to coefficient
-+        // zero. This assertion used to go through `quantize`, the *AC* quantiser, whose clamp to
-+        // the 12-bit signed token range caps it at 2047 -- so the test could never pass, and it
-+        // was measuring a function the DC never reaches. The AC clamp stays where it is
-+        // deliberately: an over-range AC magnitude saturates in `esc` and only loses detail,
-+        // whereas an over-sized ceiling desynchronises the dock's decoder outright.
++        // Through `quantize_dc_round`, which is what the encoder applies to coefficient zero. The
++        // AC quantiser is the wrong function to assert here: its clamp to the 12-bit signed token
++        // range caps the value at 2047, and the DC never reaches it. That clamp is deliberate --
++        // an over-range AC magnitude saturates in `esc` and only loses detail, whereas an
++        // over-sized ceiling desynchronises the dock's decoder outright.
 +        let (y, _, _) = wht::colour(1023, 1023, 1023);
 +        assert_eq!(
 +            wht::quantize_dc_round(0, wht::transform(&[y; wht::BLOCK])[0]),
@@ -4140,9 +4131,8 @@ index 000000000000..62a436dd52b0
 +        ] {
 +            let descriptor = cp::navarro_pipe_descriptor(connector)?;
 +            assert_eq!(descriptor.len(), 304);
-+            // The marker is present TWICE before the slot records; 14 + 14 + 6 * 46 = 304. This
-+            // test checked only the first copy and then read the slot records from offset 14, so
-+            // it was decoding the second marker as a record header.
++            // The marker is present twice before the slot records; 14 + 14 + 6 * 46 = 304. Assert
++            // both copies, so the records are read from 28 rather than from the second marker.
 +            assert_eq!(&descriptor[..14], &cp::NAVARRO_STREAM_MARKER);
 +            assert_eq!(&descriptor[14..28], &cp::NAVARRO_STREAM_MARKER);
 +            for (index, &(slot, ring, plane0, plane1)) in slots.iter().enumerate() {
@@ -4385,10 +4375,10 @@ index 000000000000..2086b0c51975
 +pub(crate) const EP84_BUF: usize = 4096;
 diff --git a/drivers/gpu/drm/vino/vino.rs b/drivers/gpu/drm/vino/vino.rs
 new file mode 100644
-index 000000000000..2d6b1bf88551
+index 000000000000..174ed11ff383
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/vino.rs
-@@ -0,0 +1,1220 @@
+@@ -0,0 +1,1216 @@
 +// SPDX-License-Identifier: GPL-2.0
 +// SPDX-FileCopyrightText: Copyright (C) 2026 Mike Lothian
 +
@@ -5024,11 +5014,10 @@ index 000000000000..2d6b1bf88551
 +            /// Measured on a lit, idle DL-7400: the absent runs are 0.11 s to 2.29 s, twenty-nine
 +            /// of them over three minutes, reaching 2.46 s around a mode change.
 +            ///
-+            /// ⚠ The debounce is only half of it. Those blips are the dock really dropping the
-+            /// sink, and letting the connector disappear was what repaired them -- the compositor
-+            /// re-enabled the output and the resulting mode set relit the panel. Debouncing alone
-+            /// leaves the head dark for good. `repair_flapped_head` is the other half, and the two
-+            /// only work together.
++            /// The debounce is only half of it. Those blips are the dock really dropping the sink,
++            /// and letting the connector disappear is what repairs them: the compositor re-enables
++            /// the output and the resulting mode set relights the panel. Debouncing alone leaves
++            /// the head dark for good, so this works only together with `repair_flapped_head`.
 +            const PRESENCE_REMOVE_MS: i64 = 5000;
 +            let mut head_absent_since: [Option<Instant<Monotonic>>; VinoDriver::CP_SETUP_HEADS] =
 +                [None; VinoDriver::CP_SETUP_HEADS];
@@ -5177,14 +5166,11 @@ index 000000000000..2d6b1bf88551
 +                        // ~575 ms of engage traffic into a mode-set transaction on another head,
 +                        // which is measurable as delayed activation, not merely as noise.
 +                        if data.probe_head_present(dev, h as u8) == Some(false) {
-+                            // ⛔ But do NOT stand down on the first negative. A *recovered EDID* is
-+                            // this dock's presence signal; the probe is a weaker one that reports a
-+                            // lit sink absent for up to 2.5 s at a time. Latching here lost a head
-+                            // across a module reload, twice in a row: the monitor slow to answer at
-+                            // bring-up was latched out for the life of the session, its EDID never
-+                            // asked for again, while its sibling flapped absent and back four times
-+                            // a minute. Re-enumerating the dock recovered it -- through this exact
-+                            // path, and with no positive probe anywhere in between.
++                            // Do not stand down on the first negative. A recovered EDID is this
++                            // dock's presence signal; the probe is a weaker one that reports a lit
++                            // sink absent for up to 2.5 s at a time. Latching here costs a monitor
++                            // slow to answer at bring-up its whole session: it is never asked for
++                            // an EDID again, and only re-enumerating the dock brings it back.
 +                            //
 +                            // So hold a negative to the same evidence a removal needs. An empty
 +                            // socket still stands down, just `PRESENCE_REMOVE_MS` later, having
@@ -5283,12 +5269,12 @@ index 000000000000..2d6b1bf88551
 +                            // The sink came back before the removal deadline, so the connector was
 +                            // never dropped and nothing downstream will re-drive this head. The
 +                            // dock has forgotten it, so vino has to put it back itself.
-+                            // ⛔ Do NOT re-drive the head here. Most of these blips heal on their
-+                            // own -- the dock brings the sink back within a second or two -- and a
++                            // Do not re-drive the head here. Most of these blips heal on their own
++                            // -- the dock brings the sink back within a second or two -- and a
 +                            // repair costs a full dock-wide re-activation, four seconds of cold
-+                            // choreography for both panels. Measured: firing one per flap put the
-+                            // dock into a permanent re-activation loop, one every five to fifteen
-+                            // seconds, and neither panel ever stayed lit. Absorbing the blip is
++                            // choreography for both panels. Firing one per flap puts the dock into
++                            // a permanent re-activation loop, one every five to fifteen seconds,
++                            // and neither panel stays lit. Absorbing the blip is
 +                            // the whole point; a drop that does *not* heal still falls through to
 +                            // the timed removal below.
 +                            if present && head_absent_since[h].take().is_some() {

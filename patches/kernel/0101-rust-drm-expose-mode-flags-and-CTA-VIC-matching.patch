@@ -1,4 +1,4 @@
-From 1f9a7336306b64d88ac3f4cca64e509fc8cc93a6 Mon Sep 17 00:00:00 2001
+From 67218d40ec3da6881989985ecabc9dafb645b256 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 21:37:16 +0100
 Subject: [PATCH 101/114] rust: drm: expose mode flags and CTA VIC matching
@@ -8,8 +8,7 @@ flags, and use the DRM EDID helper to identify the matching CTA-861
 Video Identification Code. This keeps drivers from duplicating the
 canonical HDMI mode table.
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/kernel/drm/kms/modes.rs | 73 ++++++++++++++++++++++++++++++++++++

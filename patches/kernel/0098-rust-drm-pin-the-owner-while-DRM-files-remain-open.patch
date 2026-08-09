@@ -1,4 +1,4 @@
-From f43d6c08a6eb9f4907f68976b2c1d2d7466f640b Mon Sep 17 00:00:00 2001
+From c9259c9f77cca55c3bbf0f76b552a833571a5808 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 22:51:17 +0100
 Subject: [PATCH 098/114] rust: drm: pin the owner while DRM files remain open
@@ -11,8 +11,7 @@ reference that C DRM drivers receive through DEFINE_DRM_GEM_*_FOPS().
 Pass the owning module to UnregisteredDevice::new() and use the
 built-in null module for the shmem KUnit device.
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/kernel/drm/device.rs    | 46 ++++++++++++++++++++++++++++++++++--

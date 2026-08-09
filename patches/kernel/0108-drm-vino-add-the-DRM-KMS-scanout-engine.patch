@@ -1,4 +1,4 @@
-From ce1066153707259ac49a5d6428cdc97749a481be Mon Sep 17 00:00:00 2001
+From cc2ee662322572d5062f1ebcc7c807b1cf99bb49 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 03:40:39 +0100
 Subject: [PATCH 108/114] drm/vino: add the DRM/KMS scanout engine
@@ -18,10 +18,10 @@ Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/color.rs                 |  271 +
- drivers/gpu/drm/vino/drm_sink.rs              | 4911 +++++++++++++++++
+ drivers/gpu/drm/vino/drm_sink.rs              | 4902 +++++++++++++++++
  drivers/gpu/drm/vino/drm_sink/mode_objects.rs |  862 +++
  drivers/gpu/drm/vino/drm_sink/scanout.rs      | 1528 +++++
- 4 files changed, 7572 insertions(+)
+ 4 files changed, 7563 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/color.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink/mode_objects.rs
@@ -29,7 +29,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 
 diff --git a/drivers/gpu/drm/vino/color.rs b/drivers/gpu/drm/vino/color.rs
 new file mode 100644
-index 000000000000..309a10566069
+index 000000000000..2bae62d86c5f
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/color.rs
 @@ -0,0 +1,271 @@
@@ -48,7 +48,7 @@ index 000000000000..309a10566069
 +//! `tools/color-selftest.sh` fails if they drift.
 +//!
 +//! Pipeline order follows DRM's: degamma, then CTM, then gamma. No degamma LUT is advertised, so
-+//! what runs here is **CTM then gamma**.
++//! what runs here is CTM then gamma.
 +//!
 +//! The transform is applied to the framebuffer's encoded (typically sRGB) values, not to linear
 +//! light, because there is no degamma stage to linearise them first. That is the same
@@ -306,10 +306,10 @@ index 000000000000..309a10566069
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink.rs b/drivers/gpu/drm/vino/drm_sink.rs
 new file mode 100644
-index 000000000000..185385bbffb2
+index 000000000000..593ec4465d86
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink.rs
-@@ -0,0 +1,4911 @@
+@@ -0,0 +1,4902 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! DRM/KMS integration for Vino.
@@ -466,12 +466,10 @@ index 000000000000..185385bbffb2
 +const PROMPT_KEEPALIVE_QUIESCE_MS: i64 = 40;
 +/// Minimum interval between streaming status polls (`id=0x14 sub=0x0c`).
 +///
-+/// This was issued once per *presentation*, so two heads at ~100 fps with `damage_repeats()`
-+/// presentations each drove 200-600 CP round-trips a second, every one of them serialising on the
-+/// single control link. Whichever head looped fastest re-acquired it immediately and starved the
-+/// other for seconds at a time. DLM issues ~3.8 of these per second
-+/// (266 in a 70 s capture), so a quarter-second floor matches the reference and leaves the link
-+/// free for the other head.
++/// Issued per presentation this would be 200-600 CP round-trips a second across two heads at
++/// ~100 fps, every one of them serialising on the single control link, and whichever head looped
++/// fastest would re-acquire it immediately and starve the other. DLM issues ~3.8 per second, so a
++/// quarter-second floor matches the reference and leaves the link free for the other head.
 +const STATUS_POLL_MIN_MS: i64 = 250;
 +const PROMPT_TRAINING_OPEN_MS: i64 = 0;
 +const PROMPT_TRAINING_TAIL_MS: i64 = 400;
@@ -521,7 +519,7 @@ index 000000000000..185385bbffb2
 +    pub(super) const POLLS: &[i64] = &[
 +        5, 26, 1019, 1130, 1192, 1204, 1222, 1235, 1253, 1270, 1287, 1304,
 +    ];
-+    /// `(offset_ms, head, is_fetch)` — `false` is the `0x15/0x20` probe, `true` the `0x15/0x21`
++    /// `(offset_ms, head, is_fetch)` -- `false` is the `0x15/0x20` probe, `true` the `0x15/0x21`
 +    /// fetch.
 +    pub(super) const EDID: &[(i64, u8, bool)] = &[(1033, 1, false), (1059, 1, true)];
 +    /// Keep both carriers active until downstream clock programming completes.
@@ -534,9 +532,9 @@ index 000000000000..185385bbffb2
 +/// state-0 pair before the state-1/3 pair, spaces its two mode sets 757 ms apart rather than
 +/// 29 ms, sets head 0's mode a *second* time shortly before head 0's video, and streams head 1
 +/// first. Replaying one dock's timeline at the other leaves the endpoint unarmed.
-+/// ⚠ **Every head field below is a transcript SLOT**: 0 is the first head an activation brings up
-+/// and 1 the second, whichever sockets they occupy. Both timelines were recorded with the panels
-+/// in the first two sockets, where a slot and a head number happen to coincide.
++/// Every head field below is a transcript slot, not a head number: 0 is the first head an
++/// activation brings up and 1 the second, whichever sockets they occupy. Both timelines were
++/// recorded with the panels in the first two sockets, where the two happen to coincide.
 +/// [`VinoDrmData::activate_dual_wake`] resolves them.
 +pub(super) struct ColdTimeline {
 +    /// Offset of the second slot's mode set.
@@ -639,7 +637,7 @@ index 000000000000..185385bbffb2
 +    SinkTeardown(u8),
 +    /// Engage the downstream sink.
 +    ///
-+    /// ⚠ `id=0x16 sub=0x23` names the head **twice**, at offset 22 and at offset 23, which is why
++    /// `id=0x16 sub=0x23` names the head twice, at offset 22 and at offset 23, which is why
 +    /// it is [`super::cp::edid_sink_state`]`(head, head)`. It is a distinct variant rather than a
 +    /// state so that the remap below cannot mistake the second selector for a constant: the dock
 +    /// acknowledges a mismatched pair and then never enables the sink.
@@ -748,10 +746,10 @@ index 000000000000..185385bbffb2
 +
 +/// Where the first real mode goes, measured from the start of activation.
 +///
-+/// DLM's capture put it at 2978 ms, but DLM's own prelude finishes at 2016 ms. The ~960 ms
-+/// between is dead air in that capture, not something the dock asked for, and it was 53% of a
-+/// 5.59 s enumerate-to-pixels bring-up. Follow the end of the prelude plus one poll interval, so
-+/// the two cannot drift apart when the prelude changes.
++/// DLM's capture puts it at 2978 ms, but DLM's own prelude finishes at 2016 ms; the ~960 ms
++/// between is dead air in that capture rather than something the dock asked for, and it is over
++/// half a 5.59 s enumerate-to-pixels bring-up. Follow the end of the prelude plus one poll
++/// interval, so the two cannot drift apart when the prelude changes.
 +pub(super) const NAVARRO_REAL_MODE_H0_MS: i64 =
 +    NAVARRO_COLD_PRELUDE_END_MS + NAVARRO_REAL_MODE_SETTLE_MS;
 +
@@ -1102,7 +1100,7 @@ index 000000000000..185385bbffb2
 +    }
 +}
 +
-+/// One head's shadow surfaces. Locked **per head**: the snapshot copies ~14.7 MB while holding
++/// One head's shadow surfaces. Locked per head: the snapshot copies ~14.7 MB while holding
 +/// this, and it runs on the compositor's non-blocking commit tail, so a device-wide lock made one
 +/// head's commit stall the other's -- measured at up to 4.2 ms, half a 120 Hz frame budget.
 +struct ShadowPool {
@@ -1211,8 +1209,8 @@ index 000000000000..185385bbffb2
 +    /// or whenever a real flip arrives (that flip already carries newer content, so the redundant
 +    /// repaint is pointless). See [`SETTLE_REPAINT_MS`] for the hardware observation behind it.
 +    ///
-+    /// The `bool` is "promote to a full keyframe". It is **true** for the post-keyframe settle
-+    /// repaint, whose job is to replace a stale surface. It is **false** for a
++    /// The `bool` is "promote to a full keyframe". It is true for the post-keyframe settle
++    /// repaint, whose job is to replace a stale surface. It is false for a
 +    /// *debt* repaint, which carries outstanding `dirty_ttl` retransmissions
 +    /// to the dock's second buffer without promoting them to a keyframe.
 +    #[pin]
@@ -1283,7 +1281,7 @@ index 000000000000..185385bbffb2
 +    ///
 +    /// Separate from `codec_geometry` because it is the one part of the codec's configuration that
 +    /// is neither device-wide nor fixed: the DL7400 negotiates depth per connector, measured on
-+    /// Windows holding one head at 8 bits while the other ran at 10 (`docs/hdr.md` §0.4).
++    /// Windows holding one head at 8 bits while the other ran at 10.
 +    head_ten_bit: core::sync::atomic::AtomicU32,
 +    /// Bit `h` set when head `h`'s connector is being driven with the SMPTE ST 2084 (PQ) transfer
 +    /// function, taken from the `HDR_OUTPUT_METADATA` blob userspace attached to it.
@@ -1403,7 +1401,7 @@ index 000000000000..185385bbffb2
 +    /// Set around `run_pending_scanout`, allowing `cmd_work` to wait for a
 +    /// frame already in flight when it set [`Self::cmd_busy`].
 +    video_inflight: [core::sync::atomic::AtomicBool; HEADS],
-+    /// Consecutive failed live-scanout frames **per head**, for log rate-limiting.
++    /// Consecutive failed live-scanout frames per head, for log rate-limiting.
 +    scanout_fails: [core::sync::atomic::AtomicU64; HEADS],
 +    /// Upcoming page flips to skip for per-head transport backoff.
 +    scanout_skip: [core::sync::atomic::AtomicU64; HEADS],
@@ -1869,11 +1867,11 @@ index 000000000000..185385bbffb2
 +
 +    /// Whether `head` represents a distinct runtime stream on this dock.
 +    ///
-+    /// Every physical connector does. The DL7400 maps its four connectors in pairs onto two video
-+    /// bulk endpoints, and this used to treat the second of each pair as an alias and skip it --
-+    /// which made a monitor in socket 3 or 4 invisible: never probed, never published, no way to
-+    /// drive it. Sharing an endpoint is a transport detail, and it is handled where it belongs, by
-+    /// [`UsbLink::video_pipe_index`] giving both connectors of a pair the same persistent queue.
++    /// Every physical connector does, including both halves of a shared endpoint: the DL7400 maps
++    /// its four connectors in pairs onto two video bulk endpoints, and treating the second of each
++    /// pair as an alias would make a monitor in socket 3 or 4 invisible. Sharing an endpoint is a
++    /// transport detail, handled where it belongs by [`UsbLink::video_pipe_index`], which gives
++    /// both connectors of a pair the same persistent queue.
 +    ///
 +    /// Empty sockets cost nothing here: the presence probe answers negative for them, and the
 +    /// keepalive's re-engage retry stands down permanently once it has.
@@ -2099,8 +2097,8 @@ index 000000000000..185385bbffb2
 +        self.send_cp(dev, 0x14, 0, |ctr| super::cp::device_query_req(ctr, 0x000c))
 +    }
 +
-+    /// One `id=0x16 sub=0x2e|0x2f` stream/display marker. **State lives in byte 23**, not byte 22
-+    /// (byte 22 is constantly `1` — reading it makes every marker look like state=1).
++    /// One `id=0x16 sub=0x2e|0x2f` stream/display marker. State lives in byte 23, not byte 22
++    /// (byte 22 is constantly `1` -- reading it makes every marker look like state=1).
 +    fn stream_marker(&self, dev: &BoundInterface<'_>, head: u8, sub: u16, st: u8) -> Result {
 +        self.send_cp(dev, 0x16, 0, |ctr| {
 +            super::cp::stream_marker(ctr, head, sub, st)
@@ -2149,11 +2147,11 @@ index 000000000000..185385bbffb2
 +    fn blank_head(&self, dev: &BoundInterface<'_>, head: u8) -> Result {
 +        let socket = head + 1;
 +        let head_i = head as usize;
-+        // ⛔ The DL-7400 re-enumerates about two seconds after any blank, whatever the blank does:
++        // The DL-7400 re-enumerates about two seconds after any blank, whatever the blank does:
 +        // measured with the Ridge close bracket, without it, and with the sink power-down both on
-+        // and off -- seven for seven. An idle screen blank alone therefore puts the dock into a
-+        // reset loop and takes the whole desktop down with it, which is far worse than a panel
-+        // that keeps showing its last frame while the compositor thinks it is off.
++        // and off. An idle screen blank alone therefore puts the dock into a reset loop and takes
++        // the whole desktop down with it, which is far worse than a panel that keeps showing its
++        // last frame while the compositor thinks it is off.
 +        //
 +        // Until a Navarro transcript establishes how DLM disables an output, do nothing. The
 +        // scanout has already stopped, because `atomic_disable` zeroed this head's mode
@@ -2162,8 +2160,8 @@ index 000000000000..185385bbffb2
 +        // bracket for as long as the output stays down. It is the same pair `modeset_bracket_pre`
 +        // opens with, so the stream is held rather than torn down.
 +        //
-+        // ⛔ It is **not** Ridge's close bracket (`2f=0`, `2e=0`), which re-enumerates this dock
-+        // about two seconds later, measured seven times out of seven.
++        // It is not Ridge's close bracket (`2f=0`, `2e=0`), which re-enumerates this dock about
++        // two seconds later.
 +        //
 +        // [`Self::close_blank_bracket`] owes the matching re-open before the head is driven again.
 +        if self.is_navarro() {
@@ -2790,8 +2788,8 @@ index 000000000000..185385bbffb2
 +    /// Both mode sets precede either head's video. Single-head activation and live mode changes
 +    /// use the per-head schedule.
 +    ///
-+    /// ⚠ **Every head number in a [`ColdTimeline`] is a transcript slot, not a head**: slot 0 is
-+    /// the lowest-numbered activating head and slot 1 the next. They are resolved to real heads at
++    /// Every head number in a [`ColdTimeline`] is a transcript slot, not a head: slot 0 is the
++    /// lowest-numbered activating head and slot 1 the next, and they are resolved to real heads at
 +    /// the point of send. Taken literally they address heads 0 and 1, whose bits are absent from
 +    /// `sent` for any other pair of sockets, so no marker and no video would go out at all.
 +    fn activate_dual_wake(
@@ -2993,11 +2991,11 @@ index 000000000000..185385bbffb2
 +                let Some(mut timing) = timings[head] else {
 +                    continue;
 +                };
-+                // ⭐ Recompute the shared-endpoint declaration at send time, not at
-+                // `atomic_enable` time. Whether this head's video endpoint carries a second stream
-+                // is a property of the *other* head, and it changes while this head's timing sits
-+                // cached: a monitor plugged into the partner socket a moment later left the first
-+                // head's mode set saying "not shared" forever, and only one of the two panels lit.
++                // Recompute the shared-endpoint declaration at send time, not at `atomic_enable`
++                // time. Whether this head's video endpoint carries a second stream is a property
++                // of the *other* head, and it can change while this head's timing sits cached: a
++                // monitor plugged into the partner socket a moment later would otherwise leave
++                // this mode set saying "not shared", and only one of the two panels lights.
 +                timing.dual_nivo = self.endpoint_is_shared(head);
 +                // The second head's mode set is spaced from the first by this dock's measured
 +                // interval -- 757 ms on Navarro, 29 ms on Ridge. Gate on the slot, so the spacing
@@ -3041,13 +3039,9 @@ index 000000000000..185385bbffb2
 +            // Bracket, status polls and the mid-bracket EDID re-read, up to the first video.
 +            cp_until!(timeline.video[0].1 - 1);
 +
-+            // ⛔ DLM names the streams it will not drive here -- a short sealed open on every
-+            // connector without a monitor, before any head sends pixels -- and vino deliberately
-+            // does not. It sat behind `idle_opens`, which defaulted off, so it has never once run
-+            // on this hardware; every stable bring-up ever measured was without it. Turning it on
-+            // is a hardware experiment and not a free one: this dock re-enumerates when a stream
-+            // is driven at an empty head, and an empty socket's index is not stable across
-+            // bring-ups. Restore it deliberately, with eyes on the panels, or not at all.
++            // DLM opens a short sealed stream on every connector without a monitor at this point.
++            // Vino does not: this dock re-enumerates when a stream is driven at an empty head, and
++            // an empty socket's index is not stable across bring-ups.
 +
 +            for &(vslot, at) in timeline.video {
 +                let head = head_of(vslot as u8);
@@ -3763,7 +3757,7 @@ index 000000000000..185385bbffb2
 +    /// Whether userspace has taken responsibility for describing `head`'s sink, because the dock
 +    /// cannot read it.
 +    ///
-+    /// A DP→HDMI converter that mangles or drops DDC leaves the dock unable to read the monitor at
++    /// A DP-to-HDMI converter that mangles or drops DDC leaves the dock unable to read the monitor at
 +    /// all: the presence probe reports the socket occupied, but no `id=0x194` ever arrives, so the
 +    /// head stays disconnected and nothing is ever driven. The monitor is real, and its EDID is
 +    /// readable from a working port on another machine.
@@ -3774,13 +3768,12 @@ index 000000000000..185385bbffb2
 +    /// that is connected and whose `get_modes` returned none, so all this flag does is make the
 +    /// head report no modes of its own while no EDID has been read.
 +    ///
-+    /// ⚠ It deliberately does NOT report the head connected. Connecting a modeless connector hands
-+    /// fbdev emulation a blank cheque, and its 640x480 default mode-set resets this dock -- into a
-+    /// 25 s re-enumeration loop, measured. Userspace supplies the description and then forces the
-+    /// connector on (`echo on > .../status`), in that order, which is also what makes the whole
-+    /// sequence race-free.
++    /// It deliberately does not report the head connected. Connecting a modeless connector hands
++    /// fbdev emulation a blank cheque, and its 640x480 default mode set puts this dock into a 25 s
++    /// re-enumeration loop. Userspace supplies the description and then forces the connector on
++    /// (`echo on > .../status`), in that order, which is also what makes the sequence race-free.
 +    ///
-+    /// ⚠ An override describes the SINK, not the link. A blob claiming a mode the converter cannot
++    /// An override describes the sink, not the link. A blob claiming a mode the converter cannot
 +    /// carry gives a black screen just the same: this substitutes for a broken read, it does not
 +    /// negotiate anything.
 +    pub(super) fn edid_from_userspace(&self, head: usize) -> bool {
@@ -4602,11 +4595,11 @@ index 000000000000..185385bbffb2
 +
 +/// Enforce the control session's silence deadline from off the control path.
 +///
-+/// The deadline used to be checked only when a caller arrived to start a transaction, which is
-+/// too late by construction: the thread that would arrive is the keepalive, and the keepalive is
-+/// the thread that gets stuck. A measured wedge reported 15787 ms against a 5000 ms limit, and
-+/// only because the dock re-enumerated. This runs on the system queue, so it is scheduled whatever
-+/// vino's own queues are doing, and it touches nothing a stuck transfer can be holding.
++/// Checking the deadline when a caller arrives to start a transaction is too late by
++/// construction: the thread that would arrive is the keepalive, and the keepalive is the thread
++/// that gets stuck -- a wedge then runs to 15 s against a 5 s limit, and ends only because the
++/// dock re-enumerates. This runs on the system queue, so it is scheduled whatever vino's own
++/// queues are doing, and it touches nothing a stuck transfer can be holding.
 +fn run_cp_watchdog(this: ARef<VinoDrmDevice>) {
 +    let data: &VinoDrmData = &this;
 +    if data.shutting_down.load(Ordering::Acquire) {
@@ -4825,15 +4818,14 @@ index 000000000000..185385bbffb2
 +            // needs the same exclusion against the scanout workers -- otherwise a frame already in
 +            // flight interleaves its records with the blanking frames on the wire.
 +            let has_modeset = pending.has_stream();
-+            // ⛔ On the DL7400 a mode set is DOCK-WIDE, not per head. Configuring one connector
-+            // while any other connector is lit makes the dock re-enumerate about 100 ms after the
-+            // next video write -- measured five times over, on every shape of the change:
-+            // 120 -> 165, 165 -> 120 and 120 -> 60 on a live head, waking a second head one
-+            // second after the first, and reconfiguring a head whose sibling had been lit and
-+            // idle for over three minutes. The same changes with the sibling disabled are clean,
-+            // and so is the simultaneous `activate_dual_wake` path. That is DLM's own behaviour:
-+            // its log says `[Profile change] Recreating device` and it re-runs a bring-up-shaped
-+            // burst rather than re-configuring one connector in place.
++            // On the DL7400 a mode set is dock-wide, not per head. Configuring one connector while
++            // any other is lit makes the dock re-enumerate about 100 ms after the next video
++            // write, on every shape of the change: 120 -> 165, 165 -> 120 and 120 -> 60 on a live
++            // head, waking a second head a second after the first, and reconfiguring a head whose
++            // sibling has been lit and idle for minutes. The same changes with the sibling
++            // disabled are clean, and so is the simultaneous `activate_dual_wake` path. DLM
++            // behaves the same way: it logs `[Profile change] Recreating device` and re-runs a
++            // bring-up-shaped burst rather than reconfiguring one connector in place.
 +            //
 +            // So fold every already-active head into this batch. Zeroing its mode generation
 +            // makes `activate_dual_wake` treat it as a fresh wake, and the whole dock is then
@@ -4844,10 +4836,9 @@ index 000000000000..185385bbffb2
 +            // command, and it must not drag every lit head through a re-activation.
 +            // Folding the lit heads in makes `activate_dual_wake` name every head at once, which
 +            // is the only shape of mode set this dock accepts while more than one head is lit.
-+            // ⚠ This replays the cold choreography -- a dock-wide sink reset and pipe clears --
-+            // on a dock that is already driving its sinks. That is the cost of the only mode set
-+            // this dock will take; reconfiguring one connector while another is lit re-enumerates
-+            // it about 100 ms later, measured five ways.
++            // This replays the cold choreography -- a dock-wide sink reset and pipe clears -- on a
++            // dock that is already driving its sinks. That is the cost of the only mode set this
++            // dock will take.
 +            if cmd_heads != 0 && data.is_navarro() {
 +                // Gather the whole dock's desired state first, and only commit to it if at least
 +                // two heads end up in it. Below two there is nothing for the dual path to do and
@@ -5151,8 +5142,8 @@ index 000000000000..185385bbffb2
 +                    | plane::Rotation::REFLECT_X
 +                    | plane::Rotation::REFLECT_Y,
 +            )?;
-+            // ⚠ If the hardware cursor ever has to go back to software, withdraw this PLANE --
-+            // do not merely stop sending the messages. A cursor plane whose atomic commit
++            // If the hardware cursor ever has to go back to software, withdraw this plane rather
++            // than merely stop sending the messages. A cursor plane whose atomic commit
 +            // succeeds makes the compositor hand the pointer to hardware and stop drawing its
 +            // own, so starving it of messages loses the pointer entirely rather than falling
 +            // back. A CRTC with no cursor plane is how a driver says "draw it yourself".
@@ -5208,10 +5199,10 @@ index 000000000000..185385bbffb2
 +            // `atomic_enable` takes it from this connector's HDR_OUTPUT_METADATA EOTF, and the
 +            // depth (offset 69) and DMA format (offset 23, `NM30`) go with it.
 +            //
-+            // ⚠ Attaching these is what makes a compositor re-encode the desktop in PQ/BT.2020.
-+            // If the sink does not follow, the failure is a washed-out grey desktop, and it is
-+            // invisible on the wire -- correct PQ code words is exactly what a wire capture shows
-+            // in both the working and the broken case. It is an eyes question. See `docs/hdr.md`.
++            // Attaching these is what makes a compositor re-encode the desktop in PQ/BT.2020. If
++            // the sink does not follow, the failure is a washed-out grey desktop that is invisible
++            // on the wire: a capture shows correct PQ code words in both the working and the
++            // broken case.
 +            if data.hdr_capable() {
 +                conn.attach_max_bpc_property(8, 10)?;
 +                conn.attach_colorspace_property()?;

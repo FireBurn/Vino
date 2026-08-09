@@ -1,4 +1,4 @@
-From 7f93849a89b8cca807630d68b4692ef6cb2c3ffe Mon Sep 17 00:00:00 2001
+From 79761d45bfaf81aa538795aa1ef19f83605bf9f7 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Fri, 6 Sep 2024 13:33:40 -0400
 Subject: [PATCH 079/114] rust: drm/kms: Add Kms::atomic_commit_tail

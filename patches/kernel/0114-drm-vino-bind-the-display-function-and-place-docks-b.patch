@@ -1,4 +1,4 @@
-From b4aaf97dd2432e53f5e6684b4816f49906cc6a55 Mon Sep 17 00:00:00 2001
+From 78bedbe6845471b380f0c66191f082ce2ba19c79 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sun, 9 Aug 2026 19:21:53 +0100
 Subject: [PATCH 114/114] drm/vino: bind the display function, and place docks
@@ -34,12 +34,12 @@ resolution outright.
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- Documentation/gpu/vino.rst       |  37 +++++-
+ Documentation/gpu/vino.rst       |  37 ++++-
  drivers/gpu/drm/vino/profile.rs  |  34 ++++-
  drivers/gpu/drm/vino/tests.rs    |  80 ++++++++---
  drivers/gpu/drm/vino/usb_link.rs |  35 +++--
- drivers/gpu/drm/vino/vino.rs     | 221 ++++++++++++++++++++-----------
- 5 files changed, 300 insertions(+), 107 deletions(-)
+ drivers/gpu/drm/vino/vino.rs     | 225 ++++++++++++++++++++-----------
+ 5 files changed, 302 insertions(+), 109 deletions(-)
 
 diff --git a/Documentation/gpu/vino.rst b/Documentation/gpu/vino.rst
 index 3ff6798e24f5..1dd21e89e0d7 100644
@@ -90,13 +90,13 @@ index 3ff6798e24f5..1dd21e89e0d7 100644
  The driver owns the USB device and implements the dock's initialization,
  HDCP 2.2 authentication, encrypted control protocol, downstream monitor
 diff --git a/drivers/gpu/drm/vino/profile.rs b/drivers/gpu/drm/vino/profile.rs
-index 3678bb72db4a..3cc40ecde5ed 100644
+index e40f5ffe9345..c76e9a01b8cd 100644
 --- a/drivers/gpu/drm/vino/profile.rs
 +++ b/drivers/gpu/drm/vino/profile.rs
 @@ -143,7 +143,7 @@ pub(crate) fn geometry(&self) -> video::wht::Geometry {
  }
  
- /// Dell D6000 and other Ridge-platform docks. HW-verified.
+ /// Dell D6000 and other Ridge-platform docks.
 -pub(crate) static PROFILE_D6000: DockProfile = DockProfile {
 +pub(crate) static PROFILE_RIDGE: DockProfile = DockProfile {
      name: "Dell D6000 (Ridge, DL-6xxx)",
@@ -111,7 +111,7 @@ index 3678bb72db4a..3cc40ecde5ed 100644
      name: "DL-7400 quad dock (Navarro, DL-7000)",
      video_eps: [0x08, 0x0a, 0x08, 0x0a],
      generation: Generation::Navarro,
-@@ -190,6 +190,36 @@ pub(crate) fn geometry(&self) -> video::wht::Geometry {
+@@ -185,6 +185,36 @@ pub(crate) fn geometry(&self) -> video::wht::Geometry {
      ep84_queue_depth: 1,
  };
  
@@ -119,11 +119,11 @@ index 3678bb72db4a..3cc40ecde5ed 100644
 +///
 +/// The family comes from the device's own identity descriptor, so this is what a dock *is*, not
 +/// what product ID it happens to ship under. A product-ID table can only ever describe the
-+/// hardware someone tested; see `Documentation/gpu/vino.rst` and `docs/adding-a-device.md`.
++/// hardware someone tested; see Documentation/gpu/vino.rst.
 +///
-+/// ⚠ Ella and Firefly are named by the vendor's firmware packages and have never been seen here.
++/// Ella and Firefly are named by the vendor's firmware packages and have never been seen here.
 +/// Declining them is deliberate: an unrecognised device that says what it is produces a usable
-+/// report, and a guessed profile produces a dock reset.
++/// report, whereas a guessed profile produces a dock reset.
 +pub(crate) fn for_family(family: firmware::Family) -> Option<&'static DockProfile> {
 +    match family {
 +        firmware::Family::Navarro => Some(&PROFILE_NAVARRO),
@@ -149,7 +149,7 @@ index 3678bb72db4a..3cc40ecde5ed 100644
  pub(crate) const EP_CTRL_OUT: u8 = 0x02;
  pub(crate) const EP_CTRL_IN: u8 = 0x84;
 diff --git a/drivers/gpu/drm/vino/tests.rs b/drivers/gpu/drm/vino/tests.rs
-index 5dcf73795757..7582c8c79992 100644
+index cee44fdb842c..80c038526010 100644
 --- a/drivers/gpu/drm/vino/tests.rs
 +++ b/drivers/gpu/drm/vino/tests.rs
 @@ -217,7 +217,7 @@ fn g(x: usize, y: usize) -> (u16, u16, u16) {
@@ -170,10 +170,10 @@ index 5dcf73795757..7582c8c79992 100644
          let frame = video::wht::black_frame_ep08(geom, 2560, 1440, 0)?;
          let image_len = frame.iter().map(|part| part.len()).sum::<usize>();
          assert_eq!(image_len, 203_040);
-@@ -400,11 +400,11 @@ fn stream_content_nonce_matches_golden_vectors() {
+@@ -399,11 +399,11 @@ fn stream_content_nonce_matches_golden_vectors() {
+     #[test]
      fn stream_ids_follow_the_dock_profile() {
-         // Each dock's ids come from its own geometry value, so the two cannot interfere --
-         // which is the whole reason this is no longer a pair of module-global statics.
+         // Each dock's ids come from its own geometry value, so two bound docks cannot interfere.
 -        let ridge = PROFILE_D6000.geometry();
 +        let ridge = profile::PROFILE_RIDGE.geometry();
          assert_eq!(ridge.stream_id(0), 0x0008);
@@ -184,7 +184,7 @@ index 5dcf73795757..7582c8c79992 100644
          assert_eq!(navarro.stream_id(0), 0x0007);
          assert_eq!(navarro.stream_id(1), 0x000f);
          assert_eq!(navarro.stream_id(2), 0x0017);
-@@ -857,6 +857,40 @@ fn the_first_real_mode_follows_the_prelude_rather_than_the_capture() {
+@@ -855,6 +855,40 @@ fn the_first_real_mode_follows_the_prelude_rather_than_the_capture() {
          assert!(drm_sink::NAVARRO_REAL_MODE_H0_MS - last <= 100);
      }
  
@@ -222,10 +222,10 @@ index 5dcf73795757..7582c8c79992 100644
 +        assert!(profile::for_product(0x6015).is_none());
 +    }
 +
-     /// The boundary cases matter most: each must pass by **equality**. A `<` would prune a dock's
+     /// The boundary cases matter most: each must pass by equality. A `<` would prune a dock's
      /// working configuration and dark its panels.
      #[test]
-@@ -866,29 +900,45 @@ fn mode_ceilings_bound_bandwidth_not_refresh() {
+@@ -864,29 +898,45 @@ fn mode_ceilings_bound_bandwidth_not_refresh() {
  
          // Ridge is clamped by refresh regardless of resolution: DLM puts 119.998 Hz on the wire
          // for a 180 Hz request and the 59.95 Hz CVT-RB timing for an 85 Hz one.
@@ -280,7 +280,7 @@ index 5dcf73795757..7582c8c79992 100644
          assert_eq!(rate(65535, 65535, 65535), u32::MAX); // saturates, never wraps small
          assert_eq!(rate(2560, 1440, -1), 0);
      }
-@@ -1135,7 +1185,7 @@ fn unmeasured_mode_is_accepted_with_a_derived_profile() -> Result {
+@@ -1133,7 +1183,7 @@ fn unmeasured_mode_is_accepted_with_a_derived_profile() -> Result {
          // Inside the DL7400's envelope, and exactly at its clock ceiling: the monitor's EDID DTD
          // says 699.50 MHz where DLM's wire value rounds to its 10 kHz unit (699.49), so a ceiling
          // taken from DLM's rounding would prune this mode by 10 kHz. It must not.
@@ -289,7 +289,7 @@ index 5dcf73795757..7582c8c79992 100644
          // The clock field itself carries it fine: offsets 70..73 are a u32, as the DL7400's
          // 2560x1440p165 mode set proves (0x0001113d = 699.49 MHz). Admission is the refresh
          // limit's job, not a silent conversion failure.
-@@ -1685,7 +1735,7 @@ fn stream_marker_routes_the_selected_head() -> Result {
+@@ -1682,7 +1732,7 @@ fn stream_marker_routes_the_selected_head() -> Result {
  
      #[test]
      fn video_frame_trailer_matches_dlm_cycle_and_head() {
@@ -353,7 +353,7 @@ index 2086b0c51975..6680dedf6b2b 100644
  }
  
 diff --git a/drivers/gpu/drm/vino/vino.rs b/drivers/gpu/drm/vino/vino.rs
-index d65af52a5eca..bef40251be4b 100644
+index 09d7859966ee..be233be8497c 100644
 --- a/drivers/gpu/drm/vino/vino.rs
 +++ b/drivers/gpu/drm/vino/vino.rs
 @@ -68,7 +68,7 @@ macro_rules! vino_dev_debug {
@@ -375,7 +375,7 @@ index d65af52a5eca..bef40251be4b 100644
  
                  // One line naming what setup found on every physical socket, including the ones
                  // this dock does not drive as distinct streams. Which socket a monitor is in is
-@@ -693,18 +696,7 @@ fn run(this: Arc<BringUp>) {
+@@ -692,18 +695,7 @@ fn run(this: Arc<BringUp>) {
                  // windows off a connector that has disappeared, but not off one that is merely
                  // frozen. Recovery is a replug, which rebinds and starts a fresh session.
                  if !data.cp_link_alive() {
@@ -395,7 +395,7 @@ index d65af52a5eca..bef40251be4b 100644
                      break;
                  }
                  if data.initial_modeset_quiet() {
-@@ -1008,24 +1000,59 @@ fn run(this: Arc<BringUp>) {
+@@ -1004,24 +996,59 @@ fn run(this: Arc<BringUp>) {
  /// Control-session bring-up: plaintext init, link AKE, and the sealed per-connector setup.
  mod session;
  
@@ -460,7 +460,7 @@ index d65af52a5eca..bef40251be4b 100644
      type Data<'bound> = VinoBoundData;
      const ID_TABLE: usb::IdTable<Self::IdInfo> = &USB_TABLE;
  
-@@ -1036,41 +1063,34 @@ fn probe<'bound>(
+@@ -1032,41 +1059,34 @@ fn probe<'bound>(
          io: Arc<usb::IoWindow>,
      ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound {
          let cdev: &device::Device<Core<'_>> = intf.as_ref();
@@ -499,7 +499,7 @@ index d65af52a5eca..bef40251be4b 100644
 +            .ok();
 +        let identity_family = identity.as_ref().and_then(firmware::Identity::family);
 +
-         // ⛔ Writing firmware the dock does not need is a deliberate act: its DFU interface does
+         // Writing firmware the dock does not need is a deliberate act: its DFU interface does
          // not support upload, so there is no way to read the running image back and nothing to
          // restore from if the write goes wrong.
          let force = *crate::module_parameters::force_flash.value() != 0;
@@ -523,7 +523,7 @@ index d65af52a5eca..bef40251be4b 100644
              }) {
                  Ok(()) => {}
                  Err(e) => dev_info!(cdev, "vino: dock firmware check skipped ({e:?})\n"),
-@@ -1080,7 +1100,7 @@ fn probe<'bound>(
+@@ -1076,7 +1096,7 @@ fn probe<'bound>(
          // This is how a re-flash of the running version or a downgrade is done at all, since the
          // automatic check refuses both. Published only on the DFU interface, and only for a dock
          // whose family is recognised -- an image for another family is refused in `prepare`.
@@ -532,7 +532,7 @@ index d65af52a5eca..bef40251be4b 100644
              match identity_family {
                  Some(family) => {
                      let ctx = Arc::new(
-@@ -1115,20 +1135,10 @@ fn probe<'bound>(
+@@ -1111,20 +1131,10 @@ fn probe<'bound>(
          } else {
              None
          };
@@ -555,7 +555,7 @@ index d65af52a5eca..bef40251be4b 100644
              );
              return Ok(VinoBoundData {
                  _intf: intf.into(),
-@@ -1137,14 +1147,75 @@ fn probe<'bound>(
+@@ -1133,14 +1143,75 @@ fn probe<'bound>(
                  _fw_upload: fw_upload,
              });
          }
@@ -634,7 +634,7 @@ index d65af52a5eca..bef40251be4b 100644
  
          // DRM device lifecycle: allocate an `UnregisteredDevice`, wire up the KMS pipeline on it
          // while still unregistered, then register it. The `Registration` is stored in the bound
-@@ -1155,7 +1226,7 @@ fn probe<'bound>(
+@@ -1151,7 +1222,7 @@ fn probe<'bound>(
              // The ten-bit flag has to arrive here, not in the profile block below: the KMS objects
              // are built during this call, and they decide then whether to offer a 10-bit format
              // and the HDR connector properties.
@@ -643,7 +643,7 @@ index d65af52a5eca..bef40251be4b 100644
              &THIS_MODULE,
          )?;
          // `Core` derefs to `Bound`; name the context explicitly so `as_ref()`
-@@ -1181,22 +1252,22 @@ fn probe<'bound>(
+@@ -1177,22 +1248,22 @@ fn probe<'bound>(
              // It is per device because two docks of different generations lay a strip's sixteen
              // blocks over different pixels; see `video::wht::Geometry`.
              d.set_codec_geometry(
@@ -678,3 +678,17 @@ index d65af52a5eca..bef40251be4b 100644
          let bringup_slot = KBox::pin_init(new_mutex!(Some(bringup.clone())), GFP_KERNEL)?;
  
          let data: &drm_sink::VinoDrmData = &ddev;
+@@ -1271,11 +1342,11 @@ fn disconnect<'bound>(intf: &'bound usb::Interface<Core<'_>>, data: Pin<&VinoBou
+         },
+         force_flash: u8 {
+             default: 0,
+-            description: "Write the packaged dock firmware even when the dock already runs that version or newer. The DFU interface does not support upload, so there is no host-side restore path and an interrupted write leaves a partial image. For recovering a damaged dock, not for normal use",
++            description: "Write the packaged dock firmware even when the dock already runs that version or newer. For recovering a damaged dock: DFU upload is unsupported, so there is no restore path",
+         },
+         edid_override: u8 {
+             default: 0,
+-            description: "Bitmask of heads whose sink is described by DRM's EDID override (drm_kms_helper.edid_firmware=<connector>:<path>, or a debugfs edid_override write) because the dock cannot read its EDID -- typically a DP-to-HDMI converter that mangles DDC",
++            description: "Bitmask of heads whose EDID the dock cannot read, typically behind a DP-to-HDMI converter that mangles DDC, and which are described by DRM's EDID override instead",
+         },
+     },
+ }

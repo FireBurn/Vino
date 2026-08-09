@@ -1,4 +1,4 @@
-From f385723b5c2f873af51cd73c69209e6591968167 Mon Sep 17 00:00:00 2001
+From 9742bfd0e160cae8ee26dd8650ed2aa971054a85 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 22:52:04 +0100
 Subject: [PATCH 100/114] rust: drm: add an owned display mode constructor
@@ -9,8 +9,7 @@ and tests.
 Accept the essential timing fields and reject invalid active, sync,
 and total ordering before exposing the owned mode.
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/kernel/drm/kms/modes.rs | 62 +++++++++++++++++++++++++++++++++++-

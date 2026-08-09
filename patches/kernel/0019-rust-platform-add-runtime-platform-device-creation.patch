@@ -1,4 +1,4 @@
-From daee4ee582fefb726993846beeb3dd45d8b603e3 Mon Sep 17 00:00:00 2001
+From 2ebc63a49e4bfed0b306e04c0474a215e6047e0f Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 06:19:08 +0100
 Subject: [PATCH 019/114] rust: platform: add runtime platform device creation
@@ -10,8 +10,7 @@ RegisteredDevice owns a platform_device_register_full() result and
 unregisters it on drop. Its constructor accepts the name, ID, parent,
 and DMA mask, and exposes the DEVID_AUTO and DEVID_NONE constants.
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/kernel/platform.rs | 86 +++++++++++++++++++++++++++++++++++++++++

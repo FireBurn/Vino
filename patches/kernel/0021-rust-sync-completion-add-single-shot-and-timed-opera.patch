@@ -1,4 +1,4 @@
-From e2a0e2b06bf43523796094d014e8dafc551b1a90 Mon Sep 17 00:00:00 2001
+From 0cdf3c1513fa4803344ef72aa390da997059fd18 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 21:49:17 +0100
 Subject: [PATCH 021/114] rust: sync: completion: add single-shot and timed
@@ -8,8 +8,7 @@ Expose complete() and wait_for_completion_timeout() so Rust drivers
 can coordinate asynchronous completions without open-coding access
 to struct completion.
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/kernel/sync/completion.rs | 25 ++++++++++++++++++++++++-

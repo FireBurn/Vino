@@ -1,4 +1,4 @@
-From 7e0e33071fef51e5e7bb6f78b8903a9a9d77e397 Mon Sep 17 00:00:00 2001
+From 40c213e1c7473e97b7b3dff2c0ad24798f9c40ab Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 16:54:31 +0100
 Subject: [PATCH 030/114] rust: io: add checked offset copy helpers
@@ -8,8 +8,7 @@ the complete mapping. Add checked helpers that project the requested
 range before using the backend copy operation. This keeps raw backend
 pointers out of consumers and reports invalid ranges instead.
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/kernel/io.rs | 50 +++++++++++++++++++++++++++++++++++++++++++++++

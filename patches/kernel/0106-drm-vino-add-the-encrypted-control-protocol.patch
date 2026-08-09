@@ -1,4 +1,4 @@
-From 5783fd208769c4fca6097d544db11c0b4fac8e65 Mon Sep 17 00:00:00 2001
+From 0793d0c905e492dc73873ad2aa095a5dccbebe80 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 03:40:28 +0100
 Subject: [PATCH 106/114] drm/vino: add the encrypted control protocol
@@ -15,12 +15,12 @@ Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/ake.rs    |  175 ++++
- drivers/gpu/drm/vino/cp.rs     | 1702 ++++++++++++++++++++++++++++++++
+ drivers/gpu/drm/vino/cp.rs     | 1693 ++++++++++++++++++++++++++++++++
  drivers/gpu/drm/vino/crypto.rs |   35 +
  drivers/gpu/drm/vino/hdcp.rs   |  115 +++
  drivers/gpu/drm/vino/proto.rs  |   71 ++
  drivers/gpu/drm/vino/rng.rs    |    9 +
- 6 files changed, 2107 insertions(+)
+ 6 files changed, 2098 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/ake.rs
  create mode 100644 drivers/gpu/drm/vino/cp.rs
  create mode 100644 drivers/gpu/drm/vino/crypto.rs
@@ -211,10 +211,10 @@ index 000000000000..54d24ca2d096
 +}
 diff --git a/drivers/gpu/drm/vino/cp.rs b/drivers/gpu/drm/vino/cp.rs
 new file mode 100644
-index 000000000000..6278225482d8
+index 000000000000..243c8db30572
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/cp.rs
-@@ -0,0 +1,1702 @@
+@@ -0,0 +1,1693 @@
 +// SPDX-License-Identifier: GPL-2.0
 +//! Encrypted-control-plane message builders (the inner plaintext of the type=4
 +//! sub=0x24 AES-CTR frames) plus the AES-CTR `seal` that encrypts and frames them.
@@ -288,7 +288,7 @@ index 000000000000..6278225482d8
 +    Ok(b)
 +}
 +/// Stream enable markers (`id=0x16`, sub `0x2e` or `0x2f`) bracket each mode set:
-+///   `2f(1) 2e(3)` -> **mode-set** -> `2f(1) 2e(0) 2f(1) 2e(0) 2f(0) 2e(0)`
++///   `2f(1) 2e(3)` -> mode-set -> `2f(1) 2e(0) 2f(1) 2e(0) 2f(0) 2e(0)`
 +///
 +/// Offset 22 selects the head and offset 23 carries the state.
 +pub(super) fn stream_marker(counter: u16, head: u8, sub: u16, state: u8) -> Result<KVec<u8>> {
@@ -413,9 +413,9 @@ index 000000000000..6278225482d8
 +pub(super) fn edid_engage_req(counter: u16, head: u8) -> Result<KVec<u8>> {
 +    edid_sink_state(counter, head, head)
 +}
-+/// OUT `id=0x15 sub=0x0053` post-EDID capability query. Offset 22 is a **head bitmask**.
++/// OUT `id=0x15 sub=0x0053` post-EDID capability query. Offset 22 is a head bitmask.
 +///
-+/// ⚠ `head + 1` and `1 << head` are the same byte for heads 0 and 1, so a capture with both
++/// `head + 1` and `1 << head` are the same byte for heads 0 and 1, so a capture with both
 +/// monitors in the first two sockets cannot distinguish them. DLM sends `4` for head 2, where a
 +/// one-based index would send 3.
 +pub(super) fn post_edid_query(counter: u16, head: u8) -> Result<KVec<u8>> {
@@ -751,10 +751,9 @@ index 000000000000..6278225482d8
 +const DMA_FORMAT_NONE: u8 = 0;
 +/// Offset-23 for a 10-bit head: `NM30`, the second of the table's two four-byte formats.
 +///
-+/// The choice between the two used to be a coin flip -- both are four bytes, and no capture on
-+/// either dock generation carries anything but `NM24`. The name settles it: 30 bits per pixel
-+/// packed into four bytes is what a 2:10:10:10 sample is, and `NM32` is the 8-bit-with-padding
-+/// format vino has no use for.
++/// No capture on either dock generation carries anything but `NM24`, so the name has to settle
++/// the choice between the table's two four-byte formats: 30 bits per pixel packed into four bytes
++/// is what a 2:10:10:10 sample is, and `NM32` is the 8-bit-with-padding format vino has no use for.
 +const DMA_FORMAT_NM30: u8 = 3;
 +
 +/// Build the set-mode message's teardown form: every timing word zero and
@@ -1147,9 +1146,9 @@ index 000000000000..6278225482d8
 +
 +/// Decode a per-head HDCP push from either of the two observed vendor framings.
 +///
-+/// Ridge can send the inner body directly in `wsub=0x25`; Navarro seals it as `wsub=0x45` with
-+/// the live control key.  Keeping this as one parser matters: previously only Rrx was extracted,
-+/// while L', ReceiverID/V', receiver-auth status and M' were silently treated as generic traffic.
++/// Ridge can send the inner body directly in `wsub=0x25`; Navarro seals it as `wsub=0x45` with the
++/// live control key. One parser covers both, so L', ReceiverID/V', receiver-auth status and M' are
++/// decoded alongside Rrx rather than falling through as generic traffic.
 +pub(super) fn perhead_hdcp_push(
 +    ks: &[u8; 16],
 +    out_riv: &[u8; 8],
@@ -1214,18 +1213,10 @@ index 000000000000..6278225482d8
 +/// Cursor wire layout (sec 8.6.1). All three messages share the 32-byte inner header built by
 +/// [`cursor_header`], with the head selector at off22 and a flag at off23.
 +///
-+/// The dock numbers its heads from **one**; `0` is not a valid selector.
-+///
-+/// ⚠ This was a two-entry table, `[0x01, 0x02]`, indexed by vino's head number -- written when the
-+/// only dock had two heads. The DL-7400 has four, and its two monitors sit in sockets 3 and 4, so
-+/// every cursor message for them looked up past the end of the table and returned `EINVAL`.
-+/// `EINVAL` is deliberately non-retryable, so `cmd_work` dropped each one with
-+/// "dropping invalid asynchronous KMS command" and **no cursor byte ever reached the dock**: the
-+/// hardware cursor was not unreliable on this dock, it was absent.
-+///
-+/// The selector is a **head bitmask**, `1 << head`. The two measured entries were `[0x01, 0x02]`,
-+/// which is `1 << 0` and `1 << 1`; they do not distinguish a bitmask from a one-based index, and
-+/// the two readings diverge from head 2 on. A head sent `head + 1` draws no cursor.
++/// The selector is a head bitmask, `1 << head`; the dock numbers its heads from one, so `0` is
++/// never valid. The two measured entries were `[0x01, 0x02]`, which is both `1 << head` and
++/// `head + 1`, so they do not distinguish the two readings. They diverge from head 2 on, and a
++/// head sent `head + 1` draws no cursor.
 +fn cursor_head_id(head: u8) -> Result<u8> {
 +    if usize::from(head) >= crate::drm_sink::HEADS {
 +        return Err(EINVAL);
@@ -1233,7 +1224,7 @@ index 000000000000..6278225482d8
 +    Ok(1u8 << head)
 +}
 +
-+/// off23 is the cursor's **visible** flag, not a message-kind tag: set to show the cursor, clear to
++/// off23 is the cursor's visible flag, not a message-kind tag: set to show the cursor, clear to
 +/// hide it. The bitmap-bearing messages carry it clear because an upload is not itself a show.
 +/// Offset-23 visibility flag of the cursor messages.
 +const CURSOR_VISIBLE: u8 = 0x01;
@@ -1290,7 +1281,7 @@ index 000000000000..6278225482d8
 +/// cursor image: inner `id=0x401c sub=0x41` (the `0x40` high-byte flag marks the bitmap-bearing
 +/// message), a 32-byte header then the bitmap. `w`/`h` come from [`cursor_create`].
 +///
-+/// Pixels are DRM `ARGB8888` (`[B, G, R, A]`, premultiplied) and **start at off34**: off32..33 are
++/// Pixels are DRM `ARGB8888` (`[B, G, R, A]`, premultiplied) and start at off34: off32..33 are
 +/// zero and the final pixel is truncated, so the message stays `32 + w*h*4` bytes.
 +pub(super) fn cursor_image(
 +    counter: u16,
@@ -1494,8 +1485,8 @@ index 000000000000..6278225482d8
 +    (4, 0x0018, 0x000a, 16),   // #3 SEALED 16B, per-head video key, seq 1
 +    (2, 0x0000, 0x0000, 16),   // #4 plaintext: body 00
 +    (2, 0x0010, 0x0000, 16),   // #5 plaintext: body 00 00 10
-+    (4, 0x0000, 0x0004, 16),   // #6 type=4 FIXED plaintext 0a 00 04 … (sub 0x00, unsealed)
-+    (4, 0x0010, 0x0004, 16),   // #7 type=4 FIXED plaintext 0a 00 04 … (sub 0x10, unsealed)
++    (4, 0x0000, 0x0004, 16),   // #6 type=4 FIXED plaintext 0a 00 04 ... (sub 0x00, unsealed)
++    (4, 0x0010, 0x0004, 16),   // #7 type=4 FIXED plaintext 0a 00 04 ... (sub 0x10, unsealed)
 +    (4, 0x0008, 0x000e, 1104), // #8 sealed decoder configuration, seq 2
 +    (4, 0x0018, 0x000e, 1104), // #9 sealed decoder configuration, seq 71
 +];
@@ -1657,7 +1648,7 @@ index 000000000000..6278225482d8
 +
 +/// Build a DL7400 pipe descriptor for one connector.
 +///
-+/// The 304-byte plaintext is [`NAVARRO_STREAM_MARKER`] **twice**, then six
++/// The 304-byte plaintext is [`NAVARRO_STREAM_MARKER`] twice, then six
 +/// `[len=0x002c][kind=0x000e][slot]` records of 40 configuration bytes. Records advance by
 +/// `len + 2`. Each configuration names the connector's slot id and the three dock-side addresses
 +/// that slot is given. 14 + 14 + 6 * 46 = 304 exactly, so there is no padding and no tail.

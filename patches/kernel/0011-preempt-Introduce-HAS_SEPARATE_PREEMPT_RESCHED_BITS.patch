@@ -1,4 +1,4 @@
-From 29584a660744bcf072c061c76fd0467d9ba81ded Mon Sep 17 00:00:00 2001
+From f098d415b15d498898cf4944a0254722a00ba52a Mon Sep 17 00:00:00 2001
 From: Boqun Feng <boqun@kernel.org>
 Date: Tue, 26 May 2026 08:21:46 -0700
 Subject: [PATCH 011/114] preempt: Introduce HAS_SEPARATE_PREEMPT_RESCHED_BITS

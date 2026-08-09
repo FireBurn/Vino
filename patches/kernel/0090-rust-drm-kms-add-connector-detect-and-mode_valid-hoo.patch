@@ -1,4 +1,4 @@
-From 4dad775a13eab73a9e6af16edd8c57550a346fc6 Mon Sep 17 00:00:00 2001
+From c1ebc4dd2ec81fa21bb33502aeca5e293c4a2deb Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 16:27:50 +0100
 Subject: [PATCH 090/114] rust: drm: kms: add connector detect() and
@@ -11,8 +11,7 @@ Map connector status and common mode-validation results through typed
 enums. Connectors which do not implement the callbacks retain the
 DRM defaults of connected and mode-valid.
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/kernel/drm/kms/connector.rs | 141 ++++++++++++++++++++++++++++++-

@@ -1,4 +1,4 @@
-From 72716cc262f6c3af9f1962eec3e745495dfdf61c Mon Sep 17 00:00:00 2001
+From 4b9a76b1b3272bb84a2ad02772face6ced0e0ce6 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 13:23:01 +0100
 Subject: [PATCH 089/114] rust: drm: kms: add typed color and rotation
@@ -13,8 +13,7 @@ rotation property, while the plane state accessors expose placement
 and cursor-hotspot coordinates needed by software and transport
 scanout drivers.
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/bindings/bindings_helper.h |  1 +

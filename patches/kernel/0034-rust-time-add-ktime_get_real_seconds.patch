@@ -1,4 +1,4 @@
-From 96653a9629f0c222b3e5967e5c8be12fdae4a814 Mon Sep 17 00:00:00 2001
+From 8d921112813d281bf754ec54e387d4efb0df5839 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 4 Aug 2026 21:36:59 +0100
 Subject: [PATCH 034/114] rust: time: add ktime_get_real_seconds

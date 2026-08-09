@@ -1,4 +1,4 @@
-From 719c7a67bd639143157d6d71d4709b056fc1413a Mon Sep 17 00:00:00 2001
+From e03284c3fd0a6166d214cacf059fe20f50f2189a Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 23:40:48 +0100
 Subject: [PATCH 042/114] rust: usb: add topology lookup and removal
@@ -12,8 +12,7 @@ associate separately-created devices with a USB topology node. The
 callback receives a borrowed typed device and unregistration is tied
 to the pinned notifier owner.
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/kernel/usb.rs | 240 +++++++++++++++++++++++++++++++++++++++++++++

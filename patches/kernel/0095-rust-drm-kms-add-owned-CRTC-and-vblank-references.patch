@@ -1,4 +1,4 @@
-From 9b66b0ea2f8c7903a97db134bc77e54824c49c31 Mon Sep 17 00:00:00 2001
+From f1cadcee5fe18b995e1559f2330703d3891d6f87 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 21:52:01 +0100
 Subject: [PATCH 095/114] rust: drm: kms: add owned CRTC and vblank references
@@ -27,8 +27,7 @@ and `OwnedVblankRef`, a vblank reference built on it and obtained by
 converting a `VblankRef` with `into_owned()`. The vblank reference
 is still released exactly once, on drop.
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/kernel/drm/kms/crtc.rs   | 54 +++++++++++++++++++++++++++++++++++

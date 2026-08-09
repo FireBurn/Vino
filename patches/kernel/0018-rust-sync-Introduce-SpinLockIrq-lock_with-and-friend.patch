@@ -1,4 +1,4 @@
-From f55e62adca437414bc0ff83f3e432cec1d86ea3e Mon Sep 17 00:00:00 2001
+From d64d9e6b007620a60b351b92957a3f1fb83d67cb Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Mon, 2 Mar 2026 18:16:48 -0500
 Subject: [PATCH 018/114] rust: sync: Introduce SpinLockIrq::lock_with() and

@@ -1,4 +1,4 @@
-From 0fec46c22863597ff110287ad25cee84b21f3550 Mon Sep 17 00:00:00 2001
+From 84e8644fe4bcafd025e2170c0aca603d0d191931 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 19:15:31 +0100
 Subject: [PATCH 093/114] rust: drm: framebuffer: add validated shmem scanout
@@ -17,8 +17,7 @@ undersized, and invalid-pitch framebuffers. Apply the framebuffer
 offset to the returned SysMem view with checked size arithmetic,
 and add KUnit coverage for the validation rules.
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/helpers/drm/drm.c             |   1 +

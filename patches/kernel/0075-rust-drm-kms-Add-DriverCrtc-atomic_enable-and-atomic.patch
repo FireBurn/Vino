@@ -1,4 +1,4 @@
-From fe44c9fe71bce988adfb55a9f0d81cc93ad6160c Mon Sep 17 00:00:00 2001
+From 042beb0bf41c55824385cf1d3e038bdd89232a46 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Fri, 6 Sep 2024 12:52:06 -0400
 Subject: [PATCH 075/114] rust: drm/kms: Add DriverCrtc::atomic_enable() and

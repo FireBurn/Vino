@@ -1,4 +1,4 @@
-From 2d1dfd07e3bf605cdc1fb1e7ac67fd52f15f7b93 Mon Sep 17 00:00:00 2001
+From 8f97cd3d7638070f58770bd6bee4f591f3c2cb23 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 23 May 2024 17:01:41 -0400
 Subject: [PATCH 073/114] rust: drm/kms: Add RawPlane::framebuffer()

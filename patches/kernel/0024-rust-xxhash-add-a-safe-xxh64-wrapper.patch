@@ -1,4 +1,4 @@
-From ca07f4f01ccdbeaa90720f862827084aacb1ab8a Mon Sep 17 00:00:00 2001
+From 2198c2c16ebb558b9f8a2be096e0f6fae5dc1fc8 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 21:44:01 +0100
 Subject: [PATCH 024/114] rust: xxhash: add a safe xxh64 wrapper
@@ -6,8 +6,7 @@ Subject: [PATCH 024/114] rust: xxhash: add a safe xxh64 wrapper
 Expose xxh64() through a slice-based Rust API for non-cryptographic
 hashing such as framebuffer damage detection.
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/bindings/bindings_helper.h |  1 +

@@ -1,4 +1,4 @@
-From 33357ef853e36698b77adeaef6c8473e5b588c42 Mon Sep 17 00:00:00 2001
+From 6624bbbbf14a7b91be938027c794225b50d780e0 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 22:01:31 +0100
 Subject: [PATCH 105/114] drm/evdi: add the Rust virtual display driver
@@ -44,7 +44,6 @@ virtual I2C adapter until a Rust I2C provider API can express the adapter
 lifetime safely.
 
 Assisted-by: Claude:claude-opus-5
-Assisted-by: Codex:gpt-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  MAINTAINERS                     |   6 +
@@ -148,7 +147,7 @@ index 000000000000..9c5e1a66337c
 +obj-$(CONFIG_DRM_EVDI) += evdi.o
 diff --git a/drivers/gpu/drm/evdi/color.rs b/drivers/gpu/drm/evdi/color.rs
 new file mode 100644
-index 000000000000..309a10566069
+index 000000000000..2bae62d86c5f
 --- /dev/null
 +++ b/drivers/gpu/drm/evdi/color.rs
 @@ -0,0 +1,271 @@
@@ -167,7 +166,7 @@ index 000000000000..309a10566069
 +//! `tools/color-selftest.sh` fails if they drift.
 +//!
 +//! Pipeline order follows DRM's: degamma, then CTM, then gamma. No degamma LUT is advertised, so
-+//! what runs here is **CTM then gamma**.
++//! what runs here is CTM then gamma.
 +//!
 +//! The transform is applied to the framebuffer's encoded (typically sRGB) values, not to linear
 +//! light, because there is no degamma stage to linearise them first. That is the same
@@ -425,13 +424,13 @@ index 000000000000..309a10566069
 +}
 diff --git a/drivers/gpu/drm/evdi/evdi.rs b/drivers/gpu/drm/evdi/evdi.rs
 new file mode 100644
-index 000000000000..cfd13f057676
+index 000000000000..6ad4345d70c1
 --- /dev/null
 +++ b/drivers/gpu/drm/evdi/evdi.rs
 @@ -0,0 +1,327 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
-+//! EVDI — Extensible Virtual Display Interface, Rust implementation.
++//! EVDI -- Extensible Virtual Display Interface, Rust implementation.
 +//!
 +//! A from-scratch Rust rewrite of the DisplayLink `evdi` kernel module. It presents virtual DRM
 +//! displays whose scanout is pulled by a userspace daemon (DisplayLinkManager) over a stable
@@ -508,7 +507,7 @@ index 000000000000..cfd13f057676
 +}
 +
 +/// One created card: its registered `evdi` platform device plus the bus/port chain of the USB
-+/// device it was attached to (`usb_len == 0` for a generic, non-USB card) — used to match the
++/// device it was attached to (`usb_len == 0` for a generic, non-USB card) -- used to match the
 +/// dock when it is unplugged (`USB_DEVICE_REMOVE`). The chain is stored instead of the
 +/// `usb_device` pointer itself because no reference is held on the device: its address could
 +/// be reused by an unrelated allocation, and matching on it could then tear down the wrong card.
@@ -758,7 +757,7 @@ index 000000000000..cfd13f057676
 +}
 diff --git a/drivers/gpu/drm/evdi/ioctl.rs b/drivers/gpu/drm/evdi/ioctl.rs
 new file mode 100644
-index 000000000000..a1345de3c48e
+index 000000000000..2d1e58e92d6c
 --- /dev/null
 +++ b/drivers/gpu/drm/evdi/ioctl.rs
 @@ -0,0 +1,270 @@
@@ -870,7 +869,7 @@ index 000000000000..a1345de3c48e
 +
 +    let data: &EvdiDrmData = dev;
 +    // No frame has been flipped in yet (or the pipe is down, e.g. DPMS off): report zero rects.
-+    // NOT -EAGAIN — libevdi's `drm_ioctl` retries EAGAIN in a tight loop, which would busy-spin
++    // NOT -EAGAIN -- libevdi's `drm_ioctl` retries EAGAIN in a tight loop, which would busy-spin
 +    // a core until the next flip.
 +    let Some(scanout) = data.prepared_scanout() else {
 +        arg.num_rects = 0;
@@ -894,7 +893,7 @@ index 000000000000..a1345de3c48e
 +    let fb_h = fb.height() as i32;
 +
 +    // The geometry is client-controlled: reject impossible values before any of it reaches
-+    // arithmetic (a negative stride cast to usize is ~2^63 and `y * dst_stride` wraps — a
++    // arithmetic (a negative stride cast to usize is ~2^63 and `y * dst_stride` wraps -- a
 +    // kernel panic with overflow checks on).
 +    if arg.buffer.is_null() || arg.buf_byte_stride <= 0 || arg.buf_width < 0 || arg.buf_height < 0 {
 +        return Err(EINVAL);
@@ -923,7 +922,7 @@ index 000000000000..a1345de3c48e
 +        }
 +    }
 +    if count == 0 {
-+        // The arg is copied back to userspace as passed in, so zero the count explicitly —
++        // The arg is copied back to userspace as passed in, so zero the count explicitly --
 +        // otherwise the client sees its own pre-filled value (MAX_DIRTS) and reports that many
 +        // empty rectangles.
 +        arg.num_rects = 0;
@@ -1034,7 +1033,7 @@ index 000000000000..a1345de3c48e
 +}
 diff --git a/drivers/gpu/drm/evdi/kms.rs b/drivers/gpu/drm/evdi/kms.rs
 new file mode 100644
-index 000000000000..d41849424788
+index 000000000000..56c2390449f6
 --- /dev/null
 +++ b/drivers/gpu/drm/evdi/kms.rs
 @@ -0,0 +1,884 @@
@@ -1474,7 +1473,7 @@ index 000000000000..d41849424788
 +/// `drm_vblank_timer_function`, which returns `HRTIMER_NORESTART` on a zeroed interval): the
 +/// callback sees `enabled == false` and returns [`HrTimerRestart::NoRestart`], so an idle or
 +/// DPMS-off output costs no wakeups. `enable_vblank` re-arms it with a raw
-+/// [`HasHrTimer::start`], which re-queues the timer whether it is dead or still pending —
++/// [`HasHrTimer::start`], which re-queues the timer whether it is dead or still pending --
 +/// no new handle is minted, so the single [`ArcHrTimerHandle`] taken at first start remains
 +/// the sole owner and its drop (at CRTC teardown, before the `drm_crtc` is freed) is the only
 +/// full `hrtimer_cancel`. Neither enable nor disable ever blocks on the callback, which is
@@ -1509,7 +1508,7 @@ index 000000000000..d41849424788
 +
 +    fn run(this: ArcBorrow<'_, Self>, mut ctx: HrTimerCallbackContext<'_, Self>) -> HrTimerRestart {
 +        // Vblank is off: let the timer die instead of ticking uselessly; `enable_vblank`
-+        // re-arms it. A concurrent re-arm racing this return is safe — hrtimer keeps a timer
++        // re-arms it. A concurrent re-arm racing this return is safe -- hrtimer keeps a timer
 +        // that was re-queued during its callback enqueued even on NORESTART.
 +        if !this.enabled.load(Ordering::Relaxed) {
 +            return HrTimerRestart::NoRestart;
@@ -1924,7 +1923,7 @@ index 000000000000..d41849424788
 +}
 diff --git a/drivers/gpu/drm/evdi/painter.rs b/drivers/gpu/drm/evdi/painter.rs
 new file mode 100644
-index 000000000000..2549b92dbaa5
+index 000000000000..a2f672ba4671
 --- /dev/null
 +++ b/drivers/gpu/drm/evdi/painter.rs
 @@ -0,0 +1,217 @@
@@ -1935,7 +1934,7 @@ index 000000000000..2549b92dbaa5
 +//
 +// Events are delivered through the DRM-core `drm_event` mechanism (the safe
 +// `kernel::drm::event::EventChannel` binding), which serializes delivery against file
-+// close under `event_lock` — so an event can never be sent to a client that has just
++// close under `event_lock` -- so an event can never be sent to a client that has just
 +// disconnected.
 +
 +use kernel::drm::gem::BaseObject;

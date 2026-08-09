@@ -1,4 +1,4 @@
-From 2655cac5e5d04316a1c171cbb6407d851ec1a427 Mon Sep 17 00:00:00 2001
+From 68657483f20b4e82d6e51fd027160cddb7abad19 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:38:17 +0100
 Subject: [PATCH 083/114] rust: drm: kms: constrain connector encoder
@@ -13,8 +13,7 @@ different device instance before entering C.
 
 Fixes: 322a9b8d699b ("rust: drm/kms: Add UnregisteredConnector::attach_encoder()")
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/kernel/drm/kms/connector.rs | 19 +++++++++++++++----

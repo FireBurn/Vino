@@ -1,4 +1,4 @@
-From 2727a28e109c0bba212bf6797e3a783ffb79e171 Mon Sep 17 00:00:00 2001
+From 32606faff6958ea8b9ef4cd21e08f131caa8fe39 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 18 Jun 2026 14:59:24 +0100
 Subject: [PATCH 036/114] rust: crypto: add synchronous RSA akcipher support
@@ -17,8 +17,7 @@ Gate the AES, SHA-256, and akcipher bindings with dedicated Rust
 Kconfig symbols. Cover the DER encoder and OAEP path with a published
 Wycheproof vector.
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  crypto/Kconfig                  |  10 ++

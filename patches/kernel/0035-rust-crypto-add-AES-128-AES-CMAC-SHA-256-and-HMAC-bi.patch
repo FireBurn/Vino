@@ -1,4 +1,4 @@
-From afd579f0fc64f4f137281a31b0965d9bbf91f7fe Mon Sep 17 00:00:00 2001
+From 2b2d6183c88ef2638f4822d5785f233f3c87cc35 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 3 Jun 2026 22:04:46 +0100
 Subject: [PATCH 035/114] rust: crypto: add AES-128, AES-CMAC, SHA-256, and
@@ -12,8 +12,7 @@ and CMAC. The one-shot hash and HMAC helpers operate on slices, and
 every API uses fixed-size outputs. C shims cover interfaces that bindgen
 cannot represent and clear temporary key material before returning.
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/bindings/bindings_helper.h |   3 +

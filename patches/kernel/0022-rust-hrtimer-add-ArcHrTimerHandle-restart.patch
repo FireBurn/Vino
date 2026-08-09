@@ -1,4 +1,4 @@
-From 5ad71de654ec14e97892771a4c85b26342c40e99 Mon Sep 17 00:00:00 2001
+From 7cb8f31bf77cacb558dcae366cfe1ad2618a92fa Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 21:52:22 +0100
 Subject: [PATCH 022/114] rust: hrtimer: add ArcHrTimerHandle::restart
@@ -16,8 +16,7 @@ cancelling first. It is safe because the handle already owns the
 `Arc` that keeps the timer alive and still cancels it on drop, which
 is exactly what `HasHrTimer::start()` requires of its caller.
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/kernel/time/hrtimer/arc.rs | 23 +++++++++++++++++++++++

@@ -1,4 +1,4 @@
-From 4e4e0c7749cd63a1280bb2affbbf7f70cf69a238 Mon Sep 17 00:00:00 2001
+From eac2af9cba7688bfcaba3d7780a9c804cd7b0120 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 22:52:46 +0100
 Subject: [PATCH 103/114] rust: drm: kms: add synthesized CVT connector modes
@@ -8,8 +8,7 @@ to a connector probe result. This lets virtual and transport-backed
 displays offer valid continuous-frequency modes without reaching into
 DRM mode lists.
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/kernel/drm/kms/connector.rs | 84 ++++++++++++++++++++++++++++++++

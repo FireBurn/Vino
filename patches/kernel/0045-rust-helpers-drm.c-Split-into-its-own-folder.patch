@@ -1,4 +1,4 @@
-From 5ca4ce9bea45129bcdb8f1925c55c175698efd96 Mon Sep 17 00:00:00 2001
+From c426a51bed327fc52deaa0aa635ad7b044fa225c Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Mon, 18 Nov 2024 15:59:34 -0500
 Subject: [PATCH 045/114] rust: helpers/drm.c: Split into its own folder

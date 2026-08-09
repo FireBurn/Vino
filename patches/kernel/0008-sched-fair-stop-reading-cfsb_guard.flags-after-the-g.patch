@@ -1,4 +1,4 @@
-From d8444e6ca83ae1f6fc1a838d5ea7e7d4f748e8d5 Mon Sep 17 00:00:00 2001
+From cb68808ce3d7991a12f7b2de867b757f96204ba3 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 1 Jul 2026 22:40:29 +0100
 Subject: [PATCH 008/114] sched/fair: stop reading cfsb_guard.flags after the
@@ -21,8 +21,7 @@ and do_sched_cfs_period_timer() still gets the same flags value.
 Needed as a prerequisite for the irq/locking-guard series this pulls
 in; not a vino-specific fix.
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  kernel/sched/fair.c | 12 ++++++++----

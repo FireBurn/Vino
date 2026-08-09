@@ -1,4 +1,4 @@
-From 5488a3ad36ff81699dbd8016df9456c90a3a3a26 Mon Sep 17 00:00:00 2001
+From 316289a05c494734ab3ce06bf0661fa64991db03 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 17:13:59 +0100
 Subject: [PATCH 097/114] rust: drm: add a safe constructor for owned
@@ -15,8 +15,7 @@ Keep the existing unsafe constructor for registration data which
 genuinely borrows from the bus binding. Convert the Vino and revdi
 users, whose registration data is ().
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/kernel/drm/driver.rs | 28 ++++++++++++++++++++++++++--

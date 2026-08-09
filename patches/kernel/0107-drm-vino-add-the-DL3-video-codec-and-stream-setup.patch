@@ -1,4 +1,4 @@
-From 1a759c0ea6188dc1f76627a59f64b41e59b28708 Mon Sep 17 00:00:00 2001
+From 724bde4c82f57234e57de7f2c1311e706566bb11 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 03:40:39 +0100
 Subject: [PATCH 107/114] drm/vino: add the DL3 video codec and stream setup
@@ -14,18 +14,18 @@ the stream-open descriptors, parallelised across CPUs.
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- drivers/gpu/drm/vino/video.rs     | 1754 +++++++++++++++++++++++++++++
+ drivers/gpu/drm/vino/video.rs     | 1751 +++++++++++++++++++++++++++++
  drivers/gpu/drm/vino/video_arm.rs |  121 ++
- 2 files changed, 1875 insertions(+)
+ 2 files changed, 1872 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/video.rs
  create mode 100644 drivers/gpu/drm/vino/video_arm.rs
 
 diff --git a/drivers/gpu/drm/vino/video.rs b/drivers/gpu/drm/vino/video.rs
 new file mode 100644
-index 000000000000..b706507fde4f
+index 000000000000..9d656d619b1a
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/video.rs
-@@ -0,0 +1,1754 @@
+@@ -0,0 +1,1751 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! DisplayLink full-colour video encoder and framing.
@@ -269,7 +269,7 @@ index 000000000000..b706507fde4f
 +        (511, 9),
 +    ];
 +
-+    /// LSB-first VLC bit packer matching the dock (final byte padded with **1-bits** -- a
++    /// LSB-first VLC bit packer matching the dock (final byte padded with 1-bits -- a
 +    /// truncated all-ones code required by the wire format).
 +    #[cfg(CONFIG_DRM_VINO_KUNIT_TEST)]
 +    pub(crate) struct Vlc {
@@ -367,12 +367,11 @@ index 000000000000..b706507fde4f
 +
 +    /// Bits per colour channel in the surface being encoded.
 +    ///
-+    /// This is the *only* thing that differs between an SDR and an HDR frame on this wire. Measured
-+    /// on 2026-08-05 against a DL7400 driven by Windows with genuinely HDR content
-+    /// (`docs/hdr.md` §0): record framing, strip header, significance tree, transform and
-+    /// quantiser are byte-identical across an HDR toggle, and the colour maths is entirely
-+    /// host-side -- what arrives is an ordinary PQ-encoded 10-bit RGB surface. So the codec is one
-+    /// codec, parameterised here, rather than two.
++    /// This is the only thing that differs between an SDR and an HDR frame on this wire. Measured
++    /// against a DL7400 driven by Windows with HDR content: record framing, strip header,
++    /// significance tree, transform and quantiser are byte-identical across an HDR toggle, and the
++    /// colour maths is entirely host-side -- what arrives is an ordinary PQ-encoded 10-bit RGB
++    /// surface. So this is one codec parameterised by depth, not two codecs.
 +    #[derive(Clone, Copy, PartialEq, Eq)]
 +    pub(crate) enum Depth {
 +        /// 8 bits per channel: every mode on a Ridge dock, and a Navarro one outside HDR.
@@ -413,14 +412,14 @@ index 000000000000..b706507fde4f
 +        }
 +    }
 +
-+    // ⚠ The AC ceilings deliberately do NOT vary with depth. The DC one had to, because a DC is a
-+    // direct multiple of the sample and 10-bit content immediately overflows category 10. Nothing
-+    // has ever measured an AC ceiling above 8-bit's: the 2026-08-05 capture's largest luma AC
-+    // coefficient was |273|, comfortably inside category 9, because Windows tone-mapped the content
-+    // down to the sink's 302 cd/m2 peak before the codec saw it. Guessing upward is the unsafe
-+    // direction -- `esc` saturates a magnitude whose category exceeds the ceiling, so an
-+    // under-sized ceiling clips extreme AC detail while an over-sized one desynchronises the dock.
-+    // Raise these only against a capture that needs them; see `docs/hdr.md` §0.5.
++    // The AC ceilings deliberately do not vary with depth. The DC one has to, because a DC is a
++    // direct multiple of the sample and 10-bit content immediately overflows category 10. No
++    // capture shows an AC ceiling above 8-bit's: the largest luma AC coefficient measured on
++    // 10-bit content is |273|, comfortably inside category 9, because the host tone-maps to the
++    // sink's peak luminance before the codec sees it. Guessing upward is the unsafe direction --
++    // `esc` saturates a magnitude whose category exceeds the ceiling, so an under-sized ceiling
++    // clips extreme AC detail while an over-sized one desynchronises the dock. Raise these only
++    // against a capture that needs them.
 +
 +    /// LSB-first bit accumulator for the production AC-strip coder.
 +    ///
@@ -848,15 +847,14 @@ index 000000000000..b706507fde4f
 +        cb: &[i32; PIXELS],
 +        y: &[i32; PIXELS],
 +    ) -> ColourBlock {
-+        // ⛔ Do not reach for SIMD here. An AVX2 in-block Haar was written, verified byte-exact
-+        // and measured in-kernel: it is parity-to-slower once `kernel_fpu_begin`/`end` are paid
-+        // per block, costing about 18% more CPU on a live encode. A strip is ~72% entropy coder,
-+        // which is bit-serial, so even a free transform caps the whole win near 23%.
++        // Do not reach for SIMD here. An AVX2 in-block Haar is byte-exact but parity-to-slower
++        // once `kernel_fpu_begin`/`end` are paid per block, costing about 18% more CPU on a live
++        // encode. A strip is ~72% entropy coder, which is bit-serial, so even a free transform
++        // caps the whole win near 23%.
 +        let (tcr, tcb, ty) = (transform(cr), transform(cb), transform(y));
 +        // Quantise all three planes and find each one's last significant coefficient in a single
-+        // pass. These were separate steps, so every block ran three further 63-element reverse
-+        // scans ([`chroma_last`]) across arrays it had only just written. Folding the search into
-+        // the write removes those passes and keeps the three planes in cache together.
++        // pass. Folding the search into the write avoids three further 63-element reverse scans
++        // ([`chroma_last`]) over arrays just written, and keeps the three planes in cache together.
 +        //
 +        // An explicit ascending loop rather than `core::array::from_fn`: the fold depends on the
 +        // index order, and `from_fn` does not document one. Every element is written, so the zero
@@ -1167,7 +1165,7 @@ index 000000000000..b706507fde4f
 +    /// The raster-ordered top-left coordinate of every strip a damage set selects.
 +    ///
 +    /// Split out of [`colour_frame_ep08_damage`] so the serial and parallel encoders select
-+    /// exactly the same strips in exactly the same order. **The order is load-bearing:**
++    /// exactly the same strips in exactly the same order. The order is load-bearing:
 +    /// [`frame_records`] groups strips into one record per single-Y band and requires them
 +    /// x-ordered within each band, so reordering here changes the wire format.
 +    ///
@@ -1227,10 +1225,10 @@ index 000000000000..b706507fde4f
 +    /// `(sx, sy)` is included iff some clip overlaps
 +    /// `[sx, sx+strip_w()) x [sy, sy+strip_h())`. Raster iteration keeps strips
 +    /// x-ordered within each y-band, so [`frame_records`] groups them as the
-+    /// full-frame path does. Returns an **empty** frame list when no strip is
++    /// full-frame path does. Returns an empty frame list when no strip is
 +    /// touched -- the caller must skip the USB write in that case (no-op
-+    /// flip). **The first frame after a mode-set must still be a full
-+    /// keyframe** (the dock's framebuffer is undefined until then).
++    /// flip). The first frame after a mode-set must still be a full
++    /// keyframe (the dock's framebuffer is undefined until then).
 +    ///
 +    /// This function remains out of line for the same stack bound as [`colour_frame_ep08`].
 +    #[inline(never)]
@@ -1488,10 +1486,9 @@ index 000000000000..b706507fde4f
 +    /// self-delimiting bitstream whose end it cannot otherwise find. The class is simply the
 +    /// length in 512-byte units.
 +    ///
-+    /// Measured over 68,347 `(strip, map value)` pairs in the authenticated DLM capture
-+    /// `~/dlm-today-124144/wire.pcapng`, with **zero** disagreements: value 0 covers 54..510
-+    /// bytes, 1 covers 512..1022, 2 covers 1024..1498 and 3 covers 1594..1670. Every boundary
-+    /// falls on a multiple of 512.
++    /// Measured over 68,347 `(strip, map value)` pairs in a DLM capture with zero disagreements:
++    /// value 0 covers 54..510 bytes, 1 covers 512..1022, 2 covers 1024..1498 and 3 covers
++    /// 1594..1670. Every boundary falls on a multiple of 512.
 +    #[inline]
 +    fn strip_size_class(len: usize) -> u8 {
 +        // The field does not saturate: the corpus only reaches class 3 because its longest strip
@@ -1555,8 +1552,8 @@ index 000000000000..b706507fde4f
 +    ///
 +    /// The map covers the whole frame: one byte per strip, `height / strip_h` bands of
 +    /// `width / strip_w` strips, each band padded to [`PARAM_BAND_STRIDE`]. At 2560x1440 that is
-+    /// 180 bands of 20 strips, which is exactly what every DLM map in
-+    /// `captures/navarro-dlm-modeset-20260802-005453` contains, split 120 + 60 across two records.
++    /// 180 bands of 20 strips, which is what every captured DLM map contains, split 120 + 60
++    /// across the two records.
 +    ///
 +    /// Values come from [`strip_size_class`] applied to the strips in `frames`. A position this
 +    /// frame does not carry stays zero, which is what DLM sends for it.

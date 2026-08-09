@@ -1,4 +1,4 @@
-From 2062831bc12b7bbfc77984eef9b5590b3ef78532 Mon Sep 17 00:00:00 2001
+From 520b06e920a21e0f5908f3c3b550ec35e292c309 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:54:08 +0100
 Subject: [PATCH 087/114] rust: drm: add typed RAII event channels
@@ -12,8 +12,7 @@ can test and queue under the same lock without retaining an erased
 or dangling drm_file pointer. Validate the event payload layout at
 compile time and bind each channel to its exact DRM device.
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/kernel/drm/event.rs | 424 +++++++++++++++++++++++++++++++++++++++

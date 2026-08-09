@@ -1,4 +1,4 @@
-From 79bde2dd8055c09f20bf374a2b6c57ff80ff1d44 Mon Sep 17 00:00:00 2001
+From 139b0c8452c8e55f3235fddab5b3958ce6a86e8d Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:35:15 +0100
 Subject: [PATCH 082/114] rust: drm: kms: tie mode-object references to their
@@ -16,8 +16,7 @@ Fixes: 4b14e6e6259b ("rust: drm/kms: Add drm_plane bindings")
 Fixes: c07f528ca38e ("rust: drm/kms: Add drm_encoder bindings")
 Fixes: 8ba1abe0de4b ("rust: drm/kms: Add RawPlaneState::crtc()")
 
-Assisted-by: Claude:claude-opus-5-0
-Assisted-by: Codex:gpt-5
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/kernel/drm/kms/crtc.rs    |  2 +-

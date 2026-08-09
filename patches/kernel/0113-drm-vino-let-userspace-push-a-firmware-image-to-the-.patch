@@ -1,4 +1,4 @@
-From 621c293da94acbf1e199e305ce3fbd2ad52597cb Mon Sep 17 00:00:00 2001
+From e1414ff15cba7ae19257f1c71a7ba6696e09a9c4 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 11:41:57 +0100
 Subject: [PATCH 113/114] drm/vino: let userspace push a firmware image to the
@@ -46,7 +46,7 @@ index 39c502778c80..7251a0941383 100644
  	  Open in-kernel Rust driver for DisplayLink DL3 docks: the Dell
  	  Universal Dock D6000 (USB ID 17e9:6006, DL-6xxx silicon) and the
 diff --git a/drivers/gpu/drm/vino/firmware.rs b/drivers/gpu/drm/vino/firmware.rs
-index 019f8af01279..2522189b2d24 100644
+index db680921d61e..38d1745c118c 100644
 --- a/drivers/gpu/drm/vino/firmware.rs
 +++ b/drivers/gpu/drm/vino/firmware.rs
 @@ -6,10 +6,12 @@
@@ -99,9 +99,9 @@ index 019f8af01279..2522189b2d24 100644
 +/// it is. That is what makes a re-flash of the running version, or an attempted downgrade,
 +/// possible at all -- [`update_if_newer`] refuses both by design.
 +///
-+/// ⛔ The checks below are the only thing standing between a mistyped `cat` and a dock that no
-+/// longer works, because the DFU interface does not support upload: the running image cannot be
-+/// read back and there is nothing to restore from.
++/// The checks below are the only thing between a mistyped `cat` and a dock that no longer works:
++/// the DFU interface does not support upload, so the running image cannot be read back and there
++/// is nothing to restore from.
 +pub(crate) struct Upload;
 +
 +/// What an upload needs to reach the dock, and the cancel flag userspace can set.
@@ -185,7 +185,7 @@ index 019f8af01279..2522189b2d24 100644
 +    }
 +}
 diff --git a/drivers/gpu/drm/vino/vino.rs b/drivers/gpu/drm/vino/vino.rs
-index 6b521cd3076c..d65af52a5eca 100644
+index ed7a0a82e74e..09d7859966ee 100644
 --- a/drivers/gpu/drm/vino/vino.rs
 +++ b/drivers/gpu/drm/vino/vino.rs
 @@ -310,6 +310,11 @@ struct VinoBoundData {
@@ -200,7 +200,7 @@ index 6b521cd3076c..d65af52a5eca 100644
  }
  
  /// Deferred bring-up work item.
-@@ -1055,6 +1060,7 @@ fn probe<'bound>(
+@@ -1051,6 +1056,7 @@ fn probe<'bound>(
          // not support upload, so there is no way to read the running image back and nothing to
          // restore from if the write goes wrong.
          let force = *crate::module_parameters::force_flash.value() != 0;
@@ -208,7 +208,7 @@ index 6b521cd3076c..d65af52a5eca 100644
          if ifnum == firmware::DFU_INTERFACE {
              // The dock's DFU interface, which is also the one every DFU request is addressed to.
              // Reading the identity here costs one standard control transfer and is what says
-@@ -1062,6 +1068,7 @@ fn probe<'bound>(
+@@ -1058,6 +1064,7 @@ fn probe<'bound>(
              // perfectly well on the firmware it shipped with.
              match io.enter().and_then(|link| {
                  let id = firmware::read_identity(&link)?;
@@ -216,7 +216,7 @@ index 6b521cd3076c..d65af52a5eca 100644
                  dev_info!(cdev, "vino: {id} running firmware {}\n", id.version);
                  firmware::update_if_newer(&link, cdev, &id, u16::from(ifnum), force)
              }) {
-@@ -1069,6 +1076,45 @@ fn probe<'bound>(
+@@ -1065,6 +1072,45 @@ fn probe<'bound>(
                  Err(e) => dev_info!(cdev, "vino: dock firmware check skipped ({e:?})\n"),
              }
          }
@@ -262,7 +262,7 @@ index 6b521cd3076c..d65af52a5eca 100644
          if ifnum != 0 {
              // Keep the app-specific interface paired with the display function. Let the audio
              // (2-4) and Ethernet (5-6) interfaces fall through to their class drivers. Returning
-@@ -1088,6 +1134,7 @@ fn probe<'bound>(
+@@ -1084,6 +1130,7 @@ fn probe<'bound>(
                  _intf: intf.into(),
                  registration: None,
                  bringup: KBox::pin_init(new_mutex!(None), GFP_KERNEL)?,
@@ -270,7 +270,7 @@ index 6b521cd3076c..d65af52a5eca 100644
              });
          }
          dev_info!(cdev, "vino: bound DisplayLink control interface\n");
-@@ -1159,6 +1206,8 @@ fn probe<'bound>(
+@@ -1155,6 +1202,8 @@ fn probe<'bound>(
              _intf: intf_ref,
              registration: Some(registration),
              bringup: bringup_slot,

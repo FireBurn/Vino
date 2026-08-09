@@ -1,4 +1,4 @@
-From eb77cd4984233ffe037e9559c8d95d5d32b163ef Mon Sep 17 00:00:00 2001
+From 56cb5501e0f1a5078c99be191206576f0a99a9f3 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Mon, 2 Mar 2026 18:16:46 -0500
 Subject: [PATCH 016/114] rust: sync: use super::* in spinlock.rs

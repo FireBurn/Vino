@@ -1,4 +1,4 @@
-From 0f44d82135800f766715701eab504f90d45e0184 Mon Sep 17 00:00:00 2001
+From eb43db83962ab3551559f0bc266854def91268c5 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sun, 9 Aug 2026 19:17:41 +0100
 Subject: [PATCH 043/114] rust: usb: add a vendor-and-interface-info device id
@@ -15,6 +15,7 @@ class" or "any interface of this class from any vendor", but not the
 combination -- and the combination is what a vendor-specific function
 needs, because class `0xff` means nothing without the vendor beside it.
 
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/kernel/usb.rs | 23 +++++++++++++++++++++++

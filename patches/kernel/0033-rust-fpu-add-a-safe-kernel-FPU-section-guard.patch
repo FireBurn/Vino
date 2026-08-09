@@ -1,4 +1,4 @@
-From dc881eb3bfb69af0f828b1b4e690ad5e6f14fea9 Mon Sep 17 00:00:00 2001
+From 3acc6a651c72cfebd7f44e69d655cff51f51eea5 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 4 Aug 2026 21:08:32 +0100
 Subject: [PATCH 033/114] rust: fpu: add a safe kernel-FPU section guard

@@ -74,13 +74,26 @@ write_group() {
 # previous "expected 106" guard was three commits behind the branch, so the export
 # had been failing rather than being regenerated. The tiling check below turns any
 # mismatch into an error that names the group instead.
+#
+# Contiguity alone is not enough: inserting a commit mid-series shifts every later
+# start while the numbering stays gapless, so the tiling check passes and a patch
+# lands in the wrong group. Groups whose membership is decidable from the subject
+# therefore also carry a pattern every member must match.
 group_starts=(
     "rust-core 1"
     "rust-crypto 35"
     "rust-usb 37"
-    "rust-drm 43"
-    "vino 104"
+    "rust-drm 44"
+    "vino 105"
 )
+group_pattern() {
+    case "$1" in
+    rust-crypto) printf '^rust: crypto: ' ;;
+    rust-usb) printf '^rust: usb: ' ;;
+    vino) printf '^(drm/vino|drm/evdi|Documentation/gpu|rust: firmware): ' ;;
+    *) printf '' ;;
+    esac
+}
 total="$(wc -l <"$output/series")"
 prev_end=0
 for i in "${!group_starts[@]}"; do
@@ -103,6 +116,23 @@ for i in "${!group_starts[@]}"; do
         exit 1
     fi
     write_group "$name" "$first" "$last"
+
+    pattern="$(group_pattern "$name")"
+    if [ -n "$pattern" ]; then
+        while IFS= read -r patch; do
+            subject="$(git -C "$kernel_tree" show -s --format='%s' \
+                "$(sed -n '1s/^From \([^ ]*\) .*$/\1/p' "$output/$patch")")"
+            if ! printf '%s' "$subject" | grep -Eq "$pattern"; then
+                echo "error: group '$name' ($first..$last) contains a patch that does not belong:" >&2
+                echo "       $patch" >&2
+                echo "       $subject" >&2
+                echo "       expected every subject to match: $pattern" >&2
+                echo "       a commit was inserted mid-series; update the starts above" >&2
+                exit 1
+            fi
+        done <"$output/groups/$name.series"
+    fi
+
     prev_end="$last"
 done
 

@@ -1,4 +1,3 @@
-0043-rust-usb-add-a-vendor-and-interface-info-device-id-c.patch
 0044-WIP-drm-modes-Fix-arg-types-in-drm_set_preferred_mod.patch
 0045-rust-helpers-drm.c-Split-into-its-own-folder.patch
 0046-rust-drm-Add-a-small-handful-of-fourcc-bindings.patch
@@ -59,3 +58,4 @@
 0101-rust-drm-expose-mode-flags-and-CTA-VIC-matching.patch
 0102-rust-drm-expose-CRTC-mode-changes.patch
 0103-rust-drm-kms-add-synthesized-CVT-connector-modes.patch
+0104-rust-drm-kms-read-a-connector-s-colorimetry-and-HDR-.patch

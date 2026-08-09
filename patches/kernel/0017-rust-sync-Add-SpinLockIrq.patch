@@ -1,4 +1,4 @@
-From b8178ef4778f6a4ead057fb56fc15a93ae7c455d Mon Sep 17 00:00:00 2001
+From 441da7911f734ecb267e8d4bc72ab1a2ab711ffb Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Mon, 2 Mar 2026 18:16:47 -0500
 Subject: [PATCH 017/114] rust: sync: Add SpinLockIrq

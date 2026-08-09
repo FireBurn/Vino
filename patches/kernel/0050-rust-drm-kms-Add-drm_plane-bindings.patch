@@ -1,4 +1,4 @@
-From 6566e1cfb8199a29496c5beebad9958e4a180021 Mon Sep 17 00:00:00 2001
+From 7713ce4dc0ca2bab5f15c217a58b123dd3186307 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Fri, 17 May 2024 16:43:41 -0400
 Subject: [PATCH 050/114] rust: drm/kms: Add drm_plane bindings

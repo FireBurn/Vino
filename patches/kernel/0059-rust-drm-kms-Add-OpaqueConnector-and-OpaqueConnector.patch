@@ -1,4 +1,4 @@
-From 35c7d80b4d7f1caf371090c48ff34cdeab03427e Mon Sep 17 00:00:00 2001
+From 61765bb02a687895b0feadd1040b467ec4e3c3f0 Mon Sep 17 00:00:00 2001
 From: Lyude Paul <lyude@redhat.com>
 Date: Thu, 23 May 2024 15:45:33 -0400
 Subject: [PATCH 059/114] rust: drm/kms: Add OpaqueConnector and
