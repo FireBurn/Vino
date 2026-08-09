@@ -35,6 +35,35 @@ pub mod session;
 #[cfg(target_arch = "x86_64")]
 pub mod simd;
 
+/// What the vendored kernel sources reach for in the driver crate's root.
+///
+/// The kernel files are compiled verbatim, so anything they name outside their own module has to
+/// exist here under the same path. Keeping these two definitions honest -- the same head bound,
+/// the same meaning of "debug" -- is what stops the rig from proving something about code that
+/// behaves differently in the kernel.
+pub mod drm_sink {
+    /// The largest connector count any dock profile describes; array sizes use it, loops use the
+    /// dock's own connector count. Must equal the driver's `drm_sink::HEADS`.
+    ///
+    /// Spelled out rather than taken from `vino_driver`, which is optional: the vendored sources
+    /// compile for the offline proof too, with no USB transport present. The assertion below is
+    /// what keeps the two from drifting.
+    pub const HEADS: usize = 4;
+
+    #[cfg(feature = "live")]
+    const _: () = assert!(
+        HEADS == vino_driver::MAX_HEADS,
+        "chimera and vino-driver must agree on the head bound"
+    );
+}
+
+/// Whether verbose protocol diagnostics were asked for, the rig's equivalent of the driver's
+/// `debug=1` module parameter.
+pub fn debug_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("CHIMERA_DEBUG").is_some_and(|v| v != "0"))
+}
+
 #[cfg(test)]
 mod kshim_crypto_kat {
     //! Known-answer tests for the crypto primitives added to `kshim::crypto` to

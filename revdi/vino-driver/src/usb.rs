@@ -1,4 +1,4 @@
-//! USB I/O for the D6000 dock.
+//! USB I/O for a DisplayLink DL3 dock.
 //!
 //! Backed by **rusb** (safe Rust bindings over the libusb-1.0 C library) so the
 //! userspace tools (Chimera and the focused sniff utility) drive the dock through the same
@@ -9,7 +9,7 @@
 //! the system libusb.
 //!
 //! Control transfers and
-//! bulk **OUT** (EP 0x02 control, 0x08/0x0b video) are synchronous
+//! bulk **OUT** (EP 0x02 control, the profile's video endpoints) are synchronous
 //! `libusb_bulk_transfer`/`libusb_control_transfer` with `flags=0`; the EP 0x84
 //! dock-reply **IN** path is a *persistently posted* pool of asynchronous
 //! `libusb_transfer`s reaped via `libusb_handle_events`, so a read URB is always
@@ -18,7 +18,8 @@
 //! Video OUT frames use a bounded async submit/reap window (depth 8) matching
 //! DLM's measured submit-ahead.
 
-use crate::{EP_IN_CTRL, EP_OUT_CTRL, PID, VID};
+use crate::profile::{self, DockProfile, Identity, CLASS_VENDOR, MAX_HEADS, PROTOCOL_DL3, VID};
+use crate::{EP_IN_CTRL, EP_OUT_CTRL};
 use rusb::constants::{LIBUSB_TRANSFER_COMPLETED, LIBUSB_TRANSFER_TYPE_BULK};
 use rusb::ffi::{
     libusb_alloc_transfer, libusb_cancel_transfer, libusb_context, libusb_device_handle,
@@ -37,9 +38,6 @@ const RECV_QUEUE_DEPTH: usize = 4;
 /// Buffer size for each queued EP 0x84 read. Dock control/HDCP responses are
 /// well under 1 KiB; 8 KiB is generous and avoids per-call size juggling.
 const RECV_BUF_LEN: usize = 8192;
-/// Head-1 video endpoint (bulk OUT). The passive EP08 capture shows DLM drives
-/// head 0 on EP 0x08 and head 1 on EP **0x0b**.
-const EP_OUT_VIDEO2: u8 = 0x0b;
 /// EP 0x83 status interrupt (on interface 2) that DLM polls.
 const EP_INTR: u8 = 0x83;
 
@@ -71,8 +69,18 @@ pub struct Dock {
     /// Serialises host→dock bulk OUT (EP 0x02) — libusb sync bulk is thread-safe
     /// but we keep frame ordering deterministic.
     out_lock: Mutex<()>,
-    has_video: bool,
-    has_video2: bool,
+    /// Which dock this is, chosen from the identity descriptor. See [`profile`].
+    profile: &'static DockProfile,
+    /// What the dock said it is, or `None` if it would not answer.
+    identity: Option<Identity>,
+    /// Each connector's video bulk-OUT endpoint, or `None` where the device does not expose it.
+    ///
+    /// Indexed by connector, not by endpoint: Navarro multiplexes four connectors over two
+    /// endpoints, so entries repeat. Taking the addresses from the profile rather than naming
+    /// `0x08`/`0x0b` inline is what lets one build drive both generations.
+    video: [Option<u8>; MAX_HEADS],
+    /// How many connectors this device actually backs, which is what loops must use.
+    connectors: u8,
     has_intr: bool,
 }
 
@@ -89,6 +97,13 @@ pub enum Error {
     Usb(rusb::Error),
     Decode,
     ShortRead(usize),
+    /// The device accepted fewer bytes than were offered. libusb reports this as a successful
+    /// transfer with a smaller count, so it has to be turned into an error deliberately or a
+    /// truncated frame reaches the dock unnoticed.
+    ShortWrite {
+        wrote: usize,
+        wanted: usize,
+    },
 }
 
 impl From<rusb::Error> for Error {
@@ -118,6 +133,9 @@ impl std::fmt::Display for Error {
             // checks in callers (`contains(\"NoDevice\")`) still fire.
             Error::Disconnected => write!(f, "device disconnected (NoDevice)"),
             Error::Usb(e) => write!(f, "USB error: {e}"),
+            Error::ShortWrite { wrote, wanted } => {
+                write!(f, "device accepted {wrote} of {wanted} bytes")
+            }
             Error::Decode => write!(f, "frame decode failed"),
             Error::ShortRead(n) => write!(f, "short read: {n} bytes"),
         }
@@ -290,23 +308,29 @@ fn status_to_err(status: c_int) -> Error {
 }
 
 impl Dock {
-    /// Open the first D6000 found. Detaches any existing kernel driver and
-    /// claims the bulk interface.
+    /// Open the first DisplayLink display function found, and place it by what it says it is.
+    ///
+    /// Devices are found by *function* -- vendor `17e9` with an interface of class `0xff`,
+    /// subclass `0`, protocol `0x03` -- not by a list of product IDs, which can only ever
+    /// describe the hardware somebody tested. The family then comes from the dock's own identity
+    /// descriptor. This mirrors the in-kernel driver exactly; see `docs/adding-a-device.md`.
     pub fn open() -> Result<Self, Error> {
         let ctx = Context::new().map_err(map_err)?;
 
-        let find_open = |ctx: &Context| -> Result<DeviceHandle<Context>, Error> {
+        let find_open = |ctx: &Context| -> Result<(DeviceHandle<Context>, u16), Error> {
             for dev in ctx.devices().map_err(map_err)?.iter() {
-                if let Ok(desc) = dev.device_descriptor() {
-                    if desc.vendor_id() == VID && desc.product_id() == PID {
-                        return dev.open().map_err(map_err);
-                    }
+                let Ok(desc) = dev.device_descriptor() else {
+                    continue;
+                };
+                if desc.vendor_id() != VID || !is_dl3_display_function(&dev) {
+                    continue;
                 }
+                return Ok((dev.open().map_err(map_err)?, desc.product_id()));
             }
             Err(Error::DeviceNotFound)
         };
 
-        let handle = find_open(&ctx)?;
+        let (handle, product) = find_open(&ctx)?;
 
         // Chimera owns the complete display function for the lifetime of this
         // handle. Detach stale interface drivers before selecting the known
@@ -322,20 +346,58 @@ impl Dock {
         handle.claim_interface(0).map_err(map_err)?;
         let _ = handle.set_alternate_setting(0, 0);
 
-        // Both display heads are optional at the transport layer so an error
-        // identifies the unavailable head rather than dereferencing a guessed
-        // endpoint.
-        let has_video = has_endpoint(&handle, crate::EP_OUT_VIDEO);
-        let has_video2 = has_endpoint(&handle, EP_OUT_VIDEO2);
-        if !has_video {
-            eprintln!(
-                "[usb] EP_OUT_VIDEO (0x{:02x}) unavailable",
-                crate::EP_OUT_VIDEO
-            );
+        // What this hardware is, asked of the hardware: one standard GET_DESCRIPTOR, no session
+        // and no crypto. A dock that names a family nobody here drives is declined rather than
+        // guessed at, because the way a dock rejects a guess is to reset itself. A dock that
+        // cannot be *asked* falls back to the product-ID quirk table, so a transient descriptor
+        // failure does not cost a known dock its displays.
+        let identity = read_identity(&handle);
+        let profile = match identity.as_ref().and_then(Identity::family) {
+            Some(family) => match profile::for_family(family) {
+                Some(profile) => profile,
+                None => {
+                    let id = identity.as_ref().expect("family implies identity");
+                    eprintln!("[usb] {id} is not a family this stack drives yet");
+                    return Err(Error::DeviceNotFound);
+                }
+            },
+            None => match profile::for_product(product) {
+                Some(profile) => {
+                    eprintln!("[usb] identity unreadable; using the quirk entry for {product:04x}");
+                    profile
+                }
+                None => {
+                    eprintln!("[usb] no identity descriptor and no quirk entry for {product:04x}");
+                    return Err(Error::DeviceNotFound);
+                }
+            },
+        };
+        if let Some(id) = identity.as_ref() {
+            eprintln!("[usb] {id} running firmware {}", id.version);
         }
-        if !has_video2 {
-            eprintln!("[usb] EP 0x{EP_OUT_VIDEO2:02x} (head 1 video) unavailable");
+
+        // Each connector's video endpoint, taken from the profile and checked against the
+        // descriptor. A connector whose endpoint the device does not expose is dropped rather
+        // than guessed at, and the connector count follows: a dock in a known family with fewer
+        // outputs is driven with the outputs it has.
+        let mut video = [None; MAX_HEADS];
+        let mut connectors = 0u8;
+        for (slot, addr) in video.iter_mut().zip(profile.video_eps) {
+            if connectors >= profile.connectors || !has_endpoint(&handle, addr) {
+                break;
+            }
+            *slot = Some(addr);
+            connectors += 1;
         }
+        if connectors == 0 {
+            eprintln!("[usb] no video endpoint from {:#04x?}", profile.video_eps);
+            return Err(Error::DeviceNotFound);
+        }
+        eprintln!(
+            "[usb] matched profile \"{}\", {connectors} connector(s), video endpoints {:#04x?}",
+            profile.name,
+            &video[..usize::from(connectors)]
+        );
 
         // EP 0x83 lives on interface 2. It is auxiliary status input, so a
         // failure to claim it does not invalidate the control/video endpoints.
@@ -351,14 +413,10 @@ impl Dock {
         // Clear endpoint state left by a previous userspace owner.
         let _ = handle.clear_halt(EP_OUT_CTRL);
         let _ = handle.clear_halt(EP_IN_CTRL);
-        if has_video {
-            if let Err(e) = handle.clear_halt(crate::EP_OUT_VIDEO) {
-                eprintln!("[usb] clear head 0 video halt failed: {e}");
-            }
-        }
-        if has_video2 {
-            if let Err(e) = handle.clear_halt(EP_OUT_VIDEO2) {
-                eprintln!("[usb] clear head 1 video halt failed: {e}");
+        for (head, addr) in video.iter().enumerate() {
+            let Some(addr) = addr else { continue };
+            if let Err(e) = handle.clear_halt(*addr) {
+                eprintln!("[usb] clear head {head} video halt (EP {addr:#04x}) failed: {e}");
             }
         }
 
@@ -371,8 +429,10 @@ impl Dock {
             timeout: Duration::from_millis(2000),
             ep84: Mutex::new(ep84),
             out_lock: Mutex::new(()),
-            has_video,
-            has_video2,
+            profile,
+            identity,
+            video,
+            connectors,
             has_intr,
         })
     }
@@ -548,11 +608,14 @@ impl Dock {
         let deadline = Instant::now() + completion_deadline;
         while !shared.done.load(Ordering::Acquire) {
             if Instant::now() >= deadline {
-                // The stack-owned callback state must remain valid until the
-                // cancellation completion has been drained.
+                // `shared` is stack-owned and the callback writes through a raw pointer to it,
+                // so the cancellation completion must be drained before either it or the
+                // transfer is released. This wait is deliberately unbounded: giving up early and
+                // freeing anyway is a use-after-free the moment the callback does fire, and a
+                // completion that never arrives means the device is gone and libusb will report
+                // it.
                 unsafe { libusb_cancel_transfer(t) };
-                let cancel_deadline = Instant::now() + Duration::from_millis(500);
-                while !shared.done.load(Ordering::Acquire) && Instant::now() < cancel_deadline {
+                while !shared.done.load(Ordering::Acquire) {
                     pump_events(self.ctx.as_raw(), Duration::from_millis(20));
                 }
                 unsafe { libusb_free_transfer(t) };
@@ -563,11 +626,16 @@ impl Dock {
         let status = shared.status.load(Ordering::Acquire);
         let actual = shared.actual_length.load(Ordering::Acquire) as usize;
         unsafe { libusb_free_transfer(t) };
-        if status == LIBUSB_TRANSFER_COMPLETED {
-            Ok(actual)
-        } else {
-            Err(status_to_err(status))
+        if status != LIBUSB_TRANSFER_COMPLETED {
+            return Err(status_to_err(status));
         }
+        if actual != bytes.len() {
+            return Err(Error::ShortWrite {
+                wrote: actual,
+                wanted: bytes.len(),
+            });
+        }
+        Ok(actual)
     }
 
     /// [`write_ctrl_raw_async`] with the standard two-second completion deadline.
@@ -583,43 +651,60 @@ impl Dock {
             .map_err(map_err)
     }
 
-    /// Write a video frame on EP 0x08. Returns bytes written.
-    pub fn write_video(&self, bytes: &[u8]) -> Result<usize, Error> {
-        if !self.has_video {
-            return Err(Error::Disconnected);
-        }
-        self.handle
-            .write_bulk(crate::EP_OUT_VIDEO, bytes, self.timeout)
-            .map_err(map_err)
+    /// This dock's profile, chosen from its identity descriptor.
+    pub fn profile(&self) -> &'static DockProfile {
+        self.profile
     }
 
-    /// Write one video frame to EP 0x0b (head 1). Mirrors [`write_video`].
-    pub fn write_video2(&self, bytes: &[u8]) -> Result<usize, Error> {
-        if !self.has_video2 {
-            return Err(Error::Disconnected);
+    /// What the dock said it is, or `None` if it would not answer.
+    pub fn identity(&self) -> Option<&Identity> {
+        self.identity.as_ref()
+    }
+
+    /// How many connectors this device actually backs. Loops must use this, never [`MAX_HEADS`].
+    pub fn connectors(&self) -> usize {
+        usize::from(self.connectors)
+    }
+
+    /// A connector's video bulk-OUT endpoint.
+    fn video_ep(&self, head: usize) -> Result<u8, Error> {
+        self.video
+            .get(head)
+            .copied()
+            .flatten()
+            .ok_or(Error::Disconnected)
+    }
+
+    /// Write a video frame to one connector. Returns bytes written.
+    ///
+    /// Takes the OUT lock like every other host->dock write: a video frame interleaved with a
+    /// control message is a torn frame, and on a dock whose video shares the control endpoint it
+    /// is a corrupted control stream as well.
+    pub fn write_video(&self, head: usize, bytes: &[u8]) -> Result<usize, Error> {
+        let ep = self.video_ep(head)?;
+        let _g = self.out_lock.lock().unwrap();
+        let written = self
+            .handle
+            .write_bulk(ep, bytes, self.timeout)
+            .map_err(map_err)?;
+        // A short write is a truncated frame, not a success. libusb reports the byte count and
+        // returns Ok, so nothing else notices.
+        if written == bytes.len() {
+            Ok(written)
+        } else {
+            Err(Error::ShortWrite {
+                wrote: written,
+                wanted: bytes.len(),
+            })
         }
-        self.handle
-            .write_bulk(EP_OUT_VIDEO2, bytes, self.timeout)
-            .map_err(map_err)
     }
 
     /// Pipeline a whole frame's chunks on the head-0 video EP (0x08): submit up
     /// to [`PIPELINE_DEPTH`] transfers to the URB ring, reap completions, and
     /// submit-ahead — matching DLM's async libusb submission so the dock's frame
     /// assembler never sees a host-side stall mid-frame. Returns total bytes.
-    pub fn write_video_frame(&self, chunks: &[Vec<u8>]) -> Result<usize, Error> {
-        if !self.has_video {
-            return Err(Error::Disconnected);
-        }
-        self.pipeline_out(crate::EP_OUT_VIDEO, chunks)
-    }
-
-    /// [`write_video_frame`] for head 1 (EP 0x0b).
-    pub fn write_video2_frame(&self, chunks: &[Vec<u8>]) -> Result<usize, Error> {
-        if !self.has_video2 {
-            return Err(Error::Disconnected);
-        }
-        self.pipeline_out(EP_OUT_VIDEO2, chunks)
+    pub fn write_video_frame(&self, head: usize, chunks: &[Vec<u8>]) -> Result<usize, Error> {
+        self.pipeline_out(self.video_ep(head)?, chunks)
     }
 
     /// Bounded async submit/reap of `chunks` on a bulk OUT endpoint. Keeps at
@@ -709,7 +794,15 @@ impl Dock {
                 }
                 continue;
             }
-            total += actual.max(0) as usize;
+            // A completed transfer that moved fewer bytes than it was given is a truncated
+            // record on the wire; the dock's frame assembler will not tell us about it.
+            let wanted = unsafe { (*t).length.max(0) as usize };
+            let wrote = actual.max(0) as usize;
+            if wrote != wanted {
+                err = err.or(Some(Error::ShortWrite { wrote, wanted }));
+                continue;
+            }
+            total += wrote;
             // Submit-ahead: reuse the just-completed transfer for the next chunk.
             if err.is_none() && next < chunks.len() {
                 if submit(t, next) == 0 {
@@ -726,9 +819,11 @@ impl Dock {
         for &t in &transfers {
             unsafe { libusb_cancel_transfer(t) };
         }
-        let drain_deadline = Instant::now() + Duration::from_millis(500);
-        while reaped < submitted && Instant::now() < drain_deadline {
-            if let Some(_) = completions.lock().unwrap().pop_front() {
+        // Unbounded for the same reason as the single-transfer path: `completions` is a local,
+        // and the callbacks write into it. Freeing the transfers while one can still fire is a
+        // use-after-free, so every submitted transfer has to be accounted for first.
+        while reaped < submitted {
+            if completions.lock().unwrap().pop_front().is_some() {
                 reaped += 1;
             } else {
                 pump_events(ctx, Duration::from_millis(20));
@@ -744,20 +839,11 @@ impl Dock {
         }
     }
 
-    /// Clear the halt/stall condition on the head-1 video endpoint (EP 0x0b).
-    pub fn clear_video2_halt(&self) -> Result<(), Error> {
-        if !self.has_video2 {
-            return Err(Error::Disconnected);
-        }
-        self.handle.clear_halt(EP_OUT_VIDEO2).map_err(map_err)
-    }
-
-    /// Clear the halt/stall condition on the video endpoint (EP 0x08).
-    pub fn clear_video_halt(&self) -> Result<(), Error> {
-        if !self.has_video {
-            return Err(Error::Disconnected);
-        }
-        self.handle.clear_halt(crate::EP_OUT_VIDEO).map_err(map_err)
+    /// Clear the halt/stall condition on one connector's video endpoint.
+    pub fn clear_video_halt(&self, head: usize) -> Result<(), Error> {
+        self.handle
+            .clear_halt(self.video_ep(head)?)
+            .map_err(map_err)
     }
 
     /// Read one EP 0x83 interrupt event into `buf`. Returns the byte count
@@ -806,6 +892,52 @@ extern "system" fn out_complete(transfer: *mut libusb_transfer) {
 }
 
 /// Does the active configuration expose an endpoint with address `addr`?
+/// Whether this device exposes a DL3 display function.
+///
+/// Class `0xff` / subclass `0` / protocol `0x03`, which is what DisplayLink's own udev rules key
+/// on. Protocol `0x00` is the older `udl` hardware and is excluded for free.
+fn is_dl3_display_function(dev: &rusb::Device<Context>) -> bool {
+    let Ok(config) = dev.active_config_descriptor() else {
+        return false;
+    };
+    config.interfaces().flat_map(|i| i.descriptors()).any(|d| {
+        d.class_code() == CLASS_VENDOR
+            && d.sub_class_code() == 0
+            && d.protocol_code() == PROTOCOL_DL3
+    })
+}
+
+/// Read the dock's identity by walking its configuration descriptor.
+///
+/// The blob is a vendor descriptor inside the configuration, not a separately addressable one, so
+/// the whole configuration is fetched and walked.
+fn read_identity(handle: &DeviceHandle<Context>) -> Option<Identity> {
+    const DESCRIPTOR_CONFIG: u16 = 0x02 << 8;
+    const CONFIG_DESCRIPTOR_MAX: usize = 1024;
+    let timeout = Duration::from_millis(1000);
+
+    let mut head = [0u8; 9];
+    handle
+        .read_control(
+            RT_STD_IN_DEV,
+            0x06,
+            DESCRIPTOR_CONFIG,
+            0,
+            &mut head,
+            timeout,
+        )
+        .ok()?;
+    let total = usize::from(u16::from_le_bytes([head[2], head[3]]));
+    if total < head.len() || total > CONFIG_DESCRIPTOR_MAX {
+        return None;
+    }
+    let mut all = vec![0u8; total];
+    handle
+        .read_control(RT_STD_IN_DEV, 0x06, DESCRIPTOR_CONFIG, 0, &mut all, timeout)
+        .ok()?;
+    Identity::parse(&all)
+}
+
 fn has_endpoint(handle: &DeviceHandle<Context>, addr: u8) -> bool {
     let dev = handle.device();
     let Ok(config) = dev.active_config_descriptor() else {

@@ -1,7 +1,8 @@
 //! `vino-driver` — userspace USB transport for DisplayLink DL3 devices.
 //!
 //! Provides:
-//! - USB device open by VID/PID (`open_dock`)
+//! - Device identification and per-dock parameters (`profile`), matching the in-kernel driver
+//! - USB device open by display function, not by product ID (`Dock::open`)
 //! - The universal DLM framing builder/parser (`Frame`)
 //! - An independent HDCP wire-message oracle used by protocol tests
 //!
@@ -10,19 +11,17 @@
 
 pub mod frame;
 pub mod hdcp_msgs;
+pub mod profile;
 pub mod usb;
 
 pub use frame::{build_frame, Frame};
+pub use profile::{DockProfile, Family, Identity, MAX_HEADS, VID};
 pub use usb::{Dock, Error};
 
-/// USB vendor / product IDs for the Dell D6000 (DL3 family).
-pub const VID: u16 = 0x17e9;
-pub const PID: u16 = 0x6006;
-
-/// Bulk endpoints we use.
+/// Control endpoints. These are the same across every DL3 generation; the video endpoints are
+/// not, and come from the dock's [`profile`].
 pub const EP_OUT_CTRL: u8 = 0x02;
 pub const EP_IN_CTRL: u8 = 0x84;
-pub const EP_OUT_VIDEO: u8 = 0x08;
 
 /// `msg_type` field values for the DLM transport.
 pub mod msg_type {

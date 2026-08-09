@@ -173,6 +173,12 @@ pub mod kernel {
 
     /// Userspace representation of the safe KMS mode object used by Vino's mode builder.
     pub mod drm {
+        // This module shadows the extern `kernel` crate wherever the glob above reaches, so
+        // anything the vendored sources name under `kernel::drm` has to be reachable from here
+        // too. Re-exported rather than restated: two copies of a pixel-format code would be one
+        // copy too many.
+        pub use ::kernel::drm::fourcc;
+
         pub mod kms {
             pub mod modes {
                 use crate::kshim::bindings::{drm_display_mode, drm_mode_vrefresh};

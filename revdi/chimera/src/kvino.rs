@@ -334,7 +334,10 @@ pub fn strip_dims() -> (usize, usize) {
 
 /// `video::wht::colour` — the Vino integer colour transform
 /// `(Y=16R+32G+16B, Cb=64(R−G), Cr=64(B−G))`, yielding the per-plane DC values.
-pub fn colour(r: u8, g: u8, b: u8) -> (i32, i32, i32) {
+///
+/// Channels are the framebuffer's own code words at whatever depth the plane is in, so the same
+/// transform carries a 10-bit surface unchanged.
+pub fn colour(r: i32, g: i32, b: i32) -> (i32, i32, i32) {
     video::wht::colour(r, g, b)
 }
 
@@ -346,7 +349,7 @@ pub fn colour_strip_from_planes(planes: &[[[i32; 64]; 3]; 16], x: u16, y: u16) -
     let blocks: [video::wht::ColourBlock; 16] = core::array::from_fn(|k| {
         video::wht::colour_block(&planes[k][0], &planes[k][1], &planes[k][2])
     });
-    Ok(video::wht::colour_strip(&blocks, x, y)?.into_vec())
+    Ok(video::wht::colour_strip(geometry(), &blocks, x, y)?.into_vec())
 }
 
 /// `video::wht::colour_frame_ep08` driven from a packed 8-bit RGB frame (`width*height*3`
@@ -371,8 +374,14 @@ pub fn colour_frame_ep08_head(
 ) -> Result<(Vec<Vec<u8>>, u32)> {
     let (frames, seq) =
         video::wht::colour_frame_ep08(geometry(), width, height, seq0, head, |x, y| {
+            // The codec takes code words at the plane's own depth; this feeder is the 8-bit
+            // packed-RGB path, so each channel widens unchanged.
             let i = (y * width + x) * 3;
-            (rgb[i], rgb[i + 1], rgb[i + 2])
+            (
+                u16::from(rgb[i]),
+                u16::from(rgb[i + 1]),
+                u16::from(rgb[i + 2]),
+            )
         })?;
     Ok((
         frames
@@ -407,7 +416,11 @@ pub fn strip_coords(
 pub fn encode_strip(width: usize, rgb: &[u8], sx: usize, sy: usize) -> Result<Vec<u8>> {
     let mut px = |x: usize, y: usize| {
         let i = (y * width + x) * 3;
-        (rgb[i], rgb[i + 1], rgb[i + 2])
+        (
+            u16::from(rgb[i]),
+            u16::from(rgb[i + 1]),
+            u16::from(rgb[i + 2]),
+        )
     };
     Ok(video::wht::colour_strip_at(geometry(), sx, sy, &mut px)?.into_vec())
 }

@@ -196,12 +196,16 @@ pub(super) fn edid_sink_state(counter: u16, head: u8, state: u8) -> Result<KVec<
 pub(super) fn edid_engage_req(counter: u16, head: u8) -> Result<KVec<u8>> {
     edid_sink_state(counter, head, head)
 }
-/// OUT `id=0x15 sub=0x0053` post-EDID capability query. Offset 22 carries a one-based head index.
+/// OUT `id=0x15 sub=0x0053` post-EDID capability query. Offset 22 is a **head bitmask**.
+///
+/// ⚠ `head + 1` and `1 << head` are the same byte for heads 0 and 1, so a capture with both
+/// monitors in the first two sockets cannot distinguish them. DLM sends `4` for head 2, where a
+/// one-based index would send 3.
 pub(super) fn post_edid_query(counter: u16, head: u8) -> Result<KVec<u8>> {
     let mut b = KVec::with_capacity(32, GFP_KERNEL)?;
     header(&mut b, 0x15, 0x0053, counter)?;
     pad_to(&mut b, 22)?;
-    b.push(head + 1, GFP_KERNEL)?;
+    b.push(1u8 << head, GFP_KERNEL)?;
     let mut tail = [0u8; 9];
     rng::fill(&mut tail);
     b.extend_from_slice(&tail, GFP_KERNEL)?;
@@ -277,6 +281,21 @@ pub(super) struct Timing {
     pub total_rows: u16,
     /// Picture aspect and CTA VIC at offset 66; see [`vic_word`].
     pub vic_word: u16,
+    /// Whether this head scans out 10 bits per channel, which selects the offset-68 colour depth
+    /// and the offset-23 DMA buffer format together. They are one decision: the dock sizes its own
+    /// buffer from the format's bytes-per-pixel and interprets the samples by the depth, so a
+    /// mismatched pair mis-sizes the allocation.
+    pub ten_bit: bool,
+    /// Whether the pixels this head carries are encoded with the SMPTE ST 2084 (PQ) transfer
+    /// function, which sets [`SYNC_FLAG_ST2084`] in the offset-42 flags word.
+    ///
+    /// Independent of [`Timing::ten_bit`]: the depth says how many bits a sample has, this says
+    /// what curve those bits are on. A compositor can drive a 10-bit SDR output, and PQ in 8 bits
+    /// is merely a bad idea rather than a contradiction, so the dock is told the two separately --
+    /// exactly as DLM tells it.
+    pub st2084: bool,
+    /// This head's video endpoint also carries another connector; see [`SYNC_FLAG_DUAL_NIVO`].
+    pub dual_nivo: bool,
 }
 
 /// Pixel granularity the render stride is quantised to.
@@ -315,12 +334,50 @@ fn navarro_total_rows(hactive: u16, vactive: u16) -> Option<u16> {
     }
 }
 
+/// Offset 42 is not a polarity field but a flags word, and DLM decodes every bit of it in its own
+/// `setupVideo` log line. Read out of the bit tests around DLM 3.4.26 `0x576b26`, which select
+/// between an empty string and one of these:
+///
+/// | bit | mask | DLM's name |
+/// |---|---|---|
+/// | 0 | `0x0001` | `Interlace` |
+/// | 1 | `0x0002` | `Cross-head synchronized` |
+/// | 2 | `0x0004` | `Dual NIVO` |
+/// | 3 | `0x0008` | `Just-in-time decode` |
+/// | 5 | `0x0020` | `DSC On`/`DSC Off` |
+/// | 6 | `0x0040` | `ST2084 colorspace used (HDR)` |
+/// | 7 | `0x0080` | `SingleDisplayMode enabled` |
+/// | 8 | `0x0100` | `Horizontal Sync Inverted` |
+/// | 9 | `0x0200` | `Vertical Syncs Inverted` |
+/// | 12 | `0x1000` | `ReducedQuantizationRange On`/`Off` |
+/// | 14 | `0x4000` | `Enable Timing for Gamma` |
+/// | 15 | `0x8000` | `(Disabled)` |
+///
+/// Bits 8, 9 and 15 land exactly where the decrypted corpus had already put them, which is what
+/// makes the rest of the table trustworthy. Bits 4, 10, 11 and 13 are not logged; bit 10 is the
+/// base below, always set and still unexplained.
+///
 /// Base bit of the offset-42 flags word, set in every message the corpus contains.
 const SYNC_FLAGS_BASE: u16 = 0x0400;
 /// `hSyncInv`: horizontal sync is active low.
 const SYNC_FLAG_HSYNC_INV: u16 = 0x0100;
 /// `vSyncInv`: vertical sync is active low.
 const SYNC_FLAG_VSYNC_INV: u16 = 0x0200;
+/// `ST2084 colorspace used (HDR)`: the head's pixels are PQ-encoded rather than SDR.
+///
+/// This is the transfer-function selector that no capture could settle -- the Windows HDR A/B
+/// corpus has a sealed control plane, and DLM's Linux build never toggled HDR on this hardware --
+/// and it turns out not to need a capture at all. There is exactly one HDR flag: the colour
+/// primaries are not carried here, because the dock derives the downstream infoframe itself.
+const SYNC_FLAG_ST2084: u16 = 0x0040;
+/// `Dual NIVO`: this head's video endpoint is carrying a second connector's stream too.
+///
+/// The DL-7400 multiplexes four connectors onto two video bulk endpoints -- `0x08` owns connectors
+/// {0, 2} and `0x0a` owns {1, 3} -- so any two monitors in sockets one apart share an endpoint.
+/// The dock drives only one of the two streams unless both mode sets declare the sharing here.
+/// DLM's `setupVideo` flag decode names this bit `Dual NIVO`, matching the `TiledNivoViewer`
+/// strings in its binary.
+const SYNC_FLAG_DUAL_NIVO: u16 = 0x0004;
 /// The offset-42 word a teardown carries in place of any polarity.
 const SYNC_FLAGS_TEARDOWN: u16 = 0x8000;
 
@@ -338,6 +395,7 @@ const SYNC_FLAGS_TEARDOWN: u16 = 0x8000;
 ///
 /// The last row also fixes the assignment within the pair: 2560x1440 is `+h -v` and carries
 /// `0x0600`, so `0x0200` is the vertical flag and swapping the two would predict `0x0500`.
+/// DLM's own bit test confirms both independently; see [`SYNC_FLAGS_BASE`].
 fn sync_flags(mode: &kernel::drm::kms::modes::DisplayMode) -> u16 {
     // Named through the same path as the parameter type rather than a `use`: the chimera rig
     // compiles this file verbatim against a shim where a `use kernel::...` is ambiguous.
@@ -453,14 +511,34 @@ pub(super) fn mode_supported(mode: &kernel::drm::kms::modes::DisplayMode) -> boo
 /// capture carries as zero. The three values above 24bpp are 10, 12 and 16 bits per channel --
 /// the deep-colour ladder -- and vino drives none of them.
 const COLOUR_DEPTH_24BPP: u16 = 0x0200;
+/// Offset-68 for 30 bpp: the same enum, one step up the deep-colour ladder (10 bits per channel).
+const COLOUR_DEPTH_30BPP: u16 = 0x0300;
 
 /// Offset-23 of the `0x48/0x22` message: the DMA buffer format the head scans out.
 ///
 /// The dock indexes a four-entry table with this, giving 2, 4, 3 and 4 bytes per pixel for formats
-/// 0 through 3, and rejects anything above 3. Vino scans out 24bpp, so it sends format 2. A
-/// teardown writes no timing at all and leaves the field zero.
-const DMA_FORMAT_RGB888: u8 = 2;
+/// 0 through 3, and rejects anything above 3. DLM names all four: the same value selects a string
+/// in the helper at 3.4.26 `0x62ecb0`, whose four arms point at the plaintext `NM16`, `NM32`,
+/// `NM24` and `NM30`, and the bytes-per-pixel table at `0x8dc320` reads `{2, 4, 3, 4}` in exactly
+/// that order.
+///
+/// | value | name | bytes/px |
+/// |---|---|---|
+/// | 0 | `NM16` | 2 |
+/// | 1 | `NM32` | 4 |
+/// | 2 | `NM24` | 3 |
+/// | 3 | `NM30` | 4 |
+///
+/// A teardown writes no timing at all and leaves the field zero.
+const DMA_FORMAT_NM24: u8 = 2;
 const DMA_FORMAT_NONE: u8 = 0;
+/// Offset-23 for a 10-bit head: `NM30`, the second of the table's two four-byte formats.
+///
+/// The choice between the two used to be a coin flip -- both are four bytes, and no capture on
+/// either dock generation carries anything but `NM24`. The name settles it: 30 bits per pixel
+/// packed into four bytes is what a 2:10:10:10 sample is, and `NM32` is the 8-bit-with-padding
+/// format vino has no use for.
+const DMA_FORMAT_NM30: u8 = 3;
 
 /// Build the set-mode message's teardown form: every timing word zero and
 /// [`SYNC_FLAGS_TEARDOWN`] at offset 42.
@@ -492,8 +570,19 @@ pub(super) fn set_mode(counter: u16, head: u8, t: &Timing) -> Result<KVec<u8>> {
     header(&mut b, 0x48, 0x22, counter)?;
     pad_to(&mut b, 22)?;
     b.push(head, GFP_KERNEL)?; // off22: downstream head selector
-    b.push(DMA_FORMAT_RGB888, GFP_KERNEL)?;
+    b.push(
+        if t.ten_bit {
+            DMA_FORMAT_NM30
+        } else {
+            DMA_FORMAT_NM24
+        },
+        GFP_KERNEL,
+    )?;
     pad_to(&mut b, 26)?; // off24..25 zero; timing begins at off26
+                         // The transfer function rides in the same word as the sync polarity; see `SYNC_FLAG_ST2084`.
+    let flags = t.sync_flags
+        | if t.st2084 { SYNC_FLAG_ST2084 } else { 0 }
+        | if t.dual_nivo { SYNC_FLAG_DUAL_NIVO } else { 0 };
     for v in [
         t.hactive,
         t.hblank,
@@ -503,7 +592,7 @@ pub(super) fn set_mode(counter: u16, head: u8, t: &Timing) -> Result<KVec<u8>> {
         t.vblank,
         t.vsync_front,
         t.vsync_width,
-        t.sync_flags,
+        flags,
         t.refresh_hz,
         t.stride,
         t.total_rows,
@@ -515,7 +604,15 @@ pub(super) fn set_mode(counter: u16, head: u8, t: &Timing) -> Result<KVec<u8>> {
     b.extend_from_slice(&0x00ffu16.to_le_bytes(), GFP_KERNEL)?; // off60: profile constant
     pad_to(&mut b, 66)?;
     b.extend_from_slice(&t.vic_word.to_le_bytes(), GFP_KERNEL)?; // off66: see `vic_word`
-    b.extend_from_slice(&COLOUR_DEPTH_24BPP.to_le_bytes(), GFP_KERNEL)?;
+    b.extend_from_slice(
+        &if t.ten_bit {
+            COLOUR_DEPTH_30BPP
+        } else {
+            COLOUR_DEPTH_24BPP
+        }
+        .to_le_bytes(),
+        GFP_KERNEL,
+    )?;
 
     // off70..73: pixel clock in 10 kHz units, a full u32. Ridge only ever fills the low half, so
     // this is byte-identical there to the old u16 followed by two zero bytes.
@@ -583,6 +680,14 @@ pub(super) fn timing_from_drm_mode(
         stride,
         total_rows,
         vic_word: profile.vic_word,
+        // Filled by the caller, which knows the committed framebuffer's format; the mode alone
+        // does not say what depth will be scanned out.
+        // Both describe the pixels a head will actually carry, which a DRM mode does not know.
+        // `atomic_enable` fills them in from the committed framebuffer and the connector's HDR
+        // properties.
+        ten_bit: false,
+        st2084: false,
+        dual_nivo: false,
     })
 }
 /// Known CP `sub` identifiers used to validate a decrypted header.
@@ -892,7 +997,23 @@ pub(super) fn perhead_hdcp_push(
 /// [`cursor_header`], with the head selector at off22 and a flag at off23.
 ///
 /// The dock numbers its heads from **one**; `0` is not a valid selector.
-const CURSOR_HEAD_IDS: [u8; 2] = [0x01, 0x02];
+///
+/// ⚠ This was a two-entry table, `[0x01, 0x02]`, indexed by vino's head number -- written when the
+/// only dock had two heads. The DL-7400 has four, and its two monitors sit in sockets 3 and 4, so
+/// every cursor message for them looked up past the end of the table and returned `EINVAL`.
+/// `EINVAL` is deliberately non-retryable, so `cmd_work` dropped each one with
+/// "dropping invalid asynchronous KMS command" and **no cursor byte ever reached the dock**: the
+/// hardware cursor was not unreliable on this dock, it was absent.
+///
+/// The selector is a **head bitmask**, `1 << head`. The two measured entries were `[0x01, 0x02]`,
+/// which is `1 << 0` and `1 << 1`; they do not distinguish a bitmask from a one-based index, and
+/// the two readings diverge from head 2 on. A head sent `head + 1` draws no cursor.
+fn cursor_head_id(head: u8) -> Result<u8> {
+    if usize::from(head) >= crate::drm_sink::HEADS {
+        return Err(EINVAL);
+    }
+    Ok(1u8 << head)
+}
 
 /// off23 is the cursor's **visible** flag, not a message-kind tag: set to show the cursor, clear to
 /// hide it. The bitmap-bearing messages carry it clear because an upload is not itself a show.
@@ -920,7 +1041,7 @@ fn cursor_header(
 /// cursor create: `id=0x1b sub=0x42`, advertises `w x h`. Sent once per bitmap geometry.
 pub(super) fn cursor_create(counter: u16, head: u8, w: u16, h: u16) -> Result<KVec<u8>> {
     let mut b = KVec::with_capacity(32, GFP_KERNEL)?;
-    let dock_head = CURSOR_HEAD_IDS.get(head as usize).copied().ok_or(EINVAL)?;
+    let dock_head = cursor_head_id(head)?;
     cursor_header(&mut b, 0x1b, 0x42, counter, dock_head, CURSOR_HIDDEN)?;
     b.extend_from_slice(&w.to_le_bytes(), GFP_KERNEL)?; // off24..25
     b.extend_from_slice(&h.to_le_bytes(), GFP_KERNEL)?; // off26..27
@@ -936,7 +1057,7 @@ pub(super) fn cursor_move(
     visible: bool,
 ) -> Result<KVec<u8>> {
     let mut b = KVec::with_capacity(32, GFP_KERNEL)?;
-    let dock_head = CURSOR_HEAD_IDS.get(head as usize).copied().ok_or(EINVAL)?;
+    let dock_head = cursor_head_id(head)?;
     let visible_flag = if visible {
         CURSOR_VISIBLE
     } else {
@@ -970,7 +1091,7 @@ pub(super) fn cursor_image(
         return Err(EINVAL);
     }
     let mut b = KVec::with_capacity(32 + bgra.len(), GFP_KERNEL)?;
-    let dock_head = CURSOR_HEAD_IDS.get(head as usize).copied().ok_or(EINVAL)?;
+    let dock_head = cursor_head_id(head)?;
     cursor_header(&mut b, 0x401c, 0x41, counter, dock_head, CURSOR_HIDDEN)?;
     pad_to(&mut b, 32)?; // off24..31 zero (no w/h here)
     b.extend_from_slice(&[0, 0], GFP_KERNEL)?; // off32..33
@@ -1461,9 +1582,23 @@ pub(super) fn parse_edid_from_reply(
             continue;
         }
         let edid = &inner[EDID_OFF..];
+        // Say what arrived, not just that nothing valid did. "no EDID came back" is true of a
+        // sink that answered with a block this rejected and of one that never answered at all,
+        // and those want opposite fixes.
+        if crate::debug_enabled() {
+            pr_info!(
+                "vino: EDID reply candidate: inner {} B, payload {} B, first 8 {:02x?}\n",
+                inner.len(),
+                edid.len(),
+                &edid[..8.min(edid.len())]
+            );
+        }
         // Validate the EDID base-block magic `00 FF FF FF FF FF FF 00`.
         const MAGIC: [u8; 8] = [0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00];
         if edid[..8] != MAGIC {
+            if crate::debug_enabled() {
+                pr_info!("vino: EDID reply rejected: bad base-block magic\n");
+            }
             continue;
         }
         // ...and its checksum. The magic is only eight bytes and a dock with an empty port can
@@ -1474,7 +1609,17 @@ pub(super) fn parse_edid_from_reply(
             continue;
         }
         if edid[..128].iter().fold(0u8, |a, b| a.wrapping_add(*b)) != 0 {
+            if crate::debug_enabled() {
+                pr_info!("vino: EDID reply rejected: base block checksum\n");
+            }
             continue;
+        }
+        if crate::debug_enabled() {
+            pr_info!(
+                "vino: EDID base block accepted: {} extension block(s) declared, {} B available\n",
+                edid[126],
+                edid.len()
+            );
         }
         let total = ((1 + edid[126] as usize) * 128).min(edid.len());
         let mut out = KVec::with_capacity(total, GFP_KERNEL)?;

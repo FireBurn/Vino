@@ -85,7 +85,7 @@ fn scan_block(px: &dyn Fn(usize, usize) -> (u8, u8, u8), bx: usize, by: usize, s
     for j in 0..8 {
         for i in 0..8 {
             let (r, g, b) = px(bx + i, by + j);
-            let (vy, vcb, vcr) = kvino::colour(r, g, b);
+            let (vy, vcb, vcr) = kvino::colour(r.into(), g.into(), b.into());
             y[j * 8 + i] = vy;
             cb[j * 8 + i] = vcb;
             cr[j * 8 + i] = vcr;

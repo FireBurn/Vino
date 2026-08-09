@@ -19,6 +19,18 @@ pub mod bindings {
 }
 
 pub mod drm {
+    /// The two DRM pixel formats the vendored `video.rs` names, matching
+    /// `rust/kernel/drm/fourcc.rs`. Kept here rather than in the driver so the vendored file
+    /// compiles verbatim.
+    pub mod fourcc {
+        const fn fourcc_code(a: u8, b: u8, c: u8, d: u8) -> u32 {
+            (a as u32) | ((b as u32) << 8) | ((c as u32) << 16) | ((d as u32) << 24)
+        }
+
+        pub const XRGB8888: u32 = fourcc_code(b'X', b'R', b'2', b'4');
+        pub const XRGB2101010: u32 = fourcc_code(b'X', b'R', b'3', b'0');
+    }
+
     pub mod display {
         pub mod hdcp {
             use crate::bindings;

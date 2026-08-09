@@ -7,7 +7,7 @@
 
 use crate::kvino;
 use std::time::{Duration, Instant};
-use vino_driver::{Dock, Error as UsbError};
+use vino_driver::{Dock, DockProfile, Error as UsbError, MAX_HEADS};
 
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(1);
 const REPLY_TIMEOUT: Duration = Duration::from_millis(8);
@@ -20,7 +20,6 @@ const PROBE_REPLY_DEADLINE: Duration = Duration::from_millis(64);
 const EP84_DRAIN_READS: usize = 16;
 const SET_INTERFACE: u8 = 0x0b;
 const GET_DESCRIPTOR: u8 = 0x06;
-const HEADS: usize = 2;
 
 const STREAM_OPEN: [u8; 64] = [
     0x00, 0x00, 0x1c, 0x00, 0x02, 0x00, 0x00, 0x00, 0x24, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -43,10 +42,10 @@ pub struct ControlSession {
     keys: SessionKeys,
     wire_seq: u32,
     inner_counter: u16,
-    video_keys: [[u8; 24]; HEADS],
-    frame_seq: [u32; HEADS],
+    video_keys: [[u8; 24]; MAX_HEADS],
+    frame_seq: [u32; MAX_HEADS],
     /// Per-head content shadow and retransmit ledger; see [`crate::scanout`].
-    scanout: [crate::scanout::HeadScanout; HEADS],
+    scanout: [crate::scanout::HeadScanout; MAX_HEADS],
 }
 
 impl ControlSession {
@@ -67,9 +66,20 @@ impl ControlSession {
             wire_seq,
             inner_counter,
             video_keys,
-            frame_seq: [0; HEADS],
+            frame_seq: [0; MAX_HEADS],
             scanout: core::array::from_fn(|_| crate::scanout::HeadScanout::new()),
         })
+    }
+
+    /// How many connectors this dock actually backs. Every per-head loop is bounded by this,
+    /// never by [`MAX_HEADS`], which is only an array size.
+    pub fn connectors(&self) -> usize {
+        self.dock.connectors()
+    }
+
+    /// This dock's profile, chosen from its identity descriptor.
+    pub fn profile(&self) -> &'static DockProfile {
+        self.dock.profile()
     }
 
     /// Fetch one downstream head's EDID without losing the session counters.
@@ -243,7 +253,7 @@ impl ControlSession {
         rgb: &[u8],
     ) -> Result<(), String> {
         let head_index = usize::from(head);
-        if head_index >= HEADS {
+        if head_index >= self.connectors() {
             return Err(format!("invalid Vino head {head}"));
         }
         let plan = self.scanout[head_index].plan(width, height, rgb);
@@ -440,12 +450,8 @@ impl ControlSession {
     }
 
     fn submit_video(&self, head: u8, frames: &[Vec<u8>]) -> Result<(), String> {
-        let result = match head {
-            0 => self.dock.write_video_frame(&frames),
-            1 => self.dock.write_video2_frame(&frames),
-            _ => return Err(format!("invalid Vino head {head}")),
-        };
-        result
+        self.dock
+            .write_video_frame(usize::from(head), frames)
             .map(|_| ())
             .map_err(|e| format!("submit head {head} video: {e}"))
     }
@@ -636,7 +642,7 @@ fn authenticate(dock: &Dock) -> Result<SessionKeys, String> {
 fn configure_control(
     dock: &Dock,
     keys: &mut SessionKeys,
-) -> Result<(u32, u16, [[u8; 24]; HEADS], usize), String> {
+) -> Result<(u32, u16, [[u8; 24]; MAX_HEADS], usize), String> {
     send_plain(dock, &STREAM_OPEN)?;
     let mut wire_seq = 0u32;
     let mut inner_counter = keys.next_counter;
@@ -677,8 +683,10 @@ fn configure_control(
         wire_seq += 2;
     }
 
-    let mut video_keys = [[0u8; 24]; HEADS];
-    for head in 0..HEADS {
+    // Bounded by what the device backs, not by an array size: a dock with fewer connectors must
+    // not be sent per-head setup for connectors it does not have.
+    let mut video_keys = [[0u8; 24]; MAX_HEADS];
+    for head in 0..dock.connectors() {
         configure_head(
             dock,
             keys,
@@ -692,7 +700,7 @@ fn configure_control(
 
     // Three finalization messages per head, head-major, exactly as the driver repeats
     // `CP_SETUP_FINALIZE_STEPS` for each connector that authenticated.
-    let finalize = (0..HEADS as u8).flat_map(|head| {
+    let finalize = (0..dock.connectors() as u8).flat_map(|head| {
         kvino::CP_SETUP_FINALIZE_STEPS
             .iter()
             .map(move |&(id, sub)| (id, sub, head))

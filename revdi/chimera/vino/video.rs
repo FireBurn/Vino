@@ -29,8 +29,11 @@ pub(crate) mod wht {
     /// ```
     ///
     /// The arithmetic shift rounds negative chroma contributions towards negative infinity.
-    pub(crate) fn colour(r: u8, g: u8, b: u8) -> (i32, i32, i32) {
-        let (r, g, b) = (r as i32, g as i32, b as i32);
+    ///
+    /// Channels are `i32` rather than `u8` because the same transform carries a 10-bit surface
+    /// unchanged -- see [`Depth`]. Values are the framebuffer's own code words at whatever depth
+    /// the plane is in; this applies no transfer function and no matrix of its own.
+    pub(crate) fn colour(r: i32, g: i32, b: i32) -> (i32, i32, i32) {
         let (cb, cr) = (r - g, b - g);
         (64 * g + 64 * ((cb + cr) >> 2), 64 * cb, 64 * cr)
     }
@@ -322,8 +325,9 @@ pub(crate) mod wht {
         coeff.unsigned_abs().checked_ilog2().map_or(0, |l| l + 1)
     }
 
-    /// Maximum DC escape category; the maximum category omits the unary 0-terminator (a complete
-    /// prefix code on categories `1..=SOLID_DC_CMAX`). `|qY| <= 1020 => c <= 10`, `|qCb| <= 255`.
+    /// Maximum DC escape category at 8 bits per channel; the maximum category omits the unary
+    /// 0-terminator (a complete prefix code on categories `1..=SOLID_DC_CMAX`).
+    /// `|qY| <= 1020 => c <= 10`, `|qCb| <= 255`. See [`Depth::dc_cmax`] for the 10-bit ceiling.
     const SOLID_DC_CMAX: u32 = 10;
 
     /// Max LUMA AC magnitude category (the maximum category omits the unary 0-terminator).
@@ -332,6 +336,63 @@ pub(crate) mod wht {
     /// Maximum chroma AC magnitude category. It is higher than luma's, so a category-9 chroma
     /// coefficient still carries the unary 0-terminator that luma's omits.
     const CHROMA_AC_CMAX: u32 = 10;
+
+    /// Bits per colour channel in the surface being encoded.
+    ///
+    /// This is the *only* thing that differs between an SDR and an HDR frame on this wire. Measured
+    /// on 2026-08-05 against a DL7400 driven by Windows with genuinely HDR content
+    /// (`docs/hdr.md` §0): record framing, strip header, significance tree, transform and
+    /// quantiser are byte-identical across an HDR toggle, and the colour maths is entirely
+    /// host-side -- what arrives is an ordinary PQ-encoded 10-bit RGB surface. So the codec is one
+    /// codec, parameterised here, rather than two.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum Depth {
+        /// 8 bits per channel: every mode on a Ridge dock, and a Navarro one outside HDR.
+        Eight,
+        /// 10 bits per channel, the DL-7000 "10bit profile".
+        Ten,
+    }
+
+    impl Depth {
+        /// Maximum escape category for a DC coefficient at this depth.
+        ///
+        /// A luma DC is four times the sample, so the largest magnitude is `4 * ((1 << bits) - 1)`
+        /// -- 1020 at 8 bits (category 10) and 4092 at 10 bits (category 12). The ceiling is part
+        /// of the wire format, not an implementation limit: at the maximum category `esc` omits
+        /// the unary 0-terminator, so a decoder reading with the wrong ceiling silently
+        /// desynchronises. Both values are measured, each uniquely, by decoding a captured PQ ramp
+        /// under every candidate and keeping the one that stays monotonic
+        /// (`tools/codec/depth-probe.py`).
+        #[inline]
+        pub(crate) fn dc_cmax(self) -> u32 {
+            match self {
+                Depth::Eight => SOLID_DC_CMAX,
+                Depth::Ten => 12,
+            }
+        }
+
+        /// The depth of a DRM pixel format, or `None` for one this codec cannot encode.
+        ///
+        /// Both layouts are four bytes per pixel, so they share the snapshot path and differ only
+        /// in how `PixelSource` splits a word.
+        #[inline]
+        pub(crate) fn from_fourcc(fourcc: u32) -> Option<Self> {
+            match fourcc {
+                kernel::drm::fourcc::XRGB8888 => Some(Depth::Eight),
+                kernel::drm::fourcc::XRGB2101010 => Some(Depth::Ten),
+                _ => None,
+            }
+        }
+    }
+
+    // ⚠ The AC ceilings deliberately do NOT vary with depth. The DC one had to, because a DC is a
+    // direct multiple of the sample and 10-bit content immediately overflows category 10. Nothing
+    // has ever measured an AC ceiling above 8-bit's: the 2026-08-05 capture's largest luma AC
+    // coefficient was |273|, comfortably inside category 9, because Windows tone-mapped the content
+    // down to the sink's 302 cd/m2 peak before the codec saw it. Guessing upward is the unsafe
+    // direction -- `esc` saturates a magnitude whose category exceeds the ceiling, so an
+    // under-sized ceiling clips extreme AC detail while an over-sized one desynchronises the dock.
+    // Raise these only against a capture that needs them; see `docs/hdr.md` §0.5.
 
     /// LSB-first bit accumulator for the production AC-strip coder.
     ///
@@ -509,6 +570,15 @@ pub(crate) mod wht {
         /// How many buffers the dock rotates through as it presents frames; see
         /// `DockProfile::dock_buffers`.
         pub(crate) dock_buffers: u8,
+        /// Bits per channel of the surface being encoded; see [`Depth`].
+        ///
+        /// Geometry is otherwise fixed per dock, and this is not -- a head moves between depths at
+        /// runtime when a compositor turns HDR on. It lives here because it is the one remaining
+        /// thing the codec needs to know that is neither a block coordinate nor a coefficient, and
+        /// `Geometry` is already threaded through every path that would have to carry it
+        /// separately. [`Geometry::new`] gives [`Depth::Eight`]; a 10-bit head asks for
+        /// [`Geometry::with_depth`].
+        depth: Depth,
     }
 
     impl Geometry {
@@ -536,7 +606,20 @@ pub(crate) mod wht {
                 head_sub_shift,
                 stream_id_mask,
                 dock_buffers: dock_buffers.max(1),
+                depth: Depth::Eight,
             }
+        }
+
+        /// The same dock geometry at a different sample depth; see [`Geometry::depth`].
+        #[inline]
+        pub(crate) fn with_depth(self, depth: Depth) -> Self {
+            Self { depth, ..self }
+        }
+
+        /// Bits per channel this frame is being encoded at.
+        #[inline]
+        pub(crate) fn depth(&self) -> Depth {
+            self.depth
         }
 
         /// `log2` of the strip width; see [`Geometry::strip_w_shift`].
@@ -598,6 +681,7 @@ pub(crate) mod wht {
         head_sub_shift: 0,
         stream_id_mask: 0x08,
         dock_buffers: 2,
+        depth: Depth::Eight,
     };
 
     /// `log2(DIM)`, so a block index splits into (x, y) by shift and mask rather than division.
@@ -630,7 +714,7 @@ pub(crate) mod wht {
 
     /// Per-plane DC quantizer, round-half-up on the SIGNED value (toward +inf): luma (plane 0)
     /// step 16, chroma step 64. `+224/64 = 3.5 -> 4`; `-8416/64 = -131.5 -> -131`.
-    fn quantize_dc_round(plane: usize, v: i32) -> i32 {
+    pub(crate) fn quantize_dc_round(plane: usize, v: i32) -> i32 {
         let shift: u32 = if plane == 0 { 4 } else { 6 };
         (v + (1 << (shift - 1))) >> shift
     }
@@ -736,12 +820,10 @@ pub(crate) mod wht {
         cb: &[i32; PIXELS],
         y: &[i32; PIXELS],
     ) -> ColourBlock {
-        #[cfg(target_arch = "x86_64")]
-        let (tcr, tcb, ty) = match crate::simd::colour_block_transforms(cr, cb, y) {
-            Some(t) => t,
-            None => (transform(cr), transform(cb), transform(y)),
-        };
-        #[cfg(not(target_arch = "x86_64"))]
+        // ⛔ Do not reach for SIMD here. An AVX2 in-block Haar was written, verified byte-exact
+        // and measured in-kernel: it is parity-to-slower once `kernel_fpu_begin`/`end` are paid
+        // per block, costing about 18% more CPU on a live encode. A strip is ~72% entropy coder,
+        // which is bit-serial, so even a free transform caps the whole win near 23%.
         let (tcr, tcb, ty) = (transform(cr), transform(cb), transform(y));
         // Quantise all three planes and find each one's last significant coefficient in a single
         // pass. These were separate steps, so every block ran three further 63-element reverse
@@ -793,7 +875,13 @@ pub(crate) mod wht {
     ///
     /// `#[inline(never)]`: see `haar2d`'s doc comment -- part of the kernel-stack-overflow fix.
     #[inline(never)]
-    pub(crate) fn colour_strip(blocks: &[ColourBlock], x: u16, y: u16) -> Result<KVec<u8>> {
+    pub(crate) fn colour_strip(
+        geom: Geometry,
+        blocks: &[ColourBlock],
+        x: u16,
+        y: u16,
+    ) -> Result<KVec<u8>> {
+        let dc_cmax = geom.depth().dc_cmax();
         let mut main = Bits::new();
         for b in blocks {
             main.colour_sync_unit(b.lcr, b.lcb, b.ly)?;
@@ -801,9 +889,9 @@ pub(crate) mod wht {
         let (mut pcr, mut pcb, mut py) = (0i32, 0i32, 0i32);
         for b in blocks {
             let (cr, cb, yv) = (b.qcr[0], b.qcb[0], b.qy[0]);
-            main.esc(cr - pcr, SOLID_DC_CMAX)?;
-            main.esc(cb - pcb, SOLID_DC_CMAX)?;
-            main.esc(yv - py, SOLID_DC_CMAX)?;
+            main.esc(cr - pcr, dc_cmax)?;
+            main.esc(cb - pcb, dc_cmax)?;
+            main.esc(yv - py, dc_cmax)?;
             (pcr, pcb, py) = (cr, cb, yv);
         }
         let mut row0 = Bits::new();
@@ -858,7 +946,7 @@ pub(crate) mod wht {
         geom: Geometry,
         ox: usize,
         oy: usize,
-        px: &mut impl FnMut(usize, usize) -> (u8, u8, u8),
+        px: &mut impl FnMut(usize, usize) -> (u16, u16, u16),
     ) -> Result<KVec<ColourBlock>> {
         let mut blocks = KVec::with_capacity(STRIP_BLOCKS, GFP_KERNEL)?;
         for k in 0..STRIP_BLOCKS {
@@ -878,7 +966,7 @@ pub(crate) mod wht {
             for r in 0..DIM {
                 for c in 0..DIM {
                     let (rr, gg, bb) = px(ox + bx * DIM + c, oy + by * DIM + r);
-                    let (yv, cbv, crv) = colour(rr, gg, bb);
+                    let (yv, cbv, crv) = colour(rr as i32, gg as i32, bb as i32);
                     (cr[i], cb[i], y[i]) = (crv, cbv, yv);
                     i += 1;
                 }
@@ -905,7 +993,7 @@ pub(crate) mod wht {
         height: usize,
         seq0: u32,
         head: u8,
-        mut px: impl FnMut(usize, usize) -> (u8, u8, u8),
+        mut px: impl FnMut(usize, usize) -> (u16, u16, u16),
     ) -> Result<(KVec<KVec<u8>>, u32)> {
         colour_frame_ep08_variant(geom, width, height, seq0, head, None, &mut px)
     }
@@ -919,7 +1007,7 @@ pub(crate) mod wht {
         height: usize,
         seq0: u32,
         head: u8,
-        mut px: impl FnMut(usize, usize) -> (u8, u8, u8),
+        mut px: impl FnMut(usize, usize) -> (u16, u16, u16),
     ) -> Result<(KVec<KVec<u8>>, u32)> {
         colour_frame_ep08_variant(geom, width, height, seq0, head, Some(true), &mut px)
     }
@@ -931,7 +1019,7 @@ pub(crate) mod wht {
         seq0: u32,
         head: u8,
         navarro_ordinary: Option<bool>,
-        px: &mut impl FnMut(usize, usize) -> (u8, u8, u8),
+        px: &mut impl FnMut(usize, usize) -> (u16, u16, u16),
     ) -> Result<(KVec<KVec<u8>>, u32)> {
         if width & (geom.strip_w() - 1) != 0 || height & (geom.strip_h() - 1) != 0 {
             return Err(kernel::error::code::EINVAL);
@@ -943,7 +1031,10 @@ pub(crate) mod wht {
             let mut sx = 0usize;
             while sx < width {
                 let blocks = colour_strip_blocks(geom, sx, sy, px)?;
-                strips.push(colour_strip(&blocks, sx as u16, sy as u16)?, GFP_KERNEL)?;
+                strips.push(
+                    colour_strip(geom, &blocks, sx as u16, sy as u16)?,
+                    GFP_KERNEL,
+                )?;
                 sx += geom.strip_w();
             }
             sy += geom.strip_h();
@@ -1018,7 +1109,10 @@ pub(crate) mod wht {
         while sy < height {
             let mut sx = 0usize;
             while sx < width {
-                strips.push(colour_strip(&blocks, sx as u16, sy as u16)?, GFP_KERNEL)?;
+                strips.push(
+                    colour_strip(geom, &blocks, sx as u16, sy as u16)?,
+                    GFP_KERNEL,
+                )?;
                 sx += geom.strip_w();
             }
             sy += geom.strip_h();
@@ -1036,10 +1130,10 @@ pub(crate) mod wht {
         geom: Geometry,
         sx: usize,
         sy: usize,
-        px: &mut impl FnMut(usize, usize) -> (u8, u8, u8),
+        px: &mut impl FnMut(usize, usize) -> (u16, u16, u16),
     ) -> Result<KVec<u8>> {
         let blocks = colour_strip_blocks(geom, sx, sy, px)?;
-        colour_strip(&blocks, sx as u16, sy as u16)
+        colour_strip(geom, &blocks, sx as u16, sy as u16)
     }
 
     /// The raster-ordered top-left coordinate of every strip a damage set selects.
@@ -1119,7 +1213,7 @@ pub(crate) mod wht {
         seq0: u32,
         head: u8,
         clips: &[(usize, usize, usize, usize)],
-        mut px: impl FnMut(usize, usize) -> (u8, u8, u8),
+        mut px: impl FnMut(usize, usize) -> (u16, u16, u16),
     ) -> Result<(KVec<KVec<u8>>, u32)> {
         if width & (geom.strip_w() - 1) != 0 || height & (geom.strip_h() - 1) != 0 {
             return Err(kernel::error::code::EINVAL);
@@ -1128,7 +1222,10 @@ pub(crate) mod wht {
         let mut strips: KVec<KVec<u8>> = KVec::with_capacity(coords.len(), GFP_KERNEL)?;
         for &(sx, sy) in coords.iter() {
             let blocks = colour_strip_blocks(geom, sx, sy, &mut px)?;
-            strips.push(colour_strip(&blocks, sx as u16, sy as u16)?, GFP_KERNEL)?;
+            strips.push(
+                colour_strip(geom, &blocks, sx as u16, sy as u16)?,
+                GFP_KERNEL,
+            )?;
         }
         let records = frame_records(geom, &strips, head)?;
         Ok((records, seq0.wrapping_add(1)))

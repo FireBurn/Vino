@@ -110,6 +110,19 @@ for f in "${vino_srcs[@]}"; do
     sync_one "$kdir/drivers/gpu/drm/vino/$f" "$here/chimera/vino/$f" "chimera/vino/$f"
 done
 
+# vino and evdi carry the same software colour pipeline. It is one algorithm -- gamma LUT, CTM,
+# the narrow()/expand() pair whose asymmetry once shifted every pixel -- and both drivers apply it
+# to the same kind of surface, so the two files are byte-identical by intent. They are separate
+# drivers and neither may include the other's source, which leaves nothing enforcing that but a
+# check. Reported here rather than copied: which way a fix should travel is a decision.
+echo "cross-driver: drivers/gpu/drm/{vino,evdi}/color.rs must stay identical"
+if ! cmp -s "$kdir/drivers/gpu/drm/vino/color.rs" "$kdir/drivers/gpu/drm/evdi/color.rs"; then
+    n=$(diff "$kdir/drivers/gpu/drm/vino/color.rs" "$kdir/drivers/gpu/drm/evdi/color.rs" |
+        grep -c '^[<>]')
+    echo "  DIFF     vino/color.rs vs evdi/color.rs ($n lines) -- port the fix both ways"
+    drift=1
+fi
+
 echo
 if [ "$drift" -eq 0 ]; then
     echo "in sync with $kdir -- nothing to do."

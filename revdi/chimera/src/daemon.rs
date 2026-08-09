@@ -5,8 +5,8 @@
 use crate::revdi::{self, Cursor, DeviceEvent, Mode, RevdiCard};
 use crate::session::ControlSession;
 use std::time::{Duration, Instant};
+use vino_driver::MAX_HEADS;
 
-const HEADS: usize = 2;
 const FRAME_WAIT: Duration = Duration::from_millis(8);
 const KEEPALIVE_PERIOD: Duration = Duration::from_millis(13);
 const HEARTBEAT_PERIOD: Duration = Duration::from_secs(3);
@@ -42,8 +42,10 @@ pub fn run() -> Result<(), String> {
 /// Engage the dock, expose connected sinks through Revdi, and forward compositor frames.
 fn run_session() -> Result<(), String> {
     let mut session = ControlSession::engage()?;
-    let mut outputs: [Option<Output>; HEADS] = core::array::from_fn(|_| None);
-    for head in 0..HEADS {
+    let mut outputs: [Option<Output>; MAX_HEADS] = core::array::from_fn(|_| None);
+    // The dock's own connector count, not an array size: a dock with fewer outputs must not be
+    // probed for connectors it does not have.
+    for head in 0..session.connectors() {
         if session.probe_head_present(head as u8)? == Some(true) {
             connect_output(&mut session, &mut outputs[head], head as u8);
         }
@@ -137,7 +139,7 @@ fn connect_output(session: &mut ControlSession, slot: &mut Option<Output>, head:
 
 fn refresh_topology(
     session: &mut ControlSession,
-    outputs: &mut [Option<Output>; HEADS],
+    outputs: &mut [Option<Output>; MAX_HEADS],
 ) -> Result<(), String> {
     for (head, slot) in outputs.iter_mut().enumerate() {
         // A deliberate DPMS-off closes the downstream stream and can look like removal.

@@ -131,7 +131,7 @@ impl Report {
 /// Sixteen identical flat 8x8 blocks of one RGB colour, in the codec's x64 fixed point --
 /// the input `colour_strip` needs to emit a uniform 64x16 strip.
 fn flat_planes(r: u8, g: u8, b: u8) -> [[[i32; 64]; 3]; 16] {
-    let (y, cb, cr) = crate::kvino::colour(r, g, b);
+    let (y, cb, cr) = crate::kvino::colour(r.into(), g.into(), b.into());
     [[[cr; 64], [cb; 64], [y; 64]]; 16]
 }
 
@@ -380,13 +380,11 @@ pub fn run() -> Report {
     ];
     let mut col_ok = 0usize;
     for &((r, g, b), gt) in COLOUR_GT {
-        if crate::kvino::colour(r, g, b) == gt {
+        let got = crate::kvino::colour(r.into(), g.into(), b.into());
+        if got == gt {
             col_ok += 1;
         } else {
-            println!(
-                "  *** colour({r},{g},{b}) = {:?}, DLM = {gt:?} ***",
-                crate::kvino::colour(r, g, b)
-            );
+            println!("  *** colour({r},{g},{b}) = {got:?}, DLM = {gt:?} ***");
         }
     }
     let colour_ok = col_ok == COLOUR_GT.len();
@@ -521,8 +519,11 @@ pub fn run() -> Report {
                     for c in 0..8 {
                         let (px, py) = (ox + bx * 8 + c, oy + by * 8 + r);
                         let idx = (py * fw + px) * 3;
-                        let (yv, cbv, crv) =
-                            crate::kvino::colour(rgb[idx], rgb[idx + 1], rgb[idx + 2]);
+                        let (yv, cbv, crv) = crate::kvino::colour(
+                            rgb[idx].into(),
+                            rgb[idx + 1].into(),
+                            rgb[idx + 2].into(),
+                        );
                         let i = r * 8 + c;
                         planes[k][0][i] = crv;
                         planes[k][1][i] = cbv;
