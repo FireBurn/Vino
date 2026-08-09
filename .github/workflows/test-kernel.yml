@@ -33,10 +33,13 @@ jobs:
           tool-cache: true
           large-packages: false
 
+      # Shallow. The submodule is the Linux tree, so a full clone fetches twenty years of history
+      # on every run; the only thing that needed it was `git describe`, and the submodule SHA
+      # below says the same thing for release provenance.
       - uses: actions/checkout@v4
         with:
           submodules: recursive
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Install build dependencies
         run: |
@@ -67,7 +70,7 @@ jobs:
             --enable EXPERT \
             --disable MODVERSIONS \
             --disable DEBUG_INFO_BTF \
-            --set-val CONFIG_DEBUG_INFO_NONE y \
+            --enable DEBUG_INFO_NONE \
             --disable MODULE_SIG_ALL \
             --disable SYSTEM_TRUSTED_KEYS \
             --disable SYSTEM_REVOCATION_KEYS \
@@ -79,9 +82,15 @@ jobs:
           for opt in CONFIG_RUST=y CONFIG_DRM_VINO=m; do
             grep -qx "$opt" .config || { echo "::error::$opt did not survive olddefconfig"; exit 1; }
           done
+          # Debug info is what made the first rpm 1.1 GB: the deb split it into a -dbg package that
+          # was filtered out, so only the rpm showed it. Assert it is off rather than trusting the
+          # choice symbol to have taken.
+          if grep -qx "CONFIG_DEBUG_INFO=y" .config; then
+            echo "::error::debug info is enabled; packages will be enormous"; exit 1
+          fi
 
           echo "release=$(make -s LLVM=$LLVM_SUFFIX kernelrelease)" >> "$GITHUB_OUTPUT"
-          echo "base=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
+          echo "base=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Build the kernel
         working-directory: linux
@@ -91,6 +100,8 @@ jobs:
       # failure in either is reported two hours later against whichever finished last.
       - name: Build the deb
         working-directory: linux
+        env:
+          KDEB_PKGVERSION: ${{ steps.cfg.outputs.release }}-1
         run: make LLVM=$LLVM_SUFFIX -j"$(nproc)" bindeb-pkg
 
       - name: Build the rpm
@@ -117,7 +128,7 @@ jobs:
           BASE: ${{ steps.cfg.outputs.base }}
         run: |
           {
-            echo "Kernel \`$RELEASE\`, built from \`$BASE\` at \`${GITHUB_SHA:0:12}\`."
+            echo "Kernel \`$RELEASE\`, built from linux \`$BASE\` at \`${GITHUB_SHA:0:12}\`."
             echo
             cat .github/RELEASE_NOTES.md
           } > notes.md
