@@ -32,7 +32,8 @@ The kernel tree is committed and clean, builds warning-clean and rustfmt-clean a
 real config. `revdi` builds, `cargo test --workspace` is 23/23, and `chimera-prove` still reports
 **192/192 OUT CP frames byte-identical to DLM**.
 
-⚠ `patches/kernel/` has **not** been re-exported since today's commits. Do that before publishing.
+`patches/kernel/` is re-exported and current (114 patches), and `tools/validate.sh`
+passes end to end -- the first clean run, see the last commit for what that took.
 
 ---
 
