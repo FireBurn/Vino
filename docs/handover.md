@@ -106,6 +106,60 @@ and the announce means the stream is named either way.
 The sealed stream *open* and the plane announce were fixed; the stream *announce* was not, and the
 key exchange behind it was never sent at all.
 
+### ✅ HW RESULT 2026-08-12: both fixes confirmed on the wire, and the stall is gone
+
+`~/vinocap/run17.pcapng`, module `c38c41a2`, one bring-up after a physical power cycle.
+
+- ⭐ **The ring walk now matches the vendor exactly.** `ring-openers.py` against the DLM capture:
+  `(0,1,1) (1,2,2) (2,3,0) (0,4,1)` on both, `walks agree at the first opener`. It was
+  `(1,2,2) ...` before.
+- ⭐ **The opening sequence now agrees for 43 records**, up from 32 -- through the whole plaintext
+  burst, **both** heads' complete nine-message per-head blocks and **both** stream announces.
+  `encrypted control setup complete (33 messages)`, was 27.
+- ⭐⭐ **The endpoint stall is gone.** No `-32`, no `EPIPE`, no `video endpoint halt cleared`
+  anywhere in the run. The only non-zero completions are `-2`, vino unlinking its own timed-out
+  writes during teardown.
+- The dock consumes the **entire** prologue-plus-carrier frame (115,104 B, offsets 9,952..124,672)
+  and then stops answering. Control writes queued after it time out at one second each.
+
+⚠ Each failed run costs a physical power cycle: the dock hard-wedges off USB afterwards. Budget
+one experiment per cycle and make it count.
+
+### ⭐ The next divergence, from the same alignment
+
+The three records the dock does not take are the post-close markers and a mode-set retry. Placed
+side by side with the vendor's, the ordering differs in one place:
+
+```
+DLM   #86 set-mode  #87 #88 markers  #89 set-mode  #90 #91 #92 markers
+      #93 ring descriptor  #95 decoder configuration
+      #96 #97 #98 markers          <- the last three, AFTER the configuration
+      ... 30 image records, no control at all ...
+      #129 first opener
+
+vino  #133 set-mode  #135-#141 six markers
+      #145 ring descriptor  #146 decoder configuration
+      ... 30 image records ...
+      #177 #178 markers            <- the last two, AFTER the whole frame
+      #180 a SECOND set-mode       <- the retry; the dock is already silent by here
+      #182 first opener
+```
+
+So the vendor's final `2e(head, 0)` -- the sink-up -- is the last thing before pixels, and vino's
+lands after the first frame has already gone out. That is the standing "move the prologue inside
+the bracket" lead, from the other direction: it is the **bracket's tail** that has to precede the
+strips, not the prologue that has to move back.
+
+⚠ **That change was tried on 2026-08-11 and called neutral.** It was measured on a baseline where
+the ring was one ahead and the second head had no video key at all, so "neutral" said nothing. The
+precondition the note attached to it -- "do not land this until the ring off-by-one has had a clean
+run" -- is now met.
+
+⭐ **Get a keyed capture before changing it.** vino's markers cannot be read off the wire without
+`trace_crypto=1`, and the vendor's decrypted sequence is per-head (`2e(1,3) 2f(0,1) 2e(0,0)`), so
+which head each of vino's six markers names is unknown. `record-stream.py` with the disclosed keys
+turns the next change from a guess into a diff, which is what produced both of today's fixes.
+
 ### Where the dock actually stops, on the wire
 
 `~/vinocap/run14.pcapng`, EP02, one continuous stream:
