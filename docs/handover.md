@@ -1107,6 +1107,54 @@ Ridge and the DL7400 group their payload after the terminator and are untouched;
 tests still pass. Tools: `tools/codec/ella_decode.py` (the grammar as a decoder plus a whole-corpus
 check -- anything short of 100% is a hole), `tools/render-dc.py` (the pixel oracle).
 
+## ⛔ A replug is spent before you can use it -- hold vino off first
+
+**vino autoloads by modalias**, so the moment the dock is replugged it binds, runs a bring-up, fails
+and wedges the dock -- before a capture is running and before the newly built module is the one
+being tested. Two power cycles were burnt that way. Hold it off, replug, then bind deliberately:
+
+```
+sudo tee /etc/modprobe.d/zz-vino-manual.conf <<< 'blacklist vino'   # remove when done
+   ... physical replug ...
+sudo dumpcap -i usbmon4 -w ~/vinocap/runN.pcapng -q -B 256 &
+sleep 12                       # dumpcap probes every device's descriptors on start
+sudo modprobe vino debug=1
+```
+
+⚠ **Wait for dumpcap before loading.** It issues `GET_DESCRIPTOR` to every device on the bus when
+it starts, and those requests time out against this dock
+(`usbfs: USBDEVFS_CONTROL failed cmd dumpcap ... ret -110`); a bind racing them reads
+`no identity descriptor and no quirk entry; declining`.
+
+⚠ Give the run at least 55 s of capture: a slow bring-up put the first frame 0.3 s past the end of
+a 38 s window once, which cost the whole capture.
+
+## The bracket, decrypted end to end
+
+`record-stream.py` on the vendor capture settles the mode-set sequence exactly, and it matches the
+placement derived from source:
+
+```
+#86  0x48/0x22 set-mode   off22=00      head 0's mode
+#87  0x16/0x2f off22=00 off23=01        2f(h0, 1)
+#88  0x16/0x2e off22=00 off23=03        2e(h0, 3)   sink down
+#89  0x48/0x22 set-mode   off22=01      head 1's mode
+#90  0x16/0x2f off22=00 off23=01        2f(h0, 1)
+#91  0x16/0x2e off22=00 off23=00        2e(h0, 0)   sink up
+#92  0x16/0x2f off22=01 off23=01        2f(h1, 1)
+#93  ring descriptor h0
+#95  decoder configuration h0
+#96  0x16/0x2e off22=01 off23=03        2e(h1, 3)
+#97  0x16/0x2f off22=00 off23=01        2f(h0, 1)
+#98  0x16/0x2e off22=00 off23=00        2e(h0, 0)   the last record before pixels
+#99+ strips ... then the next frame's opener, with NOTHING in between
+```
+
+⭐ **The bracket is complete before any pixels**, so the closing pair vino sent after prompt video
+put two records into the one gap the vendor leaves empty -- and one of them is `2f(head, 0)`, a
+marker state the vendor never uses on this generation at all: every `2f` in its bring-up carries
+state 1. `modeset_bracket_post_close` now returns early on a dock without a video pipe. ⚠ HW-untested.
+
 ## Next, in priority order
 
 **Refreshed 2026-08-12.** Items 1 and 2 of the old list below are done and confirmed on hardware;
