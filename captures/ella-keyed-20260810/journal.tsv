@@ -1,0 +1,174 @@
+1786369896.301655623	mark	begin:connect
+1786369896.301655623	snap	begin:connect	card0-DP-1	disconnected	
+1786369896.301655623	snap	begin:connect	card0-Writeback-1	unknown	
+1786369896.301655623	snap	begin:connect	card1-eDP-1	connected	2560x1440
+1786369896.301655623	snap	begin:connect	card1-HDMI-A-1	disconnected	
+1786369896.301655623	snap	begin:connect	card2-DP-2	connected	1920x1080
+1786369896.301655623	snap	begin:connect	card3-DP-3	connected	1920x1080
+1786369990.393949153	mark	end:connect
+1786369990.393949153	snap	end:connect	card0-DP-1	disconnected	
+1786369990.393949153	snap	end:connect	card0-Writeback-1	unknown	
+1786369990.393949153	snap	end:connect	card1-eDP-1	connected	2560x1440
+1786369990.393949153	snap	end:connect	card1-HDMI-A-1	disconnected	
+1786369990.393949153	snap	end:connect	card2-DP-2	connected	1920x1080
+1786369990.393949153	snap	end:connect	card3-DP-3	connected	1920x1080
+1786375455.905895316	mark	begin:idle-before
+1786375455.905895316	snap	begin:idle-before	card0-DP-1	disconnected	
+1786375455.905895316	snap	begin:idle-before	card0-Writeback-1	unknown	
+1786375455.905895316	snap	begin:idle-before	card1-eDP-1	connected	2560x1440
+1786375455.905895316	snap	begin:idle-before	card1-HDMI-A-1	disconnected	
+1786375455.905895316	snap	begin:idle-before	card2-DP-2	connected	1920x1080
+1786375455.905895316	snap	begin:idle-before	card3-DP-3	connected	1920x1080
+1786375455.905895316	snap	begin:idle-before	card4-DP-4	connected	2560x1440
+1786375470.931019639	mark	end:idle-before
+1786375470.931019639	snap	end:idle-before	card0-DP-1	disconnected	
+1786375470.931019639	snap	end:idle-before	card0-Writeback-1	unknown	
+1786375470.931019639	snap	end:idle-before	card1-eDP-1	connected	2560x1440
+1786375470.931019639	snap	end:idle-before	card1-HDMI-A-1	disconnected	
+1786375470.931019639	snap	end:idle-before	card2-DP-2	connected	1920x1080
+1786375470.931019639	snap	end:idle-before	card3-DP-3	connected	1920x1080
+1786375470.931019639	snap	end:idle-before	card4-DP-4	connected	2560x1440
+1786375470.953860769	mark	begin:dpms-off
+1786375470.953860769	snap	begin:dpms-off	card0-DP-1	disconnected	
+1786375470.953860769	snap	begin:dpms-off	card0-Writeback-1	unknown	
+1786375470.953860769	snap	begin:dpms-off	card1-eDP-1	connected	2560x1440
+1786375470.953860769	snap	begin:dpms-off	card1-HDMI-A-1	disconnected	
+1786375470.953860769	snap	begin:dpms-off	card2-DP-2	connected	1920x1080
+1786375470.953860769	snap	begin:dpms-off	card3-DP-3	connected	1920x1080
+1786375470.953860769	snap	begin:dpms-off	card4-DP-4	connected	2560x1440
+1786375485.994416000	mark	end:dpms-off
+1786375485.994416000	snap	end:dpms-off	card0-DP-1	disconnected	
+1786375485.994416000	snap	end:dpms-off	card0-Writeback-1	unknown	
+1786375485.994416000	snap	end:dpms-off	card1-eDP-1	connected	2560x1440
+1786375485.994416000	snap	end:dpms-off	card1-HDMI-A-1	disconnected	
+1786375485.994416000	snap	end:dpms-off	card2-DP-2	connected	1920x1080
+1786375485.994416000	snap	end:dpms-off	card3-DP-3	connected	1920x1080
+1786375485.994416000	snap	end:dpms-off	card4-DP-4	connected	2560x1440
+1786375486.016576291	mark	begin:dpms-on
+1786375486.016576291	snap	begin:dpms-on	card0-DP-1	disconnected	
+1786375486.016576291	snap	begin:dpms-on	card0-Writeback-1	unknown	
+1786375486.016576291	snap	begin:dpms-on	card1-eDP-1	connected	2560x1440
+1786375486.016576291	snap	begin:dpms-on	card1-HDMI-A-1	disconnected	
+1786375486.016576291	snap	begin:dpms-on	card2-DP-2	connected	1920x1080
+1786375486.016576291	snap	begin:dpms-on	card3-DP-3	connected	1920x1080
+1786375486.016576291	snap	begin:dpms-on	card4-DP-4	connected	2560x1440
+1786375506.057867745	mark	end:dpms-on
+1786375506.057867745	snap	end:dpms-on	card0-DP-1	disconnected	
+1786375506.057867745	snap	end:dpms-on	card0-Writeback-1	unknown	
+1786375506.057867745	snap	end:dpms-on	card1-eDP-1	connected	2560x1440
+1786375506.057867745	snap	end:dpms-on	card1-HDMI-A-1	disconnected	
+1786375506.057867745	snap	end:dpms-on	card2-DP-2	connected	1920x1080
+1786375506.057867745	snap	end:dpms-on	card3-DP-3	connected	1920x1080
+1786375506.057867745	snap	end:dpms-on	card4-DP-4	connected	2560x1440
+1786375506.081467397	mark	begin:settle
+1786375506.081467397	snap	begin:settle	card0-DP-1	disconnected	
+1786375506.081467397	snap	begin:settle	card0-Writeback-1	unknown	
+1786375506.081467397	snap	begin:settle	card1-eDP-1	connected	2560x1440
+1786375506.081467397	snap	begin:settle	card1-HDMI-A-1	disconnected	
+1786375506.081467397	snap	begin:settle	card2-DP-2	connected	1920x1080
+1786375506.081467397	snap	begin:settle	card3-DP-3	connected	1920x1080
+1786375506.081467397	snap	begin:settle	card4-DP-4	connected	2560x1440
+1786375518.104944966	mark	end:settle
+1786375518.104944966	snap	end:settle	card0-DP-1	disconnected	
+1786375518.104944966	snap	end:settle	card0-Writeback-1	unknown	
+1786375518.104944966	snap	end:settle	card1-eDP-1	connected	2560x1440
+1786375518.104944966	snap	end:settle	card1-HDMI-A-1	disconnected	
+1786375518.104944966	snap	end:settle	card2-DP-2	connected	1920x1080
+1786375518.104944966	snap	end:settle	card3-DP-3	connected	1920x1080
+1786375518.104944966	snap	end:settle	card4-DP-4	connected	2560x1440
+1786375518.128143669	mark	begin:mode-change
+1786375518.128143669	snap	begin:mode-change	card0-DP-1	disconnected	
+1786375518.128143669	snap	begin:mode-change	card0-Writeback-1	unknown	
+1786375518.128143669	snap	begin:mode-change	card1-eDP-1	connected	2560x1440
+1786375518.128143669	snap	begin:mode-change	card1-HDMI-A-1	disconnected	
+1786375518.128143669	snap	begin:mode-change	card2-DP-2	connected	1920x1080
+1786375518.128143669	snap	begin:mode-change	card3-DP-3	connected	1920x1080
+1786375518.128143669	snap	begin:mode-change	card4-DP-4	connected	2560x1440
+1786375538.948545552	mark	end:mode-change
+1786375538.948545552	snap	end:mode-change	card0-DP-1	disconnected	
+1786375538.948545552	snap	end:mode-change	card0-Writeback-1	unknown	
+1786375538.948545552	snap	end:mode-change	card1-eDP-1	connected	2560x1440
+1786375538.948545552	snap	end:mode-change	card1-HDMI-A-1	disconnected	
+1786375538.948545552	snap	end:mode-change	card2-DP-2	connected	1920x1080
+1786375538.948545552	snap	end:mode-change	card3-DP-3	connected	1920x1080
+1786375538.948545552	snap	end:mode-change	card4-DP-4	connected	2560x1440
+1786375538.970976641	mark	begin:mode-restore
+1786375538.970976641	snap	begin:mode-restore	card0-DP-1	disconnected	
+1786375538.970976641	snap	begin:mode-restore	card0-Writeback-1	unknown	
+1786375538.970976641	snap	begin:mode-restore	card1-eDP-1	connected	2560x1440
+1786375538.970976641	snap	begin:mode-restore	card1-HDMI-A-1	disconnected	
+1786375538.970976641	snap	begin:mode-restore	card2-DP-2	connected	1920x1080
+1786375538.970976641	snap	begin:mode-restore	card3-DP-3	connected	1920x1080
+1786375538.970976641	snap	begin:mode-restore	card4-DP-4	connected	2560x1440
+1786375559.051378040	mark	end:mode-restore
+1786375559.051378040	snap	end:mode-restore	card0-DP-1	disconnected	
+1786375559.051378040	snap	end:mode-restore	card0-Writeback-1	unknown	
+1786375559.051378040	snap	end:mode-restore	card1-eDP-1	connected	2560x1440
+1786375559.051378040	snap	end:mode-restore	card1-HDMI-A-1	disconnected	
+1786375559.051378040	snap	end:mode-restore	card2-DP-2	connected	1920x1080
+1786375559.051378040	snap	end:mode-restore	card3-DP-3	connected	1920x1080
+1786375559.051378040	snap	end:mode-restore	card4-DP-4	connected	2560x1440
+1786375559.074629876	mark	begin:idle-after
+1786375559.074629876	snap	begin:idle-after	card0-DP-1	disconnected	
+1786375559.074629876	snap	begin:idle-after	card0-Writeback-1	unknown	
+1786375559.074629876	snap	begin:idle-after	card1-eDP-1	connected	2560x1440
+1786375559.074629876	snap	begin:idle-after	card1-HDMI-A-1	disconnected	
+1786375559.074629876	snap	begin:idle-after	card2-DP-2	connected	1920x1080
+1786375559.074629876	snap	begin:idle-after	card3-DP-3	connected	1920x1080
+1786375559.074629876	snap	begin:idle-after	card4-DP-4	connected	2560x1440
+1786375584.098231792	mark	end:idle-after
+1786375584.098231792	snap	end:idle-after	card0-DP-1	disconnected	
+1786375584.098231792	snap	end:idle-after	card0-Writeback-1	unknown	
+1786375584.098231792	snap	end:idle-after	card1-eDP-1	connected	2560x1440
+1786375584.098231792	snap	end:idle-after	card1-HDMI-A-1	disconnected	
+1786375584.098231792	snap	end:idle-after	card2-DP-2	connected	1920x1080
+1786375584.098231792	snap	end:idle-after	card3-DP-3	connected	1920x1080
+1786375584.098231792	snap	end:idle-after	card4-DP-4	connected	2560x1440
+1786375612.951251329	mark	begin:dpms-off
+1786375612.951251329	snap	begin:dpms-off	card0-DP-1	disconnected	
+1786375612.951251329	snap	begin:dpms-off	card0-Writeback-1	unknown	
+1786375612.951251329	snap	begin:dpms-off	card1-eDP-1	connected	2560x1440
+1786375612.951251329	snap	begin:dpms-off	card1-HDMI-A-1	disconnected	
+1786375612.951251329	snap	begin:dpms-off	card2-DP-2	connected	1920x1080
+1786375612.951251329	snap	begin:dpms-off	card3-DP-3	connected	1920x1080
+1786375612.951251329	snap	begin:dpms-off	card4-DP-4	connected	2560x1440
+1786375626.993177137	mark	end:dpms-off
+1786375626.993177137	snap	end:dpms-off	card0-DP-1	disconnected	
+1786375626.993177137	snap	end:dpms-off	card0-Writeback-1	unknown	
+1786375626.993177137	snap	end:dpms-off	card1-eDP-1	connected	2560x1440
+1786375626.993177137	snap	end:dpms-off	card1-HDMI-A-1	disconnected	
+1786375626.993177137	snap	end:dpms-off	card2-DP-2	connected	1920x1080
+1786375626.993177137	snap	end:dpms-off	card3-DP-3	connected	1920x1080
+1786375626.993177137	snap	end:dpms-off	card4-DP-4	connected	2560x1440
+1786375627.015733902	mark	begin:dpms-on
+1786375627.015733902	snap	begin:dpms-on	card0-DP-1	disconnected	
+1786375627.015733902	snap	begin:dpms-on	card0-Writeback-1	unknown	
+1786375627.015733902	snap	begin:dpms-on	card1-eDP-1	connected	2560x1440
+1786375627.015733902	snap	begin:dpms-on	card1-HDMI-A-1	disconnected	
+1786375627.015733902	snap	begin:dpms-on	card2-DP-2	connected	1920x1080
+1786375627.015733902	snap	begin:dpms-on	card3-DP-3	connected	1920x1080
+1786375627.015733902	snap	begin:dpms-on	card4-DP-4	connected	2560x1440
+1786375647.055026698	mark	end:dpms-on
+1786375647.055026698	snap	end:dpms-on	card0-DP-1	disconnected	
+1786375647.055026698	snap	end:dpms-on	card0-Writeback-1	unknown	
+1786375647.055026698	snap	end:dpms-on	card1-eDP-1	connected	2560x1440
+1786375647.055026698	snap	end:dpms-on	card1-HDMI-A-1	disconnected	
+1786375647.055026698	snap	end:dpms-on	card2-DP-2	connected	1920x1080
+1786375647.055026698	snap	end:dpms-on	card3-DP-3	connected	1920x1080
+1786375647.055026698	snap	end:dpms-on	card4-DP-4	connected	2560x1440
+1786375647.076927443	mark	begin:post-dpms-idle
+1786375647.076927443	snap	begin:post-dpms-idle	card0-DP-1	disconnected	
+1786375647.076927443	snap	begin:post-dpms-idle	card0-Writeback-1	unknown	
+1786375647.076927443	snap	begin:post-dpms-idle	card1-eDP-1	connected	2560x1440
+1786375647.076927443	snap	begin:post-dpms-idle	card1-HDMI-A-1	disconnected	
+1786375647.076927443	snap	begin:post-dpms-idle	card2-DP-2	connected	1920x1080
+1786375647.076927443	snap	begin:post-dpms-idle	card3-DP-3	connected	1920x1080
+1786375647.076927443	snap	begin:post-dpms-idle	card4-DP-4	connected	2560x1440
+1786375667.100715499	mark	end:post-dpms-idle
+1786375667.100715499	snap	end:post-dpms-idle	card0-DP-1	disconnected	
+1786375667.100715499	snap	end:post-dpms-idle	card0-Writeback-1	unknown	
+1786375667.100715499	snap	end:post-dpms-idle	card1-eDP-1	connected	2560x1440
+1786375667.100715499	snap	end:post-dpms-idle	card1-HDMI-A-1	disconnected	
+1786375667.100715499	snap	end:post-dpms-idle	card2-DP-2	connected	1920x1080
+1786375667.100715499	snap	end:post-dpms-idle	card3-DP-3	connected	1920x1080
+1786375667.100715499	snap	end:post-dpms-idle	card4-DP-4	connected	2560x1440

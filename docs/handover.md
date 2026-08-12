@@ -1075,6 +1075,38 @@ Implemented and cross-verified, **not tested on hardware**:
 
 ---
 
+## ★★★★★ 2026-08-12 THE STRIP GRAMMAR IS CLOSED -- 77% -> 100%
+
+**A DL-3x00 decoder takes the payload bit that follows each unary one as the LEAST significant.**
+The driver emitted it most-significant-first, which is the same number of bits, so every
+length-based check passed and every strip decoded to noise.
+
+Settled three ways against 8000 captured strips, offline, no dock:
+
+| check | most significant first | least significant first |
+|---|---|---|
+| whole strips decoding cleanly | 6153/8000 = **77%** | 8000/8000 = **100%** |
+| recovered luma DC range | **-3205..996** (impossible; luma DC cannot be negative) | **0..1020** (exactly the codec's bound) |
+| frame rebuilt from DC | streaks | **a legible desktop** |
+
+⭐ **The landing oracle alone could not have found this.** It sees the significance fields (whose
+value sets how many coefficients follow) but is blind to an escape's payload, where reversing the
+bits changes values and not lengths. What settles the escape is pixels:
+`tools/render-dc.py` renders a frame from DC coefficients alone, and
+`captures/ella-video-evdi-20260810/decoded/frame-dc.png` is the result -- a settings window with a
+sidebar, list rows and buttons.
+
+⛔ **The flat strip that pins this dock's encoding byte for byte is blind to it**: every field of a
+flat strip carries an all-zero payload, so both orders produce the identical 54 bytes. That is why
+`DLM_FLAT_STRIP` never caught it, and why a gradient strip is now pinned alongside.
+
+⛔ **Retract "the residue is a position-dependent ceiling."** The ceilings were never involved. So
+is "whole strips are 81%": with the order corrected there is no residue at all.
+
+Ridge and the DL7400 group their payload after the terminator and are untouched; their byte-exact
+tests still pass. Tools: `tools/codec/ella_decode.py` (the grammar as a decoder plus a whole-corpus
+check -- anything short of 100% is a hole), `tools/render-dc.py` (the pixel oracle).
+
 ## Next, in priority order
 
 **Refreshed 2026-08-12.** Items 1 and 2 of the old list below are done and confirmed on hardware;
@@ -1089,10 +1121,7 @@ the prologue placement is implemented and awaiting a run.
    change this without a capture of the vendor driving a one-monitor dock.
 3. **The vendor's `aux=0x000a len=60` record before the engages** (its #43) has no counterpart in
    vino. Shape says status poll; low value until the above is settled.
-4. **Close the last 19% of the strip grammar.** Desk exercise, no dock. The main section is 100%
-   and whole strips are 81%; the residue is in the AC section and is not the category ceilings.
-   Needs the pixel decoder (`tools/render-dc.py` extended through the AC section) checked against a
-   rendered reference -- the landing oracle is exhausted.
+4. ✅ **The strip grammar is closed** -- 100% of captured strips decode. See the block above.
 5. Only then: test the firmware downgrade with the 11.2.45 image.
 
 ### The older list, kept for the items still open
