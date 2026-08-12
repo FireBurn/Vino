@@ -94,6 +94,30 @@ fi
 systemctl mask displaylink-driver.service >/dev/null 2>&1
 say "displaylink-driver.service masked -- DLM cannot see the device until we say so"
 
+# vino binds DisplayLink hardware by INTERFACE now, with the product id wildcarded, so it claims a
+# dock nobody has driven -- and on the DFU interface its probe writes the packaged firmware to any
+# dock reporting an older version. Either outcome spends the first contact: a race with DLM for
+# interface 0, or a flash that never reaches this capture at all.
+if lsmod | grep -q '^vino '; then
+  warn "vino is LOADED and binds every 17e9 DL3 interface (product id wildcarded)."
+  warn "It will race DLM for the new dock, and its DFU probe may flash it before DLM ever sees it."
+  if modprobe -r vino 2>/dev/null; then
+    say "unloaded vino"
+  else
+    warn "could not unload vino -- it is still bound to something. Unplug the known dock first."
+    read -rp "   continue anyway? [y/N] " a
+    [ "$a" = y ] || die "stopped: unplug the other dock, then 'sudo modprobe -r vino' and re-run"
+  fi
+fi
+if ls /lib/firmware/vino/*-release.spkg >/dev/null 2>&1; then
+  warn "packaged firmware is installed at /lib/firmware/vino/. If vino is loaded again during this"
+  warn "run it will flash the dock on probe. Hold the images back first:"
+  warn "   sudo mkdir -p /lib/firmware/vino/held-back"
+  warn "   sudo mv /lib/firmware/vino/*-release.spkg /lib/firmware/vino/held-back/"
+  read -rp "   continue anyway? [y/N] " a
+  [ "$a" = y ] || die "stopped at your request"
+fi
+
 AVAIL=$(df -BG --output=avail "$OUT" | tail -1 | tr -dc '0-9')
 [ "${AVAIL:-0}" -ge 10 ] || die "only ${AVAIL}G free at $OUT"
 say "${AVAIL}G free"
@@ -117,8 +141,17 @@ if [ "$(count_dev)" -gt 0 ]; then
   snap_ids | sed 's/^/     /'
   warn "for the cleanest capture, unplug everything DisplayLink except the new dock."
   warn "in particular unplug the D6000: it is already up to date, and its traffic is noise here."
-  read -rp "   continue anyway? [y/N] " a
-  [ "$a" = y ] || die "unplug and re-run"
+  # Without a terminal there is nobody to answer, and defaulting to "no" turns an advisory into an
+  # abort. Wait for the device to be removed instead, which is what the answer would have asked for.
+  if [ -t 0 ]; then
+    read -rp "   continue anyway? [y/N] " a
+    [ "$a" = y ] || die "unplug and re-run"
+  else
+    warn "no terminal to ask: waiting up to 300s for the device to be unplugged"
+    for _ in $(seq 1 300); do [ "$(count_dev)" -eq 0 ] && break; sleep 1; done
+    [ "$(count_dev)" -eq 0 ] && say "device removed; continuing" \
+      || die "device still attached after 300s -- unplug it and re-run"
+  fi
 fi
 
 
@@ -166,8 +199,20 @@ EOF
   for _ in $(seq 1 300); do [ "$(count_dev)" -eq 0 ] && break; sleep 1; done
   [ "$(count_dev)" -eq 0 ] && say "dock removed" || warn "still present; continuing anyway"
 else
-  warn "no prescan: recording usbmon0 (all buses) only, and there will be no before-state to diff"
-  : > "$OUT/before-ids.txt"
+  # A before-state taken by an earlier phase is still a before-state: only create the file when
+  # there is not one already, so --no-prescan can be used after a separate descriptor pass rather
+  # than costing the run its firmware diff.
+  if [ -s "$OUT/before-ids.txt" ]; then
+    say "no prescan, but a before-state is already present:"
+    sed 's/^/   /' "$OUT/before-ids.txt"
+  else
+    warn "no prescan: there will be no before-state to diff, so a flash cannot be proven from ids"
+    : > "$OUT/before-ids.txt"
+  fi
+  # The device is not attached now, so its bus cannot be read from sysfs. FC_BUSES lets a caller
+  # that already knows it add the per-bus recorder next to the all-bus one.
+  BUSES="${FC_BUSES:-}"
+  [ -n "$BUSES" ] && say "bus(es) from FC_BUSES: $BUSES"
   dmesg > "$OUT/before-dmesg.txt" 2>&1
 fi
 
@@ -226,12 +271,31 @@ modprobe evdi 2>/dev/null && say "evdi loaded (DLM does nothing without it)" \
 
 # ============================================================ 3. DLM, then frida, with NO device
 big "STARTING DLM WITH NO DEVICE ATTACHED"
-systemctl unmask displaylink-driver.service >/dev/null 2>&1
-systemctl start displaylink-driver.service || warn "displaylink-driver.service failed to start"
+# Run DLM BY HAND, with the unit left masked.
+#
+# /lib/udev/rules.d/99-displaylink.rules runs /opt/displaylink/udev.sh on every add/remove of a
+# 17e9 DL3 interface, and that bounces displaylink-driver.service. Under systemd the dock plug --
+# the one event this whole capture exists for -- therefore RESTARTS DLM a few seconds later, and
+# the frida hook bound to the old pid records nothing for the new session while still looking
+# healthy. That is exactly what happened on 2026-08-01: the flash was caught, keys.log came back
+# EMPTY, and the journal shows Stopping/Started 42 s after the attach.
+systemctl mask displaylink-driver.service >/dev/null 2>&1
+systemctl stop displaylink-driver.service >/dev/null 2>&1
+pkill -f '[D]isplayLinkManager' 2>/dev/null; sleep 1
+( cd /opt/displaylink && exec ./DisplayLinkManager ) > "$OUT/dlm.stdout.log" 2>&1 &
+DLMPID=$!
 date +%s.%N > "$OUT/dlm-start-epoch.txt"
-sleep 8
-pgrep -f '[D]isplayLinkManager' >/dev/null && say "DLM is running (pid $(pgrep -f '[D]isplayLinkManager' | head -1))" \
-  || warn "no DisplayLinkManager process -- check journalctl -u displaylink-driver.service"
+for _ in $(seq 1 30); do
+  kill -0 $DLMPID 2>/dev/null && pgrep -f '[D]isplayLinkManager' >/dev/null && break
+  sleep 0.5
+done
+if pgrep -f '[D]isplayLinkManager' >/dev/null; then
+  say "DLM running by hand (pid $DLMPID), unit masked so udev cannot restart it"
+else
+  cat "$OUT/dlm.stdout.log"
+  warn "DisplayLinkManager did not start -- see $OUT/dlm.stdout.log"
+fi
+sleep 5
 
 FRIDA=""
 if [ "$USE_FRIDA" = 1 ]; then
@@ -273,8 +337,10 @@ cat <<'EOF'
   says so in magenta and keeps reporting how much of the image it has seen. Long quiet stretches
   are normal: the enforcer verifies, flashes, resets the device, and verifies again.
 
-  fw-watch.py is now in the foreground. Press Ctrl-C ONCE when you are ready to stop; it exits
-  cleanly, and this script refuses to finish while the wire is still busy.
+  fw-watch.py is now in the foreground. YOU DO NOT HAVE TO WATCH THE CLOCK: once the image is
+  manifested it counts down 45 s of DFU silence and stops by itself, printing "the flash is
+  COMPLETE". A second image restarts that wait. Press Ctrl-C ONCE only if you want to stop
+  early; it exits cleanly, and this script refuses to finish while the wire is still busy.
 EOF
 sleep 2
 
@@ -294,8 +360,18 @@ busy_check() {
   a=$(stat -c%s "$f"); sleep 4; b=$(stat -c%s "$f")
   [ $((b - a)) -gt 200000 ]
 }
+# Bounded: a dock that has come up with a panel attached moves this much continuously, and an
+# unbounded loop would then never let the script finish.
+BUSY_WAITS=0
 while busy_check; do
-  warn "the wire is still MOVING (>200 KB in 4 s). Not stopping -- this could be the flash."
+  BUSY_WAITS=$((BUSY_WAITS + 1))
+  warn "the wire is still MOVING (>200 KB in 4 s). Not stopping -- this could be the flash. [$BUSY_WAITS/45]"
+  if [ "$BUSY_WAITS" -ge 45 ]; then
+    warn "three minutes of continuous traffic with no DFU activity: that is video, not a flash."
+    warn "proceeding to stop. If a flash IS running, Ctrl-C now and let it finish."
+    sleep 5
+    break
+  fi
 done
 if [ "$ELAPSED" -lt "$MIN_SECS" ] && [ ! -s "$OUT/flash-events.txt" ]; then
   warn "stopped after ${ELAPSED}s with no firmware detected, and a flash can take minutes."
@@ -310,7 +386,19 @@ fi
 
 # ============================================================ 6. stop and snapshot
 say "stopping recorders"
-[ -n "$FRIDA" ] && { kill -INT "$FRIDA" 2>/dev/null; wait "$FRIDA" 2>/dev/null; }
+# The key extractor was started with --secs covering the whole window, so a bare `wait` blocks
+# until that timer expires even though the capture is finished -- minutes of apparently hung
+# script after Ctrl-C. Ask it to stop, give it a few seconds to write keys-raw.json, then insist.
+if [ -n "$FRIDA" ]; then
+  kill -INT "$FRIDA" 2>/dev/null
+  for _ in $(seq 1 20); do kill -0 "$FRIDA" 2>/dev/null || break; sleep 0.5; done
+  if kill -0 "$FRIDA" 2>/dev/null; then
+    warn "key extractor did not exit on SIGINT after 10 s; terminating it"
+    kill -TERM "$FRIDA" 2>/dev/null; sleep 2
+    kill -0 "$FRIDA" 2>/dev/null && kill -KILL "$FRIDA" 2>/dev/null
+  fi
+  wait "$FRIDA" 2>/dev/null
+fi
 for p in "${PIDS[@]}"; do kill -TERM "$p" 2>/dev/null; done
 sleep 2
 for p in "${PIDS[@]}"; do kill -0 "$p" 2>/dev/null && kill -KILL "$p" 2>/dev/null; done
@@ -367,9 +455,23 @@ say "=== offline confirmation ==="
 
 echo
 say "capture complete: $OUT"; du -sh "$OUT"
+
+# Keys are bound to the pid frida attached to. If DLM was replaced mid-run, everything sealed in
+# this capture is unreadable and it is much cheaper to learn that now than during analysis.
 echo
-say "DLM is LEFT RUNNING for the protocol captures that follow."
-say "back to vino work:  sudo systemctl stop displaylink-driver.service && sudo systemctl mask displaylink-driver.service"
+NOWPID=$(pgrep -f '[D]isplayLinkManager' | head -1)
+if [ -n "${DLMPID:-}" ] && [ -n "$NOWPID" ] && [ "$NOWPID" != "$DLMPID" ]; then
+  warn "DLM pid changed $DLMPID -> $NOWPID: it was restarted during the run, so any keys belong"
+  warn "  to a session the wire does not contain. The WIRE is still good (the .spkg payload key is"
+  warn "  dock-side, so the image is recognisable unkeyed), but sealed CP frames will not decrypt."
+elif [ -s "$OUT/keys-raw.json" ]; then
+  say "DLM pid stable at ${DLMPID:-?} for the whole run -- keys and wire are from one session"
+else
+  warn "no keys captured (keys-raw.json empty). Wire-only: fine for the flash, not for CP frames."
+fi
+echo
+say "DLM is LEFT RUNNING (by hand, unit masked) for the protocol captures that follow."
+say "back to vino work:  sudo pkill -f DisplayLinkManager"
 say "NEXT: attach monitors, then"
 say "  sudo tools/capture/capture-newdevice.sh  ~/dlcap-keyed     # protocol + feature choreography"
 say "  sudo tools/capture/capture-modematrix.sh ~/dlcap-modes     # off42 / off66 / off72"

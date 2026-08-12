@@ -114,6 +114,9 @@ def main():
     ap.add_argument("--vid", default="17e9")
     ap.add_argument("--events", default=None, help="append flash events here (default <out>.events)")
     ap.add_argument("--interval", type=float, default=3.0, help="live report period")
+    ap.add_argument("--settle", type=float, default=45.0,
+                    help="after manifestation, seconds of DFU silence before concluding the flash "
+                         "is over and exiting (0 disables the auto-stop)")
     args = ap.parse_args()
 
     ev_path = args.events or (args.out + ".events")
@@ -161,6 +164,13 @@ def main():
     signal.signal(signal.SIGINT, on_sig)
     signal.signal(signal.SIGTERM, on_sig)
 
+    # A flash ends with a zero-length DFU_DNLOAD (manifestation), after which the device resets and
+    # re-enumerates, and the enforcer may verify -- or start a second image -- once it is back. So
+    # manifestation alone is not the end; DFU silence after it is. Waiting out the full --secs
+    # instead means sitting in front of a finished capture with no way to tell it is finished,
+    # which is what happened on the first run of this script.
+    manifested = False
+    last_dfu = None            # monotonic time of the last DFU request or image-matching payload
     end = time.monotonic() + args.secs
     last_report = 0.0
     last_traffic = time.monotonic()
@@ -171,6 +181,14 @@ def main():
         while not stop and time.monotonic() < end:
             r, _, _ = select.select([fd], [], [], 0.25)
             now = time.monotonic()
+            # The flash is over when the image has been manifested and the DFU interface has gone
+            # quiet for --settle. Stop then, rather than holding the desk hostage until --secs.
+            if manifested and args.settle > 0 and last_dfu is not None \
+                    and now - last_dfu >= args.settle:
+                event(f"no DFU activity for {args.settle:.0f}s after manifestation: the flash is "
+                      f"COMPLETE. Stopping.")
+                stop = True
+                continue
             if now - last_report >= args.interval:
                 last_report = now
                 total = sum(v[1] for v in counts.values())
@@ -178,6 +196,9 @@ def main():
                 bits = " ".join(f"{b}.{d}/ep{e:02x}={fmt(v[1])}" for (b, d, e), v in top)
                 quiet = now - last_traffic
                 dfu = f"  DFU dnload={dfu_counts.get('DNLOAD', 0)} ({fmt(dfu_bytes)})" if dfu_counts else ""
+                if manifested and args.settle > 0 and last_dfu is not None:
+                    left = max(0.0, args.settle - (now - last_dfu))
+                    dfu += f"  MANIFESTED, finishing in {left:3.0f}s"
                 print(f"\r\033[K  {frames:>7} frames  {fmt(total):>10}  quiet {quiet:4.0f}s{dfu}  {bits}",
                       end="", flush=True)
             if fd not in r:
@@ -211,6 +232,7 @@ def main():
             if hdr.xfer == 2 and hdr.type == ord('S'):
                 d = is_dfu(setup)
                 if d:
+                    last_dfu = time.monotonic()
                     first = d["req"] not in dfu_counts
                     dfu_counts[d["req"]] = dfu_counts.get(d["req"], 0) + 1
                     if d["req"] == "DNLOAD":
@@ -226,8 +248,12 @@ def main():
                     elif d["req"] == "DNLOAD" and dfu_counts["DNLOAD"] % 16 == 0:
                         event(f"DFU_DNLOAD block {d['wValue']}, {fmt(dfu_bytes)} written so far")
                     if d["req"] == "DNLOAD" and d["wLength"] == 0 and dfu_counts["DNLOAD"] > 1:
+                        manifested = True
                         event("zero-length DFU_DNLOAD = end of image, manifestation phase. "
                               "The device will reset itself. STILL DO NOT UNPLUG.")
+                        if args.settle > 0:
+                            event(f"will stop automatically after {args.settle:.0f}s of DFU "
+                                  f"silence; a second image restarts the wait.")
 
             if store >= WINDOW:
                 if not seen_magic and b"ELLA" in data:
@@ -242,6 +268,7 @@ def main():
                             break
                     if hit:
                         name, imgoff = hit
+                        last_dfu = time.monotonic()
                         first = name not in matched
                         matched[name] = matched.get(name, 0) + int(hdr.len_urb)
                         if first:

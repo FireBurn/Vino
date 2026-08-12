@@ -15,6 +15,7 @@ become mixed with kernel API design or build instructions.
 | [`adding-a-device.md`](adding-a-device.md) | **★ Start here for new hardware**: why product IDs are not how devices are identified, what the identity descriptor is, and what to send instead of a patch |
 | [`new-device-capture.md`](new-device-capture.md) | Onboarding DisplayLink hardware vino cannot yet drive: descriptor triage, the gen-1 `init_4` divergence, and a capture procedure built to record a firmware update |
 | [`new-device-day.md`](new-device-day.md) | **★ Runbook for the WAVLINK DL7400 (Navarro / DL-7000)**: the DFU shape predicted from descriptors, phase-by-phase commands, and what each capture closes |
+| [`new-device-day-ella.md`](new-device-day-ella.md) | **★ Runbook for the HP 3005pr (Ella / DL-3900)**: disarming vino's auto-flash, the one-shot pre-flash session against the archived 2014 implementation, then DLM's first contact and the `DockProfile` a third generation needs |
 | [`hdr.md`](hdr.md) | HDR/deep colour: the shared `NM30`/`YU10`/`FP16` format enum found in all three host binaries, the BT.2020 conversion path, and what vino would need |
 | [`reverse-engineering.md`](reverse-engineering.md) | Evidence policy, capture method, independent oracles, and adding findings |
 | [`navarro.md`](navarro.md) | **★ DL-7000 / DL7400 vs Ridge**: two video endpoints, no per-head HDCP auth, plaintext AKE framing, and the video stream-open sequence that Ridge's arm replaces |

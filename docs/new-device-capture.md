@@ -199,6 +199,20 @@ EOF
 
 then **reboot**, or unplug/replug the device, so nothing is still holding it.
 
+⛔ **If you have vino installed, hold its firmware images back before the device is ever plugged
+in.** vino binds DisplayLink hardware by interface — the product id is wildcarded — and on the DFU
+interface its probe writes the packaged image whenever the dock reports an older one. A dock that
+has been in a drawer for years always reports an older one, so **vino flashes it on enumeration**,
+before DLM sees it and with no upload path to restore from:
+
+```bash
+sudo mkdir -p /lib/firmware/vino/held-back
+sudo mv /lib/firmware/vino/*-release.spkg /lib/firmware/vino/held-back/
+```
+
+Probe then logs `no vino/<platform>-release.spkg available; leaving the dock on <version>` and
+touches nothing. Put them back when the capture work is done.
+
 **Disk.** A whole-bus capture also records video traffic if a panel lights up — hundreds of MB per
 minute at speed. Have a few GB free, or pass `-b filesize:200000` to `dumpcap` for a 200 MB ring.
 

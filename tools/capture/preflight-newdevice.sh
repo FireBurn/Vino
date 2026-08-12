@@ -102,8 +102,9 @@ if ls /opt/displaylink/*-release.spkg >/dev/null 2>&1; then
     cn=$(strings -n 8 "$f" | grep -E '^[A-Z][a-zA-Z]{3,10}Doc.*OW$|OW$' | head -1)
     printf '        %-34s %8s B  %-11s %s %s\n' "$(basename "$f")" "$(stat -c%s "$f")" "${cn:-?}" "${id:-?}" "${dt:-?}"
   done
-  ok "4 platform images present; a DL-7400 dock is the NAVARRO platform (identity blob tail \"NavaDock\")"
-  ok "navarro is the only image still iterating upstream => highest chance of a flash on first contact"
+  ok "$(ls /opt/displaylink/*-release.spkg | wc -l) platform images present; the dock's identity blob tail names which one targets it"
+  ok "  (RidgeDoc = D6000, NavaDock = DL-7400, EllaDock = DL-3x00, FflyMoni = monitor)"
+  ok "the enforcer flashes on a version MISMATCH, so any dock older than the date above is a candidate"
 else
   bad "no *-release.spkg under /opt/displaylink — nothing to compare wire bytes against"
 fi
@@ -136,10 +137,66 @@ elif [ "$FIX" = 1 ]; then
 else
   wrn "no udl/udlfb blacklist. --fix writes $BL"
 fi
-# vino matches ONE exact id, so it cannot bind an unfamiliar device -- state that rather than
-# leaving it as a worry on the day.
+# vino used to match two exact product ids and so could not touch an unfamiliar dock. It now binds
+# the FUNCTION -- interface class ff/00/03, plus the DFU interface -- with the product id wildcarded,
+# so it claims every DisplayLink dock including one nobody has driven. Read the alias rather than
+# trusting either statement: this check has been wrong before precisely because it was a claim about
+# the driver instead of a measurement of it.
+VINO_GENERIC=0
+if modinfo -F alias vino 2>/dev/null | grep -q '^usb:v17E9p\*'; then
+  VINO_GENERIC=1
+fi
+# A blacklist stops the modalias autoload an unfamiliar dock would otherwise trigger, while leaving
+# an explicit `modprobe vino` working -- which is what the "let vino try" step needs. Prove it by
+# resolving the alias rather than trusting the file's contents.
+if [ "$VINO_GENERIC" = 1 ]; then
+  VINO_ALIAS='usb:v17E9p4306d0257dc00dsc00dp00icFFisc00ip03in00'
+  if modprobe -n -v "$VINO_ALIAS" 2>/dev/null | grep -q 'vino\.ko'; then
+    if [ "$FIX" = 1 ]; then
+      grep -q '^blacklist vino$' "$BL" 2>/dev/null || printf 'blacklist vino\n' >> "$BL"
+      depmod -a 2>/dev/null
+      ok "blacklisted vino in $BL — it can no longer autoload when the dock is plugged in"
+    else
+      bad "vino AUTOLOADS on any 17e9 DL3 interface. Plugging the dock in binds it with no warning."
+      bad "  Fix: echo 'blacklist vino' | sudo tee -a $BL   (or --fix). An explicit modprobe still works."
+    fi
+  else
+    ok "vino does not autoload for a DL3 display interface (blacklisted)"
+  fi
+fi
+# The DFU bind is the dangerous half: probe reads the identity descriptor and, if a packaged image
+# for that family is present and newer, writes it. The dock's DFU interface does not support upload,
+# so there is no way back and the pre-flash firmware is gone. A vintage dock is ALWAYS older than the
+# packaged image, so this is not a hypothetical.
+VINO_FW=$(ls /lib/firmware/vino/*-release.spkg 2>/dev/null | wc -l)
+if [ "$VINO_GENERIC" = 1 ] && [ "$VINO_FW" -gt 0 ]; then
+  if [ "$FIX" = 1 ]; then
+    mkdir -p /lib/firmware/vino/held-back
+    mv /lib/firmware/vino/*-release.spkg /lib/firmware/vino/held-back/ 2>/dev/null
+    ok "moved $VINO_FW packaged image(s) to /lib/firmware/vino/held-back/ — vino can no longer"
+    ok "  auto-flash on probe. Restore with: sudo mv /lib/firmware/vino/held-back/*.spkg /lib/firmware/vino/"
+  else
+    bad "vino binds 17e9 by INTERFACE (product id wildcarded) and $VINO_FW packaged image(s) are in"
+    bad "  /lib/firmware/vino/. Plugging the dock in makes VINO flash it on probe, before DLM ever"
+    bad "  sees it: the first contact is spent, the pre-flash firmware is unrecoverable (DFU has no"
+    bad "  upload), and the flash runs through a path never exercised on this dock family."
+    bad "  Fix: sudo mv /lib/firmware/vino/*-release.spkg /lib/firmware/vino/held-back/   (or --fix)"
+  fi
+elif [ "$VINO_GENERIC" = 1 ]; then
+  ok "vino binds by interface, but no packaged image is installed — probe cannot flash"
+else
+  ok "vino matches exact product ids only — it cannot claim an unfamiliar dock"
+fi
+# Even with flashing disarmed, a bound vino owns the display function and races DLM for it, which
+# is the same fault the udl blacklist exists to prevent.
 if lsmod | grep -q '^vino '; then
-  ok "vino loaded (refcnt $(cat /sys/module/vino/refcnt 2>/dev/null)) — its id table is 17e9:6006 ONLY, so it cannot claim the new dock"
+  if [ "$VINO_GENERIC" = 1 ]; then
+    wrn "vino is LOADED (refcnt $(cat /sys/module/vino/refcnt 2>/dev/null)) and will bind the new dock's"
+    wrn "  display function, racing DLM. Unplug the known dock and 'sudo modprobe -r vino' before"
+    wrn "  first contact; capture-firstcontact.sh will not do it for you."
+  else
+    ok "vino loaded (refcnt $(cat /sys/module/vino/refcnt 2>/dev/null)) — exact-id table, no race"
+  fi
 else
   ok "vino not loaded"
 fi
