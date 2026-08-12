@@ -24,7 +24,7 @@ become mixed with kernel API design or build instructions.
 | [`revdi-chimera.md`](revdi-chimera.md) | Revdi ABI compatibility, Chimera data flow, and its DLM-shaped damage path |
 | [`upstream.md`](upstream.md) | Current bases, v1/v2 feedback disposition, authorship, and subsystem ownership |
 | [`testing.md`](testing.md) | Build-only validation, patch reproduction, examples, and hardware test boundary |
-| [`handover.md`](handover.md) | **★ Current state and what is open** — the single live handover, replacing the dated ones |
+| [`handover.md`](handover.md) | **★ START HERE: current state and what is open** — the single live handover, with the run procedure, the offline oracles, and the settled-do-not-re-chase list |
 
 The kernel-facing user documentation is also present in
 `linux/Documentation/gpu/vino.rst`. It intentionally documents the supported
