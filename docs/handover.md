@@ -63,6 +63,49 @@ prologue names neither and no longer consumes a slot. Pinned by
 ⭐ Also removed en route: `colour_frame_ep08*` returned `seq0 + 1` alongside its records and
 nobody needed it. Two owners of one counter is what let this drift; there is now one.
 
+### 3. ⭐⭐⭐ The second head's setup burst stopped three messages in
+
+Found by aligning both bring-ups record for record from byte zero on shape alone -- record class,
+`sub`, `aux`, length -- which needs no keys, because a sealed record's shape is as fixed as its
+contents. `tools/capture/sequence-diff.py` does it in one command and exits non-zero:
+
+```
+ #31   CP sub=0x24 aux=0x0004 len=188   |  CP sub=0x24 aux=0x0004 len=188    <- both heads' AKE_No_Stored_km
+*#32   CP sub=0x24 aux=0x000c len=76    |  CP sub=0x24 aux=0x0009 len=60     <- vendor: LC_Init.  vino: EDID probe
+```
+
+Thirty-two records agree exactly, covering the whole plaintext burst and **head 0's complete
+nine-message block plus its stream announce**. Then head 1's block simply stops after
+`AKE_No_Stored_km`. The vendor sends all nine per-head messages for both connectors; vino sent
+three for the second, skipping `LC_Init`, **the key exchange that gives the dock a key for that
+head's content stream**, `LC_Send_L_prime`, the stream restatement, the stream announce and both
+stream-open control messages.
+
+⭐ **On the head that has the monitor.** Socket 2 is head 1; socket 1 is empty. The empty head
+completed its burst and the occupied one did not, which is what makes this a timing fault rather
+than a presence one.
+
+Two causes, one each side of the same decision, both fixed:
+
+- **The rrx was sampled, not waited for.** `i >= 3 && !rrx_applied` declares a head sink-less on
+  whatever a fixed 10 ms `drain_ep84` happened to see, so a receiver answering a little late reads
+  as no receiver at all. Now `wait_perhead_push(AKE_SEND_RRX, 30 ms)` -- which the four-connector
+  path has always used, and which the surrounding code already uses for H', L' and Stream_Ready.
+- **Naming a head's content stream is not part of authenticating it.** A dock whose video shares
+  the control pipe has no video endpoint to open a stream on afterwards, so a head skipped here
+  could never be driven at all -- and that is exactly the head a monitor plugged in later arrives
+  on. Both exits now go through `announce_stream`, a no-op on a dock that carries its announcement
+  ahead of the first frame instead.
+
+⚠ Only the second is certain to be right. The first is well motivated -- it makes the two platforms
+agree and only lengthens a wait that currently ends in abandoning the head -- but whether 30 ms is
+enough is a hardware question. If a head still reports `no downstream sink`, that is where to look,
+and the announce means the stream is named either way.
+
+⛔ **This supersedes the note below** claiming the setup burst opens both heads' streams correctly.
+The sealed stream *open* and the plane announce were fixed; the stream *announce* was not, and the
+key exchange behind it was never sent at all.
+
 ### Where the dock actually stops, on the wire
 
 `~/vinocap/run14.pcapng`, EP02, one continuous stream:
