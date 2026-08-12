@@ -1151,6 +1151,34 @@ twice before the failure that caused it could be read, and it keeps writing to a
 already stopped listening -- a plausible route from the recoverable soft wedge to the hard one.
 Bounded by `KMS_RETRY_LIMIT`, reset whenever a batch gets through.
 
+## ⛔⛔ A held guard is not a re-entrant lock -- and it takes USB hotplug with it
+
+Introduced and fixed in the same session, worth writing down because the symptom points at the
+dock and not at the driver. `kms_worker` already holds `pending_kms` when it decides to drop the
+batch:
+
+```rust
+let mut pending = data.pending_kms.lock();
+...
+data.pending_kms.lock().clear();   // the guard above is still alive
+```
+
+The kernel names it exactly -- `task kworker/4:0 is blocked on a mutex likely owned by task
+kworker/4:0` -- but only after `hung_task_timeout_secs`, two minutes later. Before that the machine
+just looks like it has a dying dock:
+
+```
+kworker/4:0+events     D   <- the KMS worker, holding vino's state
+kworker/5:2+usb_hub_wq D   <- everything USB behind it
+sh                     D   <- an unbind that will never return
+```
+
+⚠ **`usb_hub_wq` in D state means every enumeration on the machine fails**, so the dock reads as
+`device not accepting address N, error -71 / unable to enumerate USB device` -- indistinguishable
+from the dock's own hard wedge. Two physical power cycles were spent on this before the hung-task
+report appeared. **Check `ps -eo pid,stat,comm | awk '$2 ~ /D/'` before concluding the dock is
+dead**, and `cat /proc/<pid>/stack` to name the offender. Nothing but a reboot clears it.
+
 ## ⛔ A replug is spent before you can use it -- hold vino off first
 
 **vino autoloads by modalias**, so the moment the dock is replugged it binds, runs a bring-up, fails
