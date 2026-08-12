@@ -155,10 +155,37 @@ the ring was one ahead and the second head had no video key at all, so "neutral"
 precondition the note attached to it -- "do not land this until the ring off-by-one has had a clean
 run" -- is now met.
 
-⭐ **Get a keyed capture before changing it.** vino's markers cannot be read off the wire without
-`trace_crypto=1`, and the vendor's decrypted sequence is per-head (`2e(1,3) 2f(0,1) 2e(0,0)`), so
-which head each of vino's six markers names is unknown. `record-stream.py` with the disclosed keys
-turns the next change from a guess into a diff, which is what produced both of today's fixes.
+⛔ **A keyed capture turned out not to be needed.** The vendor's marker sequence was already
+decrypted in a previous session and is quoted below; vino's is fixed in source. Lining the two up
+on the **driven head alone** closes it:
+
+```
+DLM, head 0:   2f(0,1)  2e(0,3)  2f(0,1)  2e(0,0)  | prologue |  2f(0,1)  2e(0,0)  strips
+vino, head H:  2f(H,1)  2e(H,3)  2f(H,1)  2e(H,0)     2f(H,1)     2e(H,0)  | prologue + strips |
+               +5       +9       +12      +14         +20         +26
+```
+
+The same six markers at the same offsets. The only difference is that the prologue comes after all
+of them. The other-head markers in the vendor's stream (`2f(1,1)`, `2e(1,3)`) bracket the head vino
+is not driving, and account for the wire's 5-before/3-after count against the driven head's
+4-before/2-after.
+
+✅ **Implemented.** `send_stream_prologue` writes the ring descriptor and the decoder configuration
+on the control pipe between the fourth marker and the fifth, so the closing `2e(head, 0)` is the
+last thing the dock sees before pixels. `build_stream_prefix_buf` yields nothing for this
+generation -- its prologue is not owed to the frame -- while Ridge and the DL7400 keep theirs with
+the first frame, which is where their own captures put it.
+
+⭐ Whether a presentation opens the generation was being inferred from whether the prefix buffer
+happened to be non-empty, which is exactly the coupling that breaks when a generation's prologue
+moves. It is now stated directly: the frame that opens a generation is the first presentation of a
+startup submission, whatever bytes it carries.
+
+⚠ **HW-unvalidated**, module `43b6288422a0`, selftests `pass:70 fail:0`. On the next run check, in
+order: `stream prologue sent inside the bracket (380 B)` in dmesg; `sequence-diff.py` agreeing past
+record 43; and whether the dock takes the records that follow the first frame. This is the only
+unvalidated change in the tree -- both of the day's earlier fixes are confirmed -- so a bad result
+is attributable.
 
 ### Where the dock actually stops, on the wire
 
@@ -1049,6 +1076,27 @@ Implemented and cross-verified, **not tested on hardware**:
 ---
 
 ## Next, in priority order
+
+**Refreshed 2026-08-12.** Items 1 and 2 of the old list below are done and confirmed on hardware;
+the prologue placement is implemented and awaiting a run.
+
+1. ⭐ **Run the current build.** One power cycle, one bring-up, `debug=1`, usbmon from before the
+   bind. Then `sequence-diff.py`, `ring-openers.py`, `stall-point.py` -- in that order, they take
+   about a minute and each answers a different question.
+2. **Two set-modes, or one?** The vendor sends `0x48/0x22` for **both** heads before any pixels;
+   vino sends one, because only the socket that returned an EDID is engaged. ⚠ The vendor's capture
+   had a monitor on both sockets, so it does **not** establish what an empty socket wants. Do not
+   change this without a capture of the vendor driving a one-monitor dock.
+3. **The vendor's `aux=0x000a len=60` record before the engages** (its #43) has no counterpart in
+   vino. Shape says status poll; low value until the above is settled.
+4. **Close the last 19% of the strip grammar.** Desk exercise, no dock. The main section is 100%
+   and whole strips are 81%; the residue is in the AC section and is not the category ceilings.
+   Needs the pixel decoder (`tools/render-dc.py` extended through the AC section) checked against a
+   rendered reference -- the landing oracle is exhausted.
+5. Only then: test the firmware downgrade with the 11.2.45 image.
+
+### The older list, kept for the items still open
+
 
 1. ⭐ **Re-test the ring off-by-one fix on an idle machine.** It makes vino's first opener match
    DLM's (`seq0 = 0`, slot 0) instead of contradicting its own ring descriptor, and it has never had
