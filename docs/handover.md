@@ -1107,6 +1107,50 @@ Ridge and the DL7400 group their payload after the terminator and are untouched;
 tests still pass. Tools: `tools/codec/ella_decode.py` (the grammar as a decoder plus a whole-corpus
 check -- anything short of 100% is a hole), `tools/render-dc.py` (the pixel oracle).
 
+## ★★★★★ 2026-08-12 late: THE MODE SET SUCCEEDS AND A REAL KEYFRAME IS REACHED
+
+`~/vinocap/run23.pcapng`, with the post-close markers removed:
+
+```
+encrypted control setup complete (33 messages)
+socket 2 monitor connected
+link ready after 81 status polls
+head=1 stream prologue sent inside the bracket (384 B)
+head 1 startup frame submitted after 0 ms (114720 bytes)
+head=1 chunks=105 first=1524320 presentations=1 records=432
+```
+
+⭐ **`socket 2 left open after a failed mode set` is gone.** The session survives the carrier, and
+for the first time the driver builds and submits a real 1.5 MB KWin desktop keyframe on this dock.
+The failure moved again: the dock consumes the **whole** carrier and then never completes the
+transfer that carries the next frame's opener (`stall-point.py`: earliest outstanding transfer at
+offset 124,608, which is that opener). The ring walk is `(0,1,1) (1,2,2)` -- the vendor's.
+
+### ⭐⭐ Why it stops there: the vendor ramps, and vino did not
+
+Frame sizes measured between consecutive openers on a fresh vendor stream:
+
+```
+head 1:  114768  114768  114832  114768  837840  115024  1882128 ...
+head 0:  361328  361568  361376  361376  361424      48   361472 ...
+```
+
+⭐ **The head that goes on to send the whole surface in detail is fed five flat frames first** --
+the prologue carrier and four more. vino sent one and then a megabyte and a half.
+
+⛔ **This corrects "a stream opens with exactly one flat frame and then goes to content"**, which
+was read off head 0: its first content frame is 361 kB, a third of the size, and it really does go
+straight to it. `carrier_presentations` is now `CARRIER_RAMP_FRAMES = 5`. ⚠ HW-untested -- the dock
+wedged before it could run.
+
+### ⭐ The retry storm, which was also destroying the evidence
+
+A KMS command that fails because the dock stopped answering was re-queued every 50 ms forever. On a
+dead session that is a reprogramming attempt twenty times a second: it filled the kernel ring buffer
+twice before the failure that caused it could be read, and it keeps writing to a dock that has
+already stopped listening -- a plausible route from the recoverable soft wedge to the hard one.
+Bounded by `KMS_RETRY_LIMIT`, reset whenever a batch gets through.
+
 ## ⛔ A replug is spent before you can use it -- hold vino off first
 
 **vino autoloads by modalias**, so the moment the dock is replugged it binds, runs a bring-up, fails
