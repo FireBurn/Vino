@@ -25,6 +25,16 @@
 const FILL_RNG = 0x28cb00;
 const SEEDER = 0x305fc0;
 
+// DLM carries its own CSPRNG -- an mbedTLS CTR_DRBG -- which is why no libc generator is ever
+// called for a token. These are its reseed/generate entry points, pinned by a cold-plug trace that
+// decrypted a real msg0 and matched its ten-byte token to the first ten bytes of the AES output
+// here. The libuuid `getrandom` calls that a syscall trace shows are this DRBG's entropy source,
+// not something unrelated.
+//
+// The AES-ECB core (0x269dd0) and the CP cipher loop (0x1cf436) sit under these and are far too
+// hot to hook -- doing so stalls DLM into a watchdog restart. Hook the DRBG, never the cipher.
+const DRBG = { "drbg_seed": 0x26bd57, "drbg_reseed": 0x26bde6, "drbg_gen1": 0x26bf56, "drbg_gen2": 0x26c406 };
+
 // Frida 17 replaced `Process.findModuleByName` and `Module.findExportByName(null, ...)`.
 // Enumerating is available in every version and costs one pass at load.
 function findModule(name) {
@@ -119,6 +129,20 @@ try {
 } catch (e) {
     send({ kind: "error", what: "seeder", msg: e.message });
 }
+
+// The DRBG that actually produces DL3 tokens.
+Object.keys(DRBG).forEach(function (tag) {
+    try {
+        Interceptor.attach(dlm.base.add(DRBG[tag]), {
+            onEnter: function () {
+                count(tag);
+                backtrace(this.context, tag);
+            },
+        });
+    } catch (e) {
+        send({ kind: "error", what: tag, msg: e.message });
+    }
+});
 
 // The libc generators themselves, hooked at the export so every caller is caught whatever it
 // reaches them through.
