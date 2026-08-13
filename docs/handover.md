@@ -17,6 +17,47 @@ them is the whole of the remaining work.
 
 **Installed module:** `a6411f11524b` = `vino` HEAD. **Selftests `pass:71 fail:0`.**
 
+### ★★★★★ THE DIVERGENCE: DLM brackets BOTH heads in ONE transaction
+
+Measured record for record on 2026-08-13, vendor against `~/vinocap/run48.pcapng`:
+
+```
+DLM                                   vino
+#86 SET-MODE head=0                   #58 SET-MODE head=0
+#87 2f(h0,1)                          #61 2f(h0,1)
+#88 2e(h0,3)   head 0 sink DOWN       #62 2e(h0,3)
+#89 SET-MODE head=1  <-- INSIDE       ---           (vino has no second set-mode here)
+#90 2f(h0,1)                          #63 2f(h0,1)
+#91 2e(h0,0)   head 0 sink UP         #64 2e(h0,0)
+#92 2f(h1,1)   head 1 marked          ---
+#93 RING h0                           #66 RING h0
+#95 CONFIG h0                         #67 CONFIG h0
+#96 2e(h1,3)   head 1 sink DOWN       ---
+#97 2f(h0,1)                          #68 2f(h0,1)
+#98 2e(h0,0)   last before pixels     #70 2e(h0,0)
+#99 PIXELS h0                         #78 PIXELS h0
+```
+
+⭐ **The vendor configures both connectors in a single dock-wide bracket and holds the second head's
+sink DOWN (`2e(h1,3)`) while the first head starts streaming.** vino runs two independent per-head
+brackets, and **the second one kills the control plane**: in run48 the dock answered everything
+until head 1's bracket began, then went silent from `0x16/0x2e ctr=142` onward and never replied
+again. Ninety seconds later the session was abandoned and every scanout returned `ENODEV`, which
+is why the HDMI panel freezes on its last frame and the DP panel never shows anything at all.
+
+⚠ This is what `activate_dual_wake` was for, and it was disabled on this dock (`ff421293fe7e`)
+because it was built from the Ridge/DL7400 cold timeline, failed every pass and stormed. The fix is
+not to re-enable that schedule but to build **this** sequence -- it is nine records and fully
+measured above.
+
+⛔ Do not chase the set-mode again. Verified byte-for-byte over all 80 bytes on both heads: identical
+to DLM outside the message counter, the head selector at off22 and the six-byte tail at off74.
+
+⚠ On that tail: 74 vendor status polls carry 74 distinct tails with no constant byte and no
+correlation to the counter, and the dock acks every message vino sends with its own random tail
+(51/51, zero rejects) and programs the mode from it -- so the dock does not validate those bytes.
+That is evidence they are not a checksum, not proof they are random.
+
 ### ⛔ The dock is HARD WEDGED -- it needs a physical unplug
 
 `device not accepting address, error -71` / `unable to enumerate USB device`, and the kernel's own
