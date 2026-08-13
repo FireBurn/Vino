@@ -17,6 +17,37 @@ them is the whole of the remaining work.
 
 **Installed module:** `a6411f11524b` = `vino` HEAD. **Selftests `pass:71 fail:0`.**
 
+### ⛔ The dock is HARD WEDGED -- it needs a physical unplug
+
+`device not accepting address, error -71` / `unable to enumerate USB device`, and the kernel's own
+port power cycle already failed. `USBDEVFS_RESET` cannot help: there is no device to reset. Unplug
+and replug the dock before the next run. ⚠ Hold vino off first (it is already blacklisted) so the
+bring-up can be captured from the first byte.
+
+**Untested on hardware:** `9055ce173fae` (the mode words and the delta repeat). It builds clean and
+selftests read `pass:71 fail:0`, but the dock wedged before it could run. Test it first.
+
+### ⭐ The divergence found after the picture appeared
+
+vino was sending **`off42 = 0x0700`, `off66 = 0x0800`** in every set-mode where DLM sends
+**`0x0400`, `0x2810`** -- an inverted sync polarity on both axes, and no picture aspect or CTA VIC.
+Both words were derived from the DRM mode's flags and `cea_vic()`, and a mode built from the
+fallback list carries neither, even when its timings are the vendor's exactly (2008/2052/2200,
+1084/1089/1125 at 148.5 MHz). Verified on the wire both ways: DLM's own set-mode reads
+`off42=0x0400 off66=0x2810`, vino's read `0x0700`/`0x0800`.
+
+⭐ The four timings the corpus covers now carry the captured words; every other mode still derives
+them. ⚠ This is a plausible reason a DP sink stays blank while an HDMI one paints -- DP is far less
+forgiving about sync polarity -- but it is **not established**, because the dock wedged before the
+build could run.
+
+### ⚠ The two heads, and which is which
+
+**Socket 1 is the HDMI monitor and it is the one that works; socket 2 is DP and has never shown
+anything.** vino registers every connector as `DisplayPort`, so KWin mislabels the HDMI head -- a
+Ridge-era fix (`CONNECTOR_VIRTUAL` skips the EDID property) that is now misleading and worth
+revisiting once pixels are stable.
+
 ### What produced the picture
 
 Four fixes, each measured against the vendor rather than guessed:
