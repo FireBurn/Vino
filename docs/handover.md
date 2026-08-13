@@ -27,6 +27,12 @@ bring-up can be captured from the first byte.
 **Untested on hardware:** `9055ce173fae` (the mode words and the delta repeat). It builds clean and
 selftests read `pass:71 fail:0`, but the dock wedged before it could run. Test it first.
 
+⚠ One thing to watch in it: a changed strip now goes out three times within the frame *and* still
+carries `damage_repeats` frames of debt, so it is transmitted far more often than it needs to be.
+Harmless for bandwidth here (three 21 kB deltas a frame is ~3.8 MB/s against a vendor mean of
+0.888 MB/s and a peak of 118 MB/s), but if the repeat proves correct the debt should come down to
+match it rather than compound with it.
+
 ### ⭐ The divergence found after the picture appeared
 
 vino was sending **`off42 = 0x0700`, `off66 = 0x0800`** in every set-mode where DLM sends
