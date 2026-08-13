@@ -55,31 +55,54 @@ That is the whole gap: **vino was sending a one-head subset of a two-head choreo
 framebuffer allocation the set-mode states, the bracket, and the sink states were all measured from
 DLM driving two connectors. Fixed in `df8b3ae25c6d`.
 
-### The one experiment to run first
+### ★★★★★ The dock DOES scan out our frame -- DC right, everything above it noise
 
-Get a **photograph of the garbled frame** the HDMI panel shows during a sink re-engagement. It is
-the only look anyone has had at what the dock actually paints, and it discriminates directly:
-content that resembles the desktop means a stride or strip-placement fault; noise means the dock is
-scanning a buffer nothing wrote.
+`IMG20260813013711.jpg`, the HDMI panel during a sink re-engagement, is the first look anyone has
+had at what this dock paints. It is **dense per-pixel noise carrying correct large-scale colour
+structure**: a blue region upper-left, green and yellow to the right, coherent bands across the
+frame. A dead output is black and a mis-strided one shears; neither looks like this.
+
+Read it as a two-part verdict:
+
+- **The low frequencies are right.** Broad colour regions in the right places means the DC
+  coefficients land where they should, which is exactly what `tools/render-dc.py` already proved
+  offline from vino's own wire.
+- **Everything above DC is wrong.** Per-pixel randomness over the whole surface is what a
+  wrongly-decoded AC section looks like once DC is correct.
+
+⭐ **This is the pixel oracle the AC path has never had.** The strip grammar was closed with a
+landing oracle plus a DC render, and both are blind to AC: `project_ella_retracted_rate_aux_replay`
+already records that "plane order and per-block grouping are invisible to a landing oracle -- use
+the pixel oracle". The panel is now that oracle, and it says the AC section is where to look --
+plane order, per-block grouping, the coefficient scan, or the quantiser the configuration declares
+against the one the encoder actually applied.
+
+⛔ This retires "the dock presents nothing". The question is no longer whether pixels arrive, it is
+why only their DC survives.
 
 ### Next, in priority order
 
-1. ⭐ **Why does the sink only scan out during a re-engage?** The dock holds the frame and paints it
-   on a sink transition, so what is missing is whatever keeps the output scanning continuously.
-   The bracket's `0x16/0x2e`/`0x2f` states are the place to look -- the vendor's last record before
-   pixels is `2e(head, 0)` and it puts the *other* head's sink down (`2e(other, 3)`) after the
-   decoder configuration, which vino still does not send.
-2. ⚠ **The re-engage loop still fires ~12 times in 30 s** and flashes the HDMI panel. Two callers
+1. ⭐⭐ **The AC section.** The photograph says DC is right and everything above it is noise, and
+   the AC path has never been checked by anything that can see it. Candidates, in the order the
+   corpus can settle them: the coefficient scan order within a block, plane order and per-block
+   grouping, and whether the quantiser the decoder configuration declares is the one the encoder
+   applied. Build a decoder that reconstructs full pixels from a captured DLM frame -- the DC-only
+   renderer already does half of it -- and compare against vino's frame of the same surface.
+2. ⭐ **Why does the sink only scan out during a re-engage?** The dock holds the frame and paints it
+   on a sink transition, so something is missing that keeps the output scanning continuously. The
+   vendor puts the *other* head's sink down (`2e(other, 3)`) after the decoder configuration and
+   ends on `2e(head, 0)`; vino still does not send the first of those.
+3. ⚠ **The re-engage loop still fires ~12 times in 30 s** and flashes the HDMI panel. Two callers
    are guarded by `reports_presence()`; a third remains, in the downstream-event path near
    `vino.rs:1004`. That loop is also what makes the garbled frame visible, so fix it *after* the
    photograph.
-3. ⛔ **A mid-frame submit failure permanently desynchronises the dock's parser.** Measured in
+4. ⛔ **A mid-frame submit failure permanently desynchronises the dock's parser.** Measured in
    run36: the submit failed 512 kB into a 1.57 MB frame, leaving a truncated record, and the record
    walk (and so the dock) can never resync -- everything after 12.93 MB is garbage to it. vino
    clears the endpoint halt and carries on into the next frame. It must re-open the stream instead.
-4. **`dual-head activation failed (ENODEV)`** fires repeatedly before the per-head fallback
+5. **`dual-head activation failed (ENODEV)`** fires repeatedly before the per-head fallback
    succeeds. Harmless so far, but it is a retry storm on a shared pipe.
-5. The HDMI socket still returns **no EDID** and the dock reports it absent, with a monitor on it.
+6. The HDMI socket still returns **no EDID** and the dock reports it absent, with a monitor on it.
    `reports_presence: false` works around this; the underlying probe is still not understood.
 
 ### Captures worth keeping
