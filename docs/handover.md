@@ -1,6 +1,6 @@
 # Handover
 
-Single current handover. Last updated **2026-08-12**. Everything below is either still true or a
+Single current handover. Last updated **2026-08-13**. Everything below is either still true or a
 trap worth not repeating; anything an earlier handover said and this does not is done, superseded
 or retracted. The DL7400/Navarro-era handover is in git history.
 
@@ -26,10 +26,11 @@ decoded frame and painting it during a sink transition. Neither panel holds a pi
 2. **The decoder configuration is byte-identical to DLM's** -- 304 bytes of plaintext, **zero**
    differing bytes. So is the ring descriptor. The set-mode differs only at off22 (which head) and
    its random token; every mode word matches.
-3. **The dock presents nothing at all, not even a full-screen solid colour.** Setting the carrier's
-   DC to a saturated bright value (`black_frame_ep08_variant`, a two-line temporary edit) left the
-   panel black. That rules out every theory about a frame's *content*: the fault is upstream of any
-   individual frame.
+3. **In the one-head configuration the dock painted nothing at all, not even a full-screen solid
+   colour.** Setting the carrier's DC to a saturated bright value (`black_frame_ep08_variant`, a
+   two-line temporary edit) left the panel black. That ruled out every theory about a frame's
+   *content* while only one head was described. ⚠ Once both heads were driven the dock started
+   painting -- see the photograph below -- so this result bounds the one-head case, not the codec.
 
 ⛔ **Do not re-chase the encoder, the strip grammar, the record framing, the ring walk or the frame
 close placement.** All measured correct against the vendor this session.
