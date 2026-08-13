@@ -24,7 +24,61 @@ physical replug. Checked: no D-state tasks and no hung-task report, so this is t
 and not the vino deadlock that mimics it. vino is unloaded and blacklisted, so the replug is not
 spent.
 
-### ★★★★★ What is left: the dock halts the endpoint at ~17 MB of stream
+### ★★★★★ THE BYTES ARE ALL RIGHT -- a full decrypted audit says so
+
+⭐ Done properly for the first time on 2026-08-13 with `tools/capture/plaintext-diff.py`, vino's
+run 49 against the vendor capture, **both streams decrypted**. Previous comparisons were of record
+*shape* (`sequence-diff.py`, no keys), which cannot see a message of the right length carrying the
+wrong bytes.
+
+| | verdict |
+|---|---|
+| all **22** control message types | identical outside the counter, the head selector and a trailing field |
+| the message vocabulary | identical -- **neither sender uses a message the other does not** |
+| frame opener (`aux=0x000a`) | **identical** |
+| ring descriptor (`aux=0x0008`) | **identical** |
+| decoder configuration (304 B sealed) | **identical** |
+| stream open / stream report | differ only in their random token |
+
+⛔ **So nothing vino says is wrong, and the remaining bug is not in any message.** Do not spend
+another run diffing the control plane. Keys for a vino run come from `trace_crypto=1`, which prints
+`vino-crypto:` lines -- control key/riv and each head's video key/nonce -- and those go straight into
+a candidate list the tool accepts. ⚠ grep for `vino-crypto`, not "video key": that mistake made this
+look impossible earlier in the same session.
+
+### ★★★★★ What is left: quantity, not content
+
+With content eliminated, one number stands out from the same audit:
+
+```
+vendor:  84,706 image records / 7,113 frames =  11.9 records per frame
+vino  :   3,238 image records /    10 frames = 323.8 records per frame
+```
+
+⭐ **The vendor's average frame is twelve image records; vino's is three hundred.** The vendor sends
+small deltas and vino sends the whole surface, every time, and then presents it `dock_buffers`
+times.
+
+⭐⭐ **And the ceiling that lands on is exactly the dock's own declared allocation.** The set-mode
+states `off46` stride `0x0800` = 2048 and `off48` rows `0x2000` = 8192, and **2048 x 8192 = 16 MiB
+exactly**:
+
+| run | halted at | as a fraction of 16 MiB |
+|---|---|---|
+| 50 | 16,229,680 | **96.7%** |
+| 51 | 17,116,864 | **102.0%** |
+
+16 MiB / 1.44 MB = 11.6 frames, and both runs halted between the 14th and 15th frame opener. That
+is the shape of a dock running out of the region its own set-mode told it to allocate -- and the
+vendor never approaches it because its frames are thirty times smaller.
+
+⚠ **Not yet established, and the next thing to settle:** why every vino content frame is a full
+surface. The idle path is provably correct (`deferred: no keyframe owed and no strip content
+changed`, 13.4 s of it), so this is about what happens when something *does* change -- whether the
+damage really is whole-surface or whether the keyframe bit is being re-raised. Read the damage and
+hash path before spending another dock cycle; it is all offline.
+
+### What is left: the dock halts the endpoint at ~17 MB of stream
 
 Both runs that got this far end the same way, and this is now the whole of the remaining work:
 
