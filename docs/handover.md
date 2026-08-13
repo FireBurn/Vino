@@ -6,16 +6,58 @@ or retracted. The DL7400/Navarro-era handover is in git history.
 
 ---
 
-## START HERE -- the state on 2026-08-13
+## START HERE -- the state on 2026-08-13, mid-morning
 
-⭐⭐⭐⭐⭐ **THE DL-3900 DRAWS THE DESKTOP.** User-confirmed: the HDMI head shows a live KDE desktop,
-a folder dragged onto it appears, and the pointer is visible. It holds steady -- no flashing, no
-re-engage, no endpoint stall. This dock has never shown a picture from vino before.
+⭐⭐⭐⭐ **THE ACTIVATION FAILURE IS GONE, ON BOTH CONNECTORS.** The dock-wide transaction and the
+runtime reconfiguration are both implemented from the vendor's own record stream, and run 51 is the
+first run in which the control plane is never silenced: both connectors activate, both take a full
+1.44 MB keyframe reaching all three ring slots, and the session then sits **quiet for 13.4 seconds**
+exactly as the vendor's does. `dock-wide activation complete after 281 ms (heads 0x3)`.
 
-⚠ **The DP head is still lit but blank.** One head works, one does not, and the asymmetry between
-them is the whole of the remaining work.
+⛔ **Nobody has confirmed what the panels showed.** One monitor was displaying a frozen desktop from
+an overnight run throughout, which makes eyeballing worthless until after a power cycle. **Ask, and
+ask about a run you can name.** Pixels on the wire are still not evidence.
 
-**Installed module:** `a6411f11524b` = `vino` HEAD. **Selftests `pass:71 fail:0`.**
+**Installed module:** `4bcfbe974987` = `vino` HEAD. **Selftests `pass:76 fail:0`** (five added).
+⚠ **The dock is hard-wedged off USB** (`device not accepting address 51, error -71`) and needs a
+physical replug. Checked: no D-state tasks and no hung-task report, so this is the dock's own wedge
+and not the vino deadlock that mimics it. vino is unloaded and blacklisted, so the replug is not
+spent.
+
+### ★★★★★ What is left: the dock halts the endpoint at ~17 MB of stream
+
+Both runs that got this far end the same way, and this is now the whole of the remaining work:
+
+| run | first refusal | at stream offset |
+|---|---|---|
+| 50 | `-32` on an ordinary 3452 B image record | 16,229,680 |
+| 51 | `-32` on an ordinary 3452 B image record | 17,116,864 |
+
+The refused record is unremarkable in both -- right size, right stride, right sub. In run 51 it
+followed a **whole-surface content change arriving on both connectors at once** (both heads encoded
+1.25 MB and then 1.39 MB back to back).
+
+⛔ **Rate is refuted again, quantitatively, on this run.** Across the 140 ms window containing the
+failure the wire carried 8.19 MB = **58.5 MB/s**, against a vendor peak of **82.9 MB/s** in a 100 ms
+window. ⛔ **Presentation pacing is not missing either** -- `encode_and_send_wht` already sleeps
+`frame_period_ms` between presentations on a shared-pipe dock. Both were checked before being
+believed; do not re-chase either.
+
+⭐ The live lead is that both figures are ~17 MB and both runs had reached a similar **frame count**.
+Decide between "bytes accepted" and "frames accepted" first -- it is one measurement over two
+existing captures (`~/vinocap/run50.pcapng`, `run51.pcapng`) and needs no dock.
+
+⚠ Also unexplained and worth one look: every content frame vino sends is a **full surface**
+(1.25--1.44 MB, 341--390 records). A desktop that changes in one corner should produce a small
+delta. If the damage really is whole-surface every time, that trebles under `dock_buffers`
+presentations and is the reason any byte ceiling is reached in seconds.
+
+### ⭐ A lead found in passing: `layout_word` is not a constant
+
+`PROFILE_ELLA` hardcodes `layout_word: 0x1800`. The vendor's stream mode header carries `0x1800` at
+1920 wide and **`0x1080` at 1280 wide** (its runtime re-mode to 1280x1024, record #38358). Nothing
+vino does at 1920x1080 is affected, which is why this has cost nothing yet, but the field is
+resolution-dependent and the profile states it as fixed.
 
 ### ★★★★★ THE DIVERGENCE: DLM brackets BOTH heads in ONE transaction
 
@@ -49,6 +91,75 @@ is why the HDMI panel freezes on its last frame and the DP panel never shows any
 because it was built from the Ridge/DL7400 cold timeline, failed every pass and stormed. The fix is
 not to re-enable that schedule but to build **this** sequence -- it is nine records and fully
 measured above.
+
+### ★★★★★ ...and the second half of it, which the table above stops short of
+
+⭐ **The table above ends with the second connector's sink still DOWN.** It comes up later, with no
+mode set of its own, interleaved into the first connector's frame stream. Measured by dumping the
+vendor's whole record stream in order (`record-stream.py --count 0`, 92,072 records) rather than
+spot-checking the bring-up:
+
+```
+#99..#128   head 0's flat carrier
+#129        head 0 opener (0,1,1)      head 0 is streaming from here on
+#228        head 0 opener (1,2,2)
+#229        2f(h1,1)
+#247        2f(h0,0)
+#431        2e(h1,0)   <- the second connector's sink UP, four frames into the first one's stream
+#632        status poll
+#633        RING descriptor h1
+#634        2e(h0,0)
+#733        decoder CONFIG h1
+#735+       head 1's pixels
+```
+
+⛔ **There is no second mode set anywhere in 326 seconds.** The whole capture contains exactly four
+`0x48/0x22`: the two above, and two later runtime re-modes of head 0 alone.
+
+### ★★★★★ Reconfiguring ONE connector while the other is lit is a different, shorter sequence
+
+Measured twice (#38348 and #44725), at two different resolutions, identical shape both times:
+
+```
+2f(h,1)  2e(h,3)  <EDID probe 0x15/0x20 + fetch 0x15/0x21>  SET-MODE(h)
+2f(h,1)  2e(h,0)  poll  RING(32 B, aux=0x0004)  stream report  ... frames ...
+```
+
+⭐ Three things distinguish it from the cold bracket, and each is a way to get this wrong:
+the sink goes **down before** the mode set rather than after it; there are **four** markers, not
+six; and **nothing belonging to the other connector is named** -- it streams throughout.
+⚠ Two details are modelled and not yet implemented: the EDID re-read inside the transaction (left
+out deliberately -- a fetch issued inside a transaction has nowhere to deliver its reply), and the
+**32-byte `aux=0x0004` ring record**, which is not the 48-byte `aux=0x0008` descriptor and comes
+with **no decoder configuration at all**. vino sends the full 384 B ring+config prologue there.
+
+### What landed for all of this
+
+| fix | commit |
+|---|---|
+| one dock-wide transaction for both connectors, second sink held down | `871c5a715f61` |
+| the short runtime sequence when one connector is reconfigured while another is lit | `c8afc83505ac` |
+| a settle repaint sends the difference, not a second whole surface | `4bcfbe974987` |
+
+⭐ Both choreographies are **tables** (`ELLA_DOCK_WIDE`, `ELLA_RUNTIME_MODE`) run by one executor,
+so which one a dock takes is a choice of data rather than a second code path, and the order can be
+checked against the capture it came from. Five selftests pin them, including the two properties a
+plausible reordering would break silently: both modes before any pixels, and the second sink down
+until the first streams.
+
+⭐ **The third fix is the one that moved the hardware.** The settle repaint re-sent the whole
+surface as a keyframe roughly a second after an identical keyframe had already been accepted --
+4.3 MB of pure duplication under `dock_buffers` presentations, and it was that transfer the dock
+refused in run 50. A keyframe now reaches every dock buffer, so what the repaint owes is the
+difference, which on an unchanged desktop is nothing. Training repaints and Navarro's keepalive
+still send keyframes: those exist to put bytes on the wire whether or not anything changed.
+
+**Result, run by run:** run 49 activated both connectors dock-wide but then replayed the *cold*
+bracket for a socket-2 re-enable and went silent through it (11 unanswered control messages, halt
+clear timed out). Run 50 took the runtime table for that re-enable -- no silence -- and died on the
+settle repaint instead. Run 51 has neither failure. The bring-up now agrees with the vendor's for
+**46 records** (was 43); the first divergence is two status polls the vendor sends before head 0's
+stream open.
 
 ⛔ Do not chase the set-mode again. Verified byte-for-byte over all 80 bytes on both heads: identical
 to DLM outside the message counter, the head selector at off22 and the six-byte tail at off74.
