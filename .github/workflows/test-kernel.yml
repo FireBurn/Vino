@@ -62,6 +62,12 @@ jobs:
         run: |
           make LLVM=$LLVM_SUFFIX rustavailable
 
+          # Name the build after the submodule commit, not just the day. A date alone means two
+          # pushes in one day produce identical package filenames and collide on the release tag,
+          # and nothing installed on a tester's machine says which tree it came from.
+          base=$(git rev-parse --short=12 HEAD)
+          short=$(git rev-parse --short=7 HEAD)
+
           zcat /proc/config.gz 2>/dev/null > .config || cp /boot/config-$(uname -r) .config
           # "Debug information" is a choice, and --enable does not clear the sibling the runner's
           # own config already sets. Both then arrive =y, olddefconfig keeps the DWARF one, and it
@@ -81,7 +87,7 @@ jobs:
             --disable MODULE_SIG_ALL \
             --disable SYSTEM_TRUSTED_KEYS \
             --disable SYSTEM_REVOCATION_KEYS \
-            --set-str LOCALVERSION "-vino-$(date -u +%Y%m%d)"
+            --set-str LOCALVERSION "-vino-$(date -u +%Y%m%d)-g$short"
           make LLVM=$LLVM_SUFFIX olddefconfig
 
           # olddefconfig silently drops anything whose dependencies are unmet, and a kernel
@@ -97,7 +103,7 @@ jobs:
           fi
 
           echo "release=$(make -s LLVM=$LLVM_SUFFIX kernelrelease)" >> "$GITHUB_OUTPUT"
-          echo "base=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
 
       - name: Build the kernel
         working-directory: linux
@@ -113,13 +119,22 @@ jobs:
 
       - name: Build the rpm
         working-directory: linux
-        run: make LLVM=$LLVM_SUFFIX -j"$(nproc)" binrpm-pkg
+        run: |
+          # The rpm takes its Release: from scripts/build-version, a counter in .version that
+          # increments on every read. The kernel build already consumed 1, so the rpm would come
+          # out -2 against the deb's -1 -- a difference that means nothing to anyone reading it.
+          echo 0 > .version
+          make LLVM=$LLVM_SUFFIX -j"$(nproc)" binrpm-pkg
 
       - name: Collect the packages
         run: |
           mkdir -p out
+          # linux-libc-dev and its rpm twin kernel-headers are the UAPI headers glibc is built
+          # against, not the kernel's own. They are distribution-wide packages, so installing one
+          # replaces a tester's system headers with an -rc kernel's: no use here, and a good way to
+          # break a toolchain. kernel-devel/linux-headers are the ones that build modules; keep those.
           find . -name '*.deb' -o -name '*.rpm' \
-            | grep -vE 'dbg|debuginfo' | xargs -r cp -t out
+            | grep -vE 'dbg|debuginfo|linux-libc-dev|kernel-headers' | xargs -r cp -t out
           ls -la out
 
       - uses: actions/upload-artifact@v4
@@ -139,7 +154,15 @@ jobs:
             echo
             cat .github/RELEASE_NOTES.md
           } > notes.md
-          gh release create "$RELEASE" out/* \
-            --prerelease \
-            --title "Vino test kernel $RELEASE" \
-            --notes-file notes.md
+
+          # The release name now carries the submodule SHA, so it is stable across re-runs of the
+          # same commit. Replace the assets in that case rather than failing on the existing tag.
+          if gh release view "$RELEASE" >/dev/null 2>&1; then
+            gh release upload "$RELEASE" out/* --clobber
+            gh release edit "$RELEASE" --notes-file notes.md
+          else
+            gh release create "$RELEASE" out/* \
+              --prerelease \
+              --title "Vino test kernel $RELEASE" \
+              --notes-file notes.md
+          fi

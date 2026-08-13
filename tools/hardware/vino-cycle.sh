@@ -100,11 +100,10 @@ for i in $(ls /sys/bus/usb/devices/ | grep -E '^[0-9]+-[0-9.]+:'); do
   v=$(cat "/sys/bus/usb/devices/$i/../idVendor" 2>/dev/null || true)
   p=$(cat "/sys/bus/usb/devices/$i/../idProduct" 2>/dev/null || true)
   [ "$v" = "17e9" ] || continue
-  # Vino supports both the Ridge D6000 and the Navarro DL7400.  Keep the rebind list in
-  # lockstep with the driver's USB ID table; otherwise a safe cycle silently leaves the DL7400
-  # unbound after unloading the old module.
+  # Keep the explicit rebind list in lockstep with the driver's USB ID table. Otherwise a safe
+  # cycle can unload cleanly and then silently leave a supported dock unbound.
   case "$p" in
-    6006|7000) ;;
+    430a|6006|7000) ;;
     *) continue ;;
   esac
   [ -e "/sys/bus/usb/devices/$i/driver" ] && continue
