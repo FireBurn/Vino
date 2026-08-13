@@ -8,110 +8,74 @@ or retracted. The DL7400/Navarro-era handover is in git history.
 
 ## START HERE -- the state on 2026-08-13
 
-⭐⭐⭐ **Both panels are now lit and driven, and the video is proven correct.** vino runs the
-vendor's two-head choreography for the first time: two engages, two set-modes, two streams, a full
-desktop keyframe accepted on each head. The HDMI panel, which had never lit at all, now lights and
-**briefly shows garbled pixels whenever its sink is re-engaged** -- so the dock is holding the
-decoded frame and painting it during a sink transition. Neither panel holds a picture yet.
+⭐⭐⭐⭐⭐ **THE DL-3900 DRAWS THE DESKTOP.** User-confirmed: the HDMI head shows a live KDE desktop,
+a folder dragged onto it appears, and the pointer is visible. It holds steady -- no flashing, no
+re-engage, no endpoint stall. This dock has never shown a picture from vino before.
 
-**Installed module:** `df8b3ae25c6d` = `vino` HEAD. **Selftests `pass:71 fail:0`.**
+⚠ **The DP head is still lit but blank.** One head works, one does not, and the asymmetry between
+them is the whole of the remaining work.
 
-### ★★★★★ The video is not the problem, and this is now settled three ways
+**Installed module:** `a6411f11524b` = `vino` HEAD. **Selftests `pass:71 fail:0`.**
 
-1. **vino's own wire renders the desktop.** Take vino's usbmon capture, skip the carrier frames,
-   and run the independent Python decoder over it:
-   `tools/render-dc.py CAP.pcapng out.png --skip 4080` gives **2040 strips, 0 undecodable, luma DC
-   0..762** and a photograph of the actual wallpaper. Encoder, grammar, coordinates, framing and
-   frame contents are all correct.
-2. **The decoder configuration is byte-identical to DLM's** -- 304 bytes of plaintext, **zero**
-   differing bytes. So is the ring descriptor. The set-mode differs only at off22 (which head) and
-   its random token; every mode word matches.
-3. **In the one-head configuration the dock painted nothing at all, not even a full-screen solid
-   colour.** Setting the carrier's DC to a saturated bright value (`black_frame_ep08_variant`, a
-   two-line temporary edit) left the panel black. That ruled out every theory about a frame's
-   *content* while only one head was described. ⚠ Once both heads were driven the dock started
-   painting -- see the photograph below -- so this result bounds the one-head case, not the codec.
+### What produced the picture
 
-⛔ **Do not re-chase the encoder, the strip grammar, the record framing, the ring walk or the frame
-close placement.** All measured correct against the vendor this session.
+Four fixes, each measured against the vendor rather than guessed:
 
-⛔ **Rate and flooding are refuted again, quantitatively.** Max bytes in a sliding window, vino
-against the vendor: 0.1 s **46.5 vs 118.6 MB/s**, 0.5 s 22.3 vs 66.5, 1 s **20.3 vs 34.4**, 2 s
-18.1 vs 18.1. vino is *below* the vendor everywhere. Stop suspecting the pipe.
+| fix | commit |
+|---|---|
+| drive every connector: two engages, two set-modes, two `0x15/0x53`, the restated session hello | `df8b3ae25c6d` |
+| one carrier per stream, not one per activation attempt (it was six) | `ff421293fe7e` |
+| **a keyframe must reach every dock buffer** | `a6411f11524b` |
+| withdraw the cursor plane; the vendor sends no cursor message on this dock | `df8b3ae25c6d` |
 
-### ⭐ What actually found the gap: aligning the two decrypted sessions
+⭐ **The last one is what put pixels on the panel.** A keyframe was presented once, into one of the
+dock's three ring slots, and the dock scanned out one of the other two: the panel showed black
+where nothing had ever been written, with the damage rectangles of later deltas floating in it
+(`IMG20260813015515.jpg` is exactly that). Naming the ring slot does not exempt a dock from filling
+the rest -- the vendor gets away with one presentation because it sends frames continuously, which
+fills every slot within a few frames.
 
-Spot-checking cost this session hours. What worked was decrypting **every** control message in both
-sessions and aligning them with `difflib`, masking the inner counter and the random tails. Every
-remaining difference then names itself:
+### ★★★★★ The video is correct, and this is now proven at the pixel level
 
-```
-REPLACE  vendor: 0x16/0x2f, 0x16/0x2e, 0x48/0x22   <- a SECOND set-mode, for the other head
-         vino:   0x14/0x0c                          <- a status poll
-DELETE   vendor: 0x16/0x2e off23=3                  <- the other head's sink put down
-0x48/0x22 differs at off22 only; every mode word identical
-```
+`tools/codec/ella_render.py` reconstructs full pixels -- AC included -- from a captured strip
+stream. It renders **DLM's own frame pixel-sharp** (readable text, checkboxes, sidebar icons), and
+it renders **vino's frame pixel-sharp** too: a Milky Way wallpaper with individual stars and a
+meteor trail. Encoder, grammar, DC, AC, scan order, Morton layout, quantiser, transform and colour
+transform are all correct.
 
-That is the whole gap: **vino was sending a one-head subset of a two-head choreography.** The
-framebuffer allocation the set-mode states, the bracket, and the sink states were all measured from
-DLM driving two connectors. Fixed in `df8b3ae25c6d`.
+⛔ **Do not re-chase the codec.** Also settled: the decoder configuration is byte-identical to
+DLM's (304 B plaintext, zero differing bytes), so are the ring descriptor and the flat carrier; the
+set-mode differs only at off22. ⛔ **Rate and flooding are refuted quantitatively** -- vino is below
+the vendor in every sliding window (0.1 s 46.5 vs 118.6 MB/s, 1 s 20.3 vs 34.4).
 
-### ★★★★★ The dock DOES scan out our frame -- DC right, everything above it noise
+⛔ **RETRACTED: "the AC section is wrong".** It was read off a photograph of a garbled panel during
+a sink re-engagement and is refuted by the full renderer above. That garbling was the dock's own
+transient, not our frame.
 
-`IMG20260813013711.jpg`, the HDMI panel during a sink re-engagement, is the first look anyone has
-had at what this dock paints. It is **dense per-pixel noise carrying correct large-scale colour
-structure**: a blue region upper-left, green and yellow to the right, coherent bands across the
-frame. A dead output is black and a mis-strided one shears; neither looks like this.
+### Next: why the DP head stays blank
 
-Read it as a two-part verdict:
+Both heads now send the same thing -- a carrier, then a 1.44 MB keyframe with `presentations=3`
+reaching all three buffers, then deltas -- and one paints while the other does not. Known
+differences, in the order worth testing:
 
-- **The low frequencies are right.** Broad colour regions in the right places means the DC
-  coefficients land where they should, which is exactly what `tools/render-dc.py` already proved
-  offline from vino's own wire.
-- **Everything above DC is wrong.** Per-pixel randomness over the whole surface is what a
-  wrongly-decoded AC section looks like once DC is correct.
+1. **The HDMI head has no EDID and runs the built-in fallback mode list; the DP head runs
+   EDID-derived modes.** Both report 1920x1080@60, but the timings behind them may differ. Capture
+   with `trace_crypto=1` and diff the two `0x48/0x22` messages -- `record-stream.py` finds them in
+   one pass, and the mode words are the obvious suspect.
+2. **The DP head is activated twice** (two `KMS CRTC enable` for head 1), so it sends two carriers
+   where the working head sends one.
+3. The dock calls the HDMI socket absent and returns no EDID for it, yet that is the head that
+   works. Presence reporting on this dock is not understood.
 
-⭐ **This is the pixel oracle the AC path has never had.** The strip grammar was closed with a
-landing oracle plus a DC render, and both are blind to AC: `project_ella_retracted_rate_aux_replay`
-already records that "plane order and per-block grouping are invisible to a landing oracle -- use
-the pixel oracle". The panel is now that oracle, and it says the AC section is where to look --
-plane order, per-block grouping, the coefficient scan, or the quantiser the configuration declares
-against the one the encoder actually applied.
+⛔ **One guard was tried and regressed it**: skipping the downstream-event re-engage loop for a
+dock that reports no presence dropped scanout to two frames and blanked both panels. Reverted. If
+that loop needs bounding, bound the *reset* it performs, not the loop itself.
 
-⛔ This retires "the dock presents nothing". The question is no longer whether pixels arrive, it is
-why only their DC survives.
+### Recovering the dock without a person
 
-### Next, in priority order
-
-1. ⭐⭐ **The AC section.** The photograph says DC is right and everything above it is noise, and
-   the AC path has never been checked by anything that can see it. Candidates, in the order the
-   corpus can settle them: the coefficient scan order within a block, plane order and per-block
-   grouping, and whether the quantiser the decoder configuration declares is the one the encoder
-   applied. Build a decoder that reconstructs full pixels from a captured DLM frame -- the DC-only
-   renderer already does half of it -- and compare against vino's frame of the same surface.
-2. ⭐ **Why does the sink only scan out during a re-engage?** The dock holds the frame and paints it
-   on a sink transition, so something is missing that keeps the output scanning continuously. The
-   vendor puts the *other* head's sink down (`2e(other, 3)`) after the decoder configuration and
-   ends on `2e(head, 0)`; vino still does not send the first of those.
-3. ⚠ **The re-engage loop still fires ~12 times in 30 s** and flashes the HDMI panel. Two callers
-   are guarded by `reports_presence()`; a third remains, in the downstream-event path near
-   `vino.rs:1004`. That loop is also what makes the garbled frame visible, so fix it *after* the
-   photograph.
-4. ⛔ **A mid-frame submit failure permanently desynchronises the dock's parser.** Measured in
-   run36: the submit failed 512 kB into a 1.57 MB frame, leaving a truncated record, and the record
-   walk (and so the dock) can never resync -- everything after 12.93 MB is garbage to it. vino
-   clears the endpoint halt and carries on into the next frame. It must re-open the stream instead.
-5. **`dual-head activation failed (ENODEV)`** fires repeatedly before the per-head fallback
-   succeeds. Harmless so far, but it is a retry storm on a shared pipe.
-6. The HDMI socket still returns **no EDID** and the dock reports it absent, with a monitor on it.
-   `reports_presence: false` works around this; the underlying probe is still not understood.
-
-### Captures worth keeping
-
-`~/vinocap/run36.pcapng` (33 accepted desktop frames, the parser desync, and the frame that
-renders the wallpaper), `~/vinocap/run37.pcapng` (the cleanest single-head run: 36-message setup,
-51/51 acked, one carrier, one keyframe, then silence), `~/vinocap/run41.pcapng` (the first
-two-head run).
+`USBDEVFS_RESET` on `/dev/bus/usb/BBB/DDD`, resolved by `idProduct`, recovered it roughly ten times
+this session. It also dropped off USB once and **re-enumerated by itself after about a minute** --
+wait before concluding it needs a replug. ⛔ Do not reset the controller or a hub.
 
 ---
 
