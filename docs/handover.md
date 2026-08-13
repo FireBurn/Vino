@@ -6,7 +6,198 @@ or retracted. The DL7400/Navarro-era handover is in git history.
 
 ---
 
-## START HERE -- the state on 2026-08-13, mid-morning
+## START HERE -- the state on 2026-08-13, afternoon (run 60)
+
+**★★★★★ THE SETUP BURST NOW MATCHES THE VENDOR RECORD FOR RECORD -- 80 records, up from 46.**
+HW-validated on run 60. Module `09445367bea8aaff0993fca1fcb218582bd093afb6cdd811f43483bb087a08de`,
+selftests `pass:82 fail:0`, **zero EP02 errors**, both connectors up, 8.91 MB delivered and then
+quiet. ⚠ Whether the panels light is NOT established -- ask, never infer it from the wire.
+
+### How it was found: enumerate every divergence, never the first
+
+`sequence-diff.py` aligns positionally and stops at the first mismatch, so one omitted record
+shifts every later position and hides the rest. New `tools/capture/choreography-diff.py` aligns
+with a sequence matcher and prints every insertion, deletion and substitution; image runs collapse
+to one token so a frame is a single event. It needs no keys, which matters because vino's own CP
+records are sealed with a session key nobody has captured.
+
+Six divergence blocks against the vendor. Three were alignment artifacts (vino activates on the
+compositor's enable, the vendor inside its own setup burst). The real one was one class:
+
+```
+VENDOR                       vino (run 59)
+44  marker 0x16/0x2a h0      marker
+45  marker 0x16/0x2a h1      marker
+46  poll                 <-- MISSING
+47  poll                 <-- MISSING
+48  stream open h0           stream open h0
+50  poll x3              <-- MISSING
+53  stream open h1           stream open h1
+55  poll x3              <-- MISSING
+58  EDID probe               EDID probe
+```
+
+⭐ **Eight `0x14/0x0c` status polls the vendor spaces its setup stages with, and vino sent none of
+them.** Each is a round trip, so a stage that follows three of them is a stage the host waited for
+the dock to acknowledge three times. Opening both connectors' streams back to back puts the same
+records on the wire in the same order and gives the dock none of that time -- invisible to any
+comparison that only checks presence and order.
+
+Landed as `DockProfile::setup_polls` (`SetupPolls { before, between, after }`): Ella `(2, 3, 3)`,
+Ridge and Navarro `NONE` because they open streams from the scanout path on a video endpoint of
+their own. One shared code path, no generation branch.
+
+### ⛔ Two things measured dead this session
+
+**The 4x frame size was the WALLPAPER.** DLM on the stock C evdi, same dock, same picture, sends
+1,247,744 B where vino sends 1,442,960 B -- 15% apart. The old reference showed a flat dark
+settings window; this desktop takes KDE's Milky Way photograph. Stop reading "vino 323.8 image
+records per frame against the vendor's 11.9" as a damage or encoder defect: those are two different
+pictures. Full numbers in `captures/ella-cevdi-load-20260813/SUMMARY.md`.
+
+**A sustained rate cap alone is not a pacing model.** With a second of credit banked over an idle
+desktop, the first thing that changes releases all of it at once: run 59 put 17.5 MB out in 0.81 s
+and halted the endpoint. The vendor obeys two numbers, no second above 13.8 MB and no 100 ms window
+above 6.14 MB, so `StreamPacing` carries both and the ledger is capped at the burst allowance.
+⚠ The keyframes at activation still leave in one 8.9 MB second, so the gate in `select_scanout`
+does not cover the activation carrier. Unproven whether that matters.
+
+### ⭐ A dock whose session was abandoned does not need a power cycle
+
+`USBDEVFS_RESET` on `/dev/bus/usb/BBB/DDD` plus `tools/hardware/vino-cycle.sh --unload` and a fresh
+`modprobe` gave a complete bring-up, selftests and all. Check for D-state processes first: a vino
+self-deadlock wedges `usb_hub_wq` and looks exactly like dead hardware.
+
+---
+
+## START HERE -- the state on 2026-08-13, late morning (run 52)
+
+⭐⭐⭐⭐ **THE ~17 MB ENDPOINT HALT IS GONE.** Run 52 brings both connectors up, sends each its
+keyframe, goes quiet, and **never gets a `-32`**. It reproduced across a user power cycle
+immediately afterwards (same shape, `dock-wide activation complete after 341 ms (heads 0x3)`).
+
+**Installed module:** built from `vino` HEAD plus the fix below,
+`04bae336009670ac7553b77f34f890ff4502aa685b7d0d8b5a181a25f5f07a25`. Capture
+`~/vinocap/run52.pcapng`, log `~/vinocap/run52.dmesg.txt`.
+
+| | run 50 | run 51 | **run 52** |
+|---|---|---|---|
+| whole-surface presentations | 11 | 12 | **9** |
+| stream at the end | 16,772,960 | 24,364,224 (post-stall noise) | **13,391,088** |
+| dock refusal | `-32` at 16,229,680 | `-32` at 17,116,864 | **none** |
+
+### ★★★★★ It was metering FRAMES, not bytes -- and the frames were all the same image
+
+⭐ Settled offline over the two existing captures with the new
+`tools/capture/frame-census.py`, which needs no keys and no dock:
+
+```
+                       run 50                run 51
+refusal lands on   sub=1, slot 2, cnt 6   sub=1, slot 2, cnt 6    <- identical
+frames on sub=1    10                     10                      <- identical
+sub=1 payload      11,722,240             11,347,968              <- differ by 3%
+```
+
+**Both runs died at the same frame and the same ring position, at different byte totals.** A
+cumulative byte ceiling is refuted independently anyway: the vendor streams hundreds of MB over
+326 s, so whatever the dock runs out of is something it frees again.
+
+⭐⭐ **And the decisive measurement was hashing each frame's image payload.** Every whole-surface
+frame in every run carries the *same digest*, `fbbad2b6770c3501`:
+
+```
+sub 1: frame 1  390 recs  1,436,720 B  fbbad2b6770c3501
+       frame 2  390 recs  1,436,720 B  fbbad2b6770c3501  == frame 1
+       frame 3  390 recs  1,436,720 B  fbbad2b6770c3501  == frame 1
+       frame 4   30 recs    114,240 B  f9ad3a85bac4737c   <- the carrier, a new activation
+       frame 5  390 recs  1,436,720 B  fbbad2b6770c3501  == frame 1
+       ...
+```
+
+⛔ **So "every vino content frame is a full surface" was the wrong reading of the earlier
+census, and the 323.8-records-per-frame figure is not a damage bug at all.** The desktop was
+static and the damage path was doing its job (`deferred: no keyframe owed and no strip content
+changed`). What was on the wire was **one keyframe, presented `dock_buffers` = 3 times, and then
+re-raised again and again** -- four keyframe events in run 50, at 4.3 MB each.
+
+### ★★★★★ The cause: a mode set for a head that was already driving that mode
+
+The `KmsCmd::ModeSet` dispatch checked `modeset_requested` (superseded or disabled while queued)
+but never checked whether the head was **already active at this exact generation**. A dock-wide
+activation brings both connectors up at once and sets `modeset_active` for both -- and the
+compositor then still commits its own enable for each of them. Each of those re-ran the whole
+transaction: mode reprogrammed, stream reopened, content shadow dropped, `owe_keyframe` raised,
+and 4.3 MB of pixels the dock already held sent again.
+
+⭐ The contract was already there and only the dispatch did not honour it: **anything that means
+to re-drive a lit head zeroes `modeset_active` first**, as the sink repair path does. The fix is
+one branch at the single dispatch site, so one call site decides once.
+
+⚠ The remaining head-1 re-activation in run 52 is **legitimate** and must not be optimised away:
+the log shows KWin genuinely doing `KMS CRTC disable -- socket 2 display OFF` and then
+`KMS CRTC enable`, with `active [key, 0, 0, 0]` proving `modeset_active` really was cleared.
+That is a compositor reconfiguring a card that has just appeared, and it costs one keyframe.
+
+### ⚠ Margin is thinner than it looks
+
+9 presentations x 1.436 MB = 12.9 MB against a refusal first seen at 16.2 MB. That is **one extra
+keyframe event of headroom**. Two known reductions are still on the table, neither yet done:
+
+1. ⭐ **The delta debt compounds with the in-frame repeat.** `damage_repeats` is
+   `dock_buffers + 1` = 4 frames of debt, while on this dock each frame is *already* presented 3
+   times and each presentation names the next ring slot -- confirmed on the wire, one keyframe's
+   three presentations walked slots 0, 1, 2. So a changed strip goes out 3 times in the frame and
+   is then re-selected for 4 more frames of 3. The debt exists for docks where consecutive
+   presentations land in the *same* buffer; where the presentation loop already covers every
+   buffer it is redundant. Express it as dock profile data, not a flag.
+2. A re-activation re-sends a keyframe the dock demonstrably still holds. Sound in general -- a
+   mode set leaves the dock's framebuffer undefined -- so this is not obviously safe to skip.
+
+### ★ THE LIVE LEAD: the socket 1 re-engage loop is the only thing running, and the DP panel blinks
+
+**User-reported on run 52, after a dock power cycle:** the left panel (socket 1, HDMI) is on; the
+right panel (socket 2, DP) **"sometimes blinks with the desktop, but is mostly off"**.
+
+⭐ That is better than anything before it -- socket 2 had never shown content at all -- and it
+means the DP head is receiving a real desktop and then losing it, rather than never being driven.
+
+⭐⭐ In steady state the log contains **exactly one recurring event**, every 2 s, forever:
+
+```
+vino: socket 1 re-engaged but no EDID came back -- no monitor, or it is not ready yet
+```
+
+Nothing is sent to head 1 at all in that window -- no scanout, no mode set. So whatever is
+knocking socket 2 down is not addressed to socket 2. And `reengage_head` opens with
+`close_bracket_before_probe`, which sends a bracket close for its head **unconditionally** -- the
+very operation `activate_head` already refuses to perform on this dock while another connector is
+lit, because "a dock already driving a sink stops answering partway through it, taking the lit
+connector down with it".
+
+⚠ **Hypothesis, not yet established:** the socket 1 re-engage loop's bracket close is what drops
+socket 2's sink every two seconds, and the blink is socket 2 recovering and being knocked down
+again. It fits the cadence and it fits which head is quiet, but it has not been tested.
+
+⭐ This is also exactly what the earlier note anticipated: *"If that loop needs bounding, bound
+the reset it performs, not the loop itself."* A previous attempt bounded the **loop** and blanked
+both panels; the thing to bound is the **bracket close**, and the condition to bound it by is the
+one `activate_head` already uses -- another connector is lit.
+
+⚠ Socket 1 is `cap:yes edid:no` and socket 2 is `cap:no edid:yes`, and it is socket 1 -- the one
+the dock returns no EDID for -- that paints. Presence and EDID reporting on this dock is still
+not understood, and the re-engage loop exists because vino keeps concluding socket 1's monitor is
+missing.
+
+### New tool
+
+`tools/capture/frame-census.py CAP.pcapng [...]` -- frame openers with cumulative totals in every
+candidate unit, plus a per-frame image-payload digest. No keys needed. The digest column is the
+part that matters: a repeated digest means the dock was sent one image several times, which is a
+bug upstream of the codec and invisible to any byte or record count.
+
+---
+
+## The state on 2026-08-13, mid-morning
 
 ⭐⭐⭐⭐ **THE ACTIVATION FAILURE IS GONE, ON BOTH CONNECTORS.** The dock-wide transaction and the
 runtime reconfiguration are both implemented from the vendor's own record stream, and run 51 is the
