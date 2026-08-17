@@ -8,44 +8,63 @@ or retracted. The DL7400/Navarro-era handover is in git history.
 
 ## START HERE -- the state on 2026-08-17 evening
 
-⭐ **vino draws the desktop on a DL-3x00 panel and holds it.** User-confirmed on the right-hand
-monitor, and confirmed independently by rendering vino's own EP02 bytes back to a PNG. Damage
-selection is measured working: on a settled desktop it selects **8 to 48 strips of 2040** and sends
-nothing at all when nothing changes.
+⭐⭐⭐⭐⭐ **BOTH DL-3x00 PANELS LIGHT, DRIVE THE DESKTOP, AND HOLD IT.** User-confirmed on the
+HP 3005pr: both monitors up at 1920x1080@60, a folder dragged across the pair. Run 72, 119 s:
+**173.6 MB delivered, zero endpoint errors**, 252 and 162 frames, both ring walks the vendor's,
+clean shutdown. The `EPIPE` that ended every previous run is gone.
 
-### ★★★★★ Why one connector was never lit: an EDID reply's id is its LENGTH
+Five measured things got it there, in the order they mattered.
+
+### ★★★★★ An EDID reply's id is its LENGTH, not a message type
 
 The dock answers an EDID fetch with `sub=0x21` and an id of **`0x14` plus the number of EDID bytes
 behind it**: `0x94` for one block, `0x114` for two, `0x194` for three. vino matched `0x194` (with
-`0x94` alongside it, believed to be "firmware drops the high bit" -- it is the same rule seen
-twice). The connector whose monitor has two blocks answered `0x114`, two milliseconds after the
-fetch, with a valid base block -- and vino threw it away, reported the socket empty, never engaged
-it downstream, and pushed a full desktop at a sink that was never turned on.
+`0x94` beside it, believed to be "firmware drops the high bit" -- it is the same rule seen twice).
+The left-hand monitor's EDID is two blocks, so it answered `0x114`, two milliseconds after the
+fetch, with a valid base block -- and vino threw it away, called the socket empty, never engaged it
+downstream, and pushed a full desktop at a sink that was never turned on. **That is why that
+monitor had never once been lit.** In the vendor capture the two sockets answer `0x114` and `0x194`
+one millisecond apart and DLM lights both. Pinned by `edid_reply_id_is_the_payload_length`.
 
-Both drivers' replies are identical in the same capture: `0x114` then `0x194`, one millisecond
-apart. The vendor lights both monitors; vino lit neither socket-1 monitor in its whole history.
-Fixed; pinned by `edid_reply_id_is_the_payload_length`.
+### ★★★★★ The second connector's sink was left half raised
 
-⚠ **What that exposed next.** Both monitors on this dock are 2560x1440 MSI MAG 27CQ6F panels. Ella's
-`max_head_clock_khz` is 148,500, so 1440p is pruned and the compositor landed the recovered
-connector on **1280x1024** -- a mode this dock has no measured `Allocation` row for. It took one
-keyframe and drew nothing further. The vendor runs both heads at **1920x1080@60**, and forcing that
-mode is what put a stable picture up. ⛔ Do not offer this dock a mode whose framebuffer allocation
-has never been measured; `Allocation::Measured` has exactly one row.
+Each connector's sink is raised by the same four markers -- `0x2f` state 1, `0x2e` state 0, `0x2f`
+state 0, `0x2e` state 0 -- and the vendor sends that tail for **both**. `ELLA_DOCK_WIDE` sent it for
+the first connector and stopped after the second connector's carrier. Decrypted side by side, vino's
+transaction matched the vendor's for twelve markers and then simply ended four short, all four
+belonging to connector 2. Adding them is what put a picture on the second panel.
 
-### ⛔ EP02 still halts, and it is not throughput
+### ⭐ A frame must never end on a full packet
 
-Every run still ends in `EPIPE` on the shared endpoint, an abandoned control session and a device
-reset -- on the panel, the monitor blinking off. Measured across runs 61 to 71 it is **not** rate:
-run 66 peaked at **4.51 MB in its worst second**, sent 4-28 kB deltas, and halted anyway. See the
-envelope table below. Nor is it the bitstream, the framing, the ring or the record shape.
+The dock delimits a frame by the short packet its last transfer ends on. One frame in sixty-four is
+a whole number of 1024-byte packets, ends on a full one, delimits nothing, and is read as running
+into the next frame -- which surfaces as a transport error on an unrelated frame some transfers
+later. Three of the five captured halts had such a transfer shortly before them; run 72 has none at
+all, and no halt.
 
-### ⛔ Reverted: offering only the connector with a monitor on it
+### ⭐ Two more, both vendor-derived
 
-Halving the bytes by advertising one connector also stopped the panel lighting -- two runs with both
-offered put the desktop up, two with one offered stayed dark. This dock's activation is one
-dock-wide transaction over every connector it has. The cost is real and wants a different answer: a
-head with no EDID should be configured and left black, not fed a full surface per repaint.
+* `ep84_queue_depth` 4 -> **1**. Measured: the vendor issues 313 IN submissions against 312
+  completions in 326 s, so it never has two outstanding. The driver already documented that a deeper
+  queue makes a dock refuse EP02.
+* `status_period_ms` **2500** on this dock, against 250 elsewhere. The vendor sends 179 sealed
+  control records in 326 s and nothing at all through silences of up to 79 s; here the pixels share
+  that endpoint.
+* The presence-transition re-engage now honours the deadline it was already setting. An empty socket
+  was re-engaging every two seconds -- 71 times in 145 s, seven paced control messages each.
+
+### ⚠ What still needs care
+
+* **Modes.** Both monitors here are 2560x1440 panels; the clock ceiling prunes 1440p and the
+  compositor will otherwise land a connector on **1280x1024**, which has no measured `Allocation`
+  row -- it takes one keyframe and draws nothing more. `Allocation::Measured` holds exactly one row,
+  1920x1080, and that is what the vendor uses. Do not offer a mode whose allocation is unmeasured.
+* **Damage selection is working**: a settled desktop selects 8-48 strips of 2040 and sends nothing
+  at all when nothing changes. A busy one runs 250-500 kB frames. Run 72's peak five seconds is
+  43.1 MB against the vendor's own 42.8 -- the envelope is fully used, not throttled.
+* ⛔ **Do not advertise only the connector that has a monitor.** It halves the bytes and stops the
+  panel lighting; the activation is one dock-wide transaction over every connector. A sinkless head
+  should be configured and left black instead.
 
 ## The 2026-08-17 daytime state
 
