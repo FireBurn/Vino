@@ -1,8 +1,88 @@
 # Handover
 
-Single current handover. Last updated **2026-08-13**. Everything below is either still true or a
+Single current handover. Last updated **2026-08-17**. Everything below is either still true or a
 trap worth not repeating; anything an earlier handover said and this does not is done, superseded
 or retracted. The DL7400/Navarro-era handover is in git history.
+
+---
+
+## START HERE -- the state on 2026-08-17
+
+⛔ **The panels are dark and the dock still halts.** vino loads, both connectors configure,
+selftests `pass:83 fail:0`, then EP02 halts partway through the first large frame (run 61: 35 MB,
+`-32` at 8.9 s). Two hypotheses were tested on hardware and are dead; a third died on inspection.
+**Do not re-run them.**
+
+### ★★★★★ The vendor's real cadence, measured over the whole session
+
+New `tools/capture/dlm-map.py` decodes an entire capture -- both endpoints, timestamps, pixel runs
+collapsed to frames, cadence per head. Every earlier tool answered a question about the *opening*,
+which is why this was missed for weeks. On `captures/ella-video-evdi-20260810`:
+
+```
+sub=0x00 (head 0): 3233 frames / 307.9 s = 10.5 fps
+    bytes  median  18,048   max 380,240
+    strips median      64   max   2038
+    gap ms median    16.5   p10 15.7   p90 81.7
+sub=0x01 (head 1):  116 frames / 300.4 s = 0.4 fps
+sealed CP records OUT: 94
+```
+
+⭐ **DLM's median frame is 64 strips of 2040 -- about 3% of the surface -- every 16.5 ms.** A full
+surface is its *maximum*, not its habit. vino's content frames are 341-392 records / 1.4 MB. That
+**damage-granularity gap is the live lead**, and it is neither rate nor choreography.
+⭐ The heads are wildly asymmetric in the vendor too: 3233 frames against 116.
+
+### ⛔ Three theories killed -- do not re-chase
+
+1. **Sustained rate.** `StreamPacing` holds vino inside the vendor's envelope (run 61 sent
+   9.95/13.75/11.35 MB in consecutive seconds; DLM never exceeds 13.8) and the dock **still halts**.
+   Rate was never the constraint.
+2. **Activation ordering.** `Stream(slot, frames)` -- presenting where the driver used to `fsleep`,
+   so the second connector comes up behind a running stream, as the vendor does -- is correct
+   against the capture and **did not light the panels**.
+3. **A head asymmetry in damage selection.** run 61 showed head 0 at 1982 strips and head 1 at 43,
+   and the log's `socket 1 colour transform updated` made "a colour pipeline forces full updates"
+   look obvious. Both wrong: `scanout.rs` computes its damage gate from **rotation alone**, colour
+   appears only in `direct_pixel_map` (the fast pixel read), and 114,720 B / 2040 strips is exactly
+   the **flat activation carrier**. run 61 died at 8.9 s before producing a content frame, so those
+   were training presentations. ⛔ Damage selection is not broken for colour; do not "fix" it.
+
+### ⚠ Five commits are stacked untested
+
+`4f8f2fc`..HEAD carry Sol's activation/delivery profile data, `StreamPacing`, the setup polls,
+`Stream(slot, frames)` and the record-layout naming. The set **does not light the panels**, and
+nobody can currently say whether dark is pre-existing or introduced. ⭐ **Re-establish the run 52
+baseline first** -- reset to the build that lit one panel, confirm it still does, then re-apply
+forward. Without it nothing after is bisectable.
+
+### What the next run must produce
+
+⛔ **No capture in the corpus contains vino's content frames.** run 61 died during activation, so
+every question about the 32x gap is unanswerable from what exists. The next dock cycle must survive
+past activation, be captured, and be mapped with `dlm-map.py` so vino's cadence block can be put
+beside the vendor's above.
+
+### ⭐ Tooling that now exists (use it before inferring)
+
+* `tools/capture/dlm-map.py` -- whole session, both directions, timings, cadence.
+* `tools/capture/choreography-diff.py` -- every ordering divergence, not just the first.
+* rr replay **works**: record **without** the `rr-norrguard` LD_PRELOAD shim, which was itself the
+  divergence (rr git master handles `MADV_GUARD_INSTALL`). Verified Ella trace in
+  `captures/rr-ella2` (56946 events). `scripts/rr-find-tail-writer.sh`.
+* `tools/capture/hook-cp-prewire.js` -- a DL3 message before it is sealed.
+  ⛔⛔ **Never hook `0x1cf436` or `0x269dd0`** -- they segfault DLM, not merely stall it.
+* ⛔⛔ DLM is **idle in steady state**: a hook that sees nothing has proved nothing unless control
+  records went out in the same window. Force a session with USB `authorized` 0->1.
+
+### ⭐ The opaque message tail, closed
+
+It is a **u32 connector selector at off22, a flag byte at off26, an HDCP message id at off27 and its
+payload at off28** -- read out of the vendor's own assembler at `0x586af0`, payloads confirmed live
+(`02`+rtx, `04`+Ekpub(128), `09`+rn, `0b`+edkey+riv, `0f`+V, `10`+Stream_Manage). Bytes past the
+message end are untouched allocation (`operator new(sz=36)`). vino already matches; the one defect
+found was introduced and reverted the same day. ⛔ Do not re-open -- it has been re-derived at least
+four times.
 
 ---
 
