@@ -44,15 +44,19 @@ off 32  hsync   : u16      off 40  vsync   : u16
 off 70  pixel clock : u16, units of 10 kHz     <- htotal = hactive + hblank
 ```
 
-## 3. The DL-3900 clamps 1440p to 50 Hz
+## 3. This sink gets 1440p at 50 Hz -- and that is the SINK's limit, not the dock's
 
-`2560x1440` is the one mode that does not come out at ~60. DLM sends CVT reduced blanking
-(2720x1474) at 200.25 MHz, which is **49.95 Hz**, and writes `50` into `off44`. The monitor offers
-the mode at 59.95; DLM drives it at 50 anyway.
+On this sink `2560x1440` is the one mode that does not come out at ~60: DLM sends 2720x1474 at
+200.25 MHz, which is **49.95 Hz**, and writes `50` into `off44`.
 
-This is a dock bandwidth decision, not a sink limit, and it is the DL-3900's analogue of the
-DL-6xxx clamping 180 Hz to 120. A driver that offers 2560x1440 on this dock and programs it at 60
-is asking for more than the vendor ever asks for.
+RETRACTED, and worth stating plainly because the first version of this file said it: this is **not**
+a dock-wide clamp and is **not** an analogue of the DL-6xxx clamping 180 Hz to 120. The companion
+capture `../ella-modesweep-dp-20260817` runs the same sweep on the same dock with a different sink
+(MSI MAG 27CQ6F over DisplayPort) and gets `2560x1440` at **2720x1481, 241.50 MHz, 59.95 Hz**.
+
+Same dock, same driver, same mode; different timing. So the timing in this record follows the
+**sink**, and a driver must not carry a static per-mode timing table. Derive the timing from the
+mode and the EDID, as any DRM driver does. Only the encoding fields below are constant.
 
 ## 4. off42 is sync polarity, and the encoding is now readable
 
@@ -70,12 +74,28 @@ existing reading of this field. The low byte is zero in nine of ten and `0x80` o
 uses reduced blanking, so `0x0080` is most likely the CVT-RB flag -- one sample, stated as a
 hypothesis, not a fact.
 
-## 5. off48 is not a row count
+## 5. off48 is not a row count -- it is a reciprocal of the padded line width
 
-`off48` moves inversely with resolution: 6241 at 1440p, 8192 at 1080p, 11915 at 1280x1024, 16384 at
-800x600, 21845 at 640x480. `8192 = 65536/8` and `21845 = 65536/3` exactly, so this is a fixed-point
-reciprocal of something per-line, not a count of rows. Whatever the driver currently calls "a
-measured row count" for this field, the name is wrong.
+`off48` moves inversely with resolution and depends on **hactive alone**. It is unchanged by
+vactive (1280x1024, 1280x960 and 1280x720 all give 11915), by refresh (1280x1024 at 60.02 and at
+75.02 both give 11915), and by sink (every value below is identical in the DisplayPort capture):
+
+```
+off48 = 16777216 // (round_up_128(hactive) + 128)
+```
+
+| hactive | padded | off48 |
+|---|---|---|
+| 2560 | 2560 | 6241 |
+| 1920 | 1920 | 8192 |
+| 1280 | 1280 | 11915 |
+| 1024 | 1024 | 14563 |
+| 800 | **896** | 16384 |
+| 640 | 640 | 21845 |
+
+Exact for all six. The padding is what gives it away: 800 is the only width that is not a multiple
+of 128, and it behaves as 896. So this is `2^24` over a padded line width, a fixed-point step per
+pixel -- not a count of rows, and the driver's name for the field is wrong.
 
 ## 6. What this retires
 
