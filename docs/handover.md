@@ -60,8 +60,14 @@ all, and no halt.
   row -- it takes one keyframe and draws nothing more. `Allocation::Measured` holds exactly one row,
   1920x1080, and that is what the vendor uses. Do not offer a mode whose allocation is unmeasured.
 * **Damage selection is working**: a settled desktop selects 8-48 strips of 2040 and sends nothing
-  at all when nothing changes. A busy one runs 250-500 kB frames. Run 72's peak five seconds is
-  43.1 MB against the vendor's own 42.8 -- the envelope is fully used, not throttled.
+  at all when nothing changes. A busy one runs 250-500 kB frames.
+* **It is slower than DLM, and the next work is there.** `stream_pacing` was set under the smallest
+  burst that had ever been refused, while the endpoint was still being halted by the framing bug;
+  run 72 saturated it exactly. Lifted to a 24 MB bucket at 8 MB/s, the dock then took 15.9 MB in
+  half a second and 20.1 MB in one -- both above what used to end the session -- with no endpoint
+  error. Whether anything else binds is unmeasured: `frame_period_ms` is 16 on this dock, one
+  scanout worker serves both heads, and a presentation is paced apart by a whole frame period on a
+  shared pipe.
 * ⛔ **Do not advertise only the connector that has a monitor.** It halves the bytes and stops the
   panel lighting; the activation is one dock-wide transaction over every connector. A sinkless head
   should be configured and left black instead.
