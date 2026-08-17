@@ -9,59 +9,90 @@ or retracted. The DL7400/Navarro-era handover is in git history.
 ## START HERE -- the state on 2026-08-17
 
 ⛔ **The panels are dark and the dock still halts.** vino loads, both connectors configure,
-selftests `pass:83 fail:0`, then EP02 halts partway through the first large frame (run 61: 35 MB,
-`-32` at 8.9 s). Two hypotheses were tested on hardware and are dead; a third died on inspection.
-**Do not re-run them.**
+selftests pass, then EP02 halts partway through a large frame (run 61: 35 MB, `-32` at 8.9 s).
 
-### ★★★★★ The vendor's real cadence, measured over the whole session
+### ⛔⛔ Every number the last handover led with was wrong -- the tool was misreading the capture
 
-New `tools/capture/dlm-map.py` decodes an entire capture -- both endpoints, timestamps, pixel runs
-collapsed to frames, cadence per head. Every earlier tool answered a question about the *opening*,
-which is why this was missed for weeks. On `captures/ella-video-evdi-20260810`:
+`tools/capture/dlm-map.py` had its own usbmon reader, and it took the transfer payload from
+`USBMON_HDR.size` (40) instead of the 64-byte offset a mmapped capture actually uses. That splices
+**24 zero bytes into the record stream at every transfer boundary**. The parser resynchronises by
+scanning, so the opening of a capture reads fine and the numbers look plausible -- but every record
+that spans a transfer is corrupted, and a busy stream desynchronises into invented records with
+50,000-byte lengths. Fixed; `usbmon_read.iter_transfers` was always right and every tool built on
+it (`record-stream`, `sequence-diff`, `ring-openers`, `stall-point`, `choreography-diff`,
+`ella_decode`) was unaffected.
+
+Re-measured with the reader fixed:
+
+| | old (wrong) | measured |
+|---|---|---|
+| vendor head 0 | 3233 frames, 10.5 fps, median 18,048 B / 64 strips | **6473 frames, 20.0 fps, median 16,416 B / 64 strips** |
+| vendor head 1 | 116 frames, 0.4 fps | **859 frames, 2.9 fps, median 18,464 B / 25 strips** |
+| vendor peak second | "never above 13.8 MB" | **34.4 MB** |
+| vendor peak 100 ms | "never above 6.14 MB" | **11.9 MB (119 MB/s)** |
+| run 61 peak second | "9.95 / 13.75 / 11.35 MB" (calendar buckets) | **23.35 MB sliding** |
+| run 61 content frames | "died before producing one" | **25 of them, every one 2040/2040 strips** |
+
+⭐ The one thing the old numbers got right is the shape of the gap: **DLM's median frame is 64
+strips of 2040, about 3% of the surface. vino sent 2040 of 2040 on every frame in run 61 and on
+every frame in run 52.** A full surface is the vendor's maximum, not its habit.
+
+### ⛔ Rate is dead, and this time with the right numbers
+
+`tools/capture/envelope.py` reports peak bytes in a *sliding* window at eight timescales -- calendar
+buckets are what hid this. vino is inside the vendor at every scale:
 
 ```
-sub=0x00 (head 0): 3233 frames / 307.9 s = 10.5 fps
-    bytes  median  18,048   max 380,240
-    strips median      64   max   2038
-    gap ms median    16.5   p10 15.7   p90 81.7
-sub=0x01 (head 1):  116 frames / 300.4 s = 0.4 fps
-sealed CP records OUT: 94
+                0.05s   0.10s   0.25s   0.50s   1.00s   2.00s   3.00s   5.00s
+vendor  MB       7.91   11.86   23.73   33.27   34.44   36.24   38.48   42.80
+run 61  MB       8.27   11.64   11.87   15.59   23.35   35.04   35.04   35.05
 ```
 
-⭐ **DLM's median frame is 64 strips of 2040 -- about 3% of the surface -- every 16.5 ms.** A full
-surface is its *maximum*, not its habit. vino's content frames are 341-392 records / 1.4 MB. That
-**damage-granularity gap is the live lead**, and it is neither rate nor choreography.
-⭐ The heads are wildly asymmetric in the vendor too: 3233 frames against 116.
+The vendor bursts a frame at 158 MB/s and then goes quiet; its curve is a ~32 MB bucket refilling
+at ~2.2 MB/s, which is what `PROFILE_ELLA.stream_pacing` now states. The previous 16 MB/s figure
+permitted 80 MB in five seconds where the vendor's own worst five seconds is 42.8 MB, and its
+stated justification ("no second above 13.8 MB", "17.5 MB inside 0.81 s halts it") came from the
+broken reader. ⛔ Do not re-open rate: the vendor does everything vino did and more.
 
-### ⛔ Three theories killed -- do not re-chase
+### ⛔ Four more mechanisms measured dead on run 61
 
-1. **Sustained rate.** `StreamPacing` holds vino inside the vendor's envelope (run 61 sent
-   9.95/13.75/11.35 MB in consecutive seconds; DLM never exceeds 13.8) and the dock **still halts**.
-   Rate was never the constraint.
-2. **Activation ordering.** `Stream(slot, frames)` -- presenting where the driver used to `fsleep`,
-   so the second connector comes up behind a running stream, as the vendor does -- is correct
-   against the capture and **did not light the panels**.
-3. **A head asymmetry in damage selection.** run 61 showed head 0 at 1982 strips and head 1 at 43,
-   and the log's `socket 1 colour transform updated` made "a colour pipeline forces full updates"
-   look obvious. Both wrong: `scanout.rs` computes its damage gate from **rotation alone**, colour
-   appears only in `direct_pixel_map` (the fast pixel read), and 114,720 B / 2040 strips is exactly
-   the **flat activation carrier**. run 61 died at 8.9 s before producing a content frame, so those
-   were training presentations. ⛔ Damage selection is not broken for colour; do not "fix" it.
+1. **A malformed bitstream.** All **49,591** strips vino put on the wire decode cleanly under
+   `tools/codec/ella_decode.py` -- 37,341 with AC rows, 12,250 flat, zero failures.
+2. **Framing.** Every frame is N x 65,536 plus one short transfer; no record exceeds 4084 bytes;
+   no record is split.
+3. **The ring.** `ring-openers.py`: `(0,1,1) (1,2,2) (2,3,0) ...` on both heads, the vendor's walk.
+4. **Frame shape.** A vendor full surface is 530 records / 1,882,144 B; vino's is 538 records /
+   1,920,272 B. When both send everything, they send the same thing.
 
-### ⚠ Five commits are stacked untested
+### ⭐ What is left: vino never sends a delta
 
-`4f8f2fc`..HEAD carry Sol's activation/delivery profile data, `StreamPacing`, the setup polls,
-`Stream(slot, frames)` and the record-layout naming. The set **does not light the panels**, and
-nobody can currently say whether dark is pre-existing or introduced. ⭐ **Re-establish the run 52
-baseline first** -- reset to the build that lit one panel, confirm it still does, then re-apply
-forward. Without it nothing after is bisectable.
+Neither capture in the corpus exercises damage selection, which is why this has never been settled:
 
-### What the next run must produce
+* **run 52** (the run that lit a panel) sent **12 frames, all 1,442,960 B, all 2040 strips** -- three
+  keyframe presentations per head per stream open, and then nothing. Its desktop never changed, so
+  the delta path never ran. It survived because it only ever sent 13.4 MB.
+* **run 61** sent 25 frames, all 2040 strips, and consecutive frames share **0.0%** of their strip
+  bytes -- the content genuinely moved everywhere. That is a fresh output's start-up animation, not
+  a selection bug, and it also cannot settle the question.
 
-⛔ **No capture in the corpus contains vino's content frames.** run 61 died during activation, so
-every question about the 32x gap is unanswerable from what exists. The next dock cycle must survive
-past activation, be captured, and be mapped with `dlm-map.py` so vino's cadence block can be put
-beside the vendor's above.
+So the next run has to catch a **settled** desktop. `scanout.rs` now logs one line per frame:
+
+```
+vino: scanout head=0 delta 336/2040 strips from 3 rect(s), 210 moved
+```
+
+`moved` is strips whose pixels changed; the selected count is what goes on the wire. If they are
+close, selection is working and the desktop really is busy. If `moved` is small and the selection is
+the surface, the widening is the retransmit debt (`damage_frames`) or the macro-tile rounding.
+
+Two amplifiers were fixed on inspection before that run, because both are wrong regardless:
+
+* `changed_strip_rects` built its rectangle list on the **strip** grid and gave up on the whole
+  surface past 128 rectangles. Damage is transmitted at macro-tile granularity anyway, so the list
+  is now built there: scattered damage collapses about sixteen-fold and stays inside the ceiling.
+* The keepalive queried status every **250 ms** on a dock where the vendor queries every **2.5 s**
+  and sends nothing at all during its long silences. Now `DockProfile::status_period_ms`; the
+  dedicated-pipe docks keep 250 ms, where a query contends with nothing.
 
 ### ⭐ Tooling that now exists (use it before inferring)
 
@@ -108,10 +139,14 @@ while it waits.
   frame delimiter and the closing record is the last thing before it.
 - The prologue frame is closed the same way. It is the flat surface as 2040 strips of 54 bytes,
   114,720 bytes exactly, and vino's is byte-identical.
-- **Cadence 16.6 ms median** per head (p10 15.8, floor 1.3 ms). Peak 82.9 MB/s in a 100 ms window;
-  mean 0.888 MB/s over the whole capture. **Idle sends nothing.**
-- Frame sizes follow content: 361 kB typical, 1,882,144 bytes largest. The vendor's first head goes
-  flat frame -> 361 kB content immediately.
+- **Cadence 16.5 ms median** per head (p10 15.6, floor 1.3 ms), 20.0 fps on head 0 and 2.9 on
+  head 1. Peak **118.7 MB/s in a 100 ms window** and 34.4 MB in the worst second; mean 0.89 MB/s
+  over the whole capture. **Idle sends nothing.**
+- Frame sizes follow content: **median 16 kB**, 361 kB where a head is busy, 1,882,144 bytes
+  largest. The vendor's first head goes flat frame -> 361 kB content immediately.
+- ⭐ The two heads' records **interleave inside a single 64 kB transfer** when both are busy, at
+  record granularity. vino serialises a whole frame per head under the queue mutex. Neither is
+  known to matter, but they are not the same transport model.
 - **No record ever exceeds 4084 bytes**, and a record is **never split**: control records sit
   between records, never inside one.
 
@@ -146,6 +181,8 @@ stopped" into a named record.
 | `tools/render-dc.py` | the pixel oracle -- the only check that can see an escape payload's bit order |
 | `tools/capture/record-stream.py` | the decrypted reference sequence, with keys |
 | `tools/capture/choreography.py` | what a sender does and when: frames and their riders (`--frames`), where its USB transfer boundaries fall relative to frame boundaries (`--transfers`), the record stream with images collapsed (`--records`) |
+| `tools/capture/dlm-map.py` | the whole session as one timeline: both planes, timings, frames, per-head cadence |
+| `tools/capture/envelope.py` | peak bytes in a sliding window at eight timescales -- the only honest way to compare two senders' rates |
 
 ### Confirmed on hardware, do not re-chase
 
@@ -203,19 +240,19 @@ stopped" into a named record.
 
 ## Next, in priority order
 
-1. ⭐ **Re-establish the run 52 baseline.** Five commits are stacked untested and the set does not
-   light the panels; nobody can say whether dark is pre-existing or introduced. Reset to the build
-   that lit one panel, confirm it still does, then re-apply forward. Nothing after this is
-   bisectable without it.
-2. ⭐ **A run that survives activation, captured and mapped** with `tools/capture/dlm-map.py`. No
-   capture in the corpus holds vino's *content* frames -- run 61 died at 8.9 s -- so every question
-   about the damage-granularity gap is currently unanswerable.
-3. **Close the damage gap.** The vendor's median frame is 64 strips of 2040; vino's content frames
-   are 341-392 records. Before touching the encoder, measure vino's changed-strip count against
-   KWin's damage: either the compositor really damages everything, or the per-strip hash comparison
-   is being defeated. ⛔ Not by colour -- see the dead theories in START HERE.
-4. **Explain the vendor's own head asymmetry** -- 3233 frames to head 0 against 116 to head 1 over
-   the same 300 s. vino drives both heads symmetrically.
+1. ⭐ **One run on a settled desktop, captured.** Let the output come up, wait for the start-up
+   animation to finish, then leave the desktop alone and move one window. Read the per-frame
+   `N/2040 strips from R rect(s), M moved` lines: that single line says whether damage selection
+   works, and no capture in the corpus answers it.
+2. **Map that capture** with `tools/capture/dlm-map.py` and profile it with
+   `tools/capture/envelope.py`, and put both blocks beside the vendor's in START HERE.
+3. **Close whatever the gap turns out to be.** If `moved` is already the whole surface on a settled
+   desktop, the snapshot or the hash is at fault, not the selector. If `moved` is small and the
+   selection is not, `damage_frames` (3 on this dock) and the macro-tile rounding are the two
+   multipliers, in that order.
+4. **Explain the vendor's own head asymmetry** -- 6473 frames to head 0 against 859 to head 1 over
+   the same 300 s. vino drives both heads symmetrically, and each of its full surfaces costs what
+   the vendor's largest frame costs.
 5. Only then: the firmware downgrade with the 11.2.45 image.
 
 ⛔ Closed, do not re-open: the ring off-by-one, the prologue inside the bracket, the strip grammar
