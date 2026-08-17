@@ -12,15 +12,15 @@ this one does not is done, superseded or retracted; the previous version is in g
 That was the open question and the answer is clean. What remains are three independent bugs, one
 per area, none of them caused by the others.
 
-⭐ **Each of the three now has a fix in the tree and none of them has been tested on hardware.**
-The next session's job is one run per dock, in the order below; see
-[Landed on 2026-08-17](#landed-on-2026-08-17-all-three-unvalidated-on-hardware).
+⭐⭐ **The DL7400 paints a desktop again** (user-confirmed 2026-08-17, 2560x1440). That was the
+worst of the three and it is closed; what is left is the EPIPE's *cause* on Ella, and hardware runs
+for two fixes that have not been exercised.
 
 | dock | USB | state |
 |---|---|---|
-| **Ella** HP 3005pr, DL-3900 | `17e9:430a` | Lights both panels and drives the desktop. Dies under sustained load -- see [The EPIPE](#the-epipe-ellas-open-bug). |
-| **Navarro** DL-7400 | `17e9:7000` | Session, EDID and mode-set all good. First content frame stalls EP08 forever -- see [The EP08 wall](#the-ep08-wall-navarros-open-bug). |
-| **Ridge** D6000, DL-6xxx | `17e9:6006` | Holds a control session and a keepalive. Not exercised with a monitor recently. |
+| **Ella** HP 3005pr, DL-3900 | `17e9:430a` | Lights both panels and drives the desktop. Dies under sustained load, and now recovers by itself -- see [The EPIPE](#3-the-epipe----ellas-open-bug). |
+| **Navarro** DL-7400 | `17e9:7000` | ✅ **Drives a 2560x1440 desktop.** See [The EP08 wall](#1-the-ep08-wall----solved-2026-08-17-hw-verified). |
+| **Ridge** D6000, DL-6xxx | `17e9:6006` | Holds a control session and a keepalive. Not exercised with a monitor recently. ⚠ It shares the carrier loop the EP08 fix touched. |
 
 Concurrency evidence, so nobody re-opens it: all three bind as separate cards with distinct DRM
 minors; the D6000 was hot-plugged into a live two-panel Ella session and came up clean without
@@ -34,88 +34,46 @@ one.
 
 ## Open work, in priority order
 
-### 1. The EP08 wall -- Navarro's open bug
+### 1. The EP08 wall -- ✅ SOLVED 2026-08-17, HW-verified
 
-⭐ **A candidate cause is identified and fixed in the tree; it needs one hardware run.** See
-[what the code review found](#what-the-code-review-of-the-ep08-wall-found) below -- the short
-version is that the per-strip parameter map goes part-way through a frame's image records on the
-carrier path and after all of them on the scanout path, and the carrier path's own comment records
-that the second placement is what leaves the endpoint un-drained. `6112303b251d` gives both paths
-the same placement.
+`be8d71890581`. The DL7400 paints a desktop at 2560x1440: user-confirmed, with the wire showing
+full 3,936,656-byte keyframes accepted where none had ever been.
 
-⛔ **It is NOT a DL-3x00 regression, and the search space in the previous handover was wrong.** See
-below; do not spend hardware time bisecting the Ella series for it.
+⭐ **A ring slot was spent on a frame the dock never saw.** The carrier loop counted ring slots
+above the send, and its deferral path -- taken when the endpoint cannot yet accept a whole frame --
+`continue`s to the top without sending. Each deferred pass therefore advanced the frame counter.
+Since the ring phase is that counter modulo the ring depth, a step equal to the depth leaves the
+phase unchanged, so from the fifth frame on **every frame told a three-buffer dock it was filling
+slot 0** -- the buffer it was scanning out. The dock stopped taking bytes. The fix counts the slot
+once the presentation has gone out, beside the frame count that already worked that way.
 
-Navarro reaches a **live, correct** state and then cannot move pixels: control session up, EDID
-read (MSI, 2560x1440), mode-set sent, training complete, `KMS CRTC enable`. Then every content
-frame fails identically:
+Introduced by `f72590773852`, which replaced `repeat` (incremented after a successful send) with
+`named` (incremented before it).
+
+⚠ **Why this resisted every byte comparison.** No single frame is malformed. Record grammar,
+trailer, decoder configuration and the whole control plane compare *identical* against a working
+revision -- only the sequence across frames is wrong. And it is timing-sensitive: whether the
+deferral fires depends on how fast the dock drains, so adding log lines around the counter was by
+itself enough to make a failing build pass. ⛔ Do not conclude anything from a single passing run,
+and do not conclude "the bytes are the same" means "the stream is the same".
+
+⭐⭐ **The method is the reusable part, and it is cheap.** The failure is machine-detectable, so it
+needs no eyes and no judgement:
 
 ```
-head=0 endpoint=0x08 persistent video queue opened (depth=8, 65536 B URBs)
-scanout head=0 pipeline submit at off=524288/2212608 failed
-head=0 retired failed physical video queue (ETIMEDOUT)
+load with debug=1, wait 40 s, then read dmesg:
+  "strip map 3600 strip(s)"        the 2560x1440 frame was attempted
+  "pipeline submit at off=... failed"   the dock refused it
 ```
 
-`524288 = 8 x 65536` -- the full URB queue. Not one of the eight ever completes. Across 81
-observed failures: 72 at `off=524288`, 5 at `65536`, 4 at `0`.
+That drove a `git bisect run` over 35 commits unattended (~2 min per step), then a within-commit
+split by reverting file groups, then this. ⚠ Unplug the other dock first: swapping the module means
+unloading it, which takes every dock down.
 
-What this rules in and out:
-
-- ⛔ **Not a halt.** vino's own `GET_STATUS` sample reads `0x0000 halt=0`.
-- ⛔ **Not a decode or framing fault.** A dock choking on bad records still drains the endpoint and
-  completes the transfer, then shows corruption. Never completing means the bytes are not being
-  accepted at the USB level, before any decode.
-- ⭐ **The dock is otherwise fully alive.** With the panel black, the **hardware cursor still moves
-  on it**. The cursor is a CP record on EP02; the desktop is EP08 bulk. So mode-set landed, the
-  downstream sink is powered, the dock's scanout engine is running and compositing, and the control
-  session is healthy. The failure is isolated to the EP08 bulk path alone.
-- ⭐ **Flat frames pass, content frames do not.** The startup/training frame (13 chunks, all class 0,
-  longest 54 B) goes through. The first real desktop frame (147 chunks, classes
-  `[679, 2833, 76, 12]`, longest 1888 B) does not.
-
-#### What the code review of the EP08 wall found
-
-⛔ **"This is a regression from the DL-3x00 work" is RETRACTED.** Three things say otherwise:
-
-- `a13775e0cdc5`, called the known-good revision, is from **2026-07-28** -- before the DL7400 was
-  ever driven and before the parameter map existed. It is a Ridge reference and says nothing about
-  Navarro.
-- The same symptom is recorded on **2026-08-05**, days before the Ella series began: *"`edid_override`
-  WORKS but the first CONTENT frame stalls EP08."*
-- Both leading candidates are **no-ops for this dock**, by inspection:
-  - `a6411f11524b` changed `full && !video_on_ctrl_pipe()` to `full`. Navarro is not on the control
-    pipe, so it took the `dock_buffers` branch before the commit and takes it after. Zero change.
-  - `f52d2ff30699` is gated on a stream budget, and Navarro's profile is `StreamPacing::UNMETERED`,
-    which returns before the ledger is touched. Zero change.
-
-⭐ **What the dmesg actually shows**, read against the code (`captures/ella-socket1-20260817/dmesg.txt`
-around t=6197, which recorded the Navarro dock as well):
-
-- The five carrier frames are **consumed** -- 210,048 B each, presented over 400 ms, the endpoint
-  draining between them. The dock is alive and taking bulk video.
-- The first content frame opens a **fresh** queue, so its eight 64-KiB transfers are all new
-  submissions and none of them completes: the dock accepts **nothing at all** of it.
-- So the discriminator is the frame, not the endpoint and not the rate.
-
-⭐ **The difference between the two frames is where the parameter map sits.** `submit_prompt_training`
-splices it `NAVARRO_PARAM_IMAGE_OFFSET` (115,168) bytes into the image records, as the vendor does,
-and carries a comment recording what the other placement cost: *"putting the same valid records
-after all pixels lets two presentations complete, then leaves the first transfer of frame three
-permanently pending."* `encode_and_send_wht` built exactly that frame -- its scatter list was
-`[chunks][parameter map][trailer]`. The fix gives both paths the same placement, rounded back to a
-chunk boundary on a content frame because a chunk holds whole records and the raw byte offset does
-not.
-
-⚠ **Unproven until it runs.** What is established is that the two paths disagreed and that the
-working one is the one that matches the vendor. If the panel is still black afterwards, the next
-thing to look at is the map's *contents* on a content frame: the vendor's quiescent frames carry an
-all-zero map, `docs/protocol/navarro-decoded.md` §3.4 warns "do not invent values", and this is the
-first frame on which vino sends non-zero ones (`classes [3400, 200, 0, 0]`).
-
-⛔ **`07124a5a3ca1` ("never end a frame on a full packet") is NOT the cause**, though it looks like
-it. It only modifies a frame's *last* transfer, and Navarro dies on the first eight URBs. Its
-condition never fires on the failing frame anyway: the final chunk is 49,920 B, which is
-`48 x 1024 + 768`, not a multiple of the packet size. Eliminated -- do not re-chase it.
+⭐ **The decisive instrument was the ring sequence itself**, read off the frame trailer of each
+EP08 frame group -- `slot` at offset 19, `ring` at 22, `frame_no` at 25. Good cycles
+`0,2,4,0,2,4` with `frame_no` stepping by one; broken sticks at slot 0. Reference captures:
+`~/vinocap/nav-good.pcapng`, `nav-bad.pcapng`, `nav-fixed.pcapng` (not committed).
 
 ### 2. `off48` is wrong on every mode set -- ✅ FIXED, needs a hardware run
 
@@ -165,10 +123,18 @@ dock has answered nothing for 90141 ms; abandoning the session
 shared video/control pipe failed (EPIPE); abandoning the session
 ```
 
-⛔⛔ **vino's own recovery is what leaves it dead** -- ✅ **root-caused and fixed** (`53b8fa4cd159`),
-needs a hardware run. It correctly resets the dock and then never re-runs bring-up; the card sits
-there with connectors still reporting `connected`, KWin still flipping into a dock that is not
-listening, and only a manual driver rebind brings it back.
+⛔⛔ **vino's own recovery is what leaves it dead** -- ✅ **root-caused, fixed and HW-VERIFIED**
+(`53b8fa4cd159`). It used to reset the dock and then never re-run bring-up; the card sat there with
+connectors still reporting `connected`, KWin still flipping into a dock that was not listening, and
+only a manual driver rebind brought it back. Measured on 2026-08-17, the whole cycle now runs
+unattended in about six seconds:
+
+```
+shared video/control pipe failed (EPIPE); abandoning the session
+resetting the dock to recover the control session
+reset complete; rebinding for a fresh session
+DL-3x00 dock (Ella, DL-3900)   [re-probe]  ...  socket 1 monitor connected
+```
 
 ⭐ **A reset does not re-probe when the driver supplies `pre_reset` and `post_reset`.** Supplying
 the pair is how a driver tells the USB core it can carry its state across a reset, and the core
@@ -180,6 +146,17 @@ is the manual rebind, done by the driver at the moment it knows one is needed.
 
 ⚠ **This is the "never comes back" half only.** What causes the EPIPE in the first place is still
 open, and the cross-head budget below is still the lead.
+
+⭐⭐ **Half the bytes were going to a socket with no monitor on it, and that is what EPIPE'd.**
+Measured 2026-08-17: Ella offers both connectors, and DP-9 reports `connected` with **zero** bytes
+of EDID where DP-8 carries 256. The compositor enables and paints the empty one, and the session
+that died did so on `head=1` -- the phantom -- pushing a frame onto the pipe the control plane
+shares. `0948e647efd0` stops painting a head with no EDID; the connector is still offered, because
+hiding it was measured to stop the panel lighting at all (`a3a153182547`).
+
+⚠ **The phantom is still visible to the user as a third screen.** That is the deliberate part of
+the trade. Whether it can now be hidden is worth re-testing: the measurement that forced it was
+taken while this dock still published **four** connectors, which `5ba58eae7cdd` has since fixed.
 
 **The vendor reference now exists** (`captures/ella-coldplug-load-20260817` and
 `captures/ella-twohead-load-20260817`, both from a cold plug, both with their own keys):
@@ -201,15 +178,28 @@ same recorder and method for both, so the ratio holds, but quote `usb-session-st
 
 ---
 
-## Landed on 2026-08-17, all three unvalidated on hardware
+## Landed on 2026-08-17
 
-These are one commit per open bug above, each building warning-clean on its own so a bad hardware
-result is bisectable. **Nothing here has been near a dock.** Both docks were attached and vino was
-unloaded while they were written, and loading it would have spent Ella's bring-up.
+Each builds warning-clean on its own, so a bad hardware result is bisectable. Selftests read
+`pass:88 fail:0` on hardware.
 
-- `6112303b251d` **Put a DL7400's parameter map among its records.** Open bug 1.
-- `53b8fa4cd159` **Come back from the reset that recovers a wedged dock.** Open bug 3's second half.
-- `88e0ab5de5e6` **Derive a DL-3x00's framebuffer row count from the width.** Open bug 2.
+- `be8d71890581` **Spend a ring slot only on a frame the dock received.** ✅ HW-verified -- the
+  DL7400 paints a desktop. Open bug 1.
+- `53b8fa4cd159` **Come back from the reset that recovers a wedged dock.** ✅ HW-verified.
+- `0948e647efd0` **Stop painting a DL-3x00 socket with nothing plugged into it.** ✅ HW-verified:
+  `scanout head=1 deferred: no monitor has described this socket`, once per repaint, on the
+  connector with no EDID.
+- `6470d5ff7d9d` **Open a stream with the carrier frames the vendor sends.** ⚠ Not the EP08 fix,
+  and not independently validated -- it was in the tree when that fix was measured.
+  The carrier was bounded by a 400 ms window rather than a count, so the *same* DL7400 at the same
+  mode opened a stream with **four** carrier frames when its endpoint was draining slowly and
+  **852** when it was not -- and every one of them walks the dock's ring and steps its frame
+  counter. Now profile data: 5 for the DL7400, 1 for Ella, and the DL-6xxx keeps its measured
+  window.
+- `88e0ab5de5e6` **Derive a DL-3x00's framebuffer row count from the width.** ⚠ Not exercised --
+  the values are unchanged at 1920x1080, which is what Ella ran. A mode sweep is what tests it.
+- `6112303b251d` **Put a DL7400's parameter map among its records.** ⚠ Did **not** fix the EP08
+  wall; see open bug 1.
 - `9c391ecae94c` Sort the KUnit re-exports -- the tree was not `rustfmt`-clean at HEAD.
 
 ⚠ A build gotcha worth keeping: an ordinary `/` on a value the compiler cannot prove non-zero adds
