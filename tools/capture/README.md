@@ -40,6 +40,24 @@ live. So the wire alone is unreadable exactly where device support comes from.
 (`DisplayLinkManager` sha256 `d3584c4369a594e9bcac…`). On another build the offset must be
 re-derived -- do not guess, because a wrong hook yields an empty key and a silently keyless capture.
 
+## Reading a whole session
+
+`dlm-map.py` prints one timeline for a capture -- control records named, pixel runs collapsed into
+frames, per-head cadence at the end. `envelope.py` prints peak bytes in a *sliding* window at eight
+timescales, which is the only comparison between two senders' rates that survives contact with a
+burst: bytes bucketed by calendar second read a 23 MB peak as "9.9 / 13.8 / 11.3".
+
+```sh
+./dlm-map.py wire.pcapng keys.candidates.json --out map.txt
+./envelope.py wire.pcapng
+```
+
+⚠ Both read `usbmon_read.iter_transfers`, which finds the transfer payload at 48 or 64 bytes
+depending on the capture. A reader that starts at the 40-byte header size instead splices 24 zero
+bytes into the stream at every transfer boundary; the record walker resynchronises past them, so
+the opening of a capture still parses and the resulting numbers look plausible. Do not hand-roll
+this.
+
 ## Slicing a capture by action
 
 The guided run writes `journal.tsv` as `epoch<TAB>begin:label` / `epoch<TAB>end:label`. Those are the

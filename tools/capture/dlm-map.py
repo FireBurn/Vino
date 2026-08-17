@@ -73,8 +73,12 @@ def transfers(path, endpoints):
             if len(pkt) < u.USBMON_HDR.size:
                 continue
             f = u.USBMON_HDR.unpack_from(pkt, 0)
-            utype, xfer, epnum = chr(f[1]), f[2], f[3]
-            payload = pkt[u.USBMON_HDR.size :]
+            utype, xfer, epnum, len_cap = chr(f[1]), f[2], f[3], f[12]
+            # A mmapped capture carries an ISO/interval descriptor between the header and the
+            # transfer data. Starting at the header size instead splices 24 zero bytes into the
+            # stream at every transfer boundary, which shifts every record that spans one.
+            base = 64 if len(pkt) >= 64 + len_cap else 48
+            payload = pkt[base : base + len_cap]
             if xfer != 3 or not payload:
                 continue
             ep_in = bool(epnum & 0x80)
