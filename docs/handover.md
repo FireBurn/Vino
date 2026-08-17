@@ -12,6 +12,10 @@ this one does not is done, superseded or retracted; the previous version is in g
 That was the open question and the answer is clean. What remains are three independent bugs, one
 per area, none of them caused by the others.
 
+⭐ **Each of the three now has a fix in the tree and none of them has been tested on hardware.**
+The next session's job is one run per dock, in the order below; see
+[Landed on 2026-08-17](#landed-on-2026-08-17-all-three-unvalidated-on-hardware).
+
 | dock | USB | state |
 |---|---|---|
 | **Ella** HP 3005pr, DL-3900 | `17e9:430a` | Lights both panels and drives the desktop. Dies under sustained load -- see [The EPIPE](#the-epipe-ellas-open-bug). |
@@ -32,7 +36,15 @@ one.
 
 ### 1. The EP08 wall -- Navarro's open bug
 
-The worst one, and the cheapest to investigate because it needs no hardware time.
+⭐ **A candidate cause is identified and fixed in the tree; it needs one hardware run.** See
+[what the code review found](#what-the-code-review-of-the-ep08-wall-found) below -- the short
+version is that the per-strip parameter map goes part-way through a frame's image records on the
+carrier path and after all of them on the scanout path, and the carrier path's own comment records
+that the second placement is what leaves the endpoint un-drained. `6112303b251d` gives both paths
+the same placement.
+
+⛔ **It is NOT a DL-3x00 regression, and the search space in the previous handover was wrong.** See
+below; do not spend hardware time bisecting the Ella series for it.
 
 Navarro reaches a **live, correct** state and then cannot move pixels: control session up, EDID
 read (MSI, 2560x1440), mode-set sent, training complete, `KMS CRTC enable`. Then every content
@@ -61,23 +73,65 @@ What this rules in and out:
   longest 54 B) goes through. The first real desktop frame (147 chunks, classes
   `[679, 2833, 76, 12]`, longest 1888 B) does not.
 
-**This is a regression.** Navarro worked before the DL-3x00 work. The search space is small: eight
-commits touch `drm_sink/scanout.rs` or `usb_link.rs` since the Ella series began, and
-`a13775e0cdc5` -- the known-good D6000 revision -- is still in the tree to diff against.
+#### What the code review of the EP08 wall found
+
+⛔ **"This is a regression from the DL-3x00 work" is RETRACTED.** Three things say otherwise:
+
+- `a13775e0cdc5`, called the known-good revision, is from **2026-07-28** -- before the DL7400 was
+  ever driven and before the parameter map existed. It is a Ridge reference and says nothing about
+  Navarro.
+- The same symptom is recorded on **2026-08-05**, days before the Ella series began: *"`edid_override`
+  WORKS but the first CONTENT frame stalls EP08."*
+- Both leading candidates are **no-ops for this dock**, by inspection:
+  - `a6411f11524b` changed `full && !video_on_ctrl_pipe()` to `full`. Navarro is not on the control
+    pipe, so it took the `dock_buffers` branch before the commit and takes it after. Zero change.
+  - `f52d2ff30699` is gated on a stream budget, and Navarro's profile is `StreamPacing::UNMETERED`,
+    which returns before the ledger is touched. Zero change.
+
+⭐ **What the dmesg actually shows**, read against the code (`captures/ella-socket1-20260817/dmesg.txt`
+around t=6197, which recorded the Navarro dock as well):
+
+- The five carrier frames are **consumed** -- 210,048 B each, presented over 400 ms, the endpoint
+  draining between them. The dock is alive and taking bulk video.
+- The first content frame opens a **fresh** queue, so its eight 64-KiB transfers are all new
+  submissions and none of them completes: the dock accepts **nothing at all** of it.
+- So the discriminator is the frame, not the endpoint and not the rate.
+
+⭐ **The difference between the two frames is where the parameter map sits.** `submit_prompt_training`
+splices it `NAVARRO_PARAM_IMAGE_OFFSET` (115,168) bytes into the image records, as the vendor does,
+and carries a comment recording what the other placement cost: *"putting the same valid records
+after all pixels lets two presentations complete, then leaves the first transfer of frame three
+permanently pending."* `encode_and_send_wht` built exactly that frame -- its scatter list was
+`[chunks][parameter map][trailer]`. The fix gives both paths the same placement, rounded back to a
+chunk boundary on a content frame because a chunk holds whole records and the raw byte offset does
+not.
+
+⚠ **Unproven until it runs.** What is established is that the two paths disagreed and that the
+working one is the one that matches the vendor. If the panel is still black afterwards, the next
+thing to look at is the map's *contents* on a content frame: the vendor's quiescent frames carry an
+all-zero map, `docs/protocol/navarro-decoded.md` §3.4 warns "do not invent values", and this is the
+first frame on which vino sends non-zero ones (`classes [3400, 200, 0, 0]`).
 
 ⛔ **`07124a5a3ca1` ("never end a frame on a full packet") is NOT the cause**, though it looks like
 it. It only modifies a frame's *last* transfer, and Navarro dies on the first eight URBs. Its
 condition never fires on the failing frame anyway: the final chunk is 49,920 B, which is
 `48 x 1024 + 768`, not a multiple of the packet size. Eliminated -- do not re-chase it.
 
-Leading candidates now: `a6411f11524b` ("a keyframe must reach every dock buffer") and
-`f52d2ff30699` ("hold a shared-pipe dock to the throughput its vendor uses"), both of which touch
-how much is submitted before anything is waited on.
+### 2. `off48` is wrong on every mode set -- ✅ FIXED, needs a hardware run
 
-### 2. `off48` is wrong on every mode set
+`88e0ab5de5e6`. The DL-3x00 allocation is now derived rather than looked up, so every resolution
+gets the row count the vendor sends instead of a family default. The values are unchanged at
+1920x1080, the one resolution the old table covered, so a mode sweep is what tests this.
 
-Measured, cross-validated, and going out today. **vino sends `0x6000` (24576) for 1920x1080 where
-DLM sends `8192`.**
+⭐ The vendor's own serializer settles the general rule, and it agrees with the closed form:
+`rows = allocation_bytes / (render_stride * bytes_per_pixel)`. A DL-3x00 partitions **48 MiB** per
+head, and `48 MiB / 3` is the `2^24` in the formula below. The depth belongs in the division, so
+`timing_from_drm_mode` now takes it as an argument rather than having the caller patch it on
+afterwards -- a 30 bpp head is told three quarters of the rows a 24 bpp one is.
+
+⚠ **Navarro does not fit this and keeps its measured table.** Its two captured values imply
+allocations of 202.5 MiB at 2560 wide and 58.5 MiB at 640, which is not one constant; Ridge keeps
+its device-level override. Do not unify the three.
 
 `off48` depends on **hactive alone** -- unchanged by vactive (1280x1024, 1280x960 and 1280x720 all
 give 11915), by refresh (1280x1024 at both 60.02 and 75.02 gives 11915), and by sink (identical in
@@ -111,10 +165,21 @@ dock has answered nothing for 90141 ms; abandoning the session
 shared video/control pipe failed (EPIPE); abandoning the session
 ```
 
-⛔⛔ **vino's own recovery is what leaves it dead.** It correctly resets the dock -- and then never
-re-runs bring-up. The card sits there with connectors still reporting `connected`, KWin still
-flipping into a dock that is not listening, and only a manual driver rebind brings it back. A
-rebind works every time, so the missing piece is small: re-run bring-up after the reset.
+⛔⛔ **vino's own recovery is what leaves it dead** -- ✅ **root-caused and fixed** (`53b8fa4cd159`),
+needs a hardware run. It correctly resets the dock and then never re-runs bring-up; the card sits
+there with connectors still reporting `connected`, KWin still flipping into a dock that is not
+listening, and only a manual driver rebind brings it back.
+
+⭐ **A reset does not re-probe when the driver supplies `pre_reset` and `post_reset`.** Supplying
+the pair is how a driver tells the USB core it can carry its state across a reset, and the core
+then leaves it bound and just calls them. The Rust `usb::Driver` adapter installs both callbacks
+for *every* driver, and their default body returns success -- so vino was claiming a session
+survived the reset that destroys it. `usb_reset_device()` rebinds an interface whose `post_reset`
+returns non-zero (`drivers/usb/core/hub.c`, and `hid_post_reset` is the in-tree precedent), which
+is the manual rebind, done by the driver at the moment it knows one is needed.
+
+⚠ **This is the "never comes back" half only.** What causes the EPIPE in the first place is still
+open, and the cross-head budget below is still the lead.
 
 **The vendor reference now exists** (`captures/ella-coldplug-load-20260817` and
 `captures/ella-twohead-load-20260817`, both from a cold plug, both with their own keys):
@@ -136,7 +201,22 @@ same recorder and method for both, so the ratio holds, but quote `usb-session-st
 
 ---
 
-## Landed on 2026-08-17
+## Landed on 2026-08-17, all three unvalidated on hardware
+
+These are one commit per open bug above, each building warning-clean on its own so a bad hardware
+result is bisectable. **Nothing here has been near a dock.** Both docks were attached and vino was
+unloaded while they were written, and loading it would have spent Ella's bring-up.
+
+- `6112303b251d` **Put a DL7400's parameter map among its records.** Open bug 1.
+- `53b8fa4cd159` **Come back from the reset that recovers a wedged dock.** Open bug 3's second half.
+- `88e0ab5de5e6` **Derive a DL-3x00's framebuffer row count from the width.** Open bug 2.
+- `9c391ecae94c` Sort the KUnit re-exports -- the tree was not `rustfmt`-clean at HEAD.
+
+⚠ A build gotcha worth keeping: an ordinary `/` on a value the compiler cannot prove non-zero adds
+a panic path that objtool reports as `falls through to next function`. `checked_div` removes both
+the warning and the trap.
+
+## Landed earlier on 2026-08-17
 
 - `5ba58eae7cdd` **Build as many heads as the dock has sockets.** `create_objects` used `HEADS` (4,
   the maximum any dock has) as the number of KMS objects to build, so two-connector docks published
