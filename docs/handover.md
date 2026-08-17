@@ -6,7 +6,48 @@ or retracted. The DL7400/Navarro-era handover is in git history.
 
 ---
 
-## START HERE -- the state on 2026-08-17
+## START HERE -- the state on 2026-08-17 evening
+
+⭐ **vino draws the desktop on a DL-3x00 panel and holds it.** User-confirmed on the right-hand
+monitor, and confirmed independently by rendering vino's own EP02 bytes back to a PNG. Damage
+selection is measured working: on a settled desktop it selects **8 to 48 strips of 2040** and sends
+nothing at all when nothing changes.
+
+### ★★★★★ Why one connector was never lit: an EDID reply's id is its LENGTH
+
+The dock answers an EDID fetch with `sub=0x21` and an id of **`0x14` plus the number of EDID bytes
+behind it**: `0x94` for one block, `0x114` for two, `0x194` for three. vino matched `0x194` (with
+`0x94` alongside it, believed to be "firmware drops the high bit" -- it is the same rule seen
+twice). The connector whose monitor has two blocks answered `0x114`, two milliseconds after the
+fetch, with a valid base block -- and vino threw it away, reported the socket empty, never engaged
+it downstream, and pushed a full desktop at a sink that was never turned on.
+
+Both drivers' replies are identical in the same capture: `0x114` then `0x194`, one millisecond
+apart. The vendor lights both monitors; vino lit neither socket-1 monitor in its whole history.
+Fixed; pinned by `edid_reply_id_is_the_payload_length`.
+
+⚠ **What that exposed next.** Both monitors on this dock are 2560x1440 MSI MAG 27CQ6F panels. Ella's
+`max_head_clock_khz` is 148,500, so 1440p is pruned and the compositor landed the recovered
+connector on **1280x1024** -- a mode this dock has no measured `Allocation` row for. It took one
+keyframe and drew nothing further. The vendor runs both heads at **1920x1080@60**, and forcing that
+mode is what put a stable picture up. ⛔ Do not offer this dock a mode whose framebuffer allocation
+has never been measured; `Allocation::Measured` has exactly one row.
+
+### ⛔ EP02 still halts, and it is not throughput
+
+Every run still ends in `EPIPE` on the shared endpoint, an abandoned control session and a device
+reset -- on the panel, the monitor blinking off. Measured across runs 61 to 71 it is **not** rate:
+run 66 peaked at **4.51 MB in its worst second**, sent 4-28 kB deltas, and halted anyway. See the
+envelope table below. Nor is it the bitstream, the framing, the ring or the record shape.
+
+### ⛔ Reverted: offering only the connector with a monitor on it
+
+Halving the bytes by advertising one connector also stopped the panel lighting -- two runs with both
+offered put the desktop up, two with one offered stayed dark. This dock's activation is one
+dock-wide transaction over every connector it has. The cost is real and wants a different answer: a
+head with no EDID should be configured and left black, not fed a full surface per repaint.
+
+## The 2026-08-17 daytime state
 
 ⛔ **The panels are dark and the dock still halts.** vino loads, both connectors configure,
 selftests pass, then EP02 halts partway through a large frame (run 61: 35 MB, `-32` at 8.9 s).
@@ -240,16 +281,18 @@ stopped" into a named record.
 
 ## Next, in priority order
 
-1. ⭐ **One run on a settled desktop, captured.** Let the output come up, wait for the start-up
-   animation to finish, then leave the desktop alone and move one window. Read the per-frame
-   `N/2040 strips from R rect(s), M moved` lines: that single line says whether damage selection
-   works, and no capture in the corpus answers it.
-2. **Map that capture** with `tools/capture/dlm-map.py` and profile it with
-   `tools/capture/envelope.py`, and put both blocks beside the vendor's in START HERE.
-3. **Close whatever the gap turns out to be.** If `moved` is already the whole surface on a settled
-   desktop, the snapshot or the hash is at fault, not the selector. If `moved` is small and the
-   selection is not, `damage_frames` (3 on this dock) and the macro-tile rounding are the two
-   multipliers, in that order.
+1. ⭐⭐ **The EP02 halt.** Everything else on this dock now works well enough to see it clearly:
+   the panel lights, the picture is right, deltas are the vendor's size, and the session still ends
+   in EPIPE. It is not throughput -- run 66 halted having peaked at 4.51 MB in a second. Next
+   measurement: decrypt vino's EP84 replies around the refusal (the recipe is below) and read what
+   the dock said before it refused. The IN nonce is the control riv with byte 7 flipped, and the IN
+   records are **not** 16-byte aligned, unlike the OUT ones.
+2. ⭐ **Do not offer a mode with no measured allocation.** `Allocation::Measured` holds one row,
+   1920x1080. A connector that lands on anything else takes one keyframe and draws nothing. This is
+   what kept the second monitor dark after its EDID was finally read.
+3. **Give a head with no sink nothing to paint.** Reverting the connector change restored lighting,
+   so both connectors must be offered -- but a head whose EDID never arrived should be configured
+   and left black rather than fed a full surface per repaint, which is half of every byte.
 4. **Explain the vendor's own head asymmetry** -- 6473 frames to head 0 against 859 to head 1 over
    the same 300 s. vino drives both heads symmetrically, and each of its full surfaces costs what
    the vendor's largest frame costs.
