@@ -154,9 +154,31 @@ that died did so on `head=1` -- the phantom -- pushing a frame onto the pipe the
 shares. `0948e647efd0` stops painting a head with no EDID; the connector is still offered, because
 hiding it was measured to stop the panel lighting at all (`a3a153182547`).
 
-⚠ **The phantom is still visible to the user as a third screen.** That is the deliberate part of
-the trade. Whether it can now be hidden is worth re-testing: the measurement that forced it was
-taken while this dock still published **four** connectors, which `5ba58eae7cdd` has since fixed.
+⛔⛔ **The phantom stays, and it has now defeated two attempts. Read this before a third.**
+It is `DP-9`, socket 2, `connected` with **zero** bytes of EDID. It is not cosmetic slack: it is
+what holds the second connector's place, because this dock activates as **one transaction over
+every connector** and that transaction is assembled from what the compositor enabled. Offer only
+the socket with a monitor and there is one timing where two are needed, `both_heads` goes false,
+the dock falls to the per-head path, and nothing lights (`a3a153182547`).
+
+⭐ The right shape is known: describe the empty socket to the dock without advertising it to
+userspace -- let it join the transaction at its sibling's mode, and let the scanout gate keep it
+unpainted. `ada280d17e9e` did exactly that and still failed, measured 2026-08-17
+(`d0be3ee71969` reverts it). A timing is not enough: a head also needs a **requested mode
+generation**, which only the compositor publishes, so the batch read
+
+```
+KMS batch -- dual timings 2, requested [<gen> 0 0 0], active [0 0 0 0]
+atomic multihead KMS batch deferred
+```
+
+and deferred again several times a second forever, waiting on a head no compositor would ever
+request. The retry churn on the shared pipe ended in EPIPE, a reset, and **both** connectors going
+away -- including the one with a monitor.
+
+⇒ A third attempt needs two more things: publish a generation for the synthesised head alongside
+its timing, and synthesise **once at activation** rather than on every commit of a dock that is
+already up.
 
 **The vendor reference now exists** (`captures/ella-coldplug-load-20260817` and
 `captures/ella-twohead-load-20260817`, both from a cold plug, both with their own keys):
@@ -185,6 +207,8 @@ Each builds warning-clean on its own, so a bad hardware result is bisectable. Se
 
 - `be8d71890581` **Spend a ring slot only on a frame the dock received.** ✅ HW-verified -- the
   DL7400 paints a desktop. Open bug 1.
+- `ada280d17e9e` + `d0be3ee71969` An attempt to retire the phantom connector, and its revert. Kept
+  as a pair because the approach is right and the reason it failed is the next person's head start.
 - `53b8fa4cd159` **Come back from the reset that recovers a wedged dock.** ✅ HW-verified.
 - `0948e647efd0` **Stop painting a DL-3x00 socket with nothing plugged into it.** ✅ HW-verified:
   `scanout head=1 deferred: no monitor has described this socket`, once per repaint, on the
