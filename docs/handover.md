@@ -280,6 +280,44 @@ both sinks, and capping 1440p at 59.95 on a panel that does 165.
 
 ## Watch list -- observed, not explained
 
+### ⚠ The D6000 recovers no EDID: its sink reports ready=false and the fetch gives up
+
+Measured 2026-08-17 with a monitor and DisplayPort cable that both work on the other two docks,
+tried on both of the dock's ports, with power cycles. The control session is perfect every time --
+HDCP complete, setup in 25 messages, link ready, keepalive running -- and the verdict is always
+`socket 1 -- cap:no edid:no`.
+
+⭐ **The dock does see the monitor, briefly.** One probe answered
+
+```
+[2conn] socket 1 presence reply status=0x00371104 -> present=true ready=false
+get-EDID socket 1 readiness poll hit wall-clock cap
+get-EDID socket 1 readiness poll finished (ready=false)
+socket 1 EDID fetch returned no EDID
+```
+
+Presence is `status & 0x1000` and it is set there. What is never set is **ready** -- the
+downstream-handler bit the EDID fetch polls for -- so the fetch spends its wall-clock cap waiting
+and gives up. The socket then settles back to `0x00200105`, the plain absent word, and stays there.
+
+⚠ **`cap:no` too**: the DISPLAY-CAP push never arrives either, so this is upstream of the EDID
+parser and of the byte22 head selector -- both of those assume the dock has a sink to describe.
+
+⛔ Two things that look like leads and are not:
+- **"vino stops probing."** It does not. That log line prints only when a head's status word
+  *changes* (see `probe_head_present`), so a steady answer is silent by design. Four lines in
+  eighty seconds is four *changes*, not four probes.
+- **The power-on connector latch.** Power cycling with the monitor attached does not fix this, so
+  whatever this is, it is not that trap.
+
+⇒ Next: the arrival path needs two consecutive positive probes and this dock gives one positive
+then a negative, so even the transient sighting cannot be adopted. Worth establishing first
+whether `ready` ever goes true for this monitor -- a `trace_crypto` capture on the dock's bus would
+show the `id=0x15 sub=0x21` exchange in the clear and settle whether the dock is refusing or vino
+is asking wrongly. ⚠ Note the separate, older record that this dock gets **zero EP08 completions**
+at HEAD while `a13775e0cdc5` drives it, so expect more than one fault here.
+
+
 ### ⚠ A DL7400 sink flap, and a dark panel that a dock restart cleared
 
 Seen 2026-08-17 with both docks bound. The DL7400's presence probe flapped every ~20 s --
