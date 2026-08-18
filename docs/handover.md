@@ -154,31 +154,28 @@ that died did so on `head=1` -- the phantom -- pushing a frame onto the pipe the
 shares. `0948e647efd0` stops painting a head with no EDID; the connector is still offered, because
 hiding it was measured to stop the panel lighting at all (`a3a153182547`).
 
-⛔⛔ **The phantom stays, and it has now defeated two attempts. Read this before a third.**
-It is `DP-9`, socket 2, `connected` with **zero** bytes of EDID. It is not cosmetic slack: it is
-what holds the second connector's place, because this dock activates as **one transaction over
-every connector** and that transaction is assembled from what the compositor enabled. Offer only
-the socket with a monitor and there is one timing where two are needed, `both_heads` goes false,
-the dock falls to the per-head path, and nothing lights (`a3a153182547`).
+✅ **The phantom is gone, HW-verified 2026-08-17** (`af03f95fb956`). KWin now sees exactly the
+sockets with a monitor in them: `DP-6` connected with 256 B of EDID, `DP-7` disconnected.
 
-⭐ The right shape is known: describe the empty socket to the dock without advertising it to
-userspace -- let it join the transaction at its sibling's mode, and let the scanout gate keep it
-unpainted. `ada280d17e9e` did exactly that and still failed, measured 2026-08-17
-(`d0be3ee71969` reverts it). A timing is not enough: a head also needs a **requested mode
-generation**, which only the compositor publishes, so the batch read
+⭐ It took three attempts because the empty connector was **load-bearing**, not slack. This dock
+activates as one transaction over every connector it has, and the transaction is assembled from
+what the compositor enabled -- so hiding the empty socket left one timing where two are needed, the
+dock fell to the per-head path, and the panel did not light (`a3a153182547`).
+
+⭐⭐ **A synthesised head needs a mode generation, not just a timing.** The second attempt gave it
+a timing alone. A head whose requested mode is zero is a head the activation waits on and never
+gets:
 
 ```
 KMS batch -- dual timings 2, requested [<gen> 0 0 0], active [0 0 0 0]
 atomic multihead KMS batch deferred
 ```
 
-and deferred again several times a second forever, waiting on a head no compositor would ever
-request. The retry churn on the shared pipe ended in EPIPE, a reset, and **both** connectors going
-away -- including the one with a monitor.
-
-⇒ A third attempt needs two more things: publish a generation for the synthesised head alongside
-its timing, and synthesise **once at activation** rather than on every commit of a dock that is
-already up.
+It deferred again several times a second for as long as the dock was up, and that retry churn on
+the shared pipe ended in EPIPE, a reset, and **both** connectors going away -- including the one
+with a monitor. Publishing `timing_key()` beside the timing fixes both halves: the activation
+accepts the head, and the head stops looking unasked-for, so the synthesis is once-only without a
+separate guard.
 
 **The vendor reference now exists** (`captures/ella-coldplug-load-20260817` and
 `captures/ella-twohead-load-20260817`, both from a cold plug, both with their own keys):
@@ -207,8 +204,8 @@ Each builds warning-clean on its own, so a bad hardware result is bisectable. Se
 
 - `be8d71890581` **Spend a ring slot only on a frame the dock received.** ✅ HW-verified -- the
   DL7400 paints a desktop. Open bug 1.
-- `ada280d17e9e` + `d0be3ee71969` An attempt to retire the phantom connector, and its revert. Kept
-  as a pair because the approach is right and the reason it failed is the next person's head start.
+- `af03f95fb956` **Stop offering a DL-3x00 socket with nothing plugged into it.** ✅ HW-verified --
+  the phantom screen is gone and both panels keep working.
 - `53b8fa4cd159` **Come back from the reset that recovers a wedged dock.** ✅ HW-verified.
 - `0948e647efd0` **Stop painting a DL-3x00 socket with nothing plugged into it.** ✅ HW-verified:
   `scanout head=1 deferred: no monitor has described this socket`, once per repaint, on the
@@ -280,6 +277,28 @@ ten DisplayPort steps were silently substituted (1680x1050 and 1440x900 became 1
 both sinks, and capping 1440p at 59.95 on a panel that does 165.
 
 ---
+
+## Watch list -- observed, not explained
+
+### ⚠ A DL7400 sink flap, and a dark panel that a dock restart cleared
+
+Seen 2026-08-17 with both docks bound. The DL7400's presence probe flapped every ~20 s --
+`present=false ready=false` then `present=true ready=true` -- each one absorbed by the debounce
+(`socket 1 sink flap healed on its own`), so the connector was never dropped. Meanwhile the panel
+was dark and the scanout path reported `no keyframe owed and no strip content changed` for three
+minutes: the driver believed the dock's framebuffer was current.
+
+⛔ **Do not "fix" this by owing a keyframe on every healed flap.** It is an appealing theory -- a
+sink that went away and came back holds nothing, so the shadow this side diffs against describes a
+framebuffer that no longer exists -- but it is unproven, and the evidence against acting on it is
+that **a dock restart cleared the darkness with no code change**. The flaps themselves are
+long-standing and normally benign; the surrounding comment records that re-driving the head per flap
+costs a full dock-wide re-activation and puts the dock in a permanent loop. A keyframe is cheaper
+than that, but it is still a 3.9 MB frame every twenty seconds bought on a hunch.
+
+⇒ What would settle it: catch the dark state again and check whether forcing a repaint
+(a mode toggle, or anything that calls `owe_keyframe`) lights the panel. If it does, the
+invalidation is right and belongs at the heal site.
 
 ## Traps -- physical and procedural
 
