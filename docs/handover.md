@@ -312,7 +312,16 @@ looks exactly like a broken one:
 ⇒ **Validate any candidate signal at both endpoints before building on it.** That is what made the
 DL7400 hunt work and skipping it cost most of a session here.
 
-⚠ **There is still no objective lit/dark discriminator for this dock.** The presence status word
+⛔⛔ **There is no in-band lit/dark discriminator for this dock, and that is now measured.**
+Its output was cycled with `kscreen-doctor output.DP-9.disable/enable` -- confirmed in dmesg as
+`socket 2 downstream sink powered down` and back -- while its EP84 stream was captured and
+decrypted. Across all 409 frames: every `0x8x sub=0x0c` push is just the firmware trace ASCII
+(`7c 32 34..` = `|24..`), differing only because the tick counter advances, and the presence reply
+`id=0x44 sub=0x20` carries exactly two payloads -- `0501200000000000` for the empty socket and
+`0511270080010100` for the one with a monitor -- **identical while the sink was powered down**.
+⇒ Nothing the dock sends reports sink power. Do not go looking for one again; it costs an hour.
+
+⚠ **Historic note:** The presence status word
 reads `present=true ready=true` while the panel is dark, so `ready` is not it. No periodic
 scanout heartbeat is identifiable in the trace. Getting one needs a labelled lit-vs-dark pair on
 the current firmware, which needs one human look.
