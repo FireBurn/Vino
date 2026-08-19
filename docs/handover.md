@@ -280,41 +280,70 @@ both sinks, and capping 1440p at 59.95 on a panel that does 165.
 
 ## Watch list -- observed, not explained
 
-### ⭐ The D6000: EDID solved, video is a separate wall
+### ⭐ The D6000: EDID fixed, video still dark
 
-**EDID -- ✅ fixed** (`56b57895d5cc`). The dock reported no capability push, no EDID and a steady
-absent probe with a monitor and cable that work on the other two docks, on both ports, across power
-cycles. Cause: the keepalive skips its sink re-engage whenever the presence probe answers negative,
-but this family reports a head absent *while its EDID handler is not engaged for that head* -- so
-the loop waited for a positive that only the skipped call could produce. Blind re-engagements are
-now spent on a socket that has **never** answered, bounded to three and only while nothing on the
-dock is lit. Measured: EDID recovered within three seconds of bring-up, and a DL7400's four empty
-sockets alongside it stop after three attempts each.
+**EDID -- ✅ fixed** (`56b57895d5cc`, `c841c1336109`). The keepalive skips its sink re-engage
+whenever the presence probe answers negative, but this family reports a head absent *while its EDID
+handler is not engaged for that head* -- so the loop waited for a positive that only the skipped
+call could produce. Blind re-engagements are now spent on a socket that has **never** answered,
+bounded to ten and only while nothing on that dock is lit.
 
-⛔ **Video -- OPEN, and it is not the encoder.** With the connector up and its CRTC enabled, the
-driver reports a *successful* write for every frame:
+⚠ **This was never the regression.** At `4f7551789675` -- the last commit before the DL-3x00 series
+-- the D6000's cold discovery fails *identically* (`socket 1/2 -- cap:no edid:no`) and is rescued by
+the same re-engage path, which fires there only because the socket has not answered yet. The fix
+makes a rescue that was always load-bearing reliable; it does not restore anything.
+
+⛔ **Video -- OPEN. The dock takes every byte and does not light the sink.** Measured across a
+fresh load: **1464 submissions on `ep 0x0b`, 87,981,136 bytes, 1456 completions status 0**, no
+halts, no errors, the eight `-108`s being the unbind. The connector is up, the CRTC is enabled at
+the panel's native mode, keyframes report `frame ok`, and the panel stays dark. So the codec, the
+ring accounting, the record grammar and the transport are all eliminated.
+
+⛔⛔ **Three false signals, all from reading absence in a short sample. Do not repeat them.**
+This dock's firmware trace and its bus traffic are both activity-dependent, and a quiet window
+looks exactly like a broken one:
+
+| claimed | what it actually was |
+|---|---|
+| "reports a successful write with nothing on the wire" | the capture window caught an idle moment; a capture across a real send has all 88 MB |
+| "five msgids appear only on the pre-Ella build" | the HEAD capture was 4x shorter; a longer one has all five |
+| "`366c51` is the discriminator" | a bisect harness built on it returned **GOOD at HEAD** |
+
+⇒ **Validate any candidate signal at both endpoints before building on it.** That is what made the
+DL7400 hunt work and skipping it cost most of a session here.
+
+⚠ **There is still no objective lit/dark discriminator for this dock.** The presence status word
+reads `present=true ready=true` while the panel is dark, so `ready` is not it. No periodic
+scanout heartbeat is identifiable in the trace. Getting one needs a labelled lit-vs-dark pair on
+the current firmware, which needs one human look.
+
+⭐ **Reading the dock's own firmware trace** (the instrument, now working):
 
 ```
-scanout head=1 delta 2040/2040 strips from 1 rect(s), 2040 moved
-head=1 chunks=78 arm=0 first=1135344 presentations=1 records=339
-scanout head=1 frame ok (1 presentation(s), 1135344 B final write)
+sudo modprobe vino debug=1 trace_crypto=1
+sudo python3 scripts/dock-trace-live.py --bus <N> --seconds 95 --save /tmp/rt.bin
+# then, with the key vino printed for THAT dock:
+python3 scripts/dock-trace-live.py --decode /tmp/rt.bin --key <key> --riv <riv>
 ```
 
-⭐⭐ **and not one byte of it appears on the dock's USB bus.** Measured 2026-08-19 with `dumpcap`
-on the D6000's bus while it was in exactly this state: **zero** URBs on its video endpoints over
-six seconds, while ~20 frames a second of 1.13 MB each were being reported written. The same
-capture sees its control traffic on `0x02`/`0x84` fine, so the bus and the recorder are right. The
-other dock's bus carries nothing extra either, so the bytes are not being misrouted to a sibling.
+⚠ The tool scrapes an old `CPKEYS` line that no longer exists; pass `--key`/`--riv` by hand from
+`vino-crypto: control key=[..] riv_out=[..]`. **The IN nonce is `riv_out` with byte 7 XOR 0x01.**
+With several docks bound the key lines are not device-tagged -- try each against the dock's bus and
+keep the one that decodes.
+⛔ `captures/vino-freshboot-20260726-1100/dock-trace-decoded.txt` is **not** a usable reference:
+its msgid space is completely disjoint from today's (220 distinct against 60, zero overlap). This
+dock now runs firmware 10.3.56, so any byte-level reference must be recaptured.
 
-⇒ That eliminates the codec, the ring accounting, the record grammar and the dock itself. Whatever
-consumes the frame sits between `q.send()` and the wire. ⚠ Note the disambiguation trap that cost
-time here: with three docks bound, `vino: vino:` scanout lines carry **no device prefix**, and every
-card has a `head 0` and a `head 1`. Map them first --
-`/sys/class/drm/cardN/device` gives the USB address, and the video endpoint in the queue-open line
-(`0x0b` is Ridge, `0x0a` Navarro, `0x02` Ella) is the other half.
+⛔ **`bracket_reopen_state` is a dead end, and the reasoning behind it was wrong.** The theory was
+that Ridge is sent a second sink-*down* mid-bracket. Diffed against `4f7551789675`, the bracket's
+markers are **byte-identical** for this dock -- the `reopen` expression evaluates to exactly the
+`3` the old code sent -- so changing it moves Ridge *away* from known-good. The
+`send_stream_prologue` call added to that bracket is gated on `video_on_ctrl_pipe()` and is inert
+here too.
 
-⚠ There is also an older, separate record that this dock gets zero EP08 completions at HEAD while
-`a13775e0cdc5` drives it. That may be this same fault seen from the other end.
+⇒ **The open question is unchanged and needs one measurement**: is the D6000 lit at
+`4f7551789675`? If yes it is a regression and bisectable; if no, this tree never drove it and the
+hunt belongs in the activation choreography.
 
 ### ⚠ A DL7400 sink flap, and a dark panel that a dock restart cleared
 
