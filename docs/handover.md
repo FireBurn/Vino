@@ -341,9 +341,26 @@ markers are **byte-identical** for this dock -- the `reopen` expression evaluate
 `send_stream_prologue` call added to that bracket is gated on `video_on_ctrl_pipe()` and is inert
 here too.
 
-⇒ **The open question is unchanged and needs one measurement**: is the D6000 lit at
-`4f7551789675`? If yes it is a regression and bisectable; if no, this tree never drove it and the
-hunt belongs in the activation choreography.
+⭐⭐ **vino sends this dock materially the same thing at HEAD as it did pre-Ella.** Captured on
+its own bus across a full load on both revisions and compared:
+
+| | pre-Ella `4f7551789675` | HEAD |
+|---|---|---|
+| video to the dock | 1216 URBs / **77.8 MB** | 1268 URBs / **80.6 MB** |
+| control records, by type | identical | identical |
+| first 723 control records, in order | \- | **2 differ**, and only as a reorder of two `sub=0x24` |
+| mode-set bracket markers | identical (`reopen` is `3` on both) | |
+
+The single real delta is the **status-poll count**: `len=64 sub=0x24` appears **3049** times
+pre-Ella against **697** at HEAD, and every other message type matches exactly. ⚠ Read that as a
+symptom, not a cause: both the keepalive period (250 ms) and the scanout poll floor
+(`STATUS_POLL_MIN_MS`) are unchanged for this family, and the scanout poll is still gated in for it,
+so the extra polls are most likely extra *activation attempts* rather than a different policy.
+
+⇒ Because the bytes are materially the same on both revisions, a regression is the *less* likely
+reading, and "this dock has not been driven by this tree for some time" is the more likely one.
+⭐ **The one measurement that settles it is one human look at the D6000 while
+`4f7551789675` is loaded.** Everything else has been eliminated or shown to be sampling noise.
 
 ### ⚠ A DL7400 sink flap, and a dark panel that a dock restart cleared
 
