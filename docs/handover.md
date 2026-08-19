@@ -368,9 +368,18 @@ per-head monitor presence (DISPLAY-CAP id=0x78): [true, true]
 ```
 
 Today it reports `cap:no` on both sockets and an EDID has to be prised out of it with a blind
-re-engage. The handler for that push still exists (`id == 0x78 && sub == 0x30` in `session.rs`) and
+re-engage. ⭐ **Verified on the wire, not inferred**: decrypting its EP84 stream across a full
+bring-up gives **596 frames and not one `id=0x78`** -- while the dock is otherwise talkative, with
+97 `0x44/0x20` presence replies and a spread of `0x82/0x85/0x88/0x89/0x8c/0x8d/0x8f/0x91/0x92`
+`sub=0x0c` async pushes. The handler still exists (`id == 0x78 && sub == 0x30` in `session.rs`) and
 vino's control sequence to this dock is byte-identical to the pre-Ella one, so **the dock's own
 behaviour differs from the era when it worked**, not vino's request. Why is the open question.
+
+⛔ A fifth hypothesis died here too: `312a2f73a066` swapped a general `drain_ep84` for a targeted
+`wait_perhead_push`, gated on `!perhead_onehot()` -- false for the DL7400, **true for this dock** --
+and the wait counts a CP acknowledgement and discards it where the drain recorded
+`display_cap_ctr`. It explained the split perfectly. Patching the wait to record the push changes
+nothing, because the push never arrives.
 
 ⚠ Unproven but worth checking first: the dock's firmware. Its trace msgid space is completely
 disjoint from the July reference, and vino is known to flash an older dock on enumeration when an
