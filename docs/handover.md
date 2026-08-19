@@ -359,8 +359,32 @@ so the extra polls are most likely extra *activation attempts* rather than a dif
 
 ⇒ Because the bytes are materially the same on both revisions, a regression is the *less* likely
 reading, and "this dock has not been driven by this tree for some time" is the more likely one.
-⭐ **The one measurement that settles it is one human look at the D6000 while
-`4f7551789675` is loaded.** Everything else has been eliminated or shown to be sampling noise.
+⭐⭐ **The concrete lead: this dock no longer sends its DISPLAY-CAP push.** In the capture from
+when it drove panels (`captures/vino-replug-validate-20260726-190920`, in the archive root) presence
+came from the dock itself:
+
+```
+per-head monitor presence (DISPLAY-CAP id=0x78): [true, true]
+```
+
+Today it reports `cap:no` on both sockets and an EDID has to be prised out of it with a blind
+re-engage. The handler for that push still exists (`id == 0x78 && sub == 0x30` in `session.rs`) and
+vino's control sequence to this dock is byte-identical to the pre-Ella one, so **the dock's own
+behaviour differs from the era when it worked**, not vino's request. Why is the open question.
+
+⚠ Unproven but worth checking first: the dock's firmware. Its trace msgid space is completely
+disjoint from the July reference, and vino is known to flash an older dock on enumeration when an
+`.spkg` is present. The July captures cannot settle it -- back then vino could not even read the
+version (`device-open 0xfd(firmware-version) non-fatal (EREMOTEIO)`); it reads 10.3.56 now.
+
+⛔ **Four hypotheses tried and disproved. Do not re-run them.**
+
+| tried | why it is wrong |
+|---|---|
+| parameter map placement | fixed on both paths, wall unchanged |
+| `bracket_reopen_state` | the bracket's markers are byte-identical to pre-Ella for this dock |
+| activation must describe every connector | single-port operation on this dock is **proven**, deliberately, including monitor removal |
+| the three trace/wire "signals" | all sampling artifacts; see the table above |
 
 ### ⚠ A DL7400 sink flap, and a dark panel that a dock restart cleared
 
