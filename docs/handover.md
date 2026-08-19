@@ -280,43 +280,41 @@ both sinks, and capping 1440p at 59.95 on a panel that does 165.
 
 ## Watch list -- observed, not explained
 
-### ⚠ The D6000 recovers no EDID: its sink reports ready=false and the fetch gives up
+### ⭐ The D6000: EDID solved, video is a separate wall
 
-Measured 2026-08-17 with a monitor and DisplayPort cable that both work on the other two docks,
-tried on both of the dock's ports, with power cycles. The control session is perfect every time --
-HDCP complete, setup in 25 messages, link ready, keepalive running -- and the verdict is always
-`socket 1 -- cap:no edid:no`.
+**EDID -- ✅ fixed** (`56b57895d5cc`). The dock reported no capability push, no EDID and a steady
+absent probe with a monitor and cable that work on the other two docks, on both ports, across power
+cycles. Cause: the keepalive skips its sink re-engage whenever the presence probe answers negative,
+but this family reports a head absent *while its EDID handler is not engaged for that head* -- so
+the loop waited for a positive that only the skipped call could produce. Blind re-engagements are
+now spent on a socket that has **never** answered, bounded to three and only while nothing on the
+dock is lit. Measured: EDID recovered within three seconds of bring-up, and a DL7400's four empty
+sockets alongside it stop after three attempts each.
 
-⭐ **The dock does see the monitor, briefly.** One probe answered
+⛔ **Video -- OPEN, and it is not the encoder.** With the connector up and its CRTC enabled, the
+driver reports a *successful* write for every frame:
 
 ```
-[2conn] socket 1 presence reply status=0x00371104 -> present=true ready=false
-get-EDID socket 1 readiness poll hit wall-clock cap
-get-EDID socket 1 readiness poll finished (ready=false)
-socket 1 EDID fetch returned no EDID
+scanout head=1 delta 2040/2040 strips from 1 rect(s), 2040 moved
+head=1 chunks=78 arm=0 first=1135344 presentations=1 records=339
+scanout head=1 frame ok (1 presentation(s), 1135344 B final write)
 ```
 
-Presence is `status & 0x1000` and it is set there. What is never set is **ready** -- the
-downstream-handler bit the EDID fetch polls for -- so the fetch spends its wall-clock cap waiting
-and gives up. The socket then settles back to `0x00200105`, the plain absent word, and stays there.
+⭐⭐ **and not one byte of it appears on the dock's USB bus.** Measured 2026-08-19 with `dumpcap`
+on the D6000's bus while it was in exactly this state: **zero** URBs on its video endpoints over
+six seconds, while ~20 frames a second of 1.13 MB each were being reported written. The same
+capture sees its control traffic on `0x02`/`0x84` fine, so the bus and the recorder are right. The
+other dock's bus carries nothing extra either, so the bytes are not being misrouted to a sibling.
 
-⚠ **`cap:no` too**: the DISPLAY-CAP push never arrives either, so this is upstream of the EDID
-parser and of the byte22 head selector -- both of those assume the dock has a sink to describe.
+⇒ That eliminates the codec, the ring accounting, the record grammar and the dock itself. Whatever
+consumes the frame sits between `q.send()` and the wire. ⚠ Note the disambiguation trap that cost
+time here: with three docks bound, `vino: vino:` scanout lines carry **no device prefix**, and every
+card has a `head 0` and a `head 1`. Map them first --
+`/sys/class/drm/cardN/device` gives the USB address, and the video endpoint in the queue-open line
+(`0x0b` is Ridge, `0x0a` Navarro, `0x02` Ella) is the other half.
 
-⛔ Two things that look like leads and are not:
-- **"vino stops probing."** It does not. That log line prints only when a head's status word
-  *changes* (see `probe_head_present`), so a steady answer is silent by design. Four lines in
-  eighty seconds is four *changes*, not four probes.
-- **The power-on connector latch.** Power cycling with the monitor attached does not fix this, so
-  whatever this is, it is not that trap.
-
-⇒ Next: the arrival path needs two consecutive positive probes and this dock gives one positive
-then a negative, so even the transient sighting cannot be adopted. Worth establishing first
-whether `ready` ever goes true for this monitor -- a `trace_crypto` capture on the dock's bus would
-show the `id=0x15 sub=0x21` exchange in the clear and settle whether the dock is refusing or vino
-is asking wrongly. ⚠ Note the separate, older record that this dock gets **zero EP08 completions**
-at HEAD while `a13775e0cdc5` drives it, so expect more than one fault here.
-
+⚠ There is also an older, separate record that this dock gets zero EP08 completions at HEAD while
+`a13775e0cdc5` drives it. That may be this same fault seen from the other end.
 
 ### ⚠ A DL7400 sink flap, and a dark panel that a dock restart cleared
 
