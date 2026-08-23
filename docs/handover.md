@@ -1,5 +1,84 @@
 # Handover
 
+## 2026-08-22 -- Ridge lights the panel; the EDID it was reading described the dock
+
+A like-for-like DLM reference for this dock now exists: `captures/ridge-dlm-ref-20260822`, 841 s,
+1362 control records decrypted, video endpoint included, current firmware, MSI MAG 27CQ6F on socket
+2. vino's matching session is `captures/ridge-vino-ref-20260822`. Full write-up in
+[`ridge.md`](ridge.md); the cross-generation table it belongs to is
+[`protocol/generations.md`](protocol/generations.md).
+
+⛔ **Two things this document previously asserted are wrong and are now corrected.**
+
+* "There is currently no obtainable like-for-like DLM reference for this dock; the only DLM corpus
+  is `captures/max-cold-20260721-235609`, on older firmware." Both halves are false. The archive
+  holds dozens of D6000 DLM captures, every recorded `pid=6006` is `bcdDevice=3159`, and no `.spkg`
+  for this family ships in `/opt/displaylink`, so nothing has ever flashed it. **The firmware has
+  not moved.** DLM run by hand drives this dock; the run that failed had simply hit the wedge.
+* "This dock no longer sends its DISPLAY-CAP push ... 596 frames and not one `id=0x78`." It sends
+  three per session, `id=0x78 sub=0x30`, 160 B, byte-identical to each other. They are **dock-wide**,
+  not per-head, and carry no presence information -- presence is `0x44/0x20` alone.
+
+### ⭐⭐ The cause: one EDID handler, shared between the heads
+
+A `0x15/0x21` fetch does not read the monitor named at offset 22. It reads whichever head the dock's
+handler is engaged for, and engaging it for one head disengages it for the other. The presence reply
+says which answer is coming: **offset 26 bit 7** is set once the downstream DDC read has completed.
+
+| socket | inner 22..26 | off26 | the next fetch returns |
+|---|---|---|---|
+| empty | `05 01 20 00` | `00` | the other head's monitor, or nothing |
+| occupied, not engaged | `05 11 27 00` | `00` | the dock's own 1920x1080 block |
+| occupied, engaged | `05 11 27 00` | `80` | the monitor |
+
+Four cases, two independent captures, agreeing every time. `cp::probe_reply_status` already decoded
+both fields; nothing acted on `ready`.
+
+That one fact produced both symptoms. Cold boot took the dock's 256-byte NOVATEK 1920x1080
+descriptor and drove the panel at a timing it never advertised. At runtime the keepalive spent a
+blind re-engage on the empty socket, which stole the handler and returned the *other* socket's
+monitor -- so a single MSI panel ping-ponged between sockets, tearing its connector down each time.
+
+⚠ **Why it was intermittent:** on a warm rebind the handler is still engaged from the previous
+session, so the first fetch returns the real EDID and everything looks correct. **Only a cold dock
+reproduces it.** Several earlier measurements were taken after a rebind and proved nothing.
+
+### Landed, HW-verified
+
+`DockProfile::shared_edid_handler` (Ridge `true`, Navarro and Ella `false`, so both are inert).
+
+* EDID acceptance gated on the readiness bit in `session.rs`. On hardware:
+  `socket 2 discarding an EDID offered before the downstream read completed` followed by
+  `cached socket 2 EDID (384 bytes)`.
+* No blind re-engage of a socket the probe reports absent. Zero
+  `monitor connected after sink re-engagement` across a full session, where there were six.
+* Ridge now runs **2560x1440** on the real MSI EDID; Ella is unchanged at 1920x1080 with its second
+  connector correctly disconnected. Module `d71fb371803f4228...`.
+* `frame_period_ms` 5 -> 8 for Ridge, matching the vendor's measured floor. ⚠ This fixed nothing;
+  it is kept only because undercutting the vendor by three times was never justified.
+
+### ✅ SOLVED: the video endpoint stopped accepting because a frame was split in two
+
+`never end a frame on a full packet` sends a frame whose length `N` is a multiple of the 1024-byte
+packet as `N - 16` then `16`. `N - 16` is 1008 modulo 1024, so the *first* transfer ends short too:
+the dock sees the frame end sixteen bytes early and a stray sixteen-byte frame behind it. The split
+cannot do what it is named for -- a multiple of the packet size cannot be divided into two transfers
+where only the last is short; that needs a zero-length packet.
+
+Three captures, the failure cascade beginning 49.0 / 46.8 / 50.7 ms after the first such transfer,
+one of them containing exactly one transfer and one cascade. DLM emits none. vino's own known-good
+July capture predates the change.
+
+Now `DockProfile::split_full_packet_frame` -- `true` for DL-3x00 where it was measured, `false`
+elsewhere. ✅ HW-verified: the reproducer no longer reproduces, and the wire shows 0 sixteen-byte
+transfers and 0 failing completions over 2865 frames.
+
+⭐⭐ **Method, and it cost five wrong fixes:** the report said "this used to work". That makes it a
+regression, and a regression is found by diffing against the last good version of *this* driver, not
+by decoding the vendor harder. Throughput, ring slots, frame rate, the record `sub` bit and a
+coverage floor were each a real measured difference from DLM, each tested on hardware, and none was
+the change that broke the dock. Full table in [`ridge.md`](ridge.md).
+
 Single current handover. Last updated **2026-08-17**, rewritten from scratch. Everything here is
 either still true, still open, or a trap worth not repeating. Anything an earlier handover said and
 this one does not is done, superseded or retracted; the previous version is in git history.

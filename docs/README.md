@@ -10,6 +10,7 @@ become mixed with kernel API design or build instructions.
 | [`protocol/usb.md`](protocol/usb.md) | USB endpoint map, transport header, framing, and I/O lifecycle |
 | [`protocol/control.md`](protocol/control.md) | Plain initialization and encrypted control-plane structure |
 | [`protocol/hdcp.md`](protocol/hdcp.md) | HDCP 2.2 message flow and verified key derivations |
+| [`protocol/generations.md`](protocol/generations.md) | **★ The three generations side by side**: what every dock shares (crypto, framing, message vocabulary, the set-mode record), what differs per generation, and which four things are genuinely code rather than `DockProfile` data |
 | [`protocol/navarro-decoded.md`](protocol/navarro-decoded.md) | The DL-7400 wire, decoded end to end: per-connector keys, stream open, mode set, strip parameter map |
 | [`protocol/video.md`](protocol/video.md) | Video arm, codec, records, damage, and submission |
 | [`adding-a-device.md`](adding-a-device.md) | **★ Start here for new hardware**: why product IDs are not how devices are identified, what the identity descriptor is, and what to send instead of a patch |
@@ -18,6 +19,7 @@ become mixed with kernel API design or build instructions.
 | [`new-device-day-ella.md`](new-device-day-ella.md) | **★ Runbook for the HP 3005pr (Ella / DL-3900)**: disarming vino's auto-flash, the one-shot pre-flash session against the archived 2014 implementation, then DLM's first contact and the `DockProfile` a third generation needs |
 | [`hdr.md`](hdr.md) | HDR/deep colour: the shared `NM30`/`YU10`/`FP16` format enum found in all three host binaries, the BT.2020 conversion path, and what vino would need |
 | [`reverse-engineering.md`](reverse-engineering.md) | Evidence policy, capture method, independent oracles, and adding findings |
+| [`ridge.md`](ridge.md) | **★ Dell D6000 / DL-6xxx**: the vendor bring-up decoded end to end, the shared EDID handler that makes a pre-engagement fetch describe the dock rather than the monitor, and the open endpoint stall with four refuted theories |
 | [`navarro.md`](navarro.md) | **★ DL-7000 / DL7400 vs Ridge**: two video endpoints, no per-head HDCP auth, plaintext AKE framing, and the video stream-open sequence that Ridge's arm replaces |
 | [`simd.md`](simd.md) | AVX2 in the encoder, measured in the kernel: 2x on the transform written within a block, why the across-blocks form regresses, and why the entropy coder caps the whole question |
 | [`color-management.md`](color-management.md) | Software `CTM`/`GAMMA_LUT` on the CRTC, shared by vino and evdi: pipeline order, the fused fast path, and the sign-magnitude trap |
