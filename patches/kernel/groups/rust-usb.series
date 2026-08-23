@@ -1,7 +1,0 @@
-0037-rust-usb-add-USB-ch9-standard-descriptors-and-consta.patch
-0038-rust-usb-add-usb-host-interface-and-endpoint-abstrac.patch
-0039-rust-usb-add-urb-abstraction-with-control-and-isochr.patch
-0040-rust-usb-add-revocable-typed-interface-I-O.patch
-0041-rust-usb-add-reusable-URBs-and-persistent-bulk-queue.patch
-0042-rust-usb-add-topology-lookup-and-removal-notificatio.patch
-0043-rust-usb-add-a-vendor-and-interface-info-device-id-c.patch
