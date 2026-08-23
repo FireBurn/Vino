@@ -83,14 +83,16 @@ group_starts=(
     "rust-core 1"
     "rust-crypto 35"
     "rust-usb 37"
-    "rust-drm 44"
-    "vino 105"
+    "rust-drm 45"
+    "vino 107"
 )
 group_pattern() {
     case "$1" in
     rust-crypto) printf '^rust: crypto: ' ;;
     rust-usb) printf '^rust: usb: ' ;;
-    vino) printf '^(drm/vino|drm/evdi|Documentation/gpu|rust: firmware): ' ;;
+    # A revert carries the reverted subject inside quotes, so it belongs to the same
+    # group as the commit it undoes.
+    vino) printf '^(Revert ")?(drm/vino|drm/evdi|Documentation/gpu|rust: firmware): ' ;;
     *) printf '' ;;
     esac
 }
