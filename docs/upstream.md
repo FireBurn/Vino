@@ -46,6 +46,32 @@ We deliberately do not follow it directly: the KMS layer this series is built on
 lives only in `drm-rust-next`, and that tree picks up `drm-next` on its own
 schedule.
 
+## 2026-08-23 re-check, and the prerequisite message-ids
+
+Every message-id below was fetched and confirmed to resolve (HTTP 200 on
+`lore.kernel.org/all/<id>/raw`) rather than reconstructed from a numbering pattern.
+
+| Dependency | Commits we carry | `prerequisite-message-id:` |
+|---|---:|---|
+| Lyude Paul, `[RFC v3 00/33] Rust bindings for KMS + RVKMS` | 43 | `20250305230406.567126-1-lyude@redhat.com` |
+| Colin Braun, `[RFC PATCH 0/4] rust: usb: add usb request block abstractions` | 3 | `20260712-urb-abstraction-v1-v1-0-9fa011634ead@gmail.com` |
+| Danilo Krummrich, `[PATCH v2 0/6] workqueue: OwnedQueue, ScopedQueue and ScopedWork` | 3 + 1 + 1 | `20260807165252.3849875-1-dakr@kernel.org` |
+
+### The interrupt prerequisites have started landing upstream
+
+Boqun Feng's `irq,spin_lock: Add counted interrupt disabling/enabling` was merged
+into the **tip `locking/core`** branch by Peter Zijlstra on 2026-08-10, as commit
+`e901c1510e24726dcbd6340ee927b3ac8b992043`.
+
+That is one patch of the group we carry as "interrupt prerequisites" (Boqun's nine, plus
+Joel Fernandes' NMI counter, Heiko Carstens' s390 enablement, and Lyude's openrisc include
+and KUnit test). It postdates our base by a day, so it is not in `drm-rust-next` yet.
+
+⭐ This is the outcome worth watching for: when it reaches mainline and `drm-rust-next`
+rebases, **those commits should be dropped from our series rather than carried**, and no
+prerequisite trailer is needed for them at all. Re-check the whole group before cutting
+v3; do not assume the rest of the series landed just because this patch did.
+
 ## 2026-08-09 re-check
 
 Lists and prerequisite trees were rechecked on 2026-08-09.
