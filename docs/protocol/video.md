@@ -6,7 +6,7 @@
 XRGB8888 framebuffer
   → coherent driver-owned strip snapshot
   → integer Y/Cb/Cr transform
-  → 8×8 hierarchical Haar/WHT transform
+  → 8×8 multilevel Haar transform (Mallat decomposition)
   → power-of-two quantization
   → DisplayLink VLC coding
   → 64×16 strip record

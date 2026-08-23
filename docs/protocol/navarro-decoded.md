@@ -338,7 +338,7 @@ Each frame on a connector is bracketed by two 28-byte plaintext records:
 descriptor uses. Each connector cycles **three** buffers — index 0, 2, 4 — and `frame_no` is a
 small one-based counter. Byte-identical between Linux DLM and Windows.
 
-vino's `video::wht::navarro_frame_trailer()` reproduces both records exactly, and its prologue ring
+vino's `video::haar::navarro_frame_trailer()` reproduces both records exactly, and its prologue ring
 record matches DLM's.
 
 ### 3.3 ⭐ `aux` is a producer lane, not a record kind
@@ -384,7 +384,7 @@ complete. vino emits them in order, which reproduces DLM's in-order instances by
 
 This was the only record kind in DLM's video stream that vino never emitted, and it is most of the
 ~4.4 KB per frame by which vino's frames were smaller than DLM's (204,208 vs 208,640 bytes for the
-same quiescent 1440p frame). Implemented as `video::wht::navarro_strip_params()`, sent ahead of the
+same quiescent 1440p frame). Implemented as `video::haar::navarro_strip_params()`, sent ahead of the
 image records — it is what tells the dock how to read them.
 
 ## 4. What is eliminated for the video jam

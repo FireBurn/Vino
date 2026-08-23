@@ -193,7 +193,7 @@ is scalar, does not vectorise, and costs about what the vectorised arithmetic sa
 ⚠ **A userspace benchmark of the same arithmetic reported 1.29x.** It is `tools/simd/haar-bench.rs`,
 and it is not wrong about the arithmetic — it is measuring a different baseline. Trust the in-kernel
 number: the kernel builds Rust with `-Ctarget-feature=-sse,…,-avx2`, links differently, and runs the
-real `video::wht::transform` rather than a copy.
+real `video::haar::transform` rather than a copy.
 
 **At the encoder's real shape it is 2.7x slower.** `colour_block` transforms exactly three blocks
 together — `cr`, `cb`, `y` — so five of eight lanes idle and the call costs the same as a full one.

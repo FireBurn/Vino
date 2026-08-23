@@ -192,7 +192,7 @@ Two mechanics the script encodes, both of which have burned time before:
 | how many video endpoints | `dl-identity.py` — free, already run | D6000 has four (`0x08`,`0x0a`,`0x0b`,`0x0c`) for two heads; the ratio tells you whether endpoints are per-head |
 | does DLM clamp this dock too | compare what `kscreen-doctor` offers against what the decoded set-mode actually programs | the D6000's 120 Hz ceiling is DLM's `pixel_per_second_limit`, and whether that is per-platform is unknown |
 | `DISPLAY-CAP` per head | count `id=0x78 sub=0x30` pushes in the connect window | two on the D6000; four here would confirm it is per-head |
-| a new codec or framing | the `video` step in Phase 2, then `usb-session-stats.py` | DL-7000 is a new generation; record stride, `aux` padding and sub-band coordinates are all checkable against `WHT-CODEC.md` |
+| a new codec or framing | the `video` step in Phase 2, then `usb-session-stats.py` | DL-7000 is a new generation; record stride, `aux` padding and sub-band coordinates are all checkable against `protocol/video.md` |
 | non-DisplayLink functions | `lsusb -t`, `before-lsusb.txt` | 2.5G LAN, audio and the hub are standard-class and belong to existing kernel drivers; worth documenting, not vino's problem |
 
 ### Phase 5 · HDR groundwork — costs nothing extra

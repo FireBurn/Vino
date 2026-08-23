@@ -437,7 +437,7 @@ existing field map: off22 head selector, off42 `0x0400` sync polarity (both posi
 CEA 1080p60), off44 refresh 60, off66 `0x2810` which is **the same word the D6000 sends for
 1080p60**, off68 `0x0200`, off70..73 = 148.50 MHz. The timing block is 1920+88+44+148 /
 1080+4+5+36. Record framing matches too: every record is 16-byte aligned and <= 4080 bytes, which is
-`video::wht` `STRIDE_CAP` exactly.
+`video::haar` `STRIDE_CAP` exactly.
 
 So Ella does not need a new `Generation`. What it needs is the transport:
 

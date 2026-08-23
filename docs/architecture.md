@@ -101,7 +101,7 @@ before revocation. A consumer cannot reopen that capability independently.
 | `hdcp.rs` | HDCP 2.2 derivations and verification |
 | `cp.rs` | typed encrypted-control message builders and sealing |
 | `proto.rs` | common USB framing and plaintext initialization |
-| `video.rs` | WHT codec, strip records, and frame construction |
+| `video.rs` | Haar codec, strip records, and frame construction |
 | `video_arm.rs` | generated decoder configuration for cold stream activation |
 | `simd.rs` | optional AVX2/AVX-512 block transforms and their in-kernel benchmark |
 | `color.rs` | software CTM and GAMMA_LUT, shared verbatim with `drm/evdi` |
