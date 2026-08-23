@@ -21,7 +21,7 @@ fn mag_category(v: i32) -> u32 {
     }
 }
 
-/// `video::wht::step_bias` + `quantize`, for the luma plane.
+/// `video::haar::step_bias` + `quantize`, for the luma plane.
 fn quantize_luma(coeff: i32, i: usize) -> i32 {
     let (step, bias) = match i {
         0 | 1 | 2 => (16, 8),
@@ -43,7 +43,7 @@ fn quantize_luma(coeff: i32, i: usize) -> i32 {
     }
 }
 
-/// `video::wht::quantize_chroma_ac`.
+/// `video::haar::quantize_chroma_ac`.
 fn quantize_chroma_ac(coeff: i32, i: usize) -> i32 {
     let step = if matches!(i, 1 | 2 | 4..=11) {
         16

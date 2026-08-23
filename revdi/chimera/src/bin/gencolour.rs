@@ -1,5 +1,5 @@
 //! gencolour — read colour-strip records from stdin and emit each strip's bytes via the
-//! LITERAL kernel `video::wht::colour_strip`. Used by the chroma-AC RE harness to prove the
+//! LITERAL kernel `video::haar::colour_strip`. Used by the chroma-AC RE harness to prove the
 //! in-kernel colour codec byte-exact against real DLM sink strips.
 //!
 //! Each record (whitespace ints): `X Y` then 16 blocks × 3 planes × 64 samples = 3074 ints.

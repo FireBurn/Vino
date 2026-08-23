@@ -7,7 +7,7 @@
 
 use crate::kvino;
 use std::time::{Duration, Instant};
-use vino_driver::{Dock, DockProfile, Error as UsbError, MAX_HEADS};
+use vino_driver::{Dock, DockProfile, Error as UsbError, MAX_CONNECTORS};
 
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(1);
 const REPLY_TIMEOUT: Duration = Duration::from_millis(8);
@@ -42,10 +42,10 @@ pub struct ControlSession {
     keys: SessionKeys,
     wire_seq: u32,
     inner_counter: u16,
-    video_keys: [[u8; 24]; MAX_HEADS],
-    frame_seq: [u32; MAX_HEADS],
+    video_keys: [[u8; 24]; MAX_CONNECTORS],
+    frame_seq: [u32; MAX_CONNECTORS],
     /// Per-head content shadow and retransmit ledger; see [`crate::scanout`].
-    scanout: [crate::scanout::HeadScanout; MAX_HEADS],
+    scanout: [crate::scanout::HeadScanout; MAX_CONNECTORS],
 }
 
 impl ControlSession {
@@ -66,13 +66,13 @@ impl ControlSession {
             wire_seq,
             inner_counter,
             video_keys,
-            frame_seq: [0; MAX_HEADS],
+            frame_seq: [0; MAX_CONNECTORS],
             scanout: core::array::from_fn(|_| crate::scanout::HeadScanout::new()),
         })
     }
 
     /// How many connectors this dock actually backs. Every per-head loop is bounded by this,
-    /// never by [`MAX_HEADS`], which is only an array size.
+    /// never by [`MAX_CONNECTORS`], which is only an array size.
     pub fn connectors(&self) -> usize {
         self.dock.connectors()
     }
@@ -642,7 +642,7 @@ fn authenticate(dock: &Dock) -> Result<SessionKeys, String> {
 fn configure_control(
     dock: &Dock,
     keys: &mut SessionKeys,
-) -> Result<(u32, u16, [[u8; 24]; MAX_HEADS], usize), String> {
+) -> Result<(u32, u16, [[u8; 24]; MAX_CONNECTORS], usize), String> {
     send_plain(dock, &STREAM_OPEN)?;
     let mut wire_seq = 0u32;
     let mut inner_counter = keys.next_counter;
@@ -685,7 +685,7 @@ fn configure_control(
 
     // Bounded by what the device backs, not by an array size: a dock with fewer connectors must
     // not be sent per-head setup for connectors it does not have.
-    let mut video_keys = [[0u8; 24]; MAX_HEADS];
+    let mut video_keys = [[0u8; 24]; MAX_CONNECTORS];
     for head in 0..dock.connectors() {
         configure_head(
             dock,

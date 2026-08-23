@@ -33,7 +33,7 @@ pub(super) fn cp_session_key(ske_ks: &[u8; 16]) -> kernel::crypto::Secret<16> {
 /// Byte 7 is xored with the stream's content-stream id: the value the stream's
 /// `RepeaterAuth_Stream_Manage` restatement declares, which is also the wire `sub` of that
 /// stream's control records. The control channel is stream `0x04`, Ridge's video streams are
-/// `0x08 | head`, and Navarro's are `(connector << 3) | 7`.
+/// `0x08 | connector`, and Navarro's are `(connector << 3) | 7`.
 pub(super) fn stream_content_nonce(riv: &[u8; 8], stream_id: u16) -> [u8; 8] {
     let mut nonce = *riv;
     nonce[7] ^= stream_id as u8;
@@ -71,14 +71,14 @@ pub(super) fn heartbeat(counter: u16) -> Result<KVec<u8>> {
     Ok(b)
 }
 /// Stream enable markers (`id=0x16`, sub `0x2e` or `0x2f`) bracket each mode set:
-///   `2f(1) 2e(3)` -> **mode-set** -> `2f(1) 2e(0) 2f(1) 2e(0) 2f(0) 2e(0)`
+///   `2f(1) 2e(3)` -> mode-set -> `2f(1) 2e(0) 2f(1) 2e(0) 2f(0) 2e(0)`
 ///
-/// Offset 22 selects the head and offset 23 carries the state.
-pub(super) fn stream_marker(counter: u16, head: u8, sub: u16, state: u8) -> Result<KVec<u8>> {
+/// Offset 22 selects the connector and offset 23 carries the state.
+pub(super) fn stream_marker(counter: u16, connector: u8, sub: u16, state: u8) -> Result<KVec<u8>> {
     let mut b = KVec::with_capacity(32, GFP_KERNEL)?;
     header(&mut b, 0x16, sub, counter)?;
     pad_to(&mut b, 22)?;
-    b.push(head, GFP_KERNEL)?; // off22: downstream head selector
+    b.push(connector, GFP_KERNEL)?; // off22: downstream connector selector
     b.push(state, GFP_KERNEL)?; // off23: state byte
     let mut token = [0u8; 8];
     rng::fill(&mut token);
@@ -86,11 +86,11 @@ pub(super) fn stream_marker(counter: u16, head: u8, sub: u16, state: u8) -> Resu
     Ok(b)
 }
 
-pub(super) fn stream_commit(counter: u16, head: u8) -> Result<KVec<u8>> {
+pub(super) fn stream_commit(counter: u16, connector: u8) -> Result<KVec<u8>> {
     let mut b = KVec::with_capacity(32, GFP_KERNEL)?;
     header(&mut b, 0x16, 0x4c, counter)?;
     pad_to(&mut b, 22)?;
-    b.push(if head == 0 { 0 } else { 1 }, GFP_KERNEL)?; // off22: per-head flag
+    b.push(if connector == 0 { 0 } else { 1 }, GFP_KERNEL)?; // off22: per-connector flag
     b.push(0, GFP_KERNEL)?; // off23
     let mut token = [0u8; 8];
     rng::fill(&mut token);
@@ -178,14 +178,14 @@ fn random_tail_msg(id: u16, sub: u16, counter: u16) -> Result<KVec<u8>> {
     b.extend_from_slice(&tail, GFP_KERNEL)?;
     Ok(b)
 }
-/// OUT `id=0x16 sub=0x0023` downstream-sink state request. Offset 22 selects the head and offset
+/// OUT `id=0x16 sub=0x0023` downstream-sink state request. Offset 22 selects the connector and offset
 /// 23 carries the state. Navarro's cold transcript uses `0xff` to tear the sink down, then the
-/// head selector itself (`0` or `1`) to re-engage it.
-pub(super) fn edid_sink_state(counter: u16, head: u8, state: u8) -> Result<KVec<u8>> {
+/// connector selector itself (`0` or `1`) to re-engage it.
+pub(super) fn edid_sink_state(counter: u16, connector: u8, state: u8) -> Result<KVec<u8>> {
     let mut b = KVec::with_capacity(32, GFP_KERNEL)?;
     header(&mut b, 0x16, 0x0023, counter)?;
     pad_to(&mut b, 22)?;
-    b.extend_from_slice(&[head, state], GFP_KERNEL)?;
+    b.extend_from_slice(&[connector, state], GFP_KERNEL)?;
     let mut tail = [0u8; 8];
     rng::fill(&mut tail);
     b.extend_from_slice(&tail, GFP_KERNEL)?;
@@ -193,31 +193,43 @@ pub(super) fn edid_sink_state(counter: u16, head: u8, state: u8) -> Result<KVec<
 }
 
 /// Engage one downstream sink after its EDID exchange.
-pub(super) fn edid_engage_req(counter: u16, head: u8) -> Result<KVec<u8>> {
-    edid_sink_state(counter, head, head)
+pub(super) fn edid_engage_req(counter: u16, connector: u8) -> Result<KVec<u8>> {
+    edid_sink_state(counter, connector, connector)
 }
-/// OUT `id=0x15 sub=0x0053` post-EDID capability query. Offset 22 is a **head bitmask**.
+/// OUT `id=0x14 sub=0x0000`: an inner header and a fresh ten-byte token.
 ///
-/// ⚠ `head + 1` and `1 << head` are the same byte for heads 0 and 1, so a capture with both
-/// monitors in the first two sockets cannot distinguish them. DLM sends `4` for head 2, where a
+/// The first sealed message of a session, and on a dock that carries video on the control pipe
+/// also the last message before the sinks are engaged. The token is host-random and the dock has
+/// no way to validate it, so what the message states is the counter it carries.
+pub(super) fn session_hello(counter: u16) -> [u8; 32] {
+    let mut content = [0u8; 32];
+    content[0..2].copy_from_slice(&0x0014u16.to_le_bytes());
+    content[4..6].copy_from_slice(&counter.to_le_bytes());
+    rng::fill(&mut content[22..32]);
+    content
+}
+/// OUT `id=0x15 sub=0x0053` post-EDID capability query. Offset 22 is a connector bitmask.
+///
+/// `connector + 1` and `1 << connector` are the same byte for connectors 0 and 1, so a capture with both
+/// monitors in the first two sockets cannot distinguish them. DLM sends `4` for connector 2, where a
 /// one-based index would send 3.
-pub(super) fn post_edid_query(counter: u16, head: u8) -> Result<KVec<u8>> {
+pub(super) fn post_edid_query(counter: u16, connector: u8) -> Result<KVec<u8>> {
     let mut b = KVec::with_capacity(32, GFP_KERNEL)?;
     header(&mut b, 0x15, 0x0053, counter)?;
     pad_to(&mut b, 22)?;
-    b.push(1u8 << head, GFP_KERNEL)?;
+    b.push(1u8 << connector, GFP_KERNEL)?;
     let mut tail = [0u8; 9];
     rng::fill(&mut tail);
     b.extend_from_slice(&tail, GFP_KERNEL)?;
     Ok(b)
 }
 /// OUT `id=0x16 sub=0x004b` downstream EDID-reader state request.
-pub(super) fn edid_readiness_state(counter: u16, head: u8, state: u8) -> Result<KVec<u8>> {
+pub(super) fn edid_readiness_state(counter: u16, connector: u8, state: u8) -> Result<KVec<u8>> {
     let mut b = KVec::with_capacity(32, GFP_KERNEL)?;
     header(&mut b, 0x16, 0x4b, counter)?;
     pad_to(&mut b, 22)?;
-    // Offset 22 selects the downstream head and offset 23 stops/starts the reader.
-    b.extend_from_slice(&[head, state], GFP_KERNEL)?;
+    // Offset 22 selects the downstream connector and offset 23 stops/starts the reader.
+    b.extend_from_slice(&[connector, state], GFP_KERNEL)?;
     let mut tail = [0u8; 8];
     rng::fill(&mut tail);
     b.extend_from_slice(&tail, GFP_KERNEL)?;
@@ -225,23 +237,23 @@ pub(super) fn edid_readiness_state(counter: u16, head: u8, state: u8) -> Result<
 }
 
 /// Start one downstream EDID read.
-pub(super) fn edid_readiness_kick(counter: u16, head: u8) -> Result<KVec<u8>> {
-    edid_readiness_state(counter, head, 1)
+pub(super) fn edid_readiness_kick(counter: u16, connector: u8) -> Result<KVec<u8>> {
+    edid_readiness_state(counter, connector, 1)
 }
 /// OUT get-EDID request (`id=0x15 sub=0x21`). A `sub=0x20` probe must precede each fetch attempt.
 /// The dock may initially return an internal placeholder, so callers retry until a downstream EDID
 /// arrives.
-pub(super) fn get_edid_req(counter: u16, head: u8) -> Result<KVec<u8>> {
-    get_edid_req_sub(counter, 0x21, head)
+pub(super) fn get_edid_req(counter: u16, connector: u8) -> Result<KVec<u8>> {
+    get_edid_req_sub(counter, 0x21, connector)
 }
 /// Build an `id=0x15` EDID-family request with an explicit `sub` (`0x20` = probe/seek,
 /// `0x21` = fetch -- see [`get_edid_req`]'s doc comment). Same 32-byte wire shape for both.
-pub(super) fn get_edid_req_sub(counter: u16, sub: u16, head: u8) -> Result<KVec<u8>> {
+pub(super) fn get_edid_req_sub(counter: u16, sub: u16, connector: u8) -> Result<KVec<u8>> {
     let mut b = KVec::with_capacity(32, GFP_KERNEL)?;
     header(&mut b, 0x15, sub, counter)?;
     pad_to(&mut b, 22)?;
-    // Offset 22 selects the downstream head; the remaining bytes are an opaque token.
-    b.push(head, GFP_KERNEL)?;
+    // Offset 22 selects the downstream connector; the remaining bytes are an opaque token.
+    b.push(connector, GFP_KERNEL)?;
     let mut tail = [0u8; 9];
     rng::fill(&mut tail);
     b.extend_from_slice(&tail, GFP_KERNEL)?;
@@ -254,7 +266,7 @@ pub(super) fn get_edid_req_sub(counter: u16, sub: u16, head: u8) -> Result<KVec<
 /// pixelClock`. That is this payload in order: eight geometry words at offsets 26 through 40, the
 /// two sync-inversion flags packed into [`Timing::sync_flags`] at offset 42, the CTA VIC in the
 /// low byte of [`Timing::vic_word`] at offset 66, and the pixel clock at offset 70.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct Timing {
     pub hactive: u16,
     pub hblank: u16,
@@ -277,16 +289,16 @@ pub(super) struct Timing {
     pub sync_flags: u16,
     /// Render stride at offset 46, in pixels; see [`render_stride`].
     pub stride: u16,
-    /// Row count at offset 48; see [`navarro_total_rows`].
+    /// Row count at offset 48; see [`profile::Allocation`].
     pub total_rows: u16,
     /// Picture aspect and CTA VIC at offset 66; see [`vic_word`].
     pub vic_word: u16,
-    /// Whether this head scans out 10 bits per channel, which selects the offset-68 colour depth
+    /// Whether this connector scans out 10 bits per channel, which selects the offset-68 colour depth
     /// and the offset-23 DMA buffer format together. They are one decision: the dock sizes its own
     /// buffer from the format's bytes-per-pixel and interprets the samples by the depth, so a
     /// mismatched pair mis-sizes the allocation.
     pub ten_bit: bool,
-    /// Whether the pixels this head carries are encoded with the SMPTE ST 2084 (PQ) transfer
+    /// Whether the pixels this connector carries are encoded with the SMPTE ST 2084 (PQ) transfer
     /// function, which sets [`SYNC_FLAG_ST2084`] in the offset-42 flags word.
     ///
     /// Independent of [`Timing::ten_bit`]: the depth says how many bits a sample has, this says
@@ -294,20 +306,12 @@ pub(super) struct Timing {
     /// is merely a bad idea rather than a contradiction, so the dock is told the two separately --
     /// exactly as DLM tells it.
     pub st2084: bool,
-    /// This head's video endpoint also carries another connector; see [`SYNC_FLAG_DUAL_NIVO`].
+    /// This connector's video endpoint also carries another connector; see [`SYNC_FLAG_DUAL_NIVO`].
     pub dual_nivo: bool,
 }
 
 /// Pixel granularity the render stride is quantised to.
 const STRIDE_ALIGN: u32 = 128;
-
-/// Ridge's fixed stride and row count, which it carries on every mode regardless of timing.
-///
-/// The protocol has a device-level stride override, and Ridge takes it: the whole decrypted Ridge
-/// corpus carries this pair at 1280x720, 1920x1080 and 2560x1440 alike, where [`render_stride`]
-/// would give a different value per width.
-const RIDGE_STRIDE: u16 = 0x4000;
-const RIDGE_TOTAL_ROWS: u16 = 0x6000;
 
 /// The render stride for `hactive`, in pixels: quantised up to [`STRIDE_ALIGN`], then one whole
 /// unit more.
@@ -315,23 +319,9 @@ const RIDGE_TOTAL_ROWS: u16 = 0x6000;
 /// The trailing unit is added after the quantisation, not as slack for it, so a width that is
 /// already a multiple of 128 still gains 128. Both decrypted DL7400 widths are such multiples,
 /// which is why `0x0a80` at 2560 and `0x0300` at 640 both read as a plain `hactive + 128`.
-pub(super) fn render_stride(hactive: u16) -> u16 {
+pub(crate) fn render_stride(hactive: u16) -> u16 {
     let quantised = (u32::from(hactive) + STRIDE_ALIGN - 1) / STRIDE_ALIGN;
     (((quantised + 1) * STRIDE_ALIGN) & 0xffff) as u16
-}
-
-/// The DL7400's offset-48 row count for a resolution, or `None` if no capture covers it.
-///
-/// This is the dock's framebuffer allocation divided by one row of [`render_stride`] pixels, so it
-/// is not a function of the timing at all: the numerator is however much the dock's own allocator
-/// handed out. Two captures pin two resolutions and nothing predicts a third, so an unmeasured one
-/// gets Ridge's constant and a log line naming it.
-fn navarro_total_rows(hactive: u16, vactive: u16) -> Option<u16> {
-    match (hactive, vactive) {
-        (2560, 1440) => Some(0x66db),
-        (640, 480) => Some(0x6800),
-        _ => None,
-    }
 }
 
 /// Offset 42 is not a polarity field but a flags word, and DLM decodes every bit of it in its own
@@ -341,7 +331,7 @@ fn navarro_total_rows(hactive: u16, vactive: u16) -> Option<u16> {
 /// | bit | mask | DLM's name |
 /// |---|---|---|
 /// | 0 | `0x0001` | `Interlace` |
-/// | 1 | `0x0002` | `Cross-head synchronized` |
+/// | 1 | `0x0002` | `Cross-connector synchronized` |
 /// | 2 | `0x0004` | `Dual NIVO` |
 /// | 3 | `0x0008` | `Just-in-time decode` |
 /// | 5 | `0x0020` | `DSC On`/`DSC Off` |
@@ -363,14 +353,14 @@ const SYNC_FLAGS_BASE: u16 = 0x0400;
 const SYNC_FLAG_HSYNC_INV: u16 = 0x0100;
 /// `vSyncInv`: vertical sync is active low.
 const SYNC_FLAG_VSYNC_INV: u16 = 0x0200;
-/// `ST2084 colorspace used (HDR)`: the head's pixels are PQ-encoded rather than SDR.
+/// `ST2084 colorspace used (HDR)`: the connector's pixels are PQ-encoded rather than SDR.
 ///
 /// This is the transfer-function selector that no capture could settle -- the Windows HDR A/B
 /// corpus has a sealed control plane, and DLM's Linux build never toggled HDR on this hardware --
 /// and it turns out not to need a capture at all. There is exactly one HDR flag: the colour
 /// primaries are not carried here, because the dock derives the downstream infoframe itself.
 const SYNC_FLAG_ST2084: u16 = 0x0040;
-/// `Dual NIVO`: this head's video endpoint is carrying a second connector's stream too.
+/// `Dual NIVO`: this connector's video endpoint is carrying a second connector's stream too.
 ///
 /// The DL-7400 multiplexes four connectors onto two video bulk endpoints -- `0x08` owns connectors
 /// {0, 2} and `0x0a` owns {1, 3} -- so any two monitors in sockets one apart share an endpoint.
@@ -460,7 +450,7 @@ pub(super) struct ModeProfile {
 ///
 /// Both words are derived by [`sync_flags`] and [`vic_word`], which between them reproduce every
 /// decrypted message byte-exactly, so an unsampled timing is driven rather than refused. The
-/// envelope the dock stays inside -- refresh ceiling, per-head clock and the shared pixel budget
+/// envelope the dock stays inside -- refresh ceiling, per-connector clock and the shared pixel budget
 /// -- is enforced by `drm_sink`'s `mode_valid`, not here.
 pub(super) fn mode_profile(mode: &kernel::drm::kms::modes::DisplayMode) -> Option<ModeProfile> {
     let clock = mode.clock();
@@ -471,31 +461,36 @@ pub(super) fn mode_profile(mode: &kernel::drm::kms::modes::DisplayMode) -> Optio
         return None;
     }
 
-    let measured = matches!(
-        (
-            clock,
-            mode.hdisplay(),
-            mode.hsync_start(),
-            mode.hsync_end(),
-            mode.htotal(),
-            mode.vdisplay(),
-            mode.vsync_start(),
-            mode.vsync_end(),
-            mode.vtotal(),
-        ),
-        // The whole decrypted DLM corpus: 1920x1080p60 and p120 (CTA), 2560x1440p60 and p120
-        // (CVT-RB). The derivation reproduces all four byte-exactly, so these need no override --
-        // the match only records that the bytes are backed by a capture.
-        (148_500, 1920, 2008, 2052, 2200, 1080, 1084, 1089, 1125)
-            | (297_000, 1920, 2008, 2052, 2200, 1080, 1084, 1089, 1125)
-            | (241_500, 2560, 2608, 2640, 2720, 1440, 1443, 1448, 1481)
-            | (497_750, 2560, 2608, 2640, 2720, 1440, 1443, 1448, 1525)
-    );
+    // The whole decrypted DLM corpus: 1920x1080p60 and p120 (CTA), 2560x1440p60 and p120
+    // (CVT-RB), with the two words each carries on the wire.
+    //
+    // These are taken from the capture rather than derived, because the derivation reads the
+    // sync polarity and the CTA VIC off the DRM mode and a mode built from the fallback list
+    // carries neither: a 1920x1080p60 with exactly these timings arrives with both syncs marked
+    // negative and no VIC at all, which sends `0x0700`/`0x0800` where the vendor sends
+    // `0x0400`/`0x2810`. The timings identify the mode; the flags on the struct do not.
+    let captured = match (
+        clock,
+        mode.hdisplay(),
+        mode.hsync_start(),
+        mode.hsync_end(),
+        mode.htotal(),
+        mode.vdisplay(),
+        mode.vsync_start(),
+        mode.vsync_end(),
+        mode.vtotal(),
+    ) {
+        (148_500, 1920, 2008, 2052, 2200, 1080, 1084, 1089, 1125) => Some((0x0400, 0x2810)),
+        (297_000, 1920, 2008, 2052, 2200, 1080, 1084, 1089, 1125) => Some((0x0400, 0x083f)),
+        (241_500, 2560, 2608, 2640, 2720, 1440, 1443, 1448, 1481) => Some((0x0600, 0x0800)),
+        (497_750, 2560, 2608, 2640, 2720, 1440, 1443, 1448, 1525) => Some((0x0600, 0x0800)),
+        _ => None,
+    };
 
     Some(ModeProfile {
-        sync_flags: sync_flags(mode),
-        vic_word: vic_word(mode.cea_vic()),
-        measured,
+        sync_flags: captured.map_or_else(|| sync_flags(mode), |(s, _)| s),
+        vic_word: captured.map_or_else(|| vic_word(mode.cea_vic()), |(_, v)| v),
+        measured: captured.is_some(),
     })
 }
 
@@ -514,7 +509,7 @@ const COLOUR_DEPTH_24BPP: u16 = 0x0200;
 /// Offset-68 for 30 bpp: the same enum, one step up the deep-colour ladder (10 bits per channel).
 const COLOUR_DEPTH_30BPP: u16 = 0x0300;
 
-/// Offset-23 of the `0x48/0x22` message: the DMA buffer format the head scans out.
+/// Offset-23 of the `0x48/0x22` message: the DMA buffer format the connector scans out.
 ///
 /// The dock indexes a four-entry table with this, giving 2, 4, 3 and 4 bytes per pixel for formats
 /// 0 through 3, and rejects anything above 3. DLM names all four: the same value selects a string
@@ -532,12 +527,11 @@ const COLOUR_DEPTH_30BPP: u16 = 0x0300;
 /// A teardown writes no timing at all and leaves the field zero.
 const DMA_FORMAT_NM24: u8 = 2;
 const DMA_FORMAT_NONE: u8 = 0;
-/// Offset-23 for a 10-bit head: `NM30`, the second of the table's two four-byte formats.
+/// Offset-23 for a 10-bit connector: `NM30`, the second of the table's two four-byte formats.
 ///
-/// The choice between the two used to be a coin flip -- both are four bytes, and no capture on
-/// either dock generation carries anything but `NM24`. The name settles it: 30 bits per pixel
-/// packed into four bytes is what a 2:10:10:10 sample is, and `NM32` is the 8-bit-with-padding
-/// format vino has no use for.
+/// No capture on either dock generation carries anything but `NM24`, so the name has to settle
+/// the choice between the table's two four-byte formats: 30 bits per pixel packed into four bytes
+/// is what a 2:10:10:10 sample is, and `NM32` is the 8-bit-with-padding format vino has no use for.
 const DMA_FORMAT_NM30: u8 = 3;
 
 /// Build the set-mode message's teardown form: every timing word zero and
@@ -546,11 +540,11 @@ const DMA_FORMAT_NM30: u8 = 3;
 /// The dock expects this for a connector before that connector's real mode. DLM sends two rounds
 /// of `(conn 0, conn 1)` teardowns 3.1 s and 1.2 s ahead of the real pair, which itself lands
 /// 0.12 s before the first video byte.
-pub(super) fn clear_mode(counter: u16, head: u8) -> Result<KVec<u8>> {
+pub(super) fn clear_mode(counter: u16, connector: u8) -> Result<KVec<u8>> {
     let mut b = KVec::with_capacity(80, GFP_KERNEL)?;
     header(&mut b, 0x48, 0x22, counter)?;
     pad_to(&mut b, 22)?;
-    b.push(head, GFP_KERNEL)?; // off22: connector
+    b.push(connector, GFP_KERNEL)?; // off22: connector
     b.push(DMA_FORMAT_NONE, GFP_KERNEL)?;
     pad_to(&mut b, 42)?;
     b.extend_from_slice(&SYNC_FLAGS_TEARDOWN.to_le_bytes(), GFP_KERNEL)?;
@@ -561,15 +555,15 @@ pub(super) fn clear_mode(counter: u16, head: u8) -> Result<KVec<u8>> {
     Ok(b)
 }
 
-/// Set-mode (`id=0x48 sub=0x22`): an 80-byte inner message carrying the target head and a timing
+/// Set-mode (`id=0x48 sub=0x22`): an 80-byte inner message carrying the target connector and a timing
 /// record. Offsets 26 through 48 hold the geometry, sync flags, refresh and the resolution-keyed
 /// pair; offset 66 carries the VIC word, offset 68 is fixed, offset 70 the pixel clock, and
 /// offsets 74 through 79 a fresh token.
-pub(super) fn set_mode(counter: u16, head: u8, t: &Timing) -> Result<KVec<u8>> {
+pub(super) fn set_mode(counter: u16, connector: u8, t: &Timing) -> Result<KVec<u8>> {
     let mut b = KVec::with_capacity(80, GFP_KERNEL)?;
     header(&mut b, 0x48, 0x22, counter)?;
     pad_to(&mut b, 22)?;
-    b.push(head, GFP_KERNEL)?; // off22: downstream head selector
+    b.push(connector, GFP_KERNEL)?; // off22: downstream connector selector
     b.push(
         if t.ten_bit {
             DMA_FORMAT_NM30
@@ -627,7 +621,8 @@ pub(super) fn set_mode(counter: u16, head: u8, t: &Timing) -> Result<KVec<u8>> {
 /// Convert a DRM display mode into the dock's set-mode timing representation.
 pub(super) fn timing_from_drm_mode(
     mode: &kernel::drm::kms::modes::DisplayMode,
-    navarro: bool,
+    allocation: &profile::Allocation,
+    ten_bit: bool,
 ) -> Result<Timing> {
     let refresh = mode.vrefresh() as u16;
     let sub = |a: u16, b: u16| a.saturating_sub(b);
@@ -639,7 +634,7 @@ pub(super) fn timing_from_drm_mode(
     // A dark panel on a mode with no decrypted message is far more likely to be these two words
     // than anything else in the pipeline, so name them in the log.
     if !profile.measured {
-        pr_info!(
+        vino_debug!(
             "vino: {}x{}@{} has no decrypted DLM profile; inferring sync_flags={:#06x} \
              vic_word={:#06x}\n",
             mode.hdisplay(),
@@ -650,22 +645,17 @@ pub(super) fn timing_from_drm_mode(
         );
     }
     let pixel_clock_10khz = (clock as u32) / 10;
-    // The stride is derived on the DL7400 and overridden to a device constant on Ridge. The row
-    // count follows the dock's own allocator, so an unmeasured resolution has no derivation.
-    let (stride, total_rows) = if navarro {
-        let rows = navarro_total_rows(mode.hdisplay(), mode.vdisplay()).unwrap_or_else(|| {
-            pr_info!(
-                "vino: {}x{} has no measured DL7400 row count; sending Ridge's {:#06x}\n",
-                mode.hdisplay(),
-                mode.vdisplay(),
-                RIDGE_TOTAL_ROWS
-            );
-            RIDGE_TOTAL_ROWS
-        });
-        (render_stride(mode.hdisplay()), rows)
-    } else {
-        (RIDGE_STRIDE, RIDGE_TOTAL_ROWS)
-    };
+    let (stride, total_rows, known) = allocation.words(mode.hdisplay(), mode.vdisplay(), ten_bit);
+    // A dock with nowhere to put the second frame stops consuming and says nothing, so name an
+    // allocation no capture covers.
+    if !known {
+        vino_debug!(
+            "vino: {}x{} has no stated allocation; sending this dock's default {:#06x} rows\n",
+            mode.hdisplay(),
+            mode.vdisplay(),
+            total_rows
+        );
+    }
     Ok(Timing {
         hactive: mode.hdisplay(),
         hblank: sub(mode.htotal(), mode.hdisplay()),
@@ -681,12 +671,12 @@ pub(super) fn timing_from_drm_mode(
         stride,
         total_rows,
         vic_word: profile.vic_word,
-        // Filled by the caller, which knows the committed framebuffer's format; the mode alone
-        // does not say what depth will be scanned out.
-        // Both describe the pixels a head will actually carry, which a DRM mode does not know.
-        // `atomic_enable` fills them in from the committed framebuffer and the connector's HDR
-        // properties.
-        ten_bit: false,
+        // The depth is an argument because the allocation above divides by it, so the pair cannot
+        // disagree: a connector told 30 bpp is told the row count that goes with 30 bpp.
+        ten_bit,
+        // Filled by the caller. Both describe the pixels a connector will actually carry, which a DRM
+        // mode does not know: `atomic_enable` reads them from the committed framebuffer and the
+        // connector's HDR properties.
         st2084: false,
         dual_nivo: false,
     })
@@ -723,7 +713,7 @@ fn is_known_sub(sub: u16) -> bool {
 /// Return the supported dock-to-host RIVs in reply-preference order.
 ///
 /// The first pair uses the direction bit preferred by interactive replies. The second pair covers
-/// firmware which replies using the outgoing RIV. Within each pair, byte 0 bit 7 selects the head.
+/// firmware which replies using the outgoing RIV. Within each pair, byte 0 bit 7 selects the connector.
 fn inbound_reply_rivs(out_riv: &[u8; 8]) -> [[u8; 8]; 4] {
     let in_head0 = in_riv(out_riv);
     let mut in_head1 = in_head0;
@@ -737,7 +727,7 @@ fn inbound_reply_rivs(out_riv: &[u8; 8]) -> [[u8; 8]; 4] {
 /// Try the supported RIV variants and return the best-scoring inner header and prefix.
 ///
 /// Interactive replies use [`in_riv`], while capability replies can use the outgoing RIV.
-/// Flipping bit 7 of byte 0 selects the second head.
+/// Flipping bit 7 of byte 0 selects the second connector.
 pub(super) fn decode_any(
     ks: &[u8; 16],
     out_riv: &[u8; 8],
@@ -757,16 +747,16 @@ pub(super) fn decode_any(
     ];
     let mut best: Option<(i32, &'static str, u16, u16, u16, [u8; 24])> = None;
     for (tag, riv) in variants {
-        let Ok(pt) = open_in(ks, &riv, seq, body) else {
+        let Ok(plaintext) = open_in(ks, &riv, seq, body) else {
             continue;
         };
-        if pt.len() < 8 {
+        if plaintext.len() < 8 {
             continue;
         }
-        let id = u16::from_le_bytes([pt[0], pt[1]]);
-        let sub = u16::from_le_bytes([pt[2], pt[3]]);
-        let ctr = u16::from_le_bytes([pt[4], pt[5]]);
-        let pad = u16::from_le_bytes([pt[6], pt[7]]);
+        let id = u16::from_le_bytes([plaintext[0], plaintext[1]]);
+        let sub = u16::from_le_bytes([plaintext[2], plaintext[3]]);
+        let ctr = u16::from_le_bytes([plaintext[4], plaintext[5]]);
+        let pad = u16::from_le_bytes([plaintext[6], plaintext[7]]);
         let mut sc = 0i32;
         if is_known_sub(sub) {
             sc += 50;
@@ -780,8 +770,8 @@ pub(super) fn decode_any(
         if best.map_or(true, |b| sc > b.0) {
             // Retain enough plaintext to identify the decoded message class.
             let mut sample = [0u8; 24];
-            let n = pt.len().min(24);
-            sample[..n].copy_from_slice(&pt[..n]);
+            let n = plaintext.len().min(24);
+            sample[..n].copy_from_slice(&plaintext[..n]);
             best = Some((sc, tag, id, sub, ctr, sample));
         }
     }
@@ -793,7 +783,7 @@ pub(super) fn decode_any(
 /// acknowledgment must decrypt to a small id, a known sub-id and a zero header pad.
 ///
 /// Firmware revisions use both the outgoing RIV and its byte-7-bit-0 variant for replies, with
-/// byte-0-bit-7 selecting the head, so all four combinations are checked.
+/// byte-0-bit-7 selecting the connector, so all four combinations are checked.
 pub(super) fn verify_in_ack(
     ks: &[u8; 16],
     out_riv: &[u8; 8],
@@ -805,16 +795,16 @@ pub(super) fn verify_in_ack(
     let seq = u32::from_le_bytes([wire[12], wire[13], wire[14], wire[15]]);
     let body = &wire[16..];
     for riv in inbound_reply_rivs(out_riv) {
-        let Ok(pt) = open_in(ks, &riv, seq, body) else {
+        let Ok(plaintext) = open_in(ks, &riv, seq, body) else {
             continue;
         };
-        if pt.len() < 8 {
+        if plaintext.len() < 8 {
             continue;
         }
-        let id = u16::from_le_bytes([pt[0], pt[1]]);
-        let sub = u16::from_le_bytes([pt[2], pt[3]]);
-        let ctr = u16::from_le_bytes([pt[4], pt[5]]);
-        let pad = u16::from_le_bytes([pt[6], pt[7]]);
+        let id = u16::from_le_bytes([plaintext[0], plaintext[1]]);
+        let sub = u16::from_le_bytes([plaintext[2], plaintext[3]]);
+        let ctr = u16::from_le_bytes([plaintext[4], plaintext[5]]);
+        let pad = u16::from_le_bytes([plaintext[6], plaintext[7]]);
         if id < 0x400 && is_known_sub(sub) && pad == 0 {
             return Some((id, sub, ctr));
         }
@@ -836,22 +826,22 @@ pub(super) fn inner_plaintext(ks: &[u8; 16], out_riv: &[u8; 8], wire: &[u8]) -> 
     }
     match u16::from_le_bytes([wire[8], wire[9]]) {
         0x25 => {
-            let mut pt = KVec::with_capacity(wire.len() - 16, GFP_KERNEL).ok()?;
-            pt.extend_from_slice(&wire[16..], GFP_KERNEL).ok()?;
-            Some(pt)
+            let mut plaintext = KVec::with_capacity(wire.len() - 16, GFP_KERNEL).ok()?;
+            plaintext.extend_from_slice(&wire[16..], GFP_KERNEL).ok()?;
+            Some(plaintext)
         }
         0x45 => {
             let seq = u32::from_le_bytes([wire[12], wire[13], wire[14], wire[15]]);
             for riv in inbound_reply_rivs(out_riv) {
-                let Ok(pt) = open_in(ks, &riv, seq, &wire[16..]) else {
+                let Ok(plaintext) = open_in(ks, &riv, seq, &wire[16..]) else {
                     continue;
                 };
                 // The verified Dl3Cmac identifies a genuine frame. Inner offsets 6..7 must NOT be
                 // tested as padding: Navarro stores connector selector bits there for the third
                 // and fourth per-connector HDCP bursts, and rejecting on them dropped those
                 // connectors' authentic pushes.
-                if pt.len() >= 8 {
-                    return Some(pt);
+                if plaintext.len() >= 8 {
+                    return Some(plaintext);
                 }
             }
             None
@@ -896,15 +886,15 @@ pub(super) fn decode_in_lenient(
     let seq = u32::from_le_bytes([wire[12], wire[13], wire[14], wire[15]]);
     let body = &wire[16..];
     for riv in inbound_reply_rivs(out_riv) {
-        let Ok(pt) = open_in(ks, &riv, seq, body) else {
+        let Ok(plaintext) = open_in(ks, &riv, seq, body) else {
             continue;
         };
-        if pt.len() < 8 {
+        if plaintext.len() < 8 {
             continue;
         }
-        let id = u16::from_le_bytes([pt[0], pt[1]]);
-        let sub = u16::from_le_bytes([pt[2], pt[3]]);
-        let ctr = u16::from_le_bytes([pt[4], pt[5]]);
+        let id = u16::from_le_bytes([plaintext[0], plaintext[1]]);
+        let sub = u16::from_le_bytes([plaintext[2], plaintext[3]]);
+        let ctr = u16::from_le_bytes([plaintext[4], plaintext[5]]);
         // Navarro's device-log/status replies use session-varying IDs beyond the old catalogued
         // range (the captured transaction boundary replies with id=0x0405/sub=0x000c). Its
         // per-connector HDCP pushes also use bytes 4--7 as a one-hot 32-bit selector, so `ctr` is
@@ -928,12 +918,12 @@ pub(super) struct PerheadHdcpPush {
     pub payload_len: usize,
 }
 
-/// Decode a per-head HDCP push from either of the two observed vendor framings.
+/// Decode a per-connector HDCP push from either of the two observed vendor framings.
 ///
-/// Ridge can send the inner body directly in `wsub=0x25`; Navarro seals it as `wsub=0x45` with
-/// the live control key.  Keeping this as one parser matters: previously only Rrx was extracted,
-/// while L', ReceiverID/V', receiver-auth status and M' were silently treated as generic traffic.
-pub(super) fn perhead_hdcp_push(
+/// Ridge can send the inner body directly in `wsub=0x25`; Navarro seals it as `wsub=0x45` with the
+/// live control key. One parser covers both, so L', ReceiverID/V', receiver-auth status and M' are
+/// decoded alongside Rrx rather than falling through as generic traffic.
+pub(super) fn per_connector_hdcp_push(
     ks: &[u8; 16],
     out_riv: &[u8; 8],
     wire: &[u8],
@@ -987,84 +977,76 @@ pub(super) fn perhead_hdcp_push(
 // off0..7 id/sub/counter header
 // off8..21 zero
 // off22 0x02 constant marker
-// off23 head_id (0 / 1 across the cold-ref's two monitors)
+// off23 connector_id (0 / 1 across the cold-ref's two monitors)
 // off24..25 field1 LE u16 (create: width / move: X / image: 0)
 // off26..27 field2 LE u16 (create: height / move: Y / image: 0)
 // off28..31 zero
 // Cursor images append their w*h*4 BGRA bitmap at off32 and set the high-byte flag in id 0x401c.
-/// The dock's head id at off22 of every cursor message, indexed by vino's head number.
+/// The dock's connector id at off22 of every cursor message, indexed by vino's connector number.
 ///
 /// Cursor wire layout (sec 8.6.1). All three messages share the 32-byte inner header built by
-/// [`cursor_header`], with the head selector at off22 and a flag at off23.
+/// [`cursor_header`], with the connector selector at off22 and a flag at off23.
 ///
-/// The dock numbers its heads from **one**; `0` is not a valid selector.
-///
-/// ⚠ This was a two-entry table, `[0x01, 0x02]`, indexed by vino's head number -- written when the
-/// only dock had two heads. The DL-7400 has four, and its two monitors sit in sockets 3 and 4, so
-/// every cursor message for them looked up past the end of the table and returned `EINVAL`.
-/// `EINVAL` is deliberately non-retryable, so `cmd_work` dropped each one with
-/// "dropping invalid asynchronous KMS command" and **no cursor byte ever reached the dock**: the
-/// hardware cursor was not unreliable on this dock, it was absent.
-///
-/// The selector is a **head bitmask**, `1 << head`. The two measured entries were `[0x01, 0x02]`,
-/// which is `1 << 0` and `1 << 1`; they do not distinguish a bitmask from a one-based index, and
-/// the two readings diverge from head 2 on. A head sent `head + 1` draws no cursor.
-fn cursor_head_id(head: u8) -> Result<u8> {
-    if usize::from(head) >= crate::drm_sink::HEADS {
+/// The selector is a connector bitmask, `1 << connector`; the dock numbers its connectors from one, so `0` is
+/// never valid. The two measured entries were `[0x01, 0x02]`, which is both `1 << connector` and
+/// `connector + 1`, so they do not distinguish the two readings. They diverge from connector 2 on, and a
+/// connector sent `connector + 1` draws no cursor.
+fn cursor_head_id(connector: u8) -> Result<u8> {
+    if usize::from(connector) >= crate::drm_sink::MAX_CONNECTORS {
         return Err(EINVAL);
     }
-    Ok(1u8 << head)
+    Ok(1u8 << connector)
 }
 
-/// off23 is the cursor's **visible** flag, not a message-kind tag: set to show the cursor, clear to
+/// off23 is the cursor's visible flag, not a message-kind tag: set to show the cursor, clear to
 /// hide it. The bitmap-bearing messages carry it clear because an upload is not itself a show.
 /// Offset-23 visibility flag of the cursor messages.
 const CURSOR_VISIBLE: u8 = 0x01;
 const CURSOR_HIDDEN: u8 = 0x00;
 
-/// Common prologue of the cursor messages: the dock-side head id at offset 22 and the visibility
+/// Common prologue of the cursor messages: the dock-side connector id at offset 22 and the visibility
 /// flag at offset 23.
 fn cursor_header(
     b: &mut KVec<u8>,
     id: u16,
     sub: u16,
     counter: u16,
-    dock_head: u8,
+    dock_connector: u8,
     visible: u8,
 ) -> Result {
     header(b, id, sub, counter)?;
     pad_to(b, 22)?;
-    b.push(dock_head, GFP_KERNEL)?;
+    b.push(dock_connector, GFP_KERNEL)?;
     b.push(visible, GFP_KERNEL)?;
     Ok(())
 }
 
 /// cursor create: `id=0x1b sub=0x42`, advertises `w x h`. Sent once per bitmap geometry.
-pub(super) fn cursor_create(counter: u16, head: u8, w: u16, h: u16) -> Result<KVec<u8>> {
+pub(super) fn cursor_create(counter: u16, connector: u8, w: u16, h: u16) -> Result<KVec<u8>> {
     let mut b = KVec::with_capacity(32, GFP_KERNEL)?;
-    let dock_head = cursor_head_id(head)?;
-    cursor_header(&mut b, 0x1b, 0x42, counter, dock_head, CURSOR_HIDDEN)?;
+    let dock_connector = cursor_head_id(connector)?;
+    cursor_header(&mut b, 0x1b, 0x42, counter, dock_connector, CURSOR_HIDDEN)?;
     b.extend_from_slice(&w.to_le_bytes(), GFP_KERNEL)?; // off24..25
     b.extend_from_slice(&h.to_le_bytes(), GFP_KERNEL)?; // off26..27
     pad_to(&mut b, 32)?; // off28..31 reserved
     Ok(b)
 }
-/// cursor move: `id=0x1a sub=0x43`, X at off24 and Y at off26 (LE), for one head.
+/// cursor move: `id=0x1a sub=0x43`, X at off24 and Y at off26 (LE), for one connector.
 pub(super) fn cursor_move(
     counter: u16,
-    head: u8,
+    connector: u8,
     x: u16,
     y: u16,
     visible: bool,
 ) -> Result<KVec<u8>> {
     let mut b = KVec::with_capacity(32, GFP_KERNEL)?;
-    let dock_head = cursor_head_id(head)?;
+    let dock_connector = cursor_head_id(connector)?;
     let visible_flag = if visible {
         CURSOR_VISIBLE
     } else {
         CURSOR_HIDDEN
     };
-    cursor_header(&mut b, 0x1a, 0x43, counter, dock_head, visible_flag)?;
+    cursor_header(&mut b, 0x1a, 0x43, counter, dock_connector, visible_flag)?;
     b.extend_from_slice(&x.to_le_bytes(), GFP_KERNEL)?; // off24..25
     b.extend_from_slice(&y.to_le_bytes(), GFP_KERNEL)?; // off26..27
     pad_to(&mut b, 32)?; // off28..31 reserved
@@ -1073,11 +1055,11 @@ pub(super) fn cursor_move(
 /// cursor image: inner `id=0x401c sub=0x41` (the `0x40` high-byte flag marks the bitmap-bearing
 /// message), a 32-byte header then the bitmap. `w`/`h` come from [`cursor_create`].
 ///
-/// Pixels are DRM `ARGB8888` (`[B, G, R, A]`, premultiplied) and **start at off34**: off32..33 are
+/// Pixels are DRM `ARGB8888` (`[B, G, R, A]`, premultiplied) and start at off34: off32..33 are
 /// zero and the final pixel is truncated, so the message stays `32 + w*h*4` bytes.
 pub(super) fn cursor_image(
     counter: u16,
-    head: u8,
+    connector: u8,
     w: u16,
     h: u16,
     bgra: &[u8],
@@ -1092,8 +1074,8 @@ pub(super) fn cursor_image(
         return Err(EINVAL);
     }
     let mut b = KVec::with_capacity(32 + bgra.len(), GFP_KERNEL)?;
-    let dock_head = cursor_head_id(head)?;
-    cursor_header(&mut b, 0x401c, 0x41, counter, dock_head, CURSOR_HIDDEN)?;
+    let dock_connector = cursor_head_id(connector)?;
+    cursor_header(&mut b, 0x401c, 0x41, counter, dock_connector, CURSOR_HIDDEN)?;
     pad_to(&mut b, 32)?; // off24..31 zero (no w/h here)
     b.extend_from_slice(&[0, 0], GFP_KERNEL)?; // off32..33
     b.extend_from_slice(&bgra[..bgra.len() - 2], GFP_KERNEL)?; // pixels @ off34
@@ -1198,11 +1180,11 @@ pub(super) fn aux_for_id(id: u16, body_len: usize) -> u16 {
         _ => (body_len / 4) as u16,
     }
 }
-/// Per-head downstream repeater authentication and stream-open sequence.
+/// Per-connector downstream repeater authentication and stream-open sequence.
 ///
 /// Each entry is `(id, sub, plaintext length)` before [`seal_interactive`] appends the Dl3Cmac.
 /// The AKE entries carry the HDCP message id at offset 27 and its payload at offset 28. The driver
-/// derives a self-consistent HDCP 2.2 chain independently for each head.
+/// derives a self-consistent HDCP 2.2 chain independently for each connector.
 ///
 /// [`VinoDriver::send_cp_setup`]: super::VinoDriver::send_cp_setup
 pub(super) const CP_SETUP_PER_HEAD: [(u16, u16, usize); 9] = [
@@ -1210,48 +1192,82 @@ pub(super) const CP_SETUP_PER_HEAD: [(u16, u16, usize); 9] = [
     (0x001f, 0x0010, 48),  // AKE_Transmitter_Info -- msg-id 0x13, fixed 00 06 02 00 02 prefix
     (0x009a, 0x0010, 160), // AKE_No_Stored_km -- msg-id 0x04, 132B payload (10 AES blocks)
     (0x0022, 0x0010, 48),  // LC_Init -- msg-id 0x09 @off27, 20B random payload
-    (0x0032, 0x0010, 64),  // per-head VIDEO KEY -- msg-id 0x0b, fresh 32B key @off28, stashed
+    (0x0032, 0x0010, 64),  // per-connector VIDEO KEY -- msg-id 0x0b, fresh 32B key @off28, stashed
     (0x002a, 0x0010, 48),  // LC_Send_L_prime -- msg-id 0x0f @off27, 20B random payload
-    (0x0026, 0x0010, 48),  // RepeaterAuth Stream_Manage -- built by stream_manage_restatement
-    (0x0014, 0x0030, 32),  // per-head stream-open ctl -- no marker/tag, 10B random @off22
-    (0x0019, 0x0031, 32),  // per-head strm2 -- head @off22, fixed 06 [head*4] 04 @off24
+    // RepeaterAuth_Stream_Manage -- built by `stream_manage_restatement`.
+    (0x0026, 0x0010, 48),
+    (0x0014, 0x0030, 32), // per-connector stream-open ctl -- no marker/tag, 10B random @off22
+    (0x0019, 0x0031, 32), // per-connector strm2 -- connector @off22, fixed 06 [connector*4] 04 @off24
 ];
-/// Build a 48-byte `RepeaterAuth_Stream_Manage` restatement for one head.
+/// Layout of a restatement record, as the vendor's own message assembler writes it.
 ///
-/// Offset 27 carries the HDCP message id, offset 32 the stream count and offset 36 the head's
-/// content-stream id, and offsets 40 through 47 a fresh token. `connector_marker` writes the
-/// dock's connector selector into offsets 22 through 25.
+/// It allocates the record, stores a connector selector as a `u32`, a flag byte, and then copies
+/// an HDCP message -- its id byte first, its payload after -- to a fixed offset. Naming the four
+/// positions once keeps every builder below describing the same record rather than each repeating
+/// a different set of literals.
+pub(super) mod restatement {
+    /// `u32` connector selector. The upstream authentication uses `0x30`; a downstream connector
+    /// uses its one-based index, which puts `1` or `2` in the selector's second byte.
+    pub(super) const SELECTOR: usize = 22;
+    /// The HDCP message id, the first byte of the copied message.
+    pub(super) const HDCP_ID: usize = 27;
+    /// The HDCP payload, everything the message carries after its id.
+    pub(super) const PAYLOAD: usize = 28;
+
+    /// How far an HDCP message with a `payload_len`-byte payload reaches into the record.
+    ///
+    /// This is where the message *ends*, not how long the record is. The vendor assembles the
+    /// message into an allocation of exactly this size and then sends it inside a larger fixed
+    /// record, so everything past this offset is untouched allocation -- on its side heap
+    /// metadata, on ours a fresh token. The record length itself is per message class and comes
+    /// from the wire.
+    pub(super) const fn message_end(payload_len: usize) -> usize {
+        PAYLOAD + payload_len
+    }
+}
+
+/// Build a `RepeaterAuth_Stream_Manage` restatement for one connector.
+///
+/// The payload is the HDCP one: a zero `seq_num_M`, a stream count, and that many content-stream
+/// ids. One stream per connector, so the record ends after the first id -- there is nothing after
+/// it to fill, and appending anything makes the record longer than the message it carries.
 pub(super) fn stream_manage_restatement(
     counter: u16,
-    head: u8,
+    connector: u8,
     stream_id: u16,
     onehot: bool,
 ) -> Result<KVec<u8>> {
+    use restatement::*;
+    // seq_num_M, stream count, one stream id.
+    const PAYLOAD_LEN: usize = 4 + 4 + 4;
+    // The record is 48 bytes on the wire whatever the message inside it needs; the vendor's own
+    // is the same size and carries whatever its allocation held past `message_end`.
     let mut b = KVec::from_elem(0u8, 48, GFP_KERNEL)?;
     b[0..2].copy_from_slice(&0x0026u16.to_le_bytes());
     b[2..4].copy_from_slice(&0x0010u16.to_le_bytes());
     b[4..6].copy_from_slice(&counter.to_le_bytes());
-    connector_marker(&mut b, head, onehot);
-    b[27] = 0x10; // HDCP msg-id (RepeaterAuth_Stream_Manage)
-    b[32..36].copy_from_slice(&1u32.to_le_bytes());
-    b[36..40].copy_from_slice(&(stream_id as u32).to_le_bytes());
-    let mut tail = [0u8; 8];
-    rng::fill(&mut tail);
-    b[40..48].copy_from_slice(&tail);
+    connector_marker(&mut b, connector, onehot);
+    b[HDCP_ID] = ake::id::REPEATERAUTH_STREAM_MANAGE;
+    // `seq_num_M` stays zero at PAYLOAD..PAYLOAD + 4.
+    b[PAYLOAD + 4..PAYLOAD + 8].copy_from_slice(&1u32.to_le_bytes());
+    b[PAYLOAD + 8..PAYLOAD + 12].copy_from_slice(&u32::from(stream_id).to_le_bytes());
+    let mut past_message = [0u8; 48 - message_end(PAYLOAD_LEN)];
+    rng::fill(&mut past_message);
+    b[message_end(PAYLOAD_LEN)..].copy_from_slice(&past_message);
     Ok(b)
 }
 
-/// Write a per-head record's connector selector.
+/// Write a per-connector record's connector selector.
 ///
-/// Ridge names the connector by a one-based head number at offset 23. Navarro sets a one-hot bit
-/// at offset `22 + head`, which is why it can address four connectors where Ridge addresses two.
-pub(super) fn connector_marker(content: &mut [u8], head: u8, onehot: bool) {
+/// Ridge names the connector by a one-based connector number at offset 23. Navarro sets a one-hot bit
+/// at offset `22 + connector`, which is why it can address four connectors where Ridge addresses two.
+pub(super) fn connector_marker(content: &mut [u8], connector: u8, onehot: bool) {
     if onehot {
-        if let Some(byte) = content.get_mut(22 + head as usize) {
+        if let Some(byte) = content.get_mut(restatement::SELECTOR + connector as usize) {
             *byte = 0x80;
         }
-    } else if let Some(byte) = content.get_mut(23) {
-        *byte = head + 1;
+    } else if let Some(byte) = content.get_mut(restatement::SELECTOR + 1) {
+        *byte = connector + 1;
     }
 }
 /// Stream-finalization sequence sent after both [`CP_SETUP_PER_HEAD`] blocks.
@@ -1261,11 +1277,11 @@ pub(super) fn connector_marker(content: &mut [u8], head: u8, onehot: bool) {
 pub(super) const CP_SETUP_FINALIZE_STEPS: [(u16, u16); 3] =
     [(0x0016, 0x004c), (0x0015, 0x004a), (0x0016, 0x004c)];
 
-/// Video-channel arm sequence prepended to the first frame on each head's bulk endpoint.
+/// Video-channel arm sequence prepended to the first frame on each connector's bulk endpoint.
 ///
-/// Entries are `(wire type, head-0 sub-id, auxiliary value, body length)`; the head index is added
+/// Entries are `(wire type, connector-0 sub-id, auxiliary value, body length)`; the connector index is added
 /// to the sub-id. Entries 0, 1, 4 and 5 are plaintext. Entries 6 and 7 are fixed type-4 records
-/// containing a tag over an empty payload. Entries 2, 3, 8 and 9 are sealed with the per-head video
+/// containing a tag over an empty payload. Entries 2, 3, 8 and 9 are sealed with the per-connector video
 /// key and share one block-counter sequence. The final pair carries the decoder configuration.
 ///
 /// The complete arm sequence and the first encoded frame must be submitted in one URB. Splitting
@@ -1273,18 +1289,18 @@ pub(super) const CP_SETUP_FINALIZE_STEPS: [(u16, u16); 3] =
 pub(super) const VIDEO_ARM_BURST: [(u32, u16, u16, usize); 10] = [
     (2, 0x0008, 0x0000, 16),   // #0 plaintext: body 08 00 06
     (2, 0x0018, 0x0000, 16),   // #1 plaintext: body 08 00 16
-    (4, 0x0008, 0x000a, 16),   // #2 SEALED 16B, per-head video key, seq 0
-    (4, 0x0018, 0x000a, 16),   // #3 SEALED 16B, per-head video key, seq 1
+    (4, 0x0008, 0x000a, 16),   // #2 SEALED 16B, per-connector video key, seq 0
+    (4, 0x0018, 0x000a, 16),   // #3 SEALED 16B, per-connector video key, seq 1
     (2, 0x0000, 0x0000, 16),   // #4 plaintext: body 00
     (2, 0x0010, 0x0000, 16),   // #5 plaintext: body 00 00 10
-    (4, 0x0000, 0x0004, 16),   // #6 type=4 FIXED plaintext 0a 00 04 … (sub 0x00, unsealed)
-    (4, 0x0010, 0x0004, 16),   // #7 type=4 FIXED plaintext 0a 00 04 … (sub 0x10, unsealed)
+    (4, 0x0000, 0x0004, 16),   // #6 type=4 FIXED plaintext 0a 00 04 ... (sub 0x00, unsealed)
+    (4, 0x0010, 0x0004, 16),   // #7 type=4 FIXED plaintext 0a 00 04 ... (sub 0x10, unsealed)
     (4, 0x0008, 0x000e, 1104), // #8 sealed decoder configuration, seq 2
     (4, 0x0018, 0x000e, 1104), // #9 sealed decoder configuration, seq 71
 ];
 
 /// Build the fully-known 16-byte plaintext body for one of [`VIDEO_ARM_BURST`]'s `wire_type==2`
-/// entries at table index `i`, for head `h`.
+/// entries at table index `i`, for connector `h`.
 pub(super) fn video_arm_plaintext_body(i: usize, h: u16) -> [u8; 16] {
     let mut b = [0u8; 16];
     match i {
@@ -1314,12 +1330,26 @@ pub(super) fn video_arm_plaintext_body(i: usize, h: u16) -> [u8; 16] {
 /// [`VIDEO_ARM_BURST`]'s plaintext entries byte-exact.
 pub(super) fn video_arm_plain_frame(sub: u16, body: &[u8; 16]) -> [u8; 32] {
     let mut f = [0u8; 32];
-    f[2..4].copy_from_slice(&0x001cu16.to_le_bytes());
-    f[4..8].copy_from_slice(&2u32.to_le_bytes());
-    f[8..10].copy_from_slice(&sub.to_le_bytes());
+    super::video::haar::record_header(&mut f, 2, sub, 0, 0);
     f[16..32].copy_from_slice(body);
     f
 }
+
+/// Build the plaintext record that announces one stream or video plane to the dock.
+///
+/// The body names the `sub` a second time and carries a marker: 6 on a connector's content-stream id,
+/// 0 on its video `sub`. Every generation sends this pair; they differ only in when. A dock with a
+/// video pipe of its own takes them immediately ahead of the first frame, and a dock that shares
+/// its control pipe takes them during CP setup, interleaved with the per-connector blocks.
+pub(super) fn stream_announce(sub: u16, marker: u16) -> [u8; 32] {
+    let mut body = [0u8; 16];
+    body[0..2].copy_from_slice(&sub.to_le_bytes());
+    body[2..4].copy_from_slice(&marker.to_le_bytes());
+    video_arm_plain_frame(sub, &body)
+}
+
+/// The marker a record announcing a content stream carries; see [`stream_announce`].
+pub(super) const STREAM_ANNOUNCE_MARKER: u16 = 6;
 
 /// Build a sealed type-4 video-arm frame from its header fields and plaintext content.
 /// The fixed 14-byte stream marker that opens every Navarro video stream record.
@@ -1341,6 +1371,30 @@ pub(super) fn navarro_stream_open() -> [u8; 16] {
     open[..14].copy_from_slice(&NAVARRO_STREAM_MARKER);
     rng::fill(&mut open[14..]);
     open
+}
+
+/// Build the 16-byte plaintext that opens a connector's sealed video stream on a dock whose marker is
+/// six bytes long.
+///
+/// The first four bytes are shared with [`NAVARRO_STREAM_MARKER`]; `kind` is the fifth, and is the
+/// only part that differs between generations. The rest is a host-random token, which the dock
+/// cannot validate but which the Dl3Cmac covers, so its length is what matters.
+pub(super) fn stream_open(kind: u8) -> [u8; 16] {
+    let mut open = [0u8; 16];
+    open[..6].copy_from_slice(&[0x04, 0x00, 0x08, 0x04, kind, 0x00]);
+    rng::fill(&mut open[6..]);
+    open
+}
+
+/// Build the 32-byte plaintext of a per-frame stream report that carries nothing but the mode.
+///
+/// A dock that shares its control pipe restates the mode on every report rather than only around a
+/// mode change, and has no equivalent of the DL7400's longer report body.
+pub(super) fn stream_report_mode_only(mode_header: &[u8; 26]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out[..26].copy_from_slice(mode_header);
+    rng::fill(&mut out[26..]);
+    out
 }
 
 /// Fixed leader of one slot record in a DL7400 pipe descriptor, observed at 2560x1440.
@@ -1440,7 +1494,7 @@ pub(super) fn navarro_stream_report_mode(mode_header: &[u8; 26]) -> [u8; 112] {
 
 /// Build a DL7400 pipe descriptor for one connector.
 ///
-/// The 304-byte plaintext is [`NAVARRO_STREAM_MARKER`] **twice**, then six
+/// The 304-byte plaintext is [`NAVARRO_STREAM_MARKER`] twice, then six
 /// `[len=0x002c][kind=0x000e][slot]` records of 40 configuration bytes. Records advance by
 /// `len + 2`. Each configuration names the connector's slot id and the three dock-side addresses
 /// that slot is given. 14 + 14 + 6 * 46 = 304 exactly, so there is no padding and no tail.
@@ -1539,23 +1593,45 @@ pub(super) fn open_in(ks: &[u8; 16], in_riv: &[u8; 8], seq: u32, body: &[u8]) ->
     }
 
     let cipher = crypto::Aes128::new(ks)?;
-    let mut pt = KVec::with_capacity(ct.len(), GFP_KERNEL)?;
+    let mut plaintext = KVec::with_capacity(ct.len(), GFP_KERNEL)?;
     for (i, chunk) in ct.chunks(16).enumerate() {
         let mut iv = [0u8; 16];
         iv[..8].copy_from_slice(in_riv);
         iv[12..].copy_from_slice(&seq.wrapping_add(i as u32).to_be_bytes());
         let ksb = cipher.encrypt_block(&iv);
         for (j, &c) in chunk.iter().enumerate() {
-            pt.push(c ^ ksb[j], GFP_KERNEL)?;
+            plaintext.push(c ^ ksb[j], GFP_KERNEL)?;
         }
     }
-    Ok(pt)
+    Ok(plaintext)
 }
+/// How many EDID bytes a reply id says it carries, if it names an EDID reply at all.
+///
+/// There is no single id for an EDID reply. The field is `0x14` -- the dock's generic reply -- plus
+/// the number of EDID bytes behind it, so a monitor whose EDID is one block answers `0x94`, a
+/// two-block one `0x114` and a three-block one `0x194`. Matching a fixed value makes every monitor
+/// with a different extension count invisible: the fetch is answered, the answer is discarded, and
+/// the connector is reported as having no sink at all.
+pub(crate) fn edid_reply_len(id: u16) -> Option<usize> {
+    let n = usize::from(id).checked_sub(0x14)?;
+    (n >= 128 && n % 128 == 0).then_some(n)
+}
+
+/// Whether a reply carries a connector's downstream display capability.
+///
+/// The inner sub names the message; the id is `0x14` plus the payload length, exactly as for an
+/// EDID reply (see [`edid_reply_len`]), so it moves with the descriptor the attached monitor
+/// produces. Pinning it to one observed length makes a monitor answering a shorter descriptor read
+/// as an empty socket, and that connector is then never probed for an EDID.
+pub(crate) fn is_display_cap_reply(id: u16, sub: u16) -> bool {
+    sub == 0x30 && id > 0x14
+}
+
 /// Decrypt an EDID reply and return its complete base block and extensions.
 ///
-/// EDID replies use wire `sub=0x45` and inner `id=0x194 sub=0x21`. The EDID starts at inner offset
-/// 22 and its base-block extension count determines the returned length. All supported direction
-/// and head RIV variants are checked.
+/// EDID replies use wire `sub=0x45` and inner `sub=0x21`, with the id naming the payload length
+/// (see [`edid_reply_len`]). The EDID starts at inner offset 22 and its base-block extension count
+/// determines the returned length. All supported direction and connector RIV variants are checked.
 pub(super) fn parse_edid_from_reply(
     ks: &[u8; 16],
     out_riv: &[u8; 8],
@@ -1578,16 +1654,15 @@ pub(super) fn parse_edid_from_reply(
         }
         let id = u16::from_le_bytes([inner[0], inner[1]]);
         let sub = u16::from_le_bytes([inner[2], inner[3]]);
-        // Some firmware reports the EDID reply id without the high bit.
-        if (id != 0x94 && id != 0x194) || sub != 0x21 {
+        let Some(declared) = edid_reply_len(id).filter(|_| sub == 0x21) else {
             continue;
-        }
+        };
         let edid = &inner[EDID_OFF..];
         // Say what arrived, not just that nothing valid did. "no EDID came back" is true of a
         // sink that answered with a block this rejected and of one that never answered at all,
         // and those want opposite fixes.
         if crate::debug_enabled() {
-            pr_info!(
+            vino_debug!(
                 "vino: EDID reply candidate: inner {} B, payload {} B, first 8 {:02x?}\n",
                 inner.len(),
                 edid.len(),
@@ -1598,12 +1673,12 @@ pub(super) fn parse_edid_from_reply(
         const MAGIC: [u8; 8] = [0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00];
         if edid[..8] != MAGIC {
             if crate::debug_enabled() {
-                pr_info!("vino: EDID reply rejected: bad base-block magic\n");
+                vino_debug!("vino: EDID reply rejected: bad base-block magic\n");
             }
             continue;
         }
         // ...and its checksum. The magic is only eight bytes and a dock with an empty port can
-        // return a block that carries it, which is enough to be mistaken for a monitor: the head
+        // return a block that carries it, which is enough to be mistaken for a monitor: the connector
         // is then declared connected, a hotplug is raised for a sink that is not there, and the
         // dock resets. A real base block sums to zero modulo 256.
         if edid.len() < 128 {
@@ -1611,20 +1686,54 @@ pub(super) fn parse_edid_from_reply(
         }
         if edid[..128].iter().fold(0u8, |a, b| a.wrapping_add(*b)) != 0 {
             if crate::debug_enabled() {
-                pr_info!("vino: EDID reply rejected: base block checksum\n");
+                vino_debug!("vino: EDID reply rejected: base block checksum\n");
             }
             continue;
         }
         if crate::debug_enabled() {
-            pr_info!(
+            vino_debug!(
                 "vino: EDID base block accepted: {} extension block(s) declared, {} B available\n",
                 edid[126],
                 edid.len()
             );
         }
-        let total = ((1 + edid[126] as usize) * 128).min(edid.len());
-        let mut out = KVec::with_capacity(total, GFP_KERNEL)?;
-        out.extend_from_slice(&edid[..total], GFP_KERNEL)?;
+        // The reply says how much EDID it carries; the base block says how much the monitor has.
+        // Take the smaller, so a truncated reply is never read past its end and a base block
+        // claiming more extensions than arrived cannot manufacture them.
+        let total = ((1 + edid[126] as usize) * 128)
+            .min(edid.len())
+            .min(declared);
+        // Keep only extension blocks that are wholly present and sum to zero. The core validates
+        // the whole blob, so one bad extension costs the monitor every mode it described --
+        // the connector then falls back to a synthesised list and the sink is driven at a timing
+        // it never advertised. A base block alone is a valid EDID and still carries the native
+        // mode, so salvage what checks out.
+        let mut blocks = 1;
+        while blocks * 128 + 128 <= total {
+            let ext = &edid[blocks * 128..blocks * 128 + 128];
+            if ext.iter().fold(0u8, |a, b| a.wrapping_add(*b)) != 0 {
+                break;
+            }
+            blocks += 1;
+        }
+        let kept = blocks * 128;
+        if crate::debug_enabled() && kept != total {
+            vino_debug!(
+                "vino: EDID extension blocks: {} of {} kept, rest failed checksum\n",
+                blocks - 1,
+                total / 128 - 1
+            );
+        }
+        let mut out = KVec::with_capacity(kept, GFP_KERNEL)?;
+        out.extend_from_slice(&edid[..kept], GFP_KERNEL)?;
+        // The extension count and the base-block checksum have to agree with what is actually
+        // being handed over, or the core rejects a blob whose blocks are individually sound.
+        if out[126] != (blocks - 1) as u8 {
+            out[126] = (blocks - 1) as u8;
+            out[127] = 0;
+            let sum = out[..128].iter().fold(0u8, |a, b| a.wrapping_add(*b));
+            out[127] = (0u8).wrapping_sub(sum);
+        }
         return Ok(Some(out));
     }
     Ok(None)
@@ -1657,8 +1766,10 @@ pub(super) fn probe_reply_status(
             continue;
         }
         // Ignore unrelated traffic: only a downstream capability/EDID handler response or a
-        // generic negative acknowledgment can answer this probe.
-        if !(matches!(id, 0x44 | 0x78 | 0x194) && sub == 0x0020) && id != 0x14 {
+        // generic negative acknowledgment can answer this probe. The handler's id is `0x14` plus
+        // its payload length (see `edid_reply_len`), so it names a descriptor size rather than a
+        // message type and cannot be matched against a list of the sizes seen so far.
+        if !(id > 0x14 && sub == 0x0020) && id != 0x14 {
             continue;
         }
         // A short generic ack (the `id=0x14` the dock sends when it cannot route the probe)

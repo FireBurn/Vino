@@ -10,8 +10,8 @@ pub(crate) fn rgb565(r: u8, g: u8, b: u8) -> u16 {
     ((r as u16 >> 3) << 11) | ((g as u16 >> 2) << 5) | (b as u16 >> 3)
 }
 
-/// DisplayLink's 8x8 Walsh-Hadamard codec and 64x16 strip grammar.
-pub(crate) mod wht {
+/// DisplayLink's 8x8 multilevel Haar codec and 64x16 strip grammar.
+pub(crate) mod haar {
     use super::*;
 
     /// Transform block geometry. Each 8x8 input block produces 64 coefficients.
@@ -241,7 +241,7 @@ pub(crate) mod wht {
         (511, 9),
     ];
 
-    /// LSB-first VLC bit packer matching the dock (final byte padded with **1-bits** -- a
+    /// LSB-first VLC bit packer matching the dock (final byte padded with 1-bits -- a
     /// truncated all-ones code required by the wire format).
     #[cfg(CONFIG_DRM_VINO_KUNIT_TEST)]
     pub(crate) struct Vlc {
@@ -339,12 +339,11 @@ pub(crate) mod wht {
 
     /// Bits per colour channel in the surface being encoded.
     ///
-    /// This is the *only* thing that differs between an SDR and an HDR frame on this wire. Measured
-    /// on 2026-08-05 against a DL7400 driven by Windows with genuinely HDR content
-    /// (`docs/hdr.md` §0): record framing, strip header, significance tree, transform and
-    /// quantiser are byte-identical across an HDR toggle, and the colour maths is entirely
-    /// host-side -- what arrives is an ordinary PQ-encoded 10-bit RGB surface. So the codec is one
-    /// codec, parameterised here, rather than two.
+    /// This is the only thing that differs between an SDR and an HDR frame on this wire. Measured
+    /// against a DL7400 driven by Windows with HDR content: record framing, strip header,
+    /// significance tree, transform and quantiser are byte-identical across an HDR toggle, and the
+    /// colour maths is entirely host-side -- what arrives is an ordinary PQ-encoded 10-bit RGB
+    /// surface. So this is one codec parameterised by depth, not two codecs.
     #[derive(Clone, Copy, PartialEq, Eq)]
     pub(crate) enum Depth {
         /// 8 bits per channel: every mode on a Ridge dock, and a Navarro one outside HDR.
@@ -385,14 +384,14 @@ pub(crate) mod wht {
         }
     }
 
-    // ⚠ The AC ceilings deliberately do NOT vary with depth. The DC one had to, because a DC is a
-    // direct multiple of the sample and 10-bit content immediately overflows category 10. Nothing
-    // has ever measured an AC ceiling above 8-bit's: the 2026-08-05 capture's largest luma AC
-    // coefficient was |273|, comfortably inside category 9, because Windows tone-mapped the content
-    // down to the sink's 302 cd/m2 peak before the codec saw it. Guessing upward is the unsafe
-    // direction -- `esc` saturates a magnitude whose category exceeds the ceiling, so an
-    // under-sized ceiling clips extreme AC detail while an over-sized one desynchronises the dock.
-    // Raise these only against a capture that needs them; see `docs/hdr.md` §0.5.
+    // The AC ceilings deliberately do not vary with depth. The DC one has to, because a DC is a
+    // direct multiple of the sample and 10-bit content immediately overflows category 10. No
+    // capture shows an AC ceiling above 8-bit's: the largest luma AC coefficient measured on
+    // 10-bit content is |273|, comfortably inside category 9, because the host tone-maps to the
+    // sink's peak luminance before the codec sees it. Guessing upward is the unsafe direction --
+    // `esc` saturates a magnitude whose category exceeds the ceiling, so an under-sized ceiling
+    // clips extreme AC detail while an over-sized one desynchronises the dock. Raise these only
+    // against a capture that needs them.
 
     /// LSB-first bit accumulator for the production AC-strip coder.
     ///
@@ -403,14 +402,17 @@ pub(crate) mod wht {
         /// Pending bits, LSB-first, valid in the low `nacc`.
         acc: u64,
         nacc: u32,
+        /// Which dialect of the shared unary code to emit; see [`Bits::unary`].
+        coding: super::super::video_arm::CodeTables,
     }
 
     impl Bits {
-        fn new() -> Self {
+        fn new(coding: super::super::video_arm::CodeTables) -> Self {
             Self {
                 out: KVec::new(),
                 acc: 0,
                 nacc: 0,
+                coding,
             }
         }
 
@@ -451,8 +453,45 @@ pub(crate) mod wht {
             Ok(self.out)
         }
 
-        /// The shared escape value code: a 0 is one `0` bit; else `unary(c) ++ [0-term IFF c<cmax]
-        /// ++ offset(c-1, MSB-first) ++ sign(1=positive)`. `c = bit_length(|v|)`.
+        /// The one code every field in a strip is built from: a unary category of `count` ones, a
+        /// `0` terminator unless the category is the codebook maximum, and exactly `count` payload
+        /// bits.
+        ///
+        /// The dock generations differ in where the payload sits and in which end of it comes
+        /// first. Ridge and the DL7400 group it after the terminator, most significant bit first.
+        /// A DL-3x00 decoder expects one payload bit immediately after each unary one, terminator
+        /// last, and reads that interleaved payload **least** significant bit first. Every
+        /// spelling is the same length, so emitting the wrong one produces records of exactly the
+        /// right size that decode to noise -- and a flat strip cannot tell them apart, because its
+        /// payload is all zeroes.
+        fn unary(&mut self, count: u32, terminate: bool, payload: u32) -> Result {
+            match self.coding {
+                super::super::video_arm::CodeTables::Wide => {
+                    for _ in 0..count {
+                        self.bit(1)?;
+                    }
+                    if terminate {
+                        self.bit(0)?;
+                    }
+                    for i in (0..count).rev() {
+                        self.bit(payload >> i)?;
+                    }
+                }
+                super::super::video_arm::CodeTables::Narrow => {
+                    for i in 0..count {
+                        self.bit(1)?;
+                        self.bit(payload >> i)?;
+                    }
+                    if terminate {
+                        self.bit(0)?;
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        /// The shared escape value code: a 0 is one `0` bit; else a category of `c` carrying
+        /// `offset(c-1) ++ sign(1=positive)` as its payload. `c = bit_length(|v|)`.
         fn esc(&mut self, v: i32, cmax: u32) -> Result {
             if v == 0 {
                 return self.bit(0);
@@ -466,55 +505,27 @@ pub(crate) mod wht {
             // not otherwise exercise.
             let c = mag_category(v).min(cmax);
             let off = v.unsigned_abs().min((1 << c) - 1) - (1 << (c - 1));
-            for _ in 0..c {
-                self.bit(1)?;
-            }
-            if c < cmax {
-                self.bit(0)?;
-            }
-            for i in (0..c.saturating_sub(1)).rev() {
-                self.bit(off >> i)?;
-            }
-            self.bit(u32::from(v > 0))
+            // The payload is the offset with the sign bit below it, which is `c` bits: an offset
+            // spans `c - 1` bits at category `c`.
+            self.unary(c, c < cmax, (off << 1) | u32::from(v > 0))
         }
 
-        /// Per-block luma significance code recovered across every last position in 1..63.
-        /// For `k=floor(log2(64-last))`, emit `00`, `k` one bits, `0`, then the `k`-bit
-        /// MSB-first value `(64-2^k)-last`. A flat block retains its separate 15-bit code.
-        fn sync_unit_after(&mut self, last: usize, mut skip: usize) -> Result {
-            fn emit(bits: &mut Bits, value: u32, skip: &mut usize) -> Result {
-                if *skip != 0 {
-                    *skip -= 1;
-                    Ok(())
-                } else {
-                    bits.bit(value)
-                }
+        /// Per-block luma significance, after the two zero root branches a present chroma plane
+        /// replaces. For `k=floor(log2(64-last))` the category is `k` and the payload the `k`-bit
+        /// value `(64-2^k)-last`; a flat block is the maximum category with an all-zero payload,
+        /// which is why it reads as one fixed-width code rather than a position.
+        fn sync_unit_after(&mut self, last: usize, skip: usize) -> Result {
+            for _ in skip..2 {
+                self.bit(0)?;
             }
             if last == 0 {
-                for &bit in &[0u32, 0, 1, 1, 1, 1, 1, 1] {
-                    emit(self, bit, &mut skip)?;
-                }
-                for _ in 0..7 {
-                    emit(self, 0, &mut skip)?;
-                }
+                self.unary(6, true, 0)
             } else {
                 debug_assert!(last < COEFFS);
-                emit(self, 0, &mut skip)?;
-                emit(self, 0, &mut skip)?;
-                let remaining = COEFFS - last;
-                let k = usize::BITS - 1 - remaining.leading_zeros();
-                for _ in 0..k {
-                    emit(self, 1, &mut skip)?;
-                }
-                emit(self, 0, &mut skip)?;
+                let k = usize::BITS - 1 - (COEFFS - last).leading_zeros();
                 let end = COEFFS - (1usize << k);
-                let v = (end - last) as u32;
-                for i in (0..k).rev() {
-                    emit(self, (v >> i) & 1, &mut skip)?;
-                }
+                self.unary(k, true, (end - last) as u32)
             }
-            debug_assert_eq!(skip, 0);
-            Ok(())
         }
 
         fn sync_unit(&mut self, last: usize) -> Result {
@@ -553,16 +564,16 @@ pub(crate) mod wht {
         /// image records carry only the connector, and fill to the stride cap across band
         /// boundaries.
         pub(crate) band_parity_bit: bool,
-        /// How the dock encodes a head in a video record's `sub` field, as a left shift.
+        /// How the dock encodes a connector in a video record's `sub` field, as a left shift.
         ///
-        /// Ridge puts the bare head number there (0, 1). Navarro shifts it by three: its records
+        /// Ridge puts the bare connector number there (0, 1). Navarro shifts it by three: its records
         /// use `0x00`/`0x08`/`0x10`/`0x18` and its stream-open ids are `0x07`/`0x0f`/`0x17`/`0x1f`
         /// -- the same eight-apart spacing.
-        pub(crate) head_sub_shift: u8,
-        /// The bits a head's stream id sets over its record `sub`.
+        pub(crate) connector_selector_shift: u8,
+        /// The bits a connector's stream id sets over its record `sub`.
         ///
-        /// A dock names each video stream by its head's record `sub` with a fixed low pattern set:
-        /// Ridge uses `0x08 | head`, Navarro `(connector << 3) | 7`. The same id is the wire `sub`
+        /// A dock names each video stream by its connector's record `sub` with a fixed low pattern set:
+        /// Ridge uses `0x08 | connector`, Navarro `(connector << 3) | 7`. The same id is the wire `sub`
         /// of the stream's control records, the value its `RepeaterAuth_Stream_Manage`
         /// restatement declares, and the byte-7 tweak deriving the stream's AES-CTR nonce from its
         /// SKE RIV.
@@ -570,15 +581,25 @@ pub(crate) mod wht {
         /// How many buffers the dock rotates through as it presents frames; see
         /// `DockProfile::dock_buffers`.
         pub(crate) dock_buffers: u8,
+        /// Bits a steady-state image record adds to its `sub`; see
+        /// `DockProfile::steady_record_sub_bit`.
+        ///
+        /// Cleared for the frames that open a stream, which the vendor sends without it.
+        pub(crate) steady_sub_bit: u8,
         /// Bits per channel of the surface being encoded; see [`Depth`].
         ///
-        /// Geometry is otherwise fixed per dock, and this is not -- a head moves between depths at
+        /// Geometry is otherwise fixed per dock, and this is not -- a connector moves between depths at
         /// runtime when a compositor turns HDR on. It lives here because it is the one remaining
         /// thing the codec needs to know that is neither a block coordinate nor a coefficient, and
         /// `Geometry` is already threaded through every path that would have to carry it
-        /// separately. [`Geometry::new`] gives [`Depth::Eight`]; a 10-bit head asks for
+        /// separately. [`Geometry::new`] gives [`Depth::Eight`]; a 10-bit connector asks for
         /// [`Geometry::with_depth`].
         depth: Depth,
+        /// Which dialect of the shared unary code this dock's decoder reads.
+        ///
+        /// The same profile field states the dock's code tables in its stream configuration, so
+        /// the code vino emits and the code it declares cannot drift apart.
+        coding: super::super::video_arm::CodeTables,
     }
 
     impl Geometry {
@@ -590,7 +611,7 @@ pub(crate) mod wht {
             strip_blocks_x: usize,
             interlaced_bands: bool,
             band_parity_bit: bool,
-            head_sub_shift: u8,
+            connector_selector_shift: u8,
             stream_id_mask: u8,
             dock_buffers: u8,
         ) -> Self {
@@ -603,10 +624,12 @@ pub(crate) mod wht {
                 strip_h_shift,
                 interlaced_bands,
                 band_parity_bit,
-                head_sub_shift,
+                connector_selector_shift,
                 stream_id_mask,
                 dock_buffers: dock_buffers.max(1),
+                steady_sub_bit: 0,
                 depth: Depth::Eight,
+                coding: super::super::video_arm::CodeTables::Wide,
             }
         }
 
@@ -614,6 +637,33 @@ pub(crate) mod wht {
         #[inline]
         pub(crate) fn with_depth(self, depth: Depth) -> Self {
             Self { depth, ..self }
+        }
+
+        /// Select the bitstream dialect; see [`Geometry::coding`].
+        pub(crate) fn with_coding(self, coding: super::super::video_arm::CodeTables) -> Self {
+            Self { coding, ..self }
+        }
+
+        /// The same geometry with the steady-state record bit set; see [`Geometry::steady_sub_bit`].
+        pub(crate) fn with_steady_sub_bit(self, bit: u8) -> Self {
+            Self {
+                steady_sub_bit: bit,
+                ..self
+            }
+        }
+
+        /// The same geometry for a frame that opens a stream, which carries no steady-state bit.
+        pub(crate) fn opening(self) -> Self {
+            Self {
+                steady_sub_bit: 0,
+                ..self
+            }
+        }
+
+        /// Which dialect of the shared unary code this dock's decoder reads.
+        #[inline]
+        pub(crate) fn coding(&self) -> super::super::video_arm::CodeTables {
+            self.coding
         }
 
         /// Bits per channel this frame is being encoded at.
@@ -659,16 +709,16 @@ pub(crate) mod wht {
             4 * self.strip_h()
         }
 
-        /// Encode `head` the way this dock expects it in a record `sub` field.
+        /// Encode `connector` the way this dock expects it in a record `sub` field.
         #[inline]
-        pub(crate) fn head_sub(&self, head: u8) -> u8 {
-            head << self.head_sub_shift
+        pub(crate) fn connector_selector(&self, connector: u8) -> u8 {
+            connector << self.connector_selector_shift
         }
 
-        /// The content-stream id of `head` on this dock; see [`Geometry::stream_id_mask`].
+        /// The content-stream id of `connector` on this dock; see [`Geometry::stream_id_mask`].
         #[inline]
-        pub(crate) fn stream_id(&self, head: u8) -> u16 {
-            u16::from(self.head_sub(head) | self.stream_id_mask)
+        pub(crate) fn stream_id(&self, connector: u8) -> u16 {
+            u16::from(self.connector_selector(connector) | self.stream_id_mask)
         }
     }
 
@@ -678,10 +728,13 @@ pub(crate) mod wht {
         strip_h_shift: 4,
         interlaced_bands: false,
         band_parity_bit: true,
-        head_sub_shift: 0,
+        connector_selector_shift: 0,
         stream_id_mask: 0x08,
         dock_buffers: 2,
+        // The geometry-free starting point describes a stream that has not opened yet.
+        steady_sub_bit: 0,
         depth: Depth::Eight,
+        coding: super::super::video_arm::CodeTables::Wide,
     };
 
     /// `log2(DIM)`, so a block index splits into (x, y) by shift and mask rather than division.
@@ -720,21 +773,12 @@ pub(crate) mod wht {
     }
 
     impl Bits {
-        /// Exact chroma last-position tree node. For
-        /// `c=floor(log2(last+1))`, emit `1`x`c`, `0`, then the `c`-bit MSB-first
-        /// offset `last-(2^c-1)`.
+        /// Exact chroma last-position tree node. For `c=floor(log2(last+1))` the category is `c`
+        /// and the payload the `c`-bit offset `last-(2^c-1)`.
         fn chroma_base(&mut self, last: usize) -> Result {
             debug_assert!(last > 0 && last < COEFFS);
             let c = usize::BITS - 1 - (last + 1).leading_zeros();
-            for _ in 0..c {
-                self.bit(1)?;
-            }
-            self.bit(0)?;
-            let offset = (last - ((1usize << c) - 1)) as u32;
-            for bit in (0..c).rev() {
-                self.bit((offset >> bit) & 1)?;
-            }
-            Ok(())
+            self.unary(c, true, (last - ((1usize << c) - 1)) as u32)
         }
 
         /// One block's three-plane significance tree. The luma code begins with two
@@ -820,15 +864,14 @@ pub(crate) mod wht {
         cb: &[i32; PIXELS],
         y: &[i32; PIXELS],
     ) -> ColourBlock {
-        // ⛔ Do not reach for SIMD here. An AVX2 in-block Haar was written, verified byte-exact
-        // and measured in-kernel: it is parity-to-slower once `kernel_fpu_begin`/`end` are paid
-        // per block, costing about 18% more CPU on a live encode. A strip is ~72% entropy coder,
-        // which is bit-serial, so even a free transform caps the whole win near 23%.
+        // Do not reach for SIMD here. An AVX2 in-block Haar is byte-exact but parity-to-slower
+        // once `kernel_fpu_begin`/`end` are paid per block, costing about 18% more CPU on a live
+        // encode. A strip is ~72% entropy coder, which is bit-serial, so even a free transform
+        // caps the whole win near 23%.
         let (tcr, tcb, ty) = (transform(cr), transform(cb), transform(y));
         // Quantise all three planes and find each one's last significant coefficient in a single
-        // pass. These were separate steps, so every block ran three further 63-element reverse
-        // scans ([`chroma_last`]) across arrays it had only just written. Folding the search into
-        // the write removes those passes and keeps the three planes in cache together.
+        // pass. Folding the search into the write avoids three further 63-element reverse scans
+        // ([`chroma_last`]) over arrays just written, and keeps the three planes in cache together.
         //
         // An explicit ascending loop rather than `core::array::from_fn`: the fold depends on the
         // index order, and `from_fn` does not document one. Every element is written, so the zero
@@ -876,13 +919,14 @@ pub(crate) mod wht {
     /// `#[inline(never)]`: see `haar2d`'s doc comment -- part of the kernel-stack-overflow fix.
     #[inline(never)]
     pub(crate) fn colour_strip(
-        geom: Geometry,
+        geometry: Geometry,
         blocks: &[ColourBlock],
         x: u16,
         y: u16,
     ) -> Result<KVec<u8>> {
-        let dc_cmax = geom.depth().dc_cmax();
-        let mut main = Bits::new();
+        let dc_cmax = geometry.depth().dc_cmax();
+        let coding = geometry.coding();
+        let mut main = Bits::new(coding);
         for b in blocks {
             main.colour_sync_unit(b.lcr, b.lcb, b.ly)?;
         }
@@ -894,11 +938,11 @@ pub(crate) mod wht {
             main.esc(yv - py, dc_cmax)?;
             (pcr, pcb, py) = (cr, cb, yv);
         }
-        let mut row0 = Bits::new();
+        let mut row0 = Bits::new(coding);
         for b in &blocks[..STRIP_ROW_BLOCKS] {
             row0.colour_block_ac(&b.qcr, &b.qcb, &b.qy, b.lcr, b.lcb, b.ly)?;
         }
-        let mut row1 = Bits::new();
+        let mut row1 = Bits::new(coding);
         for b in &blocks[STRIP_ROW_BLOCKS..] {
             row1.colour_block_ac(&b.qcr, &b.qcb, &b.qy, b.lcr, b.lcb, b.ly)?;
         }
@@ -943,14 +987,14 @@ pub(crate) mod wht {
     /// the kernel stack.
     #[inline(never)]
     fn colour_strip_blocks(
-        geom: Geometry,
+        geometry: Geometry,
         ox: usize,
         oy: usize,
         px: &mut impl FnMut(usize, usize) -> (u16, u16, u16),
     ) -> Result<KVec<ColourBlock>> {
         let mut blocks = KVec::with_capacity(STRIP_BLOCKS, GFP_KERNEL)?;
         for k in 0..STRIP_BLOCKS {
-            let across_shift = geom.strip_w_shift() - DIM_SHIFT;
+            let across_shift = geometry.strip_w_shift() - DIM_SHIFT;
             let (bx, by) = (k & ((1usize << across_shift) - 1), k >> across_shift);
             // One `px` call per pixel, in the same row-major order as before -- it is the
             // expensive accessor, so the converted values are gathered once and then split into
@@ -976,52 +1020,49 @@ pub(crate) mod wht {
         Ok(blocks)
     }
 
-    /// Encode a full `width`x`height` RGB frame into WHT colour records. `px(x, y)` yields the
+    /// Encode a full `width`x`height` RGB frame into Haar colour records. `px(x, y)` yields the
     /// source pixel's `(R, G, B)`; the caller applies rotation, gamma and format conversion. The
     /// surface is tiled into 64x16 strips in raster order, each built from [`colour_block`] +
     /// [`colour_strip`], and the strip stream is framed for the wire by [`frame_records`] using
-    /// the EP08 TLV layout. `seq0` is the logical frame number and the returned value is advanced
-    /// for the next frame.
+    /// the EP08 TLV layout. The frame counter belongs to the records that name a ring slot, not
+    /// here.
     ///
     /// `width`/`height` must be multiples of 64 and 16 (`EINVAL` otherwise). Live scanout pads a
     /// non-aligned mode with black to this strip grid while preserving the real mode dimensions.
     /// This function remains out of line to bound kernel stack use.
     #[inline(never)]
     pub(crate) fn colour_frame_ep08(
-        geom: Geometry,
+        geometry: Geometry,
         width: usize,
         height: usize,
-        seq0: u32,
-        head: u8,
+        connector: u8,
         mut px: impl FnMut(usize, usize) -> (u16, u16, u16),
-    ) -> Result<(KVec<KVec<u8>>, u32)> {
-        colour_frame_ep08_variant(geom, width, height, seq0, head, None, &mut px)
+    ) -> Result<KVec<KVec<u8>>> {
+        colour_frame_ep08_variant(geometry, width, height, connector, None, &mut px)
     }
 
     /// Encode a full live Navarro frame using the ordinary-frame producer permutation measured
     /// from DLM. The first ordinary band is y=8, not y=0, and the captured worker boundaries are
     /// part of the record grammar for a 2560x1440 surface.
     pub(crate) fn colour_frame_ep08_navarro_ordinary(
-        geom: Geometry,
+        geometry: Geometry,
         width: usize,
         height: usize,
-        seq0: u32,
-        head: u8,
+        connector: u8,
         mut px: impl FnMut(usize, usize) -> (u16, u16, u16),
-    ) -> Result<(KVec<KVec<u8>>, u32)> {
-        colour_frame_ep08_variant(geom, width, height, seq0, head, Some(true), &mut px)
+    ) -> Result<KVec<KVec<u8>>> {
+        colour_frame_ep08_variant(geometry, width, height, connector, Some(true), &mut px)
     }
 
     fn colour_frame_ep08_variant(
-        geom: Geometry,
+        geometry: Geometry,
         width: usize,
         height: usize,
-        seq0: u32,
-        head: u8,
+        connector: u8,
         navarro_ordinary: Option<bool>,
         px: &mut impl FnMut(usize, usize) -> (u16, u16, u16),
-    ) -> Result<(KVec<KVec<u8>>, u32)> {
-        if width & (geom.strip_w() - 1) != 0 || height & (geom.strip_h() - 1) != 0 {
+    ) -> Result<KVec<KVec<u8>>> {
+        if width & (geometry.strip_w() - 1) != 0 || height & (geometry.strip_h() - 1) != 0 {
             return Err(kernel::error::code::EINVAL);
         }
         // Build every strip body (raster order; each strip's natural row1 tail, no echo).
@@ -1030,38 +1071,35 @@ pub(crate) mod wht {
         while sy < height {
             let mut sx = 0usize;
             while sx < width {
-                let blocks = colour_strip_blocks(geom, sx, sy, px)?;
+                let blocks = colour_strip_blocks(geometry, sx, sy, px)?;
                 strips.push(
-                    colour_strip(geom, &blocks, sx as u16, sy as u16)?,
+                    colour_strip(geometry, &blocks, sx as u16, sy as u16)?,
                     GFP_KERNEL,
                 )?;
-                sx += geom.strip_w();
+                sx += geometry.strip_w();
             }
-            sy += geom.strip_h();
+            sy += geometry.strip_h();
         }
-        Ok((
-            frame_records_with_boundary(
-                geom,
-                &strips,
-                head,
-                navarro_ordinary.filter(|_| strips.len() == 3600),
-            )?,
-            seq0.wrapping_add(1),
-        ))
+        frame_records_with_boundary(
+            geometry,
+            &strips,
+            connector,
+            navarro_ordinary.filter(|_| strips.len() == 3600),
+        )
     }
 
-    /// Build a valid all-black WHT frame without sampling or transforming a framebuffer.
+    /// Build a valid all-black Haar frame without sampling or transforming a framebuffer.
     ///
     /// This is the post-mode-set training carrier. Its zero-coefficient blocks are built once and
     /// reused, so construction is proportional to the strip grid rather than the pixel count. A
     /// real framebuffer keyframe follows.
     pub(crate) fn black_frame_ep08(
-        geom: Geometry,
+        geometry: Geometry,
         width: usize,
         height: usize,
-        head: u8,
+        connector: u8,
     ) -> Result<KVec<KVec<u8>>> {
-        black_frame_ep08_variant(geom, width, height, head, Some(false))
+        black_frame_ep08_variant(geometry, width, height, connector, Some(false))
     }
 
     /// Build the ordinary Navarro black carrier which follows the prologue frame.
@@ -1072,22 +1110,22 @@ pub(crate) mod wht {
     /// second frame and then NAKs the first transfer of frame three, so this distinction is part of
     /// the producer grammar rather than harmless USB chunking.
     pub(crate) fn black_frame_ep08_ordinary(
-        geom: Geometry,
+        geometry: Geometry,
         width: usize,
         height: usize,
-        head: u8,
+        connector: u8,
     ) -> Result<KVec<KVec<u8>>> {
-        black_frame_ep08_variant(geom, width, height, head, Some(true))
+        black_frame_ep08_variant(geometry, width, height, connector, Some(true))
     }
 
     fn black_frame_ep08_variant(
-        geom: Geometry,
+        geometry: Geometry,
         width: usize,
         height: usize,
-        head: u8,
+        connector: u8,
         navarro_ordinary: Option<bool>,
     ) -> Result<KVec<KVec<u8>>> {
-        if width & (geom.strip_w() - 1) != 0 || height & (geom.strip_h() - 1) != 0 {
+        if width & (geometry.strip_w() - 1) != 0 || height & (geometry.strip_h() - 1) != 0 {
             return Err(kernel::error::code::EINVAL);
         }
         let mut blocks: KVec<ColourBlock> = KVec::with_capacity(STRIP_BLOCKS, GFP_KERNEL)?;
@@ -1110,14 +1148,14 @@ pub(crate) mod wht {
             let mut sx = 0usize;
             while sx < width {
                 strips.push(
-                    colour_strip(geom, &blocks, sx as u16, sy as u16)?,
+                    colour_strip(geometry, &blocks, sx as u16, sy as u16)?,
                     GFP_KERNEL,
                 )?;
-                sx += geom.strip_w();
+                sx += geometry.strip_w();
             }
-            sy += geom.strip_h();
+            sy += geometry.strip_h();
         }
-        frame_records_with_boundary(geom, &strips, head, navarro_ordinary)
+        frame_records_with_boundary(geometry, &strips, connector, navarro_ordinary)
     }
 
     /// Encode ONE 64x16 strip whose top-left output pixel is `(sx, sy)`.
@@ -1127,32 +1165,32 @@ pub(crate) mod wht {
     /// and produces its own independent byte vector, sharing no state with any other strip. The
     /// scanout encoder in `drm_sink.rs` fans batches of these across CPUs; see `EncodeChunk`.
     pub(crate) fn colour_strip_at(
-        geom: Geometry,
+        geometry: Geometry,
         sx: usize,
         sy: usize,
         px: &mut impl FnMut(usize, usize) -> (u16, u16, u16),
     ) -> Result<KVec<u8>> {
-        let blocks = colour_strip_blocks(geom, sx, sy, px)?;
-        colour_strip(geom, &blocks, sx as u16, sy as u16)
+        let blocks = colour_strip_blocks(geometry, sx, sy, px)?;
+        colour_strip(geometry, &blocks, sx as u16, sy as u16)
     }
 
     /// The raster-ordered top-left coordinate of every strip a damage set selects.
     ///
     /// Split out of [`colour_frame_ep08_damage`] so the serial and parallel encoders select
-    /// exactly the same strips in exactly the same order. **The order is load-bearing:**
+    /// exactly the same strips in exactly the same order. The order is load-bearing:
     /// [`frame_records`] groups strips into one record per single-Y band and requires them
     /// x-ordered within each band, so reordering here changes the wire format.
     ///
     /// A strip is selected when a clip overlaps its 256x64 macro-tile. Every strip in a touched
     /// tile is resent.
     pub(crate) fn damage_strip_coords(
-        geom: Geometry,
+        geometry: Geometry,
         width: usize,
         height: usize,
         clips: &[(usize, usize, usize, usize)],
     ) -> Result<KVec<(usize, usize)>> {
         let mut coords: KVec<(usize, usize)> = KVec::new();
-        let (mw, mh) = (geom.macro_w(), geom.macro_h());
+        let (mw, mh) = (geometry.macro_w(), geometry.macro_h());
         let mut sy = 0usize;
         while sy < height {
             let mut sx = 0usize;
@@ -1165,16 +1203,16 @@ pub(crate) mod wht {
                 if hit {
                     coords.push((sx, sy), GFP_KERNEL)?;
                 }
-                sx += geom.strip_w();
+                sx += geometry.strip_w();
             }
-            sy += geom.strip_h();
+            sy += geometry.strip_h();
         }
         Ok(coords)
     }
 
     /// Every strip of a full frame, in the same raster order as [`damage_strip_coords`].
     pub(crate) fn all_strip_coords(
-        geom: Geometry,
+        geometry: Geometry,
         width: usize,
         height: usize,
     ) -> Result<KVec<(usize, usize)>> {
@@ -1184,9 +1222,9 @@ pub(crate) mod wht {
             let mut sx = 0usize;
             while sx < width {
                 coords.push((sx, sy), GFP_KERNEL)?;
-                sx += geom.strip_w();
+                sx += geometry.strip_w();
             }
-            sy += geom.strip_h();
+            sy += geometry.strip_h();
         }
         Ok(coords)
     }
@@ -1199,42 +1237,106 @@ pub(crate) mod wht {
     /// `(sx, sy)` is included iff some clip overlaps
     /// `[sx, sx+strip_w()) x [sy, sy+strip_h())`. Raster iteration keeps strips
     /// x-ordered within each y-band, so [`frame_records`] groups them as the
-    /// full-frame path does. Returns an **empty** frame list when no strip is
+    /// full-frame path does. Returns an empty frame list when no strip is
     /// touched -- the caller must skip the USB write in that case (no-op
-    /// flip). **The first frame after a mode-set must still be a full
-    /// keyframe** (the dock's framebuffer is undefined until then).
+    /// flip). The first frame after a mode-set must still be a full
+    /// keyframe (the dock's framebuffer is undefined until then).
     ///
     /// This function remains out of line for the same stack bound as [`colour_frame_ep08`].
     #[inline(never)]
     pub(crate) fn colour_frame_ep08_damage(
-        geom: Geometry,
+        geometry: Geometry,
         width: usize,
         height: usize,
-        seq0: u32,
-        head: u8,
+        connector: u8,
         clips: &[(usize, usize, usize, usize)],
         mut px: impl FnMut(usize, usize) -> (u16, u16, u16),
-    ) -> Result<(KVec<KVec<u8>>, u32)> {
-        if width & (geom.strip_w() - 1) != 0 || height & (geom.strip_h() - 1) != 0 {
+    ) -> Result<KVec<KVec<u8>>> {
+        if width & (geometry.strip_w() - 1) != 0 || height & (geometry.strip_h() - 1) != 0 {
             return Err(kernel::error::code::EINVAL);
         }
-        let coords = damage_strip_coords(geom, width, height, clips)?;
+        let coords = damage_strip_coords(geometry, width, height, clips)?;
         let mut strips: KVec<KVec<u8>> = KVec::with_capacity(coords.len(), GFP_KERNEL)?;
         for &(sx, sy) in coords.iter() {
-            let blocks = colour_strip_blocks(geom, sx, sy, &mut px)?;
+            let blocks = colour_strip_blocks(geometry, sx, sy, &mut px)?;
             strips.push(
-                colour_strip(geom, &blocks, sx as u16, sy as u16)?,
+                colour_strip(geometry, &blocks, sx as u16, sy as u16)?,
                 GFP_KERNEL,
             )?;
         }
-        let records = frame_records(geom, &strips, head)?;
-        Ok((records, seq0.wrapping_add(1)))
+        frame_records(geometry, &strips, connector)
     }
 
     /// A strip's `y` (the EP08 record bands group strips by row). Reads the `y` field the strip
     /// builders write at byte offset 4 ([`colour_strip`] / [`solid_strip`]).
     fn strip_y(s: &[u8]) -> u16 {
         u16::from_le_bytes([s[4], s[5]])
+    }
+
+    /// A strip's `x`, written by the strip builders at byte offset 2.
+    fn strip_x(s: &[u8]) -> u16 {
+        u16::from_le_bytes([s[2], s[3]])
+    }
+
+    /// Write the sixteen-byte header every record on every one of these docks begins with.
+    ///
+    /// ```text
+    /// off 0..2   zero
+    /// off 2..4   size : u16   the stride less four, so a record ends at `size + 4`
+    /// off 4..8   type : u32   2 for a plaintext marker, 4 for everything else
+    /// off 8..10  sub  : u16   the plane: a connector for video, a control sub otherwise
+    /// off 10..12 aux  : u16   the trailing pad count on an image record, a subtype on others
+    /// off 12..16 seq  : u32   the sealed stream's AES-CTR block counter, else zero
+    /// ```
+    ///
+    /// Verified unchanged across all three generations against 92,072 captured records, which is
+    /// why it is written once. `out` must be the whole record: its length fixes `size`.
+    pub(crate) fn record_header(out: &mut [u8], kind: u32, sub: u16, aux: u16, seq: u32) {
+        let size = (out.len() - 4) as u16;
+        out[0..2].fill(0);
+        out[2..4].copy_from_slice(&size.to_le_bytes());
+        out[4..8].copy_from_slice(&kind.to_le_bytes());
+        out[8..10].copy_from_slice(&sub.to_le_bytes());
+        out[10..12].copy_from_slice(&aux.to_le_bytes());
+        out[12..16].copy_from_slice(&seq.to_le_bytes());
+    }
+
+    /// The shape of an encoded frame, read back off the records themselves.
+    ///
+    /// Returns `(records, largest record stride, largest strip)`. The wire invariants are that a
+    /// stride never passes the 4080-byte cap and that a strip fits inside a record; the sizes DLM
+    /// reaches for comparison are 1758 bytes per strip on DL-6xxx, 1780 on the DL-7400 and 2036 on
+    /// DL-3x00. Reported when a frame fails to reach the dock, because a dock refuses a malformed
+    /// record by halting the endpoint several transfers later, where it is indistinguishable from
+    /// any other transport fault.
+    pub(crate) fn record_stats(chunks: &[KVec<u8>]) -> (usize, usize, usize) {
+        let (mut records, mut max_stride, mut max_strip) = (0usize, 0usize, 0usize);
+        for chunk in chunks {
+            let mut off = 0usize;
+            while off + 16 <= chunk.len() {
+                let size = u16::from_le_bytes([chunk[off + 2], chunk[off + 3]]) as usize;
+                let stride = size + 4;
+                if stride < 16 || off + stride > chunk.len() {
+                    break;
+                }
+                let aux = u16::from_le_bytes([chunk[off + 10], chunk[off + 11]]) as usize;
+                let body = &chunk[off + 16..off + stride];
+                let payload = body.len().saturating_sub(aux);
+                let mut at = 0usize;
+                while at + 2 <= payload {
+                    let len = u16::from_le_bytes([body[at], body[at + 1]]) as usize;
+                    if len == 0 || at + 2 + len > payload {
+                        break;
+                    }
+                    max_strip = max_strip.max(len);
+                    at += 2 + len;
+                }
+                max_stride = max_stride.max(stride);
+                records += 1;
+                off += stride;
+            }
+        }
+        (records, max_stride, max_strip)
     }
 
     /// Frame a raster-ordered list of strip bodies into EP08 records:
@@ -1244,7 +1346,7 @@ pub(crate) mod wht {
     ///   u16 pad   = 0
     ///   u16 size  = total record length (TLV..trailer, excludes the inter-record gap)
     ///   u32 type  = 4
-    ///   u16 sub   = head | (((y / 16) & 1) << 4)
+    ///   u16 sub   = connector | (((y / 16) & 1) << 4)
     ///   u16 aux   = zero-padding byte count
     ///   u32 fseq  = 0
     ///   per strip: u16 strip_id (== strip length) ++ strip bytes
@@ -1255,22 +1357,27 @@ pub(crate) mod wht {
     /// those fragments directly into persistent 65536-byte URBs, so the internal boundaries are
     /// not USB framing. Complete record strides are limited to 4080 bytes.
     pub(crate) fn frame_records(
-        geom: Geometry,
+        geometry: Geometry,
         strips: &[KVec<u8>],
-        head: u8,
+        connector: u8,
     ) -> Result<KVec<KVec<u8>>> {
-        frame_records_with_boundary(geom, strips, head, None)
+        frame_records_with_boundary(geometry, strips, connector, None)
     }
 
     /// Frame a full live Navarro surface with the ordinary DLM producer order. Other modes and
     /// damage subsets deliberately fall back to the generic interlaced order: the measured
     /// permutation and its split-worker boundaries describe exactly 3600 128x8 strips.
     pub(crate) fn frame_records_navarro_ordinary(
-        geom: Geometry,
+        geometry: Geometry,
         strips: &[KVec<u8>],
-        head: u8,
+        connector: u8,
     ) -> Result<KVec<KVec<u8>>> {
-        frame_records_with_boundary(geom, strips, head, (strips.len() == 3600).then_some(true))
+        frame_records_with_boundary(
+            geometry,
+            strips,
+            connector,
+            (strips.len() == 3600).then_some(true),
+        )
     }
 
     // Exact producer completion order from DLM's authenticated 2560x1440 cold capture. Navarro
@@ -1288,6 +1395,22 @@ pub(crate) mod wht {
         153, 155, 157, 159, 161, 163, 165, 167, 169, 171, 173, 175, 177, 179,
     ];
 
+    // Producer band order for a 1920x1080 DL-3x00 surface: 30 strips across x 68 bands of 64x16.
+    // Taken from DLM's own stream. Like the DL7400, this dock stops draining at the first band it
+    // did not expect, so the generic even-then-odd interlace is not close enough -- it diverges at
+    // the second band, sending 2 where the dock wants 3. No band appears twice, so unlike the
+    // DL7400 there are no split-row producer boundaries to reproduce.
+    /// The DL-3x00 producer band order, exposed so a selftest can pin it.
+    pub(crate) fn ella_rows_1080p() -> &'static [u8] {
+        ELLA_ROWS_1080P
+    }
+
+    const ELLA_ROWS_1080P: &[u8] = &[
+        0, 3, 5, 7, 9, 11, 13, 16, 18, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 44, 46, 48,
+        50, 51, 53, 55, 56, 58, 60, 61, 63, 65, 66, 1, 2, 4, 6, 8, 10, 12, 14, 15, 17, 19, 20, 22,
+        24, 26, 28, 30, 32, 34, 36, 38, 40, 42, 45, 47, 49, 52, 54, 57, 59, 62, 64, 67,
+    ];
+
     const NAVARRO_ORDINARY_ROWS: &[u8] = &[
         1, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47,
         49, 51, 53, 55, 57, 59, 61, 63, 64, 66, 68, 70, 72, 73, 75, 77, 79, 81, 83, 85, 87, 89, 91,
@@ -1301,16 +1424,16 @@ pub(crate) mod wht {
     ];
 
     fn frame_records_with_boundary(
-        geom: Geometry,
+        geometry: Geometry,
         strips: &[KVec<u8>],
-        head: u8,
+        connector: u8,
         navarro_ordinary: Option<bool>,
     ) -> Result<KVec<KVec<u8>>> {
         let Geometry {
             band_parity_bit,
             interlaced_bands,
             ..
-        } = geom;
+        } = geometry;
         // Both platforms count an image record's 0..15 padding bytes in `aux`. Navarro also uses
         // `aux` as a subtype on non-image records; its fixed black carriers masked the image rule
         // because their 4048-byte strides require no padding.
@@ -1327,19 +1450,29 @@ pub(crate) mod wht {
         // across x 180 bands, its strips being 128x8. A strip count alone cannot select it --
         // Ridge at the same resolution is also exactly 3600 strips, 40 across x 90 bands -- and
         // both black carriers reach here on every dock, so match the layout itself.
-        let navarro_layout =
-            geom.interlaced_bands && geom.strip_w() == STRIP_BLOCKS * DIM && strips.len() == 3600;
+        let navarro_layout = geometry.interlaced_bands
+            && geometry.strip_w() == STRIP_BLOCKS * DIM
+            && strips.len() == 3600;
+        // 64-wide strips with interlaced bands is DL-3x00 and nothing else: Ridge is 64 wide but
+        // raster, the DL7400 is 128 wide. Deliberately not conditioned on the strip count -- a
+        // partial frame has to reach the dock in the same order a full one would.
+        let ella_layout = geometry.interlaced_bands && geometry.strip_w() == DIM * 8;
         let navarro_rows = match navarro_ordinary {
             Some(false) if navarro_layout => Some(NAVARRO_PROLOGUE_ROWS),
             Some(true) if navarro_layout => Some(NAVARRO_ORDINARY_ROWS),
             _ => None,
         };
         if let Some(rows) = navarro_rows {
-            // 2560 px / 128 px per strip. Guaranteed by `navarro_layout` above.
-            const STRIPS_ACROSS: usize = 20;
+            // 2560 px / 128 px per strip on the DL7400, 1920 / 64 on the DL-3x00. Guaranteed by
+            // the layout checks above.
+            let strips_across = if ella_layout { 30 } else { 20 };
             let ordinary = navarro_ordinary == Some(true);
             for (run, &y) in rows.iter().enumerate() {
-                let (x0, x1) = if ordinary {
+                // The DL-3x00 order carries whole bands; only the DL7400 splits rows at its
+                // producer boundaries.
+                let (x0, x1) = if ella_layout {
+                    (0, strips_across)
+                } else if ordinary {
                     match run {
                         50 => (0, 8),
                         101 => (0, 8),
@@ -1357,13 +1490,46 @@ pub(crate) mod wht {
                     }
                 };
                 for x in x0..x1 {
-                    order.push(y as usize * STRIPS_ACROSS + x, GFP_KERNEL)?;
+                    order.push(y as usize * strips_across + x, GFP_KERNEL)?;
                 }
+            }
+        } else if ella_layout {
+            // Order by where each strip's band sits in the producer table, read from the strip
+            // itself rather than from an assumed full-surface layout. That is what lets a frame
+            // carry a *subset* of the surface and still arrive in the order the dock expects --
+            // which it must, because this dock will not take a whole surface in one frame.
+            let rank = |s: &KVec<u8>| -> usize {
+                let band = (strip_y(s) >> geometry.strip_h_shift()) as u8;
+                ELLA_ROWS_1080P
+                    .iter()
+                    .position(|&b| b == band)
+                    .unwrap_or(usize::MAX)
+            };
+            let mut idx: KVec<usize> = KVec::with_capacity(strips.len(), GFP_KERNEL)?;
+            for n in 0..strips.len() {
+                idx.push(n, GFP_KERNEL)?;
+            }
+            // Insertion sort: the comparison is a table lookup and the driver has no sort in
+            // scope; a frame's strip count here is bounded by the dock's frame ceiling.
+            for a in 1..idx.len() {
+                let mut b = a;
+                while b > 0 {
+                    let (l, r) = (idx[b - 1], idx[b]);
+                    let key = |n: usize| (rank(&strips[n]), strip_x(&strips[n]));
+                    if key(l) <= key(r) {
+                        break;
+                    }
+                    idx.swap(b - 1, b);
+                    b -= 1;
+                }
+            }
+            for n in idx {
+                order.push(n, GFP_KERNEL)?;
             }
         } else if interlaced_bands {
             for pass in 0..2u16 {
                 for (n, s) in strips.iter().enumerate() {
-                    if (strip_y(s) >> geom.strip_h_shift()) & 1 == pass {
+                    if (strip_y(s) >> geometry.strip_h_shift()) & 1 == pass {
                         order.push(n, GFP_KERNEL)?;
                     }
                 }
@@ -1380,10 +1546,14 @@ pub(crate) mod wht {
             // Sub bit 4 carries the y-band parity when the selected framing
             // profile requires it.
             record.extend_from_slice(&[0u8; 8 + PREFIX], GFP_KERNEL)?;
-            record[4..8].copy_from_slice(&4u32.to_le_bytes());
-            let parity = u16::from(band_parity_bit) & ((y0 >> geom.strip_h_shift()) & 1);
-            let sub = u16::from(geom.head_sub(head)) | (parity << 4);
-            record[8..10].copy_from_slice(&sub.to_le_bytes());
+            let parity = u16::from(band_parity_bit) & ((y0 >> geometry.strip_h_shift()) & 1);
+            // Once a stream is running the vendor marks every image record here. Its frames and
+            // vino's are otherwise byte-identical -- same size, type, aux, sequence and payload --
+            // so this one bit is the whole difference between a stream the dock keeps taking and
+            // one it stops accepting with the endpoint still reporting healthy.
+            let sub = u16::from(geometry.connector_selector(connector))
+                | (parity << 4)
+                | u16::from(geometry.steady_sub_bit);
             let mut n = 0usize;
             // A record ends at a y-band boundary only where the band is part of its identity.
             // Ridge carries the band parity in `sub`, so a record cannot span two bands; Navarro
@@ -1405,8 +1575,23 @@ pub(crate) mod wht {
                 let s = &strips[order[i]];
                 let projected = record.len() + 2 + s.len();
                 let projected_aligned = (projected + 15) & !15;
-                if n > 0 && projected_aligned > STRIDE_CAP {
-                    break;
+                if projected_aligned > STRIDE_CAP {
+                    if n > 0 {
+                        break;
+                    }
+                    // A strip too big for a record of its own cannot be framed at all. Emitting it
+                    // anyway produces a record whose stride is over the cap, which a dock answers
+                    // by halting the endpoint -- a failure indistinguishable from any other
+                    // transport fault, surfacing several transfers later and blamed on the
+                    // transport. Refuse the frame instead, so the encoder is what gets looked at.
+                    pr_err!(
+                        "vino: strip at {}x{} encoded to {} B, over the {} a record can carry\n",
+                        strip_x(s),
+                        strip_y(s),
+                        s.len(),
+                        STRIDE_CAP - 18
+                    );
+                    return Err(kernel::error::code::EOVERFLOW);
                 }
                 record.extend_from_slice(&(s.len() as u16).to_le_bytes(), GFP_KERNEL)?;
                 record.extend_from_slice(s, GFP_KERNEL)?;
@@ -1421,12 +1606,11 @@ pub(crate) mod wht {
             // type, and every one of its image records carries zero, so a pad count written there
             // would be read as some other kind of record entirely.
             let pad = (16 - (record.len() & 15)) & 15;
-            if aux_is_pad_count {
-                record[10..12].copy_from_slice(&(pad as u16).to_le_bytes());
-            }
             record.extend_from_slice(&[0u8; 15][..pad], GFP_KERNEL)?;
-            let size = (record.len() - 4) as u16;
-            record[2..4].copy_from_slice(&size.to_le_bytes());
+            // Written once the strips and the padding are in, because the stride the header
+            // states is the length of the finished record.
+            let aux = if aux_is_pad_count { pad as u16 } else { 0 };
+            record_header(&mut record, 4, sub, aux, 0);
 
             if !chunk.is_empty() && chunk.len() + record.len() > CHUNK {
                 frames.push(chunk, GFP_KERNEL)?;
@@ -1460,10 +1644,9 @@ pub(crate) mod wht {
     /// self-delimiting bitstream whose end it cannot otherwise find. The class is simply the
     /// length in 512-byte units.
     ///
-    /// Measured over 68,347 `(strip, map value)` pairs in the authenticated DLM capture
-    /// `~/dlm-today-124144/wire.pcapng`, with **zero** disagreements: value 0 covers 54..510
-    /// bytes, 1 covers 512..1022, 2 covers 1024..1498 and 3 covers 1594..1670. Every boundary
-    /// falls on a multiple of 512.
+    /// Measured over 68,347 `(strip, map value)` pairs in a DLM capture with zero disagreements:
+    /// value 0 covers 54..510 bytes, 1 covers 512..1022, 2 covers 1024..1498 and 3 covers
+    /// 1594..1670. Every boundary falls on a multiple of 512.
     #[inline]
     fn strip_size_class(len: usize) -> u8 {
         // The field does not saturate: the corpus only reaches class 3 because its longest strip
@@ -1527,8 +1710,8 @@ pub(crate) mod wht {
     ///
     /// The map covers the whole frame: one byte per strip, `height / strip_h` bands of
     /// `width / strip_w` strips, each band padded to [`PARAM_BAND_STRIDE`]. At 2560x1440 that is
-    /// 180 bands of 20 strips, which is exactly what every DLM map in
-    /// `captures/navarro-dlm-modeset-20260802-005453` contains, split 120 + 60 across two records.
+    /// 180 bands of 20 strips, which is what every captured DLM map contains, split 120 + 60
+    /// across the two records.
     ///
     /// Values come from [`strip_size_class`] applied to the strips in `frames`. A position this
     /// frame does not carry stays zero, which is what DLM sends for it.
@@ -1537,16 +1720,16 @@ pub(crate) mod wht {
     /// bytes", so the dock mis-parses exactly the detailed strips and renders them as coloured
     /// noise while flat fills stay perfect.
     pub(crate) fn navarro_strip_params(
-        geom: Geometry,
+        geometry: Geometry,
         connector: u8,
         width: usize,
         height: usize,
         frames: &[KVec<u8>],
         remembered: &mut KVec<u8>,
     ) -> Result<KVec<u8>> {
-        let bands = height.div_ceil(geom.strip_h());
-        let across = width.div_ceil(geom.strip_w()).min(PARAM_BAND_STRIDE);
-        let sub = u16::from(geom.head_sub(connector));
+        let bands = height.div_ceil(geometry.strip_h());
+        let across = width.div_ceil(geometry.strip_w()).min(PARAM_BAND_STRIDE);
+        let sub = u16::from(geometry.connector_selector(connector));
         let mut out = KVec::new();
 
         // One byte per map slot, laid out exactly as the sub-records carry it.
@@ -1567,7 +1750,7 @@ pub(crate) mod wht {
         let mut classes = [0usize; 8];
         let mut longest = 0usize;
         for (x, y, len) in framed_strip_extents(frames) {
-            let (bx, by) = (x / geom.strip_w(), y / geom.strip_h());
+            let (bx, by) = (x / geometry.strip_w(), y / geometry.strip_h());
             if bx >= across || by >= bands {
                 continue;
             }
@@ -1640,6 +1823,27 @@ pub(crate) mod wht {
         len: usize,
     }
 
+    impl FrameTrailer {
+        /// A frame that ends at its last strip record, with nothing closing it.
+        ///
+        /// A trailer borrowed from another generation is an unrecognised record in the middle of
+        /// the stream, so a dock whose format is not known closes nothing.
+        pub(crate) fn none() -> Self {
+            Self {
+                bytes: [0u8; 96],
+                len: 0,
+            }
+        }
+
+        /// Carry a single closing record, for a generation that delimits a frame with one.
+        pub(crate) fn one(record: &[u8]) -> Self {
+            let mut bytes = [0u8; 96];
+            let len = record.len().min(bytes.len());
+            bytes[..len].copy_from_slice(&record[..len]);
+            Self { bytes, len }
+        }
+    }
+
     impl core::ops::Deref for FrameTrailer {
         type Target = [u8];
 
@@ -1650,7 +1854,7 @@ pub(crate) mod wht {
 
     /// The ring slot a frame writes, and the one it writes next.
     ///
-    /// Both platforms cycle a head's frames through three buffers. Ridge names them by a phase of
+    /// Both platforms cycle a connector's frames through three buffers. Ridge names them by a phase of
     /// `0`, `2` or `4`; Navarro names the dock-side slot id and address of each.
     fn ring_phase(seq0: u32) -> (u8, u8) {
         let phase = ((seq0 % 3) as u8) * 2;
@@ -1662,20 +1866,17 @@ pub(crate) mod wht {
     /// Both working transports put a USB-transfer boundary between the `aux=0x0006` close and this
     /// `aux=0x0004` next-slot record, so the opener belongs to the frame it describes rather than
     /// to the preceding trailer. This is protocol framing, not cosmetic grouping.
-    pub(crate) fn navarro_frame_opener(geom: Geometry, connector: u8, seq0: u32) -> [u8; 32] {
+    pub(crate) fn navarro_frame_opener(geometry: Geometry, connector: u8, seq0: u32) -> [u8; 32] {
         let (phase, _) = ring_phase(seq0);
         let prev_phase = (phase + 4) % 6;
         let slot = super::super::cp::navarro_pipe_slot(connector, u16::from(phase));
         let ring = super::super::cp::navarro_pipe_ring(connector, u16::from(phase)) as u16;
         let prev_ring =
             super::super::cp::navarro_pipe_ring(connector, u16::from(prev_phase)) as u16;
-        let sub = u16::from(geom.head_sub(connector));
+        let sub = u16::from(geometry.connector_selector(connector));
 
         let mut out = [0u8; 32];
-        out[2] = 0x1c; // size=28 -> 32-byte record
-        out[4] = 0x04; // type=4
-        out[8..10].copy_from_slice(&sub.to_le_bytes());
-        out[10..12].copy_from_slice(&0x0004u16.to_le_bytes());
+        record_header(&mut out, 4, sub, 0x0004, 0);
         out[16..19].copy_from_slice(&[0x0a, 0x00, 0x04]);
         out[19] = slot as u8;
         out[22..24].copy_from_slice(&ring.to_le_bytes());
@@ -1683,21 +1884,84 @@ pub(crate) mod wht {
         out
     }
 
+    /// Build the DL-3x00 record that opens a connector's video stream, sent once before any frame.
+    ///
+    /// Two ring descriptors naming slot 0, distinguished from the per-frame close by `aux`: this
+    /// dock uses that field as a record subtype on non-image records, `0x0008` here and `0x000a`
+    /// for [`ella_frame_close`]. Sending the wrong opening leaves the stream unconfigured and the
+    /// dock stalls the endpoint on the first image write.
+    pub(crate) fn ella_stream_open(geometry: Geometry, connector: u8) -> [u8; 48] {
+        let mut out = [0u8; 48];
+        ella_record_header(&mut out, geometry, connector, 0x0008);
+        // Ring descriptor: slot 0 next, with the last slot named as the one it follows.
+        out[16..18].copy_from_slice(&10u16.to_le_bytes());
+        out[18] = 0x04;
+        out[27] = (ELLA_RING_SLOTS - 1) as u8;
+        out[28..30].copy_from_slice(&10u16.to_le_bytes());
+        out[30] = 0x04;
+        out
+    }
+
+    /// Build the DL-3x00 record that closes a frame.
+    ///
+    /// Names the ring slot this frame filled and the slot the next one will fill. The dock rotates
+    /// [`ELLA_RING_SLOTS`] buffers, so a wrong modulus hands it a slot it is still scanning out.
+    ///
+    /// It is the last record of the frame's final USB transfer, which is what tells the dock the
+    /// frame is complete: every short-terminated transfer carrying pixels ends on one of these.
+    pub(crate) fn ella_frame_close(geometry: Geometry, connector: u8, seq0: u32) -> [u8; 48] {
+        let cur = (seq0 % ELLA_RING_SLOTS) as u8;
+        let next = ((seq0 + 1) % ELLA_RING_SLOTS) as u8;
+        // The frame counter is one-based and occupies a single byte on the wire.
+        let seq = (seq0 % 256) as u8;
+
+        let mut out = [0u8; 48];
+        ella_record_header(&mut out, geometry, connector, 0x000a);
+        out[16..18].copy_from_slice(&8u16.to_le_bytes());
+        out[18] = 0x05;
+        out[19] = cur;
+        out[23] = cur;
+        out[24] = 0x01;
+        out[25] = seq.wrapping_add(1);
+        out[26..28].copy_from_slice(&10u16.to_le_bytes());
+        out[28] = 0x04;
+        out[29] = next;
+        out[33] = next;
+        // The slot this frame filled, repeated after the pair naming the next one.
+        out[37] = cur;
+        out
+    }
+
+    /// Buffers the DL-3x00 dock rotates through; see `DockProfile::dock_buffers`.
+    const ELLA_RING_SLOTS: u32 = 3;
+
+    /// Fill the 16-byte record header shared by this dock's non-image records.
+    fn ella_record_header(out: &mut [u8; 48], geometry: Geometry, connector: u8, aux: u16) {
+        record_header(
+            out,
+            4,
+            u16::from(geometry.connector_selector(connector)),
+            aux,
+            0,
+        );
+    }
+
     /// Build the DL7400's closing record for the ring slot this frame filled.
     ///
     /// The next slot is announced by [`navarro_frame_opener`] only after this frame's final USB
     /// transfer has terminated.
-    pub(crate) fn navarro_frame_trailer(geom: Geometry, connector: u8, seq0: u32) -> FrameTrailer {
+    pub(crate) fn navarro_frame_trailer(
+        geometry: Geometry,
+        connector: u8,
+        seq0: u32,
+    ) -> FrameTrailer {
         let (phase, _) = ring_phase(seq0);
         let slot = super::super::cp::navarro_pipe_slot(connector, u16::from(phase));
         let ring = super::super::cp::navarro_pipe_ring(connector, u16::from(phase)) as u16;
-        let sub = u16::from(geom.head_sub(connector));
+        let sub = u16::from(geometry.connector_selector(connector));
 
         let mut out = [0u8; 96];
-        out[2] = 0x1c; // size=28 -> 32-byte record
-        out[4] = 0x04; // type=4
-        out[8..10].copy_from_slice(&sub.to_le_bytes());
-        out[10..12].copy_from_slice(&0x0006u16.to_le_bytes());
+        record_header(&mut out[..32], 4, sub, 0x0006, 0);
 
         // Slot complete: its id, its ring address, and this frame's number.
         out[16..19].copy_from_slice(&[0x08, 0x00, 0x05]);
@@ -1713,22 +1977,19 @@ pub(crate) mod wht {
 
     /// They delimit every logical frame, including the ARM-prefixed first frame. The first record
     /// carries a wrapping one-based frame counter; all three carry a three-slot phase (`0,2,4`) and
-    /// the selected head.
-    pub(crate) fn frame_trailer(geom: Geometry, head: u8, seq0: u32) -> FrameTrailer {
+    /// the selected connector.
+    pub(crate) fn frame_trailer(geometry: Geometry, connector: u8, seq0: u32) -> FrameTrailer {
         let (phase, next_phase) = ring_phase(seq0);
         let phase_off = phase * 4;
         let next_off = next_phase * 4;
         let frame_no = (seq0 as u8).wrapping_add(1);
         let mut out = [0u8; 96];
 
-        let h = geom.head_sub(head);
-        for (i, head_byte) in [h, h, h | 0x10].into_iter().enumerate() {
+        let h = geometry.connector_selector(connector);
+        for (i, connector_byte) in [h, h, h | 0x10].into_iter().enumerate() {
             let o = i * 32;
-            out[o + 2] = 0x1c; // size=28 -> 32-byte record
-            out[o + 4] = 0x04; // type=4
-                               // `sub` is the little-endian u16 at bytes 8..10.
-            out[o + 8] = head_byte;
-            out[o + 10] = if i == 0 { 0x06 } else { 0x04 };
+            let aux = if i == 0 { 0x0006 } else { 0x0004 };
+            record_header(&mut out[o..o + 32], 4, u16::from(connector_byte), aux, 0);
         }
 
         // Record A: frame-present marker + current ring phase + one-based u8 frame number.
@@ -1738,7 +1999,7 @@ pub(crate) mod wht {
         out[23] = phase_off;
         out[25] = frame_no;
 
-        // Records B/C are identical apart from C's head|0x10 header selector.
+        // Records B/C are identical apart from C's connector|0x10 header selector.
         for o in [32usize, 64] {
             out[o + 16] = 0x0a;
             out[o + 18] = 0x04;

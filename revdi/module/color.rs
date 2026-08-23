@@ -13,7 +13,7 @@
 //! `tools/color-selftest.sh` fails if they drift.
 //!
 //! Pipeline order follows DRM's: degamma, then CTM, then gamma. No degamma LUT is advertised, so
-//! what runs here is **CTM then gamma**.
+//! what runs here is CTM then gamma.
 //!
 //! The transform is applied to the framebuffer's encoded (typically sRGB) values, not to linear
 //! light, because there is no degamma stage to linearise them first. That is the same

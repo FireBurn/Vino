@@ -43,17 +43,17 @@ pub mod simd;
 /// behaves differently in the kernel.
 pub mod drm_sink {
     /// The largest connector count any dock profile describes; array sizes use it, loops use the
-    /// dock's own connector count. Must equal the driver's `drm_sink::HEADS`.
+    /// dock's own connector count. Must equal the driver's `drm_sink::MAX_CONNECTORS`.
     ///
     /// Spelled out rather than taken from `vino_driver`, which is optional: the vendored sources
     /// compile for the offline proof too, with no USB transport present. The assertion below is
     /// what keeps the two from drifting.
-    pub const HEADS: usize = 4;
+    pub const MAX_CONNECTORS: usize = 4;
 
     #[cfg(feature = "live")]
     const _: () = assert!(
-        HEADS == vino_driver::MAX_HEADS,
-        "chimera and vino-driver must agree on the head bound"
+        MAX_CONNECTORS == vino_driver::MAX_CONNECTORS,
+        "chimera and vino-driver must agree on the connector bound"
     );
 }
 

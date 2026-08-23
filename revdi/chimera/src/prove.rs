@@ -328,7 +328,7 @@ pub fn run() -> Report {
     }
 
     // ---- proof 3: video codec (solid colour) -------------------------------
-    // The kernel `video::wht::solid_strip` is KUnit-verified byte-exact vs DLM
+    // The kernel `video::haar::solid_strip` is KUnit-verified byte-exact vs DLM
     // (14/14 colours; 3508/3508 strips of the grey128 capture). Here the chimera
     // runs that literal code and must reproduce the known-good grey128 reference
     // strip (X=Y=0), proving the codec head of the rig is the kernel's bytes.
@@ -432,7 +432,7 @@ pub fn run() -> Report {
     }
 
     // ---- proof 4: colour AC (chroma Cb/Cr) vs REAL DLM sink strips ----------
-    // The kernel `video::wht::colour_strip` (chroma sync fields + (Cr,Cb,Y) DC/AC + col-major
+    // The kernel `video::haar::colour_strip` (chroma sync fields + (Cr,Cb,Y) DC/AC + col-major
     // L1HL + chroma quant) reproduces real DLM colour strips byte-for-byte. The fixture holds
     // three sink-captured strips (captures/codec-sink-sweep-*) with both chroma planes
     // (cramp256), Cr-only (bramp256) and Cb-only (rramp256), each as its 16x3x64 planes + the
@@ -482,7 +482,7 @@ pub fn run() -> Report {
     );
 
     // ---- proof 5: colour FRAME assembler -> DLM's EP08 wire RECORD framing ----------------------
-    // `video::wht::colour_frame_ep08` must tile the surface into 64x16 strips and frame them the way
+    // `video::haar::colour_frame_ep08` must tile the surface into 64x16 strips and frame them the way
     // DLM puts them on the EP08 wire (RE'd 2026-06-28, captures/ep08-framing-20260628/): a `type=4`
     // TLV record per single-Y band of strips -- `pad=0, size, type=4`, an 8-byte record prefix
     // (`flag, 0, fseq, 0, 0,0,0,0`), then per strip `strip_id(2) == strip length ++ strip bytes`,
@@ -647,7 +647,7 @@ pub fn run() -> Report {
         );
     }
     if video_ok {
-        println!("  [PASS] kernel video::wht::colour_strip == DLM; 1440p flat fill built.");
+        println!("  [PASS] kernel video::haar::colour_strip == DLM; 1440p flat fill built.");
     }
 
     let builder_exact = hb.0 + cur.0;

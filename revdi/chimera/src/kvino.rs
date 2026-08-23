@@ -282,7 +282,7 @@ pub fn stream_manage_restatement(counter: u16, head: u8) -> Result<Vec<u8>> {
 /// message id; the rig needs only `AKE_Send_rrx` (`0x06`), whose payload starts with the eight
 /// `rrx` bytes.
 pub fn perhead_rrx(ks: &[u8; 16], out_riv: &[u8; 8], wire: &[u8]) -> Option<[u8; 8]> {
-    let push = cp::perhead_hdcp_push(ks, out_riv, wire)?;
+    let push = cp::per_connector_hdcp_push(ks, out_riv, wire)?;
     if push.msg_id != 0x06 || push.payload_len < 8 {
         return None;
     }
@@ -307,8 +307,8 @@ const NAVARRO: bool = false;
 /// The driver carries one of these per dock in `profile.rs` and passes it down; the rig drives a
 /// Ridge dock only, so it names the kernel's own `RIDGE_GEOMETRY` in one place instead of
 /// threading a parameter no caller varies.
-pub(crate) fn geometry() -> video::wht::Geometry {
-    video::wht::RIDGE_GEOMETRY
+pub(crate) fn geometry() -> video::haar::Geometry {
+    video::haar::RIDGE_GEOMETRY
 }
 
 /// How many buffers the dock rotates through as it presents frames.
@@ -332,27 +332,27 @@ pub fn strip_dims() -> (usize, usize) {
     (geom.strip_w(), geom.strip_h())
 }
 
-/// `video::wht::colour` — the Vino integer colour transform
+/// `video::haar::colour` — the Vino integer colour transform
 /// `(Y=16R+32G+16B, Cb=64(R−G), Cr=64(B−G))`, yielding the per-plane DC values.
 ///
 /// Channels are the framebuffer's own code words at whatever depth the plane is in, so the same
 /// transform carries a 10-bit surface unchanged.
 pub fn colour(r: i32, g: i32, b: i32) -> (i32, i32, i32) {
-    video::wht::colour(r, g, b)
+    video::haar::colour(r, g, b)
 }
 
-/// `video::wht::colour_strip` driven from 16 blocks of three raw planes (each 64 samples in
+/// `video::haar::colour_strip` driven from 16 blocks of three raw planes (each 64 samples in
 /// the codec's ×64 fixed point: `[Cr=64*(B-G), Cb=64*(R-G), Y=64*G+64*((Cb+Cr)>>2)]`). Runs the
 /// LITERAL kernel `colour_block` + `colour_strip`, so the RE harness can prove the in-kernel
 /// colour codec byte-exact against real DLM sink strips.
 pub fn colour_strip_from_planes(planes: &[[[i32; 64]; 3]; 16], x: u16, y: u16) -> Result<Vec<u8>> {
-    let blocks: [video::wht::ColourBlock; 16] = core::array::from_fn(|k| {
-        video::wht::colour_block(&planes[k][0], &planes[k][1], &planes[k][2])
+    let blocks: [video::haar::ColourBlock; 16] = core::array::from_fn(|k| {
+        video::haar::colour_block(&planes[k][0], &planes[k][1], &planes[k][2])
     });
-    Ok(video::wht::colour_strip(geometry(), &blocks, x, y)?.into_vec())
+    Ok(video::haar::colour_strip(geometry(), &blocks, x, y)?.into_vec())
 }
 
-/// `video::wht::colour_frame_ep08` driven from a packed 8-bit RGB frame (`width*height*3`
+/// `video::haar::colour_frame_ep08` driven from a packed 8-bit RGB frame (`width*height*3`
 /// bytes, R,G,B raster order). Runs the LITERAL kernel colour FRAME assembler (strip tiling +
 /// forward-hint tail chaining + EP08 split), so the rig can prove the in-kernel colour frame
 /// path, not just individual strips. Returns the ready-to-send EP08 frames and the next `seq`.
@@ -373,7 +373,7 @@ pub fn colour_frame_ep08_head(
     head: u8,
 ) -> Result<(Vec<Vec<u8>>, u32)> {
     let (frames, seq) =
-        video::wht::colour_frame_ep08(geometry(), width, height, seq0, head, |x, y| {
+        video::haar::colour_frame_ep08(geometry(), width, height, seq0, head, |x, y| {
             // The codec takes code words at the plane's own depth; this feeder is the 8-bit
             // packed-RGB path, so each channel widens unchanged.
             let i = (y * width + x) * 3;
@@ -393,7 +393,7 @@ pub fn colour_frame_ep08_head(
     ))
 }
 
-/// `video::wht::damage_strip_coords` / `all_strip_coords` — the strips a frame carries, raster
+/// `video::haar::damage_strip_coords` / `all_strip_coords` — the strips a frame carries, raster
 /// ordered.
 ///
 /// **The order is load-bearing**: [`frame_records`] groups strips into one record per single-Y
@@ -406,13 +406,13 @@ pub fn strip_coords(
 ) -> Result<Vec<(usize, usize)>> {
     let geom = geometry();
     let coords = match clips {
-        Some(clips) => video::wht::damage_strip_coords(geom, width, height, clips)?,
-        None => video::wht::all_strip_coords(geom, width, height)?,
+        Some(clips) => video::haar::damage_strip_coords(geom, width, height, clips)?,
+        None => video::haar::all_strip_coords(geom, width, height)?,
     };
     Ok(coords.into_vec())
 }
 
-/// `video::wht::colour_strip_at` — encode the one strip whose top-left pixel is `(sx, sy)`.
+/// `video::haar::colour_strip_at` — encode the one strip whose top-left pixel is `(sx, sy)`.
 pub fn encode_strip(width: usize, rgb: &[u8], sx: usize, sy: usize) -> Result<Vec<u8>> {
     let mut px = |x: usize, y: usize| {
         let i = (y * width + x) * 3;
@@ -422,10 +422,10 @@ pub fn encode_strip(width: usize, rgb: &[u8], sx: usize, sy: usize) -> Result<Ve
             u16::from(rgb[i + 2]),
         )
     };
-    Ok(video::wht::colour_strip_at(geometry(), sx, sy, &mut px)?.into_vec())
+    Ok(video::haar::colour_strip_at(geometry(), sx, sy, &mut px)?.into_vec())
 }
 
-/// `video::wht::frame_records` — frame encoded strip bodies into EP08 records.
+/// `video::haar::frame_records` — frame encoded strip bodies into EP08 records.
 pub fn frame_records(strips: &[Vec<u8>], head: u8) -> Result<Vec<Vec<u8>>> {
     let owned: Vec<KVec<u8>> = strips
         .iter()
@@ -435,25 +435,25 @@ pub fn frame_records(strips: &[Vec<u8>], head: u8) -> Result<Vec<Vec<u8>>> {
             Ok(k)
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok(video::wht::frame_records(geometry(), &owned, head)?
+    Ok(video::haar::frame_records(geometry(), &owned, head)?
         .into_vec()
         .into_iter()
         .map(|r| r.into_vec())
         .collect())
 }
 
-/// `video::wht::frame_trailer` — the 96-byte per-frame trailer the dock expects after each image.
+/// `video::haar::frame_trailer` — the 96-byte per-frame trailer the dock expects after each image.
 ///
 /// The kernel driver appends this itself rather than folding it into the codec output, so any
 /// caller building an EP08 stream must do the same. Its phase is derived from the sequence number
 /// (`seq % 3`), which is how the dock rotates its buffers: repeating one sequence pins the phase.
 pub fn frame_trailer(head: u8, seq: u32) -> Vec<u8> {
-    video::wht::frame_trailer(geometry(), head, seq).to_vec()
+    video::haar::frame_trailer(geometry(), head, seq).to_vec()
 }
 
 pub fn black_frame_ep08(width: usize, height: usize, head: u8) -> Result<Vec<Vec<u8>>> {
     Ok(
-        video::wht::black_frame_ep08(geometry(), width, height, head)?
+        video::haar::black_frame_ep08(geometry(), width, height, head)?
             .into_vec()
             .into_iter()
             .map(|frame| frame.into_vec())
@@ -590,17 +590,17 @@ pub fn colour_strip_blocks(planes: &[[[i32; 64]; 3]; 16], x: u16, y: u16) -> Res
     colour_strip_from_planes(planes, x, y)
 }
 
-/// `video::wht::transform` + `quantize` for one 8×8 plane (values already in the
+/// `video::haar::transform` + `quantize` for one 8×8 plane (values already in the
 /// codec's ×64 fixed point), returning the 32 quantized coeffs.
 pub fn transform_raw(plane: &[i32; 64]) -> [i32; 64] {
-    video::wht::transform(plane)
+    video::haar::transform(plane)
 }
 
 pub fn transform_quantize(plane: &[i32; 64]) -> [i32; 64] {
-    let c = video::wht::transform(plane);
+    let c = video::haar::transform(plane);
     let mut q = [0i32; 64];
     for i in 0..64 {
-        q[i] = video::wht::quantize(c[i], i);
+        q[i] = video::haar::quantize(c[i], i);
     }
     q
 }

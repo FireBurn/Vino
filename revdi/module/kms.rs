@@ -434,7 +434,7 @@ impl KmsDriver for EvdiDrmDriver {
 /// `drm_vblank_timer_function`, which returns `HRTIMER_NORESTART` on a zeroed interval): the
 /// callback sees `enabled == false` and returns [`HrTimerRestart::NoRestart`], so an idle or
 /// DPMS-off output costs no wakeups. `enable_vblank` re-arms it with a raw
-/// [`HasHrTimer::start`], which re-queues the timer whether it is dead or still pending —
+/// [`HasHrTimer::start`], which re-queues the timer whether it is dead or still pending --
 /// no new handle is minted, so the single [`ArcHrTimerHandle`] taken at first start remains
 /// the sole owner and its drop (at CRTC teardown, before the `drm_crtc` is freed) is the only
 /// full `hrtimer_cancel`. Neither enable nor disable ever blocks on the callback, which is
@@ -469,7 +469,7 @@ impl HrTimerCallback for VblankTimer {
 
     fn run(this: ArcBorrow<'_, Self>, mut ctx: HrTimerCallbackContext<'_, Self>) -> HrTimerRestart {
         // Vblank is off: let the timer die instead of ticking uselessly; `enable_vblank`
-        // re-arms it. A concurrent re-arm racing this return is safe — hrtimer keeps a timer
+        // re-arms it. A concurrent re-arm racing this return is safe -- hrtimer keeps a timer
         // that was re-queued during its callback enqueued even on NORESTART.
         if !this.enabled.load(Ordering::Relaxed) {
             return HrTimerRestart::NoRestart;

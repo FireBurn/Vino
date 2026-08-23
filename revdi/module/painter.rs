@@ -5,7 +5,7 @@
 //
 // Events are delivered through the DRM-core `drm_event` mechanism (the safe
 // `kernel::drm::event::EventChannel` binding), which serializes delivery against file
-// close under `event_lock` — so an event can never be sent to a client that has just
+// close under `event_lock` -- so an event can never be sent to a client that has just
 // disconnected.
 
 use kernel::drm::gem::BaseObject;

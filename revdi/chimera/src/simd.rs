@@ -5,7 +5,7 @@
 //! to prove the codec's *bytes*, which the scalar path produces identically -- returning `None`
 //! selects it.
 
-use crate::kvino::video::wht::{COEFFS, PIXELS};
+use crate::kvino::video::haar::{COEFFS, PIXELS};
 
 /// Always `None`: run the scalar transform.
 pub fn colour_block_transforms(

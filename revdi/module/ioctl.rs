@@ -106,7 +106,7 @@ pub(crate) fn grabpix(
 
     let data: &EvdiDrmData = dev;
     // No frame has been flipped in yet (or the pipe is down, e.g. DPMS off): report zero rects.
-    // NOT -EAGAIN — libevdi's `drm_ioctl` retries EAGAIN in a tight loop, which would busy-spin
+    // NOT -EAGAIN -- libevdi's `drm_ioctl` retries EAGAIN in a tight loop, which would busy-spin
     // a core until the next flip.
     let Some(scanout) = data.prepared_scanout() else {
         arg.num_rects = 0;
@@ -130,7 +130,7 @@ pub(crate) fn grabpix(
     let fb_h = fb.height() as i32;
 
     // The geometry is client-controlled: reject impossible values before any of it reaches
-    // arithmetic (a negative stride cast to usize is ~2^63 and `y * dst_stride` wraps — a
+    // arithmetic (a negative stride cast to usize is ~2^63 and `y * dst_stride` wraps -- a
     // kernel panic with overflow checks on).
     if arg.buffer.is_null() || arg.buf_byte_stride <= 0 || arg.buf_width < 0 || arg.buf_height < 0 {
         return Err(EINVAL);
@@ -159,7 +159,7 @@ pub(crate) fn grabpix(
         }
     }
     if count == 0 {
-        // The arg is copied back to userspace as passed in, so zero the count explicitly —
+        // The arg is copied back to userspace as passed in, so zero the count explicitly --
         // otherwise the client sees its own pre-filled value (MAX_DIRTS) and reports that many
         // empty rectangles.
         arg.num_rects = 0;

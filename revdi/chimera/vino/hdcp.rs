@@ -1,6 +1,37 @@
 // SPDX-License-Identifier: GPL-2.0
 
 //! HDCP 2.2 key derivation and verifier computation, built on [`crypto`].
+//!
+//! # The key hierarchy
+//!
+//! Every key below is per-session: they are established once by the AKE and SKE exchanges at
+//! bring-up and then used for the life of the link. Nothing here is per-frame. The names are the
+//! ones the HDCP 2.2 specification uses, so that a reader can follow the spec alongside the code,
+//! and this is the one place that says how they relate.
+//!
+//! ```text
+//!   km   (16 bytes, host random)        AKE master key. Sent to the dock RSA-OAEP encrypted
+//!    |                                  under its public key, so only the dock recovers it.
+//!    |
+//!    +-- dkey_0, dkey_1  (rn = 0)  -->  kd = dkey_0 || dkey_1   (32 bytes)
+//!    |                                  The derived key. Not a content key: it exists to prove
+//!    |                                  both ends hold km, via H', L' and V.
+//!    |
+//!    +-- dkey_2          (rn = SKE nonce)
+//!                                  -->  masks ks in transit:
+//!                                       edkey = ks XOR (dkey_2 with its low 8 bytes XOR rrx)
+//!
+//!   ks   (16 bytes, host random)        SKE content session key. Delivered under the mask above,
+//!    |                                  never in clear.
+//!    |
+//!    +-- XOR CP_KEY_WHITEN         -->  the control-plane seal key (see [`cp`](super::cp))
+//!
+//!   riv  (8 bytes)                      Content random IV, delivered beside ks. Nonces for the
+//!                                       control plane are derived from it by fixed byte flips.
+//! ```
+//!
+//! `kd` and `ks` are easy to confuse and are not interchangeable: `kd` is 32 bytes and
+//! authenticates, `ks` is 16 bytes and encrypts. Both come from `km`, by different derivations.
 
 use super::*;
 

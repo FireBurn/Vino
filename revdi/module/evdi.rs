@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 
-//! EVDI — Extensible Virtual Display Interface, Rust implementation.
+//! EVDI -- Extensible Virtual Display Interface, Rust implementation.
 //!
 //! A from-scratch Rust rewrite of the DisplayLink `evdi` kernel module. It presents virtual DRM
 //! displays whose scanout is pulled by a userspace daemon (DisplayLinkManager) over a stable
@@ -77,7 +77,7 @@ impl platform::Driver for EvdiPlatformDriver {
 }
 
 /// One created card: its registered `evdi` platform device plus the bus/port chain of the USB
-/// device it was attached to (`usb_len == 0` for a generic, non-USB card) — used to match the
+/// device it was attached to (`usb_len == 0` for a generic, non-USB card) -- used to match the
 /// dock when it is unplugged (`USB_DEVICE_REMOVE`). The chain is stored instead of the
 /// `usb_device` pointer itself because no reference is held on the device: its address could
 /// be reused by an unrelated allocation, and matching on it could then tear down the wrong card.
