@@ -341,7 +341,31 @@ pub fn run() -> Report {
     // to hand addresses its connectors one-hot, and a record carrying the wrong encoding is
     // acknowledged either way, so only the vendor's bytes can say which is right for a dock that
     // is not plugged in.
-    println!("\n== Proof 2b: kernel connector selector matches DLM's, per family ==");
+    println!("\n== Proof 2b: kernel connector selector and burst order match DLM's ==");
+    // The order the downstream authentication is sent in, as the vendor sent it. The fixture is a
+    // cold plug of a two-connector dock from the other family, so its burst is the one no hardware
+    // here can exercise -- and an out-of-order burst is not something the dock reports, it simply
+    // stops answering.
+    let declared: Vec<(u16, u16)> = kvino::CP_SETUP_PER_HEAD
+        .iter()
+        .take(7)
+        .map(|&(id, sub, _)| (id, sub))
+        .collect();
+    let observed: Vec<(u16, u16)> = recovered
+        .iter()
+        .filter_map(|(_, c)| (c.len() >= 8).then(|| (le16(c, 0), le16(c, 2))))
+        .filter(|pair| declared.contains(pair))
+        .collect();
+    let bursts = observed.chunks(declared.len());
+    let complete = bursts
+        .clone()
+        .filter(|chunk| chunk.len() == declared.len())
+        .count();
+    let in_order = bursts
+        .filter(|chunk| chunk.len() == declared.len() && *chunk == declared.as_slice())
+        .count();
+    println!("  downstream burst: {in_order}/{complete} in the order the driver sends it");
+
     let ridge_dock = ridge();
     let mut selector = (0usize, 0usize);
     let mut strm2 = (0usize, 0usize);
