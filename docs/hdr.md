@@ -1,9 +1,11 @@
 # HDR on DisplayLink
 
-Status: **the 10-bit wire is decoded.** A DL7400 driving genuinely HDR content was captured on
-2026-08-05 and the difference from SDR is now measured rather than argued: the codec is *unchanged*
+Status: **the 10-bit wire drives real panels.** A DL7400 driving genuinely HDR content was captured
+on 2026-08-05 and the difference from SDR is measured rather than argued: the codec is *unchanged*
 — same records, same strip header, same transform, same quantiser — and the only thing that moves
-is the entropy coder's escape-category ceiling, which follows the sample depth. §0 is that
+is the entropy coder's escape-category ceiling, which follows the sample depth. ⭐ **Every ceiling
+moves, not just the DC one, and each is stated to the dock by its own code table** — see §0.2a.
+Two DL7400 panels have since been confirmed by eye at 2560x1440p120 in PQ at 30 bpp. §0 is that
 measurement; everything from §1 on is the binary survey that preceded it and still explains *why*
 the dock behaves this way.
 
@@ -89,6 +91,45 @@ would put after a category-12 value is measurably absent.
 eats the next value's first bit as an offset bit and returns plausible rubbish. Read at the 8-bit
 ceiling, the HDR half decodes to *negative* luma — `grey100` came out at −220 — with no exception,
 no length mismatch and no failed strip.
+
+### 0.2a ⭐⭐ Each ceiling is stated to the dock by its own code table
+
+A ceiling is not something the dock infers from the depth — it is told, by the five code tables the
+stream configuration opens with. They are not opaque captured constants. Each is the series
+`2^n * (2^(n+1) - 1)` truncated at a category, with the second half of the record repeating each
+entry less `2^(n+1) - 1` and a terminator of `2^(2N+2)`. A generator built from that reproduces the
+captured tables exactly:
+
+    code_table(8) == CODE_TABLES[0]
+    code_table(9) == CODE_TABLES[1] == CODE_TABLES[2]
+
+So a table *is* one plane's escape codebook, with `naturals = cmax - 1`:
+
+| table | 24 bpp naturals / ceiling | plane | 30 bpp naturals / ceiling |
+|---|---|---|---|
+| 0 | 8 / 9 | luma AC | 10 / 11 |
+| 1 | 9 / 10 | chroma AC | 11 / 12 |
+| 2 | 9 / 10 | DC | 11 / 12 |
+| 3, 4 | short, different shape | sync/significance | unchanged |
+
+Tables 1 and 2 are byte-identical at 24 bpp because chroma AC and DC share a ceiling of ten there,
+which is why no capture can tell them apart; the mapping above was settled by bisecting on hardware.
+The vendor computes the tables at runtime rather than storing them, so they are absent from
+`DisplayLinkManager` and the Windows `dlidusb*.dll`. ⭐ A table record holds 47 entries, which is
+exactly the eleven naturals a ceiling of twelve needs — the format was sized for 30 bpp all along.
+
+⛔ **Raising a ceiling in the encoder without raising its table is the bug this cost a day to find.**
+The two halves fail differently, which is why they were chased separately:
+
+* **DC mismatch desynchronises.** The dock loses the bitstream for the rest of the record and
+  resynchronises at the next one: strip-aligned runs of saturated black and white, flat strips fine,
+  the cursor plane untouched because it does not go through the decoder.
+* **AC mismatch does not.** `esc` saturates and the category still fixes the length, so the stream
+  stays in step and only the high-frequency values are wrong.
+
+⚠ And note why the repository decoder cannot catch either: it takes `cmax` from `Depth`, not from
+the tables in the stream. vino's own 30 bpp wire therefore decodes perfectly against a screenshot
+(Pearson r = 0.96) while the dock cannot decode it at all.
 
 ### 0.3 The values are PQ code words, tone-mapped host-side
 
@@ -199,22 +240,23 @@ Implemented 2026-08-06: `Timing::st2084` beside `Timing::ten_bit`, fed from the 
 `HDR_OUTPUT_METADATA` EOTF in `atomic_enable`, pinned by
 `set_mode_carries_depth_and_transfer_function`.
 
-### 0.5 What is NOT established
+### 0.5 What was open, and what is now settled
 
-* ⚠ **The AC ceilings in 10-bit.** Nothing in `cap9` produced a luma AC coefficient above `|273|` —
-  512 of 218,000 sampled coefficients even reached category 9, and none reached the 8-bit ceiling's
-  saturation point. The DC ceiling moved by two categories because a DC is a direct multiple of the
-  sample; whether luma AC goes 9 → 11 and chroma 10 → 12 is a guess until something on the wire
-  needs it. **Settling it needs content whose adjacent pixels swing across most of the 10-bit range
-  *without* being tone-mapped down first — i.e. a brighter sink** (the ~302 cd/m² panel compressed
-  everything above it, which is exactly what killed the contrast).
-  ⭐ Until then the safe choice is to leave the AC ceilings at their 8-bit values: `Bits::esc`
-  already saturates a magnitude whose category exceeds the ceiling, so an under-sized ceiling clips
-  extreme AC detail but **cannot desync the dock**. An over-sized one can.
+* ✅ **The AC ceilings in 10-bit — SETTLED, and the earlier advice here was wrong.** Luma AC does
+  go 9 → 11 and chroma 10 → 12. `cap9` never reached them because Windows tone-mapped to the
+  ~302 cd/m² panel first, so the corpus could not settle it; a real desktop can. ⛔ The advice this
+  entry used to give — "the safe choice is to leave the AC ceilings at their 8-bit values, an
+  under-sized ceiling cannot desync the dock" — is true about synchronisation and wrong about
+  everything else. It does not desync, and that is what makes it hard to see: the category still
+  fixes the field width, so the stream stays in step while every magnitude needing twelve bits is
+  written into ten. Smooth gradients come out perfect and **every sharp edge speckles** — text,
+  icon borders, window chrome. Measured on vino's own wire driving a desktop, luma AC reaches
+  category 10, above the 8-bit ceiling of 9.
 * ⚠ **Whether the dock's own capability push (`id=0x78 sub=0x30`) advertises HDR.** Needs Linux and
   keys.
-* ⚠⚠ **Whether a panel actually lights in PQ.** Every field is now known and sent, and the SDR wire
-  is byte-identical to before, but nobody has looked at a screen in HDR since. The properties are
+* ✅ **Whether a panel actually lights in PQ — YES, confirmed by eye.** Two DL7400 panels at
+  2560x1440p120, 30 bpp, PQ, reported as `10 Bit` by the monitors' own OSD. The paragraph below is
+  kept for the grey-desktop failure it describes, which is still the thing to watch for. The properties are
   attached unconditionally as of 2026-08-06 (`hdr_advertise` is gone with the other experiment
   switches), so `kscreen-doctor -o` reads the dock heads as `HDR: disabled` and one
   `output.DP-4.hdr.enable` is the whole experiment. ⚠ The failure to watch for is a *grey* desktop

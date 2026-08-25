@@ -7,9 +7,21 @@ The WAVLINK DL7400, `17e9:7000`, "Universal DP Quad Display Docking 16G", identi
 
 ## Status
 
-vino brings this dock up **stably as a dual-head KMS device**: control session, EDID, 36
-EDID-derived modes per head, both connectors `connected`, compositor driving them. **No picture
-yet** — video is deliberately gated off, see §4.
+vino drives this dock as a dual-head KMS device with a picture on both panels, confirmed by eye at
+**2560x1440p120, 30 bpp, PQ** — the monitors' own OSD reads `10 Bit`. Control session, EDID, 36
+EDID-derived modes per head, both connectors `connected`, compositor driving them.
+
+What is known about its limits, each measured rather than inferred:
+
+* **30 bpp needs every escape ceiling raised, and each is stated by its own code table.** Raising
+  the encoder's ceiling without raising the table is the failure that looks like corruption; see
+  [`hdr.md`](hdr.md) §0.2a for the mechanism and the table-to-plane mapping.
+* **2560x1440p165 runs at 24 bpp, not 30.** Two connectors at that refresh is exactly the dock's
+  pixel budget, and three quarters of the budget is what a 30 bpp connector is priced against, so
+  the depth gives way. Raising the budget to the dock's rated four-connector 4K60 load admits the
+  pair and **both sinks then power off with nothing logged**, so the rated figure is not a bound
+  this budget can borrow.
+* **A warm plug can be answered from the dock's own descriptor.** See §4a.
 
 ## 1. Descriptors
 
@@ -326,6 +338,25 @@ monitors at once, because only two were ever available.
 ⊙ Still open: bandwidth admission when both members of a pair run at high resolution. Two 1440p
 streams share one endpoint's budget, so the dock's `pixel_per_second_limit` must be enforced per
 *endpoint pair*, not per connector.
+
+### 4a. ⛔ The dock answers an early EDID fetch from itself
+
+A fetch this dock cannot yet answer from the monitor is answered from its own bridge: a 256-byte
+block, vendor `NVT`, product `0x079c`, describing a 1920x1080 panel at 148.5 MHz. It carries valid
+base-block magic and a valid checksum, so nothing structural rejects it, and publishing it drives
+the sink at a timing it never advertised — a garbled picture at 1080p60. The real monitor block is
+384 bytes with two extension blocks.
+
+Two things guard it, and the first is not enough on its own:
+
+* Offset 26 bit 7 of the presence reply says the downstream DDC read has completed. Gating on it is
+  necessary but **not sufficient**: the dock can report readiness and still answer from itself.
+  ⚠ The gate is per dock (`edid_ready_reported`) and is *not* the same property as
+  `shared_edid_handler` — Ridge happens to have both, which is why one flag covered it there and
+  Navarro went ungated. A dock that never reports readiness must not be gated on it, or discovery
+  discards every block it is given.
+* The block is refused on identity, by vendor and product id. That is what makes "we never see the
+  default EDID" hold.
 
 ### ⚠ Two gotchas that cost measurements here
 

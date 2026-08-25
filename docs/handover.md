@@ -1,5 +1,40 @@
 # Handover
 
+## 2026-08-25 -- 30 bpp drives both DL7400 panels; every escape ceiling is stated by a code table
+
+Both DL7400 panels are confirmed by eye at 2560x1440p120 in PQ at 30 bpp, reported as `10 Bit` by
+the monitors. What stood between the wire being right and the picture being right was the decoder
+code tables.
+
+`CODE_TABLES` are not opaque constants: each is the series `2^n * (2^(n+1) - 1)` truncated at a
+category, and a table *is* one plane's escape codebook with `naturals = cmax - 1`. A coefficient is
+four times the sample, so **every** depth-sensitive ceiling gains two categories at 30 bpp -- luma
+AC nine to eleven, chroma AC and DC ten to twelve -- and each has to be raised in its own table as
+well as in the encoder. The mapping is table 0 luma AC, table 1 chroma AC, table 2 DC; the last two
+are indistinguishable at 24 bpp because they share a ceiling there. Mechanism, evidence and the
+two very different failure shapes are in [`hdr.md`](hdr.md) §0.2a.
+
+⛔ **Do not use the repository decoder to check this.** It takes `cmax` from `Depth`, not from the
+tables in the stream, so vino's own 30 bpp wire decodes perfectly against a screenshot while the
+dock cannot decode it at all. Round-tripping proves nothing; only vendor bytes or a panel do.
+
+Three other things settled on hardware the same day:
+
+* **1440p165 is a 24 bpp mode on this dock.** Two connectors at that refresh sit exactly on the
+  pixel budget, and 30 bpp is priced against three quarters of it. Raising the budget to the rated
+  four-connector 4K60 load admits the pair and both sinks power off with nothing logged.
+* **A warm plug can be answered from the dock's own bridge descriptor** -- `NVT` / `0x079c`, a
+  1920x1080 panel, valid magic and checksum. It is now refused on identity. Gating on the presence
+  reply's readiness bit is necessary but not sufficient, and that bit is a different property from
+  `shared_edid_handler`; see [`navarro.md`](navarro.md) §4a.
+* **A bring-up can report complete success and leave the panels dark**, cleared by a second mode
+  set. Unexplained, and the open item most worth taking next.
+
+⚠ `modprobe vino debug=1` fills the kernel ring buffer in about four minutes -- 40,000 lines, 4 MB
+-- and `dmesg` then shows only the last couple of minutes. Read `journalctl -k -o short-monotonic`
+instead, and check `dmesg | head -1` before believing that an event is absent.
+
+
 ## 2026-08-22 -- Ridge lights the panel; the EDID it was reading described the dock
 
 A like-for-like DLM reference for this dock now exists: `captures/ridge-dlm-ref-20260822`, 841 s,

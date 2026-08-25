@@ -1273,3 +1273,1210 @@ paths (`drivers/gpu/drm/vino/profile.rs` lives under `linux/`, the capture scrip
 `tools/capture/`), but a genuine link audit of `docs/` is worth doing once and is not part
 of the codec rename. Left for the section 11 pass proper, which the brief places after the
 code settles.
+
+---
+
+## 2026-08-23 - Session 1 (continued) - Section 8, chimera
+
+### chimera was already broken, and still is
+
+Recorded plainly because it would be easy to mistake for damage from this refactor.
+
+chimera compiles the driver's `cp.rs`, `video.rs`, `video_arm.rs` and `hdcp.rs` **verbatim**
+from `revdi/chimera/vino/`, kept in step by `revdi/scripts/sync-kernel-sources.sh`. The
+renames therefore reach it automatically, and its own `src/` has to follow.
+
+Before touching anything I built chimera against the **pre-session** kernel tree
+(`backup/vino-pre-v3-refactor-20260823`) to establish a baseline. It failed with **8
+errors**. After syncing my changes and updating chimera's `src/`, it fails with the **same
+8 errors**, verified by diffing the normalised error sets rather than comparing counts:
+
+```
+baseline errors: 8   now: 8
+IDENTICAL - my changes are fully absorbed
+```
+
+The eight are pre-existing rot, unrelated to anything here: a `profile` module chimera does
+not vendor, `kshim::KVec` lacking `new()` and `IntoIterator`, and three signature
+mismatches (`video_arm::build`, a `FnMut(usize, usize)` given a `u8`, and two arity
+errors). They want their own fix, which is a separate task from this refactor.
+
+What I did change in chimera's own sources: `video::wht` -> `video::haar`,
+`perhead_hdcp_push` -> `per_connector_hdcp_push`, and the `drm_sink` shim's `HEADS` ->
+`MAX_CONNECTORS` including the compile-time assertion that keeps it equal to the driver's.
+Committed as `86ca3e3` in the revdi repository.
+
+Section 8 also asks for dock identification, generation handling, capability exposure and
+HDR gating to be brought in line. That cannot be assessed while the thing does not compile,
+so it is **deferred behind fixing the eight**, and recorded here rather than silently
+skipped.
+
+### A self-inflicted scare worth recording
+
+To get the baseline I checked the kernel tree out at the backup branch, having stashed
+first. Popping the stash afterwards landed `wip/danilo-wq-v2`'s uncommitted work onto
+`v3/phase3-profile` and left `drm_sink.rs` with conflict markers.
+
+No harm done: I confirmed the stash's content was already committed on the workqueue branch
+(`git diff stash@{0} wip/danilo-wq-v2 -- ...` empty), reset the tree to
+`v3/phase3-profile`, and rebuilt clean. The stash is left in place.
+
+**Do not use a bare `git stash` to hop between these branches.** The branches carry
+overlapping edits to the same files and the stash does not remember which branch it came
+from in any way `pop` respects.
+
+---
+
+## 2026-08-23 - Session 1 (continued) - Section 9, checkpoint record
+
+### CHECKPOINT (software gates only - no hardware exercised)
+
+```
+Dock / family        NONE EXERCISED. Ella, Ridge and Navarro all untested this session.
+Kernel commit        v3/phase3-profile @ 28043e1b1cbf
+                     base integration/base-20260809 = drm-rust-next 4c9ba407018e
+Tested connectors    none (no hardware access from this session)
+Resolution / refresh  n/a
+Modeset              n/a
+Stable scanout       n/a
+Hotplug / reconnect  n/a
+Known limitations    every hardware gate in section 9 is outstanding and is Mike's to run
+```
+
+Software gates, all passing:
+
+| Gate | Result |
+|---|---|
+| `make LLVM=1 -j16 modules` | exit 0, **zero warnings**, both `vino.ko` and `evdi.ko` linked |
+| `make LLVM=1 rustfmtcheck` | exit 0 |
+| `make LLVM=1 rusttest` | exit 0, no failures |
+| lines over 100 columns | 40, matching the 40 on the pre-session backup |
+| no hardcoded endpoint addresses in routing paths | confirmed: none outside `profile.rs` and named constants |
+| HDR gate holds | confirmed, see below |
+
+**HDR gate.** `hdr_capable` is declared per profile and read, never inferred: Ella `false`,
+Ridge `false`, Navarro `true`. That matches DisplayLink documenting HDR10 as DL-7000 only,
+and the D6000 reporting `HDR supported = False` to Windows. The only two consumers go
+through `data.hdr_capable()`, which is populated from `profile.capabilities.hdr_capable` at
+probe. Nothing derives it from connector type or product family.
+
+### The comment reflow, and why it is its own commit
+
+The connector rename pushed **281** comment lines past 100 columns, because `connector` is
+five characters longer than `head` and rustfmt does not reflow comments. Measured rather
+than assumed: 40 over-length lines on the pre-session backup, 321 after the rename. That is
+a real regression and it showed up as 260 checkpatch warnings on one patch.
+
+Reflowed back to 40. Only prose is joined and re-broken; tables, fenced blocks, lists and
+indented lines are emitted exactly as found, and a run is skipped entirely if reflowing it
+would still leave a line over the limit. Verified that **only comment lines changed** in
+the diff.
+
+**The brief says to fold such a fix into the commit that introduced the line, and I tried
+and backed out.** `git rebase --autosquash` onto the rename commit conflicts irreducibly:
+the reflow touches `drm_sink/activation.rs`, `bracket.rs`, `presence.rs`, `stream.rs` and
+`cp_session.rs`, none of which exist at that point in history, and the later split commits
+move the very lines being rewrapped. I then tried stopping *at* the rename commit and
+reflowing there, which is the right shape - it got through the activation split by redoing
+the extraction, then conflicted again on the compound-rename commit and produced a
+non-building tree.
+
+At that point I aborted and restored. The fold is cosmetic; a working 190-commit branch is
+not. Restored from `backup/phase3-pre-autosquash-20260823`, verified building clean with
+`rustfmtcheck` passing and 40 over-length lines.
+
+So the reflow stays as its own commit, and the cover letter should say plainly that it is a
+mechanical follow-on to the rename rather than pretend otherwise. If a future session wants
+it folded, the way to do it is to redo the whole phase with the reflow applied at each
+step, not to rebase it backwards.
+
+**Bug found while reflowing.** The `DockProfile` split had **stranded a doc comment**: the
+paragraph explaining why the video endpoints cannot be a global constant came loose and
+re-attached above `struct Topology`, in front of that struct's own one-line summary, so
+`Topology` carried two descriptions and the text read as a non-sequitur. The first reflow
+attempt then *merged* them, which is how I noticed. Repaired: the paragraph is about the
+endpoint layout, so it stays with `Topology` as one comment. The other three new structs
+were checked and are clean.
+
+That makes three separate doc-comment casualties from the structural work this session, all
+of which compiled: two from line-range slicing, one from the struct split. Every one was
+found by reading output rather than by a build or test.
+
+### checkpatch on the current series
+
+191 patches: **81 ERROR, 478 WARNING, 8 CHECK**. Of the errors, **78 are the absent
+`Signed-off-by`**, which is correct and must not be "fixed" by an agent. Two are real (a
+commit-description style, a brace placement) and one is the same missing-SoB on a new
+commit.
+
+The warning count is dominated by the rename patch's 260 line-length findings, which the
+later reflow commit fixes but which checkpatch still sees on the intermediate patch. That
+is the direct consequence of not folding, described above.
+
+---
+
+## 2026-08-23 - Session 1 (final) - THE PLAN FOR THE VINO SERIES. Read this first.
+
+Mike's direction, and it corrects how I had been working: **this is a new driver, so the
+series must be original correct commits, not development history.** No "fixup" commits, no
+renames-after-the-fact, no reverts. It has only ever been an RFC and it was broken, so the
+big changes should be made now, cleanly.
+
+That invalidates the shape of the current `v3/phase3-profile` branch as a *posting*. Its
+eleven refactor commits are my working history: "call a connector a connector", "give a dock
+profile four distinct responsibilities", "move sink activation into its own module", the
+comment reflow. **None of those should appear in the series.** The driver should simply be
+introduced with connectors called connectors, the profile already split, the transform
+already called Haar, and the modules already separate.
+
+The branch stays as the source of the *content*. The series is cut fresh from its end state.
+
+### The precedent, checked rather than assumed: panthor
+
+I was about to argue for one large core commit. Mike asked which drivers had done this
+before, and the answer changed the design.
+
+`drivers/gpu/drm/panthor` is 15,907 lines, comparable to vino's ~19k, and landed as
+**eleven commits, one per logical block**:
+
+```
+drm/panthor: Add GPU register definitions          239 insertions
+drm/panthor: Add the device logical block          943
+drm/panthor: Add the GPU logical block             534
+drm/panthor: Add GEM logical block                 372
+drm/panthor: Add the devfreq logical block         304
+drm/panthor: Add the MMU/VM logical block        2,870
+drm/panthor: Add the FW logical block            1,865
+drm/panthor: Add the heap logical block            636
+drm/panthor: Add the scheduler logical block     3,552
+drm/panthor: Add the driver frontend block       1,473
+drm/panthor: Allow driver compilation               40   <- Kconfig/Makefile LAST
+```
+
+⭐ **`Allow driver compilation` adds only Kconfig and Makefile, and comes second to last.**
+The ten commits before it deliberately do not build as a driver.
+
+⛔ **This contradicts the brief.** Section 1 warns that "splitting a driver into 'add file
+A' / 'add file B' commits where nothing compiles until the last one is a cosmetic split".
+Panthor is the accepted modern precedent for a large new DRM driver and does exactly that.
+Reality wins. Do not use the brief's rule to argue for a single 19k-line commit.
+
+Contrast points: `udl` (1,380 lines) landed as one commit of 2,324 insertions; `tyr` landed
+as a 667-line skeleton and grew afterwards. Size decides, and vino is panthor-sized.
+
+### The target series for the vino group
+
+One commit per logical block, in dependency order, Kconfig last. This needs no surgical
+extraction of features, because after the section 6 work the blocks **are** real files.
+
+| # | Commit | Files | ~lines |
+|---|---|---|---|
+| 1 | protocol and framing | `proto.rs` | 71 |
+| 2 | USB transport | `usb_link.rs` | 250 |
+| 3 | crypto, HDCP and the AKE | `crypto.rs` `rng.rs` `hdcp.rs` `ake.rs` | 300 |
+| 4 | the control plane | `cp.rs` (split further, see below) | 1,816 |
+| 5 | dock profiles | `profile.rs` | 866 |
+| 6 | the codec | `video.rs` `video_arm.rs` `color.rs` | 2,457 |
+| 7 | session bring-up | `session.rs` (split further) | 2,329 |
+| 8 | the KMS sink | `drm_sink.rs` + its 5 submodules | 7,300 |
+| 9 | firmware reporting and DFU update | `firmware.rs` | 624 |
+| 10 | the driver frontend | `vino.rs` | 1,622 |
+| 11 | allow driver compilation | Kconfig, Makefile, MAINTAINERS | ~40 |
+| 12 | documentation | `Documentation/gpu/vino.rst` | - |
+
+`drm/evdi` is a separate driver and gets its own commit or small series.
+`rust: firmware: add the firmware upload abstraction` belongs in a subsystem series, not
+here.
+
+### Further splitting, before cutting - Mike asked, and the answer is yes
+
+Commit 8 at 7,300 lines is twice panthor's largest block (3,552). Three files still want
+splitting, and each has real internal seams rather than arbitrary ones:
+
+- **`session.rs` (2,329)** is a single `impl VinoDriver`, exactly the shape `drm_sink.rs`
+  had before section 6. Split it by method group the same way, with the same
+  name-based tooling (`/tmp/.../impl_split.py`, `do_split.py`).
+- **`cp.rs` (1,816)** already has seams: `Timing`, `ModeProfile`, `PerheadHdcpPush`, and
+  `mod restatement`. Suggest `cp/{mode,hdcp,restatement}.rs`.
+- **`video.rs` (2,016)** is one `mod haar`. Suggest `video/{haar,colour,records}.rs`.
+- **`drm_sink.rs` (3,981)** may still want one more pass; it is the largest single file.
+- `vino.rs` (1,622) is fine: panthor's frontend block was 1,473.
+
+### ⛔ tests.rs is not how the kernel does this
+
+Mike asked whether one big self-test file is normal. **It is not, and vino is the only
+place in the entire tree that does it**: `find rust/ drivers/gpu/drm/ -name tests.rs`
+returns exactly one file, ours. Every other Rust kernel module puts its tests inline in the
+file they test, via `#[kunit_tests(...)]`.
+
+`tests.rs` is 3,011 lines and 92 test functions under a single `#[kunit_tests(vino_protocol)]`.
+By subject they already cluster: 11 haar, 10 ella, 5 stream, 4 edid, 3 video, 2 timing,
+2 navarro, 2 identity, 2 ctm.
+
+**Distribute them into the modules they test**, so each block commit carries its own tests.
+That is both the kernel convention and better for review: a reviewer reading `cp.rs` sees
+what pins its wire format.
+
+### Decisions already taken, do not re-litigate
+
+- Keep the HDCP spec names `km`/`kd`/`ks`/`riv`; hierarchy documented once in `hdcp.rs`. **Confirmed by Mike.**
+- Dock order is always **Ella, Ridge, Navarro** (oldest first). **Confirmed by Mike.**
+- evdi mirrors vino in naming and structure; but evdi is **unlikely to go upstream**, so do
+  not justify kernel-wide abstractions by evdi's needs (that is why the shared colour
+  pipeline was reverted).
+- Fold Mike's own binding fixes into the patch that introduces what they modify.
+  ⛔ **Never reshape Lyude Paul's, Colin Braun's, Alice Ryhl's or Onur Ozkan's patches** -
+  `git am` them unmodified and put any fix in a later commit of ours. Lyude was unhappy when
+  this was got wrong before.
+
+### State at handover
+
+- `v3/phase3-profile` @ `e2e95ee84506` (after the group reorder): builds warning-clean,
+  `rustfmtcheck` and `rusttest` pass, 40 lines over 100 columns (the pre-session baseline).
+- Backups: `backup/vino-pre-v3-refactor-20260823`, `backup/phase3-pre-autosquash-20260823`,
+  `backup/phase3-pre-reorder-20260823`.
+- `wip/danilo-wq-v2` @ `d0c860b4d390`: workqueue v2 adopted, builds clean, **needs hardware
+  validation before folding in**. Mail to Danilo drafted at
+  `outgoing/danilo-scopedwork-delayed.eml`, **not sent**.
+- The patch export regenerates for the first time in a while: `tools/regenerate-patches.sh`
+  had two pre-existing faults (a `Revert "drm/vino: ..."` subject its group pattern rejected,
+  and pinned group starts gone stale). Both fixed; `tools/check-series.sh` confirms the
+  export reproduces the branch exactly. Groups: rust-core 34, rust-crypto 2, rust-usb 8,
+  rust-drm 62, vino 86.
+- Prerequisite message-ids are recorded in `docs/upstream.md`, each verified to resolve.
+- ⭐ Boqun Feng's counted-interrupt patch is now in **tip locking/core** (`e901c1510e24`),
+  so the interrupt prerequisites are a group to **drop**, not to reference, once a base
+  carrying them is used.
+
+### Immediate next action for the next session
+
+Split `session.rs`, `cp.rs` and `video.rs` as above and distribute `tests.rs` into the
+modules it tests, all on `v3/phase3-profile`. Then cut the vino series fresh in the
+panthor shape from that end state.
+
+---
+
+## 2026-08-24 - Session 1 (close) - further splits done; tests.rs is the handover point
+
+Answering Mike's three questions, with the evidence, then the state.
+
+### Can the files be split further? Yes, and three were
+
+| File | Before | After |
+|---|---:|---|
+| `session.rs` | 2,329 | `session.rs` 625 + `session/setup.rs` 1,390 + `session/replies.rs` 337 |
+| `cp.rs` | 1,816 | `cp.rs` 1,135 + `cp/mode.rs` 327 + `cp/edid.rs` 281 + `cp/cursor.rs` 101 |
+| `video.rs` | 2,016 | `video.rs` 346 + `haar/{transform 516, strip 425, records 715}` |
+
+`session.rs` was the worst offender in a way the line count hid: **`send_cp_setup` alone
+was 1,376 lines**, 60% of the file, so reading the authentication path meant scrolling past
+the entire post-authentication burst.
+
+⚠ **A note for whoever cuts the series.** `send_cp_setup` is still a single 1,376-line
+function. Splitting the *function* is a behaviour-affecting refactor of the setup burst,
+which is hardware-critical and ordering-sensitive, so I moved it rather than divided it. If
+it is divided later, that is a change to test on hardware, not a move.
+
+⛔ **A real cost of splitting the codec, recorded so it is not mistaken for sloppiness.**
+Rust lets a child module see its parent's private items but **not a sibling's**. Splitting
+`mod haar` into three siblings therefore forced a number of items and `ColourBlock`'s fields
+to `pub(crate)`. That is weaker encapsulation in exchange for readable modules; it stays
+inside the driver, but it is a real trade and the commit message says so.
+
+Still large and worth a further look before cutting: `drm_sink.rs` (3,981) and
+`scanout.rs` (1,783). `vino.rs` (1,622) is fine - panthor's frontend block was 1,473.
+
+### Is one big self-test file normal? No, and vino is the only one
+
+`find rust/ drivers/gpu/drm/ -name tests.rs` returns **exactly one file: ours**. Every other
+Rust module in the tree puts tests inline in the file under test, via `#[kunit_tests(...)]`.
+
+`tests.rs` is 3,011 lines: a single `#[kunit_tests(vino_protocol)] mod protocol` holding 92
+test functions plus shared fixtures. By subject they already cluster - 11 haar, 10 ella,
+5 stream, 4 edid, 3 video, 2 timing, 2 navarro, 2 identity, 2 ctm.
+
+**This is the next task and I deliberately did not start it.** Distributing 92 tests across
+~12 modules means deciding where each shared fixture lives, giving each module its own
+`#[kunit_tests(vino_<subject>)]` block, and the result **cannot be verified here** - KUnit
+tests run at module load on the dock. Starting it at the end of a long session, with no way
+to check the outcome, is how a green build hides a test suite that registers nothing. The
+file's own doc comment already warns of exactly that failure mode: `#[kunit_tests]` rewrites
+the module it is applied to, and an `include!` body "compiles green while registering no
+tests at all".
+
+### State at close
+
+`v3/phase3-profile` @ **`d05cf17f9e4d`**, working tree clean.
+
+| Gate | Result |
+|---|---|
+| `make LLVM=1 -j16 modules` | exit 0, **zero warnings** |
+| `make LLVM=1 rustfmtcheck` | exit 0 |
+| `make LLVM=1 rusttest` | exit 0 |
+| lines over 100 columns | 40 (the pre-session baseline) |
+
+⚠ **No hardware exercised at any point this session.** Ella, Ridge and Navarro are all
+untested against this branch, and the code most touched - teardown, presence, brackets, the
+control-plane session - is exactly what has wedged docks before.
+
+---
+
+## 2026-08-24 - Session 1 (close, cont.) - series generated; Danilo mail SENT by Mike
+
+### The five series are generated, with prerequisite trailers
+
+`vino/outgoing/v3/` (gitignored, regenerable):
+
+| Series | Patches | prerequisite-message-id | Recipients |
+|---|---:|---|---:|
+| `rust-core` | 34 | Danilo's workqueue v2 | 90 |
+| `rust-crypto` | 2 | none | 30 |
+| `rust-usb` | 8 | Colin Braun's URB RFC | 19 |
+| `rust-drm` | 62 | Lyude Paul's KMS RFC v3 | 30 |
+| `vino` | 86 | none (**provisional**, to be re-cut) | 37 |
+
+Every cover carries `base-commit: 4c9ba407018e...`, no `*** SUBJECT HERE ***` or
+`*** BLURB HERE ***` placeholders remain, and each subsystem cover answers the specific v2
+review it received. **That closes blocker 3** for the four subsystem series; the vino cover
+is explicitly marked provisional because the driver is being re-cut.
+
+⚠ `scripts/get_maintainer.pl` does **not** find the people who actually reviewed v1/v2 -
+it finds maintainers and lists. `outgoing/v3/REVIEWERS-TO-ADD.md` records who must be Cc'd
+by name per series (Oliver Neukum, Alan Stern, Eric Biggers, Lyude Paul, Julian Braha,
+Miguel Ojeda) or they will not see the revision that answers them.
+
+⚠ **Miguel Ojeda's v1 request is still outstanding**: link the related series in the cover
+letters and say plainly that vino is the user for all of them. It is noted in
+`REVIEWERS-TO-ADD.md` and must be in the final covers.
+
+### Mail to Danilo: SENT
+
+Mike sent it manually on 2026-08-24. It reports that workqueue v2 leaves no way to cancel a
+`DelayedWork` synchronously: `cancel_sync` is dropped, `ScopedWork` cancels via
+`cancel_work_sync()`, and there is no delayed variant, so wrapping a `DelayedWork` in
+`ScopedWork` would let the work fire after the data it borrows is dropped.
+
+**Watch for a reply** on `[PATCH v2 6/6] rust: workqueue: add ScopedWork ...`
+(`20260807165252.3849875-7-dakr@kernel.org`). The answer decides whether we keep carrying
+Onur's `cancel_sync`, restructure to avoid delayed work, or wait for v3.
+
+### Hardware validation is next, and needs a reboot
+
+Written up for Mike at `outgoing/HW-VALIDATION-workqueue-v2.md`. The essential point: the
+branch changes `rust/kernel/workqueue/`, so `make modules` alone fails with a `modpost:
+undefined!` that points at entirely the wrong thing. A full `make LLVM=1` is required, then
+install and reboot.
+
+The migration touches **teardown**, so that is where a regression would appear: boot
+selftests `fail:0`, both panels lit by eye, then `remove_all` plus `modprobe -r vino`
+returning promptly. Check for a **D state** before blaming the dock.
+
+---
+
+## 2026-08-24 - Session 2 - tests distributed, drm_sink split again, vino series re-cut
+
+Three tasks, all done, all on new commits. **Nothing pushed, nothing sent.**
+
+### 1. drm_sink.rs split by responsibility: 3,981 -> 1,859
+
+`impl VinoDrmData` alone was 1,681 lines of it, so the profile accessors, the mode
+admission checks, the work publication and the workers were one scroll. Six new modules:
+
+| Module | Lines | What it holds |
+|---|---:|---|
+| `drm_sink/timeline.rs` | 571 | the measured cold-wake and dock-wide timelines, `NavarroColdOp` |
+| `drm_sink/limits.rs` | 454 | clock/refresh ceilings, `timing_key`, `effective_timing`, the dock budget |
+| `drm_sink/settings.rs` | 473 | the runtime knobs a profile installs, and their accessors |
+| `drm_sink/dispatch.rs` | 446 | `queue_cmd`, `queue_scanout`, cursor recording, scanout selection |
+| `drm_sink/worker.rs` | 571 | the `WorkItem` impls and the KMS reconcile loop |
+| `drm_sink/driver.rs` | 208 | `impl drm::Driver` / `KmsDriver`, the GEM and file types |
+
+⛔ **The visibility cost is real and is not sloppiness.** A Rust module sees its parent's
+private items but not a sibling's, so items a *sibling* under `drm_sink/` reads had to become
+`pub(crate)` -- and anything nested one level deeper (`timeline::cold`, `NavarroColdOp`'s
+methods) needs `pub(crate)` even for a sibling, because `pub(super)` there only reaches
+`timeline`. Everything else was tightened back to `pub(super)` by measurement, not by guess.
+
+### 2. tests.rs distributed - 88 tests, 18 suites, and vino is no longer the tree's only `tests.rs`
+
+`find rust/ drivers/gpu/drm/ -name tests.rs` now returns **nothing**.
+
+⭐ **The oracle that made this safe to do without hardware**, which the last session was right
+to worry about: `#[kunit_tests]` registration is *readable out of the object file*.
+
+```
+llvm-objdump -h drivers/gpu/drm/vino/vino.o | grep 'kunit_test_suites '   # size/8 = suite count
+llvm-nm --defined-only .../vino.o | awk '$2=="T"' | grep -oP 'kunit_rust_wrapper_\K\w+' | sort -u
+```
+
+Before: 1 suite, 82 unique wrapper symbols. After: **18 suites, the same 82 symbols**, and 88
+`#[test]` in source both times. A suite that silently registered nothing would show up as a
+missing pointer in `.kunit_test_suites`, which is exactly the failure mode `tests.rs`'s own
+doc comment warned about.
+
+Distribution (suite name -> file): `vino_cp` cp.rs 12, `vino_cp_mode` 11, `vino_cp_edid` 7,
+`vino_cp_cursor` 1, `vino_haar_transform` 8, `vino_haar_records` 5, `vino_haar_strip` 4,
+`vino_video` 3, `vino_video_arm` 1, `vino_profile` 7, `vino_crypto` 2, `vino_firmware` 1,
+`vino_sink` drm_sink.rs 4, `vino_timeline` 6, `vino_mode_limits` 3, `vino_scanout` 2,
+`vino_mode_objects` 1, and `drm_color_pipeline` in color.rs 10.
+
+⚠ **color.rs is shared verbatim with evdi and `tools/color-selftest.sh` enforces that.** So its
+tests are gated `#[cfg(any(CONFIG_DRM_VINO_KUNIT_TEST, CONFIG_DRM_EVDI_KUNIT_TEST))]`, named
+`drm_color_pipeline` rather than `vino_*`, and name nothing outside the module -- the block is
+byte-identical in both copies and the drift check still passes. **`CONFIG_DRM_EVDI_KUNIT_TEST`
+is new in evdi's Kconfig.** Consequence worth knowing: both modules build from one `.config`,
+so enabling *either* symbol builds the colour tests into *both* drivers.
+
+✅ Fallout the distribution cleaned up on its own: the four `#[cfg(CONFIG_DRM_VINO_KUNIT_TEST)]`
+re-exports in drm_sink.rs that existed only so tests.rs could reach `rot_src`,
+`changed_strip_rects` and `parallel_rotation_matches_serial` are gone, and so is the
+`let _ = EINVAL; // silence unused import` hack in `rgb565_packing`.
+
+### 3. The vino series re-cut in the panthor shape: 88 commits -> 15
+
+`v3/vino-recut` @ **`4be706928ceb`**, branched from the last rust-drm commit
+(`55da92cc9d6f`). Pre-recut state is `backup/phase3-pre-recut-20260824` (= `v3/phase3-profile`).
+
+| # | Commit | Files | Lines |
+|---:|---|---:|---:|
+| 1 | `rust: firmware: add the firmware upload abstraction` | 1 | 237 |
+| 2 | `drm/vino: add the DL3 wire framing` | 1 | 71 |
+| 3 | `drm/vino: add the USB transport` | 1 | 250 |
+| 4 | `drm/vino: add the crypto primitives and the HDCP 2.2 AKE` | 4 | 420 |
+| 5 | `drm/vino: add the encrypted control plane` | 4 | 3,059 |
+| 6 | `drm/vino: add the dock profiles` | 1 | 1,068 |
+| 7 | `drm/vino: add the video codec` | 6 | 3,291 |
+| 8 | `drm/vino: add control-session bring-up` | 3 | 2,352 |
+| 9 | `drm/vino: add the KMS device and the atomic path` | 7 | 4,934 |
+| 10 | `drm/vino: add the dock activation and scanout path` | 8 | 5,352 |
+| 11 | `drm/vino: read the dock's firmware version, and update it over DFU` | 1 | 670 |
+| 12 | `drm/vino: add the USB driver frontend` | 1 | 1,615 |
+| 13 | `drm/vino: allow the driver to be built` | 5 | 50 |
+| 14 | `Documentation/gpu: document the Vino driver` | 3 | 201 |
+| 15 | `drm/evdi: add the Rust virtual display driver` | 13 | 2,488 |
+
+No rename commit, no fixup, no revert. Kconfig/Makefile/MAINTAINERS is commit 13, second to
+last, exactly as panthor's `Allow driver compilation` is -- so commits 2..12 deliberately do
+not build as a driver.
+
+⭐ **The sink was split into two commits (9 and 10) rather than left at 10,286 lines.** One
+commit would have been 2.4x panthor's largest block (`panthor_sched.c`, 3,552 added), which the
+brief itself calls unreviewable. The seam is textual as well as logical: commit 9 adds
+`drm_sink.rs` carrying only the `mod` lines for the files it adds, and commit 10 adds the other
+seven files *and* their `mod` lines. Neither commit has a `mod x;` without an `x.rs`.
+
+⚠ **`Assisted-by:` only -- no `Signed-off-by:`.** An AI agent must not certify the DCO, and 78
+of the 88 commits it replaced had no SoB either, so the tree's own convention is that Mike adds
+it at send time (`git format-patch --signoff` / `git rebase --signoff`). **That has to happen
+before this is posted**; the previous export was inconsistent about it (3 of 86 patches had one).
+
+✅ Three ordering faults fixed while re-cutting, and they are the *only* tree differences from
+the pre-recut branch besides one typo: `drivers/gpu/drm/Kconfig`'s list says "sorted" and had
+`evdi`/`vino` wedged between `bridge` and `etnaviv` (now after `etnaviv` and after `vgem`);
+`Documentation/gpu/drivers.rst` had `vino` after `vkms`; the Makefile had evdi before vino,
+which contradicts the commit order. The typo: "costs a busy one one spinlock per frame".
+
+### Gates
+
+| Gate | Result |
+|---|---|
+| `make LLVM=1 -j16 modules` (vino + evdi) | exit 0, **zero warnings** |
+| `make LLVM=1 rustfmtcheck` | exit 0 |
+| `make LLVM=1 rusttest` | 7 passed, 0 failed |
+| `tools/color-selftest.sh` | byte-identical + **15 pass, 0 fail** |
+| `checkpatch.pl --strict` over all 15 patches | 0 errors; warnings are only the 11 "does MAINTAINERS need updating?" false positives (it is, in commit 13) and 17 long string literals rustfmt leaves alone |
+| non-ASCII in `drivers/gpu/drm/vino/*.rs` | none |
+| lines over 100 columns | 40 (the pre-session baseline) |
+| `tools/regenerate-patches.sh` with `KERNEL_HEAD=v3/vino-recut` | exit 0; groups rust-core 34, rust-crypto 2, rust-usb 8, rust-drm 62, **vino 15** (was 86) |
+
+⚠ **No hardware exercised at any point this session, again.** Ella, Ridge and Navarro are all
+untested against this tree. The code moved most -- the sink's activation, presence and worker
+paths -- is exactly what has wedged docks before.
+
+### Next session
+
+1. **Hardware validation**, which is now two branches deep: `outgoing/HW-VALIDATION-workqueue-v2.md`
+   still applies, and nothing since the 2026-08-23 refactor has met a dock.
+2. **Decide which branch is canonical.** `v3/vino-recut` holds the re-cut; `v3/phase3-profile`
+   holds the pre-recut history; `vino` is still at `7445bb14b8fc` and behind both. ⭐ Push
+   `vino/linux` before the `vino/` superproject, and take a backup of the previous remote tip.
+3. **Re-cut the vino cover letter**, which `outgoing/v3/vino/` marks provisional, and add
+   Miguel Ojeda's outstanding v1 request: link the related series and say plainly that vino is
+   the user for all of them.
+4. Watch for Danilo's reply on `ScopedWork` (`20260807165252.3849875-7-dakr@kernel.org`).
+
+---
+
+## 2026-08-24 - Session 2 addendum - signoffs, `vino` repointed, and a DPMS regression found
+
+### Signoffs
+
+`Signed-off-by: Mike Lothian <mike@fireburn.co.uk>` added to **all 60 of Mike's own commits** in
+`integration/base-20260809..vino` (43 already had it; 17 did not, plus the 15 re-cut ones).
+
+⛔ **The 61 commits by other people were deliberately left alone** -- Lyude Paul (43), Boqun Feng
+(9), Colin Braun (3), Alice Ryhl (3), Onur Ozkan, Joel Fernandes, Heiko Carstens. They are `git am`'d
+prerequisites referenced by message-id, not patches being reposted, and reshaping them is what upset
+Lyude before. ⚠ If any of them ends up genuinely *carried* in a posted series rather than referenced,
+that one needs Mike's SoB added by hand, because the DCO wants it from whoever passes a patch on.
+
+### `vino` now points at the re-cut
+
+`vino` = `c564f4929c8c`. Backups taken first: `backup/vino-20260824-pre-recut` (the old local tip
+`7445bb14b8fc`) and `backup/vino-remote-fdo-20260824` (the previous **remote** tip `bebe3029d79e`).
+`backup/vino-pre-signoff-20260824` holds the recut before signoffs. **Still nothing pushed.**
+
+### ★★★★★ The Navarro DPMS symptom is a real regression, and the culprit is `35a4880a1919`
+
+Reported: the monitor on the DL-7400 goes black on DPMS but stays lit. ⭐ **It used to work, and
+`git log` on the subsystem found it in one step -- no wire work at all.**
+
+`35a4880a1919 drm/vino: name the behaviour a dock wants, not the model it is` replaced
+`is_navarro()` with a profile field. The predicate appeared **twice** in `blank_head`, and the two
+occurrences were mapped to two *mutually exclusive* enum values:
+
+```
+        if self.is_navarro() { 2f=1; 2e=3; hold bracket; return }   ->  == SinkDown
+        ... black frames ...
+        if self.is_navarro() { return }                             ->  == BlackFrames
+        2f=0; 2e=0; power_down_sink(sink_down_state())
+```
+
+The second check was **unreachable** before the refactor (the first returns early), so it carried no
+behaviour -- but it was translated as though it did, and `PROFILE_NAVARRO` was then given
+`BlackFrames`. The result inverts every dock:
+
+| Dock | before `35a4880a1919` | after it | now |
+|---|---|---|---|
+| Navarro | `2f=1`, `2e=3`, bracket held | black frames, **stays lit** | restored |
+| Ridge | black, `2f=0`/`2e=0`, sink down `2e=1` | `2f=1`, `2e=3` held | restored |
+| Ella | black, `2f=0`/`2e=0`, sink down `2e=3` | `2f=1`, `2e=3` held | restored |
+
+⛔ It also made the close bracket, the `connector_present` guard and `power_down_sink` **dead code**
+inside `blank_connector` -- so `sink_down_state` stopped being read there at all and every dock
+blanked with a hardcoded `3`. Ridge's HW-verified `2e(1)` had not been sent since 23 August.
+
+⚠ **The code was already right and only the profile was wrong.** The `SinkDown` branch is Navarro's
+disable byte for byte -- its comment, its markers and its debug string all say Navarro. And the
+"until a transcript settles the real sequence" comment was stale: `docs/protocol/navarro-decoded.md`
+§2d has had the measured sequence ("confirmed byte-identical on a second window") for weeks.
+
+**Fixed** in `c564f4929c8c`: the variants are renamed for what they do (`MarkersHeld`,
+`BlackThenClose`), each dock gets the shape measured from its own vendor, the unreachable branch is
+deleted so the close path is live again, and the held-marker branch reads `sink_down_state()` instead
+of a literal. Verified equivalent to `35a4880a1919^` per dock. A KUnit case
+(`blanking_follows_the_vendor_disable_for_each_dock`) pins all three, because nothing on the wire
+reports a blank that only paints.
+
+⚠ **HW-UNVALIDATED, and it changes DPMS on all three docks.** Kept as one commit on top rather than
+folded into commits 6 and 10, so a bad result is a single revert. **Fold it once validated.**
+
+Test plan, in order of what it would cost to get wrong:
+1. **Navarro first** -- DPMS off should take the signal away (monitor reports no input), and DPMS on
+   should relight. ⚠ Watch for the ~2 s re-enumeration: if the dock resets, the profile is wrong and
+   the whole desktop goes with it.
+2. **Ridge** -- confirm `2e(1)` is on the wire again and the panel darkens, per the 2026-07-27 result.
+3. **Ella** -- ⛔ use `kscreen-doctor output.X.disable`, not the panel's own power button.
+
+### Gates after the fix
+
+`modules` zero warnings, `rustfmtcheck` clean, `rusttest` 7/0, colour selftest 15/0, **18 KUnit
+suites / 83 test wrappers** (was 82; one added). Export regenerated: 122 patches, vino group **16**.
+
+---
+
+## 2026-08-24 - Session 2, HW results - blanking is measured on all three docks
+
+### The blank fix was two-thirds right, and the wrong third was destructive
+
+User-tested on hardware. **Navarro and Ridge: confirmed good.** Ella: broke, and I broke it.
+
+⛔⛔ **Blanking a DL-3x00 with black frames halts its pipe and kills the session.** Its measured
+disable is the held-marker pair alone (`2f=1`, `2e=3`) with **no video in the window**. Video shares
+the control pipe on that platform, and the 2026-08-10 capture measured a black desktop
+**quadrupling** EP02 traffic (14.0 -> 62.7 MB), which is exactly the load its endpoint halts under:
+
+```
+vino: scanout connector=1 pipeline submit at off=458752/1519552 failed
+vino: shared video/control pipe failed (EPIPE); abandoning the session
+vino: resetting the dock to recover the control session
+vino 2-2.1:1.0: disconnected
+```
+
+⇒ connector gone from KWin, dock still scanning out its last frame, so the panel **kept showing the
+desktop after being asked to blank**. The panel then came up **corrupted** -- block noise over ~2/3
+of the width, 1px vertical stripes over the rest, i.e. a decoder reading at the wrong offset, left
+by the reset tearing the stream mid-frame. ⭐ **A clean vino reload cleared it**; the codec was never
+involved. Fixed in `a51162b2813f` (a `fixup!` for `c564f4929c8c`).
+
+### ⭐ The lesson, and it is the one that cost the outage
+
+I justified Ella's value as "restore what it did before the refactor". That code **predated the
+capture that isolated this dock's disable**. Age is not evidence -- the newest measurement is.
+Two of three docks happened to be right; the one I reasoned about historically was wrong.
+
+⚠ Second-order: the KUnit case I added to stop this recurring asserted the two non-Navarro docks
+*as a group*, which is the same exclusion-list shape I had just fixed elsewhere in the same file.
+It would not have caught this. Each dock is now pinned individually.
+
+### The settled table, each row from its own vendor capture
+
+| Dock | blank | `sink_down_state` | status |
+|---|---|---|---|
+| Ella (DL-3x00) | `MarkersHeld`, **never paints** | 3 | ✅ user-confirmed good |
+| Ridge (DL-6xxx) | `BlackThenClose` | 1 | ✅ user-confirmed good |
+| Navarro (DL-7400) | `MarkersHeld` | 3 | ✅ user-confirmed good |
+
+⚠ **Ella's DPMS itself is still untested** -- what is confirmed is that it renders correctly again.
+
+### Two false alarms, recorded so they are not re-investigated
+
+- ⛔ "The Ella has no monitor" and "the Ridge lost its monitor" were **neither**. Mike has two
+  monitors and moves them between docks to test. Every appear/disappear in dmesg is that.
+- ⛔ Three power cycles did **not** trigger an auto-flash; firmware stayed 12.2.15 throughout.
+
+### Other fixes this stretch
+
+- `2185c53ecaf9` -- the selftest that had failed at **every module load** since `15a7b070f58e`:
+  it asserted "every family except Ella has `frame_period_ms == 5`" while the DL-6xxx had been
+  measured at 8. Now pinned per family. ⚠ My earlier claim of "`pass:37 fail:0`" was stale CLAUDE.md
+  text; the real figure is **18 suites / 89 tests**, now `fail:0`.
+- ⛔ `/sys/devices/vino/remove_all` **does not exist** in this branch, so the documented teardown
+  recipe is stale. Teardown is: unbind each interface under `/sys/bus/usb/drivers/vino/`, wait for
+  `refcnt` to reach 0, then `modprobe -r`. Script: `scratchpad/reload-vino.sh`, run detached.
+- ⭐ A module-only install needed no reboot, and that was **checked, not assumed**: the new .ko's
+  undefined-symbol set was identical to the running one's. This config has neither `MODVERSIONS`
+  nor module signing, so a real ABI mismatch would have loaded silently.
+
+### Next
+
+1. **Test DPMS on the Ella** -- the one behaviour still unconfirmed. Use
+   `kscreen-doctor output.X.disable`; ⛔ `--dpms off` never reaches this dock.
+2. Fold `a51162b2813f` into `c564f4929c8c` (`git rebase -i --autosquash`) once that is confirmed.
+3. Then fold the whole blank fix into commits 6 and 10 of the re-cut series.
+
+---
+
+## 2026-08-24 - Session 2 close - fixes folded, series respun
+
+### Folded, with the tested tree preserved exactly
+
+The three follow-up commits are gone; their content now sits in the commits that introduced the
+lines, which is where a reviewer will look for it:
+
+| Fix | folded into |
+|---|---|
+| blank bracket per dock + its KUnit case + the Ella correction (`profile.rs`) | `drm/vino: add the dock profiles` |
+| `blank_markers_held` field and accessor (`drm_sink.rs`, `settings.rs`) | `drm/vino: add the KMS device and the atomic path` |
+| the blank path itself (`bracket.rs`) | `drm/vino: add the dock activation and scanout path` |
+| frame period pinned per family (`profile.rs`) | `drm/vino: add the dock profiles` |
+
+⭐ **The invariant that makes this safe to claim:** `git diff backup/vino-pre-fold-20260824 vino`
+is **empty**. The folded tree is byte-identical to what ran on the hardware, and the installed
+`.ko` hash is unchanged, so no reload was needed and nothing was re-validated by assertion.
+
+⚠ `git rebase -i`'s todo here is `pick <sha> # <subject>`, not `pick <sha> <subject>` -- this repo
+sets `rebase.instructionFormat`. A sequence-editor script matching the documented format silently
+matches nothing and the rebase completes as a no-op. Dump the todo before trusting a regex.
+
+### Respun
+
+`tools/regenerate-patches.sh` with `KERNEL_HEAD=vino`: **121 patches**, groups rust-core 34,
+rust-crypto 2, rust-usb 8, rust-drm 62, **vino 15**. `tools/check-series.sh` confirms the export
+reproduces the branch. checkpatch `--strict`: **0 errors**; warnings are only the 11 "does
+MAINTAINERS need updating?" false positives and 17 long string literals rustfmt leaves alone.
+All 15 vino patches carry Mike's `Signed-off-by`.
+
+Gates: build zero-warning, `rustfmtcheck` clean, `rusttest` 7/0, 18 KUnit suites.
+
+### Two things seen on hardware that are NOT from this work
+
+- ⚠ **The Ella EPIPE'd again at t=47926**, with markers-held blanking in place and no blanking
+  involved: `off=524288/1444032`, the 8-deep URB queue boundary. This is the pre-existing
+  load-triggered EP02 halt ([[project_ella_epipe_reproduced_under_load_20260817]]), independent of
+  the blank path. Removing black frames from the blank removed *one trigger*, not the fault.
+- ⚠ **A DRM minor was consumed and not reused**: after that reset the Ella came back on minor 5,
+  having been on minor 4, so `card4` is gone and `card5` is live. CLAUDE.md records the minor leak
+  as root-caused and fixed, but that was verified across *module reloads*; this was a **dock reset
+  and rebind**, which may not take the same path. Unverified either way -- worth a look.
+
+### ★★★★ A cold-plugged Navarro published the dock's own NOVATEK EDID
+
+Reported as "Navarro garbled, and the EDID isn't our usual testing monitor". It was not a codec
+fault and not from the blank work.
+
+`card3-DP-5` carried monitor name **`NOVATEK`** -- the dock's own bridge block -- 26 modes topping
+out at 1920x1080, on a socket holding an MSI MAG 27CQ6F (2560x1440). The panel showed two narrow
+columns of white dashes at the far left and dark elsewhere: a **geometry mismatch**, exactly what
+`session/setup.rs` predicts for this case ("drives the panel at a timing it never advertised").
+
+⭐ **Diagnose from the EDID, not the picture**: `cat /sys/class/drm/cardN-DP-M/edid | strings`.
+Two identical monitors are told apart by serial -- `CD9M145800302` (Ridge) vs `...341` (Navarro).
+
+⛔ **The guard for this already exists and is Ridge-only.** `gate_on_ready` in `session/setup.rs`
+discards a block offered before the dock reports its downstream read complete (presence reply offset
+26 bit 7), and it is keyed on `profile.quirks.shared_edid_handler`: **Ella false, Ridge true,
+Navarro false**.
+
+⚠ **Cold-only.** A physical replug produced it; a plain vino reload re-probed and both docks read
+their real EDIDs (Navarro back to 37 modes / 2560x1440). ⇒ recovery is a re-probe; reproducing it
+needs a physical replug.
+
+⛔ **Do not just set `shared_edid_handler: true` on Navarro.** The same flag suppresses the blind
+re-engage in `vino.rs`, which is right where one handler serves several connectors and unproven on a
+four-connector dock that pushes hotplug. And if offset-26 bit 7 is not meaningful there, gating
+discards **every** EDID and the dock never gets a monitor -- a wrong guess costs a power cycle.
+**Next step: settle that bit against the Navarro corpus, then consider splitting the flag** into the
+readiness gate and the shared-handler behaviour.
+
+### Settling offset-26 bit 7: the corpus cannot, live hardware can
+
+Asked to settle whether the EDID-readiness gate is safe to enable on Navarro.
+
+⛔ **The corpus cannot answer it, and that is a finding rather than a shrug.** Checked exhaustively:
+`captures/` holds **5** readiness records in total, all Ella, all `ready=false`; the Windows Navarro
+captures skipped session keys **by design** ("Phase 6 -- impossible here, there is no DisplayLink
+user-mode process to hook"); `navarro-dlm-control-094605` has a `.mon` and no keys, and the
+`keys-raw.json` in `navarro-dlm-today-124144` is the **string-store** key, not a session key.
+
+⭐ **`modprobe vino debug=1` settles it in one load**, printing the bit for every socket of every
+dock:
+
+| dock | socket | status | ready |
+|---|---|---|---|
+| Navarro `[video 08/0a]` | 1, 3, 4 (empty) | `0x00200105` | **false** |
+| Navarro | 2 (**monitor**) | `0x00271105` | **true** |
+| Ella `[video 02/02]` | 1 | `0x00100104` | false |
+| Ella | 2 | `0x00300105` | true |
+
+**Result:** ✅ **Navarro sets the bit, and only on a populated socket** -- so gating there cannot
+discard every EDID, and the failure mode that made a blind flip unsafe is ruled out. The presence
+values also agree with the four-connector port map (`status & 0x1000` set only on socket 2).
+
+⛔ **Ella must keep the gate off**, and now for a measured reason rather than caution: its EDID fetch
+never reaches ready (`readiness poll hit wall-clock cap` -> `ready=false`) and then **succeeds
+anyway**. Enabling the gate there would discard the EDID the dock depends on.
+
+⚠ **One thing is still open, and it is the one that decides the fix.** The presence path and the
+fetch path read the same bit at different moments. What is proven is that Navarro *sets* it; what is
+not is whether it is set *before* the bridge block is offered on a **cold** dock -- the only case
+that fails. This load re-used a cached EDID, so it never exercised that path.
+
+**Next: one physical replug of the Navarro with `debug=1` loaded** (it is loaded now). That both
+reproduces the original NOVATEK failure under instrumentation and shows the ordering. If ready
+arrives first, the fix is to split `shared_edid_handler` into the readiness gate (Navarro + Ridge)
+and the shared-handler blind-engage suppression (Ridge only).
+
+⚠ vino is currently loaded with `debug=1` -- verbose. Reload without it when the cold-plug test is
+done.
+
+### ⛔⛔ REFUTED: the EDID readiness gate must NOT be enabled on Navarro
+
+The cold plug was done with `debug=1` loaded, and it **came up correctly** -- `EDID read from dock
+(384 bytes)`, two extension blocks, `MAG 27CQ6F CD9M145800341`, 37 modes. So the NOVATEK failure is
+**intermittent**, i.e. a race, not a deterministic cold-plug property.
+
+⛔⛔ **And the ordering refutes the fix that was about to be written:**
+
+```
+50009.221   EDID read from dock (384 bytes)          <- the GOOD EDID
+50010.853   presence reply socket 2 ready=true       <- 1.6 s LATER
+```
+
+with **zero** readiness-poll records during that fetch. `gate_on_ready` discards whenever
+`!edid_ready`, so on this evidence enabling it for Navarro would have thrown the **good** EDID away
+and left the dock with no monitor. **It would break the working case rather than fix the broken
+one.** The readiness bit is therefore *not* the discriminator for this failure, even though Navarro
+does set it in the presence path.
+
+⭐ This is the same trap as the Ella blank: a change that is plausible, has a real mechanism behind
+it, and is wrong because it was never checked against the case that already works. Checking cost one
+cold plug; not checking would have cost a dark dock and a power cycle to find out.
+
+**Whatever fixes the NOVATEK block must distinguish it from a monitor block by content or
+provenance, not by that bit.** Catch the next occurrence with `debug=1` loaded before proposing
+anything.
+
+### State
+
+**No new fix to fold** -- everything from today (blank bracket per dock, the Ella correction, the
+frame-period assertion) was already folded into commits 6, 9 and 10. Working tree clean.
+
+Respun and verified: **121 patches**, groups rust-core 34, rust-crypto 2, rust-usb 8, rust-drm 62,
+**vino 15**; `check-series.sh` reports the export reproduces the branch; 15/15 vino patches carry
+Mike's `Signed-off-by`. Nothing pushed, nothing sent.
+
+⚠ vino is still loaded with `debug=1`. Worth leaving on to catch the intermittent NOVATEK race;
+reload without it for a quiet dmesg.
+
+### The Navarro wake: what five trials actually settled
+
+⛔⛔ **The hard failure never reproduced.** Five deliberate attempts, including the exact
+combination that produced it:
+
+| | blank | refresh change | flaps | outcome |
+|---|---|---|---|---|
+| original failure | 168 s | yes | **22** | never recovered |
+| trial 1 / 2 | 8 s | no | 0 | clean |
+| trial 3 | ~0 s | yes | 0 | clean |
+| trial 4 | 180 s | no | 0 | **wake visibly slow** |
+| repro attempt | **857 s** | **yes** | 0 | instant |
+
+⇒ neither variable, nor both together, is sufficient. Do not treat a quiet DPMS cycle as proof of
+anything; **the only reproducible symptom was the slow wake after a long blank.**
+
+⛔ Three hypotheses died on the way, all plausible, all wrong: the 1440p165 mode words (they are
+derived from the measured sync-polarity rule, not guessed, and Mike confirms that mode worked);
+the refresh change; and "vino fights its own blank" -- the presence oscillation during a blank is
+**documented dock behaviour** and `vino.rs` already guards it (`if data.is_self_blanked(h)`), which
+I found only after reporting it as the bug.
+
+### ✅ The fix, and what it is judged on
+
+`f7805ebabd82` -- on a held-marker dock, `close_blank_bracket` now runs the existing
+`reengage_connector` after the closing markers. That function already **is** the vendor's wake
+(probe, fetch, engage, capability query) and clears the self-blanked record and asserts the closed
+bracket on entry. ⚠ Corrected en route: the wake was **not** missing its set-mode --
+`close_blank_bracket` is called from inside the activation path, so the mode was always re-sent.
+Only the probe/fetch/engage was absent.
+
+HW result, user-confirmed: a **738 s** blank with a refresh change came back **quick**, against
+trial 4's 180 s pre-B blank which was visibly slow, and the log now shows the re-engage retrieving
+the real monitor EDID:
+
+```
+socket 2 EDID 384 B, vendor MSI product 0x3cd9
+socket 2 blank bracket closed; wake runs as a repair
+```
+
+⚠ **One trial, and against a baseline that does not reproduce** -- so this is evidence the
+degraded wake is fixed, not that the hard failure is.
+
+### Open, unrelated: HDR is 8-bit
+
+Mike observed the monitor reports HDR but 8-bit depth. Cause found, not fixed:
+`attach_max_bpc_property(8, 10)` in `drm_sink/driver.rs` is the **only** mention of max bpc in the
+driver -- the property is advertised and **never read**. Depth comes solely from the committed
+framebuffer's fourcc (`dispatch.rs` -> `set_connector_depth`), so the dock is told 24 bpp unless
+KWin commits `XRGB2101010`, while off42 bit 6 (ST2084) is set. HDR transfer function on, 8-bit
+samples. ⚠ Only the Navarro is `10-bit capable true`; Ridge and Ella are false.
+
+---
+
+## 2026-08-24 - Session 2 (afk) - 10 bpc reaches the DL7400
+
+### ⭐ The gap was `max bpc`, and vino never read it
+
+Everything downstream of the trigger was already correct and pinned by tests: the plane offers
+`XRGB2101010` on an `hdr_capable` dock, `from_fourcc` maps it to `Depth::Ten`, the set-mode emits
+`off23=3` (NM30) and `off68/69=0x0300`, and the codec uses DC ceiling 12 at 10-bit with the AC
+ceilings left at their 8-bit values and `esc` saturating so a wrong ceiling clips rather than
+desynchronises. **Nothing was missing except the trigger.**
+
+⛔ **`attach_max_bpc_property` was the only mention of max bpc in the driver.** Dumped the
+connector properties and found userspace asking for exactly what it was not getting:
+
+```
+connector 54 (DP-7): max bpc = 10  Colorspace = 9  HDR_OUTPUT_METADATA = 90
+connector 43 (DP-6): max bpc = 10  Colorspace = 0  HDR_OUTPUT_METADATA = 0
+```
+
+KWin sets `max bpc = 10` and keeps committing `XRGB8888` -- and that is **correct behaviour**:
+`max bpc` describes the *link*, not the buffer, and an eight-bit surface over a ten-bit link is the
+ordinary case everywhere. The Windows captures agree: `bpc 8 <-> 10` per head on an HDR toggle.
+So the bug was vino deriving link depth from the framebuffer format.
+
+### The fix, and the HW result
+
+Split the two meanings: the fourcc still decides how a pixel is **decoded**, `max bpc` decides what
+the dock is **told** and what the codec emits. Where they differ the sample is widened after
+decode, replicating the top bits so `255 -> 1023` exactly; a plain shift leaves white three codes
+short and tints every highlight. Pinned by `widening_an_eight_bit_sample_keeps_the_endpoints`.
+
+```
+KMS CRTC enable -- connector 0 ... 2560x1440@120 10 bpc         <- HDR off
+KMS CRTC enable -- connector 1 ... 2560x1440@165 10 bpc PQ      <- HDR on
+```
+
+**757 frames, 0 errors, 0 sink disconnects, selftests 90/0.** The dock accepts the ten-bit stream
+and keeps running. ⚠ **Panel content is unverified** -- nobody was at the machine; the dock
+accepting bytes is not proof a panel is right.
+
+⛔ **Refuted en route:** advertising `IN_FORMATS` / the linear modifier does **not** make KWin pick
+a ten-bit buffer (tested: 755 frames, still eight-bit). Kept as its own commit anyway, because the
+framebuffer path accepts only linear and saying so is honest.
+
+### Commits
+
+| | |
+|---|---|
+| `3cda1ad359e9` | `rust: drm: kms: expose a connector's requested link depth` (binding) |
+| `60f4f58a11ca` | `drm/vino: publish the plane's format modifier` |
+| `aec4730bd967` | `drm/vino: drive the link at the depth userspace asked for` |
+| `e62e082ce489` | `drm/vino: say which sample depth a connector is being driven at` |
+
+⚠ Still unmeasured: the **10-bit AC ceilings**. `ac-hdr.webm` exists in
+`navarro-wincap-20260805/hdr-content/ac/` but **no capture of it was ever taken**, so vino's
+saturating 8-bit AC ceilings remain the safe choice.
+⭐ Read the depth with `modprobe vino debug=1` and grep `KMS CRTC enable`.
+
+### ⛔ The sink flapping is NOT from 10 bpc
+
+Measured on one boot, so the only variable is the depth:
+
+| period | duration | flaps | rate |
+|---|---|---:|---|
+| 8-bit, after the reload | 90 s | 8 | 5.3/min |
+| **10-bit active** | 160 s | 12 | **4.5/min** |
+| blanked (idle) | 793 s | 0 | 0 |
+| earlier 8-bit periods, same boot | 1550 s | **0** | 0 |
+
+The rate is the same either side of the change, and there is a flap **10 s before** the 10-bit mode
+set. ⇒ depth is not the variable.
+
+⭐ What is different in the flapping periods: **both monitors are on the Navarro**, so two
+connectors are lit on one dock, where every quiet period had one monitor per dock. That points at
+[[project_navarro_modeset_is_dockwide_20260806]] and the presence debounce, not at anything from
+today. ⚠ Do not re-blame 10 bpc for this.
+
+⭐ Note the flaps stop entirely once the connectors blank -- the `self_blanked` guard works.
+
+---
+
+## 2026-08-25 - 10 bpc: the encoder is proven correct; the dock's decoder is not switching
+
+### ✅ Proven: vino's 10-bit bitstream is correct
+
+Captured vino's own EP08 output and ran it through the same reference decoder that reads the
+Windows corpus:
+
+```
+navarro-render.py <vino capture> --depth 8   -> noise
+navarro-render.py <vino capture> --depth 10  -> clean content, 0 strips failed
+```
+
+⇒ the encoder, the DC ceiling of 12 and the AC ceilings at their 8-bit values are all right. This
+also settles it independently against the vendor: probing `cap6` (HDR on) shows ceiling 10 decoding
+differently while 11/12/13 agree, i.e. the DC ceiling is above 10, as vino has it.
+
+⛔ **My AC `+2` change was wrong and is reverted.** Raising the AC ceilings desynchronises the dock:
+above its ceiling every coefficient below the maximum carries a terminator the dock reads as an
+offset bit, and the picture breaks into horizontal bands.
+
+### ✅ Fixed: the strip cache served 8-bit bodies into a 10-bit stream
+
+`63f3772bd8fe`. The cache tag named the colour transform but not the depth, and depth is the same
+hazard in a sharper form: it re-maps every sample and moves the escape ceiling while leaving the
+framebuffer byte for byte identical, so the content hash hit and stale bodies went out.
+
+### ⛔⛔ The blocker, and why the corpus cannot answer it
+
+The dock renders vino's (correct) 10-bit stream as garbage ⇒ **its decoder is still in 8-bit mode**.
+What switches it is unidentified. Eliminated with evidence: the set-mode (carries `off23=3` NM30 and
+`off68/69=0x0300`, test-pinned), the per-strip parameter map (a size-class map), and the prologue
+ordering (Navarro takes `build_navarro_prologue_buf`, armed *after* the set-mode on every
+activation).
+
+⛔⛔ **The decoder configuration is SEALED**, so the corpus cannot settle its contents. Searching for
+the `18 00 0b 03` mode header returns **zero** hits even in `cap1`, a cold-boot-to-plug capture that
+certainly contains a stream open -- that is the positive control I should have run first, and
+without it I drew several worthless conclusions from zero-hit scans today. The Windows captures have
+no session keys **by design**.
+
+⭐ **Next**, neither of which is offline work: frida against **Linux** DLM driving a Navarro with HDR
+on ([[reference_cp_decrypt_via_frida_live_dlm_20260726]]), or the dock's firmware trace.
+
+### State
+
+Both monitors lit, 1440p120, 10 bpc PQ, 91/0 selftests, build and rustfmt clean -- **and corrupt**,
+because the dock-side switch is unsolved. `git revert aec4730bd967` returns to 8 bpc and a correct
+picture.
+
+## 2026-08-25 — the 10-bit codec model is verified against the vendor; the ceilings are cleared
+
+Retracted my own claim from earlier in the session that vino's 10-bit encoder was "proven correct".
+That test decoded vino's own capture with `tools/codec/`, which shares the encoder's model, so it
+only ever proved self-consistency. `navarro-render.py`'s docstring says so explicitly.
+
+Redone against vendor bytes. `out/cap9-hdr-ab-usbpcap1.pcap` is the second Windows set (phaselog:
+`bpc 10`, `depth:30`, playing `hdr-pattern.webm`/`hdr-motion.webm`); the rest of `out/` is the
+SDR-content set. At `--depth 10` it decodes **6924 of 6928 strips** in its largest frame. The
+10-bit model is right.
+
+The unmeasured AC escape ceilings are **not** the cause. Rendering that frame at `luma_ac=9` and
+`luma_ac=13` gives byte-identical PNGs -- the ceiling is never reached by this content, so the
+"fit prefers 13" from a bitstream-slack sweep is an artifact of scoring an unexercised parameter.
+That also explains why the earlier `AC_CMAX + 2` experiment made the picture worse. `dc=14`
+overruns, so DC <= 13; 10 vs 12 is not separable from this content. Do not re-chase the ceilings.
+
+So the corruption is not in the strip payload. The photo agrees: strip-aligned runs saturating to
+black/white with clean detailed strips between them, and a perfect hardware cursor -- a partition
+overrun shape, not the per-row drift a wrong stride gives.
+
+Fixed there: `Allocation::words()` documents that a 30 bpp connector is told three quarters of the
+rows a 24 bpp one is, but only `Derived` implemented it; `Measured` and `Fixed` dropped `ten_bit`.
+Navarro is `Measured`, tabulated at 24 bpp, so 10 bpc went out as NM30 against a 3 B/px row count
+(`0x66db` where the partition holds 19748). Corrected in the `Measured` arm and pinned by a
+`vino_profile` assertion. Selftests 18 suites, pass:140 fail:0; rustfmt and build clean.
+
+Unconfirmed: whether that is the whole corruption. It needs eyes on the panels.
+
+## 2026-08-25 (later) -- the decoder config states the sample format, and vino hardcoded 24 bpp
+
+The sealed stream mode header is `[len][kind][0x0204][count]` then the surface stated twice as
+`[format][width][height][layout word]`. That leading word is the same DMA format the set-mode
+carries at offset 23 -- `2` for NM24, `3` for NM30 -- and `mode_header()` hardcoded `2` whatever
+the depth, while the set-mode for the same connector went out saying `3`. The timing said 30 bpp
+and the decoder configuration said 24 bpp.
+
+That is consistent with what the panels show: the strips themselves are valid (the model is
+verified against the vendor's own 10-bit stream), so a dock unpacking a valid stream into a surface
+of the wrong depth mis-renders it in strip-aligned runs while the cursor plane, which does not go
+through the decoder, stays clean.
+
+`mode_header()` now takes the depth from the connector's stored timing, so the pair cannot
+disagree. The eight-bit bytes are unchanged and pinned by an assertion alongside the ten-bit ones,
+so the known-good path cannot regress.
+
+The dock accepts the new configuration -- no stall, reject, reset or endpoint error across a reload
+with both heads at 2560x1440@120 in PQ. That says the value is legal, not that it is right; the
+picture still needs eyes.
+
+⛔ Not the cause, established today and not to be re-chased: the escape ceilings. The DC ceiling of
+12 is measured (cap9's pq_ramp is monotonic only at 12, inverting at 10 and 11), and the AC
+ceilings are never reached by this content -- rendering the same vendor frame at luma_ac 9 and 13
+gives byte-identical PNGs.
+
+### The dock's own firmware trace says nothing is wrong at 30 bpp
+
+`trace_crypto` is a runtime module parameter, so the dock's firmware log needs no rebuild: reload
+with `trace_crypto=1`, take `key=`/`riv_out=` from dmesg, flip bit 0 of riv byte 7 for the IN nonce
+and feed both to `dock-trace-live.py --bus N`. All three docks answer. Navarro and Ridge log the
+compact `|<ticks> <msgid><args>` form; the HP dock logs English.
+
+A 25 s Navarro trace at 2560x1440@120 in PQ against the same at 24 bpp gives the same message
+vocabulary and the same distribution. One line differed on the first pass -- msgid `7551c` carrying
+`e10 e10` at 30 bpp against `cb12 cb13` at 24 bpp, and 0xe10 is 3600, the frame's strip count -- but
+it does not reproduce: a second 30 bpp trace gives `e594 e593`, consecutive like the 24 bpp pair,
+and the leading argument moves between runs. It is a counter, not a format word.
+
+So the dock reports no decode error, no reject and no stall at 30 bpp. That is a negative result
+worth keeping: the dock cannot tell us the picture is wrong, so the firmware trace is not an oracle
+for this bug and should not be spent on it again.
+
+### The encoder is correct at 30 bpp, measured against the compositor
+
+The wire was finally checked against something independent of the codec model. Forcing a mode set
+on a lit connector (an HDR disable/enable) makes vino send a black keyframe and then repaint the
+desktop as deltas, so accumulating the deltas that follow the last full frame reconstructs what the
+dock was handed. 26,000 strips accumulated, **0 failed to decode**, covering 3139 of 3600 strip
+origins; the uncovered remainder stays black and is a budget limit, not a defect.
+
+Against a `spectacle` capture of the same connector, cropped from the multi-head shot by the
+`kscreen-doctor` geometry, the reconstruction matches at **Pearson r = 0.96** over 3.2 M covered
+pixels. The residual is the transfer function: the wire is PQ at 30 bpp and the screenshot is sRGB.
+Structure -- every subject, edge and boundary -- lands in the same place.
+
+⇒ vino's 30 bpp encoder output is correct. Anything still wrong on the panel is the dock
+interpreting a correct stream, which is what the mode header's format word governs.
+
+⛔ The dock's presence/status word is not an oracle for depth either: `0x00271105` (present, ready)
+is the steady value across mode sets at both 24 and 30 bpp, with no accompanying change.
+
+### The format=2 vs format=3 A/B is inconclusive
+
+Ran the isolation directly: a build with the mode header's format word pinned to 24 bpp against the
+depth-aware one, each traced across a mode set on a lit 30 bpp connector. The dock's firmware log is
+the same either way -- 116 message ids, identical histogram counts.
+
+One id, `6ebb1`, showed up only in the pinned build's first run, twice, once per connector, and the
+three-way split looked decisive: absent at 24 bpp with a matching config, absent at 30 bpp with a
+matching config, present only in the mismatched combination. ⛔ It does not reproduce -- a second
+run of the same build has none. Noise, exactly like `7551c` earlier.
+
+⇒ The dock's firmware trace cannot distinguish the two format words. The change stays a reasoned
+candidate, not a measured fix; the only remaining test is the panel.
+
+### Next lead if 30 bpp is still wrong: `layout_word` may be a 24 bpp byte stride
+
+`layout_word` sits in the same mode-header descriptor as the format word and is likewise a
+hardcoded per-dock constant taken from 24 bpp captures. Its doc says it is not a pitch, but the
+numbers do not support that:
+
+| dock | width | layout_word | / 3 |
+|---|---|---|---|
+| Ella | 1920 | 0x1800 = 6144 | **2048** |
+| Navarro | 2560 | 0x2100 = 8448 | **2816** |
+
+Both divide by three to an exact multiple of 256 -- 2048 is the next 256-multiple at or above 1920.
+That is what a 24 bpp byte stride looks like, and if it is one it owes a factor of 4/3 at 30 bpp
+(Navarro 0x2100 -> 0x2C00). Ridge does not divide by three but gives 4096 on four, and its
+allocation stride is separately 0x4000, so it may state bytes a different way.
+
+⚠ Deliberately NOT changed. Two 30 bpp wire changes are already live and unvalidated; a third guess
+could mask or undo whichever of them works, with no way to tell them apart. Settle the current pair
+against the panel first.
+
+## 2026-08-25 (later) -- ROOT CAUSE: the decoder code tables state the escape ceiling
+
+`CODE_TABLES` are not opaque captured constants. Each is the series `2^n * (2^(n+1) - 1)` truncated
+at a category, with the second half repeating each entry less `2^(n+1) - 1` and a terminator of
+`2^(2N+2)`. A generator built from that reproduces the shipped tables exactly:
+
+    code_table(8) == CODE_TABLES[0]
+    code_table(9) == CODE_TABLES[1] == CODE_TABLES[2]
+
+So a table *is* the escape codebook for one ceiling, with `naturals = cmax - 1`: table 0 is a
+ceiling of nine (`AC_CMAX`), tables 1 and 2 a ceiling of ten (`DC_CMAX`, `CHROMA_AC_CMAX`). Ella's
+narrow tables mirror the same shape one generation down -- table 0 one power shorter, 1 and 2
+identical -- which confirms the reading.
+
+A 30 bpp connector raises the DC ceiling to twelve when *encoding* and vino shipped these tables
+unchanged, so it told the dock the ceiling was ten and then emitted category-eleven and -twelve
+escapes. The dock desynchronises for the rest of that record and resynchronises at the next one.
+That is the panel exactly: strip-aligned runs of saturated black and white, clean detailed strips
+between them, flat strips unaffected, and the cursor plane -- which does not go through the decoder
+-- untouched.
+
+⭐ It also explains every dead end. The repository decoder takes `cmax` from `Depth` rather than
+from the tables in the stream, so vino's own 30 bpp wire decodes perfectly (r = 0.96 against a
+screenshot) while the dock cannot; and the vendor's stream decodes fine because the vendor ships
+tables that match. A 47-entry record holds exactly eleven naturals, so the record was sized for a
+ceiling of twelve from the start.
+
+⚠ Which of tables 1 and 2 is the DC plane is not recoverable: they are byte-identical at 24 bpp
+because both ceilings are ten, the RE notes never recorded a table-to-plane mapping, and the vendor
+computes the tables at runtime rather than storing them (searched DisplayLinkManager and the
+Windows dlidusb*.dll for the constants -- absent). Settled empirically with `deep_dc_table`.
+
+## 2026-08-25 -- SOLVED: 30 bpp raises every ceiling, and each is stated by its own code table
+
+User-confirmed on hardware: both DL7400 panels render correctly at 2560x1440@120 in PQ at 10 bpc.
+
+The remaining half of the bug was the AC planes. A coefficient is four times the sample, so every
+depth-sensitive ceiling gains two categories at 30 bpp, not just DC: luma AC nine to eleven, chroma
+AC and DC ten to twelve. The two failures look nothing alike, which is why they were chased
+separately:
+
+- **DC mismatch desynchronises.** The dock loses the bitstream for the rest of the record and
+  recovers at the next one: strip-aligned runs of saturated black and white, flat strips fine.
+- **AC mismatch does not.** `esc` saturates and the category still fixes the length, so the stream
+  stays in step and only the high-frequency values are wrong: smooth gradients perfect, every text
+  edge and icon border speckled.
+
+Both were reproduced and then cured in that order, each confirmed by eye.
+
+The table-to-plane mapping, settled by bisection on hardware: table 0 luma AC, table 1 chroma AC,
+table 2 DC. Tables 1 and 2 are byte-identical at 24 bpp because chroma AC and DC share a ceiling of
+ten there, which is precisely why nothing in the corpus could distinguish them.
+
+Measured on the live wire during HDR video playback: 1.35 GB, 40,709 frames, no decode failure and
+no malformed section offset in 6,000 sampled strips; DC reaches category twelve once in 192,000,
+luma AC reaches ten -- above the old ceiling of nine, which is exactly why edges speckled -- and
+nothing saturates now.
+
+Both diagnostic module parameters are gone and the behaviour is unconditional. The stale
+`haar_depth_selects_the_ac_codebooks` assertion, which pinned the AC ceilings as depth-independent,
+now states the +2 rule. Selftests pass with no failures.
+
+⚠ Both panels cap at 10 bpc (EDID byte 0x14 = 0xb5), so a 12 bpp path cannot be exercised here.
