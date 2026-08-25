@@ -34,6 +34,14 @@ const KNOWN_SUB: &[u16] = &[
     0x00, 0x04, 0x0c, 0x10, 0x20, 0x21, 0x22, 0x24, 0x25, 0x30, 0x41, 0x42, 0x43, 0x45, 0x75, 0x84,
 ];
 
+/// The dock every fixture here was captured from: a Dell D6000 on the Ridge platform.
+///
+/// The codec proofs are dock-specific -- the strip size, the record framing and the connector
+/// selector all come from the profile -- so the capture's own dock is named rather than assumed.
+fn ridge() -> kvino::DockProfile {
+    kvino::DockProfile::for_family(kvino::Family::Ridge).expect("Ridge is a family vino drives")
+}
+
 fn unhex(s: &str) -> Vec<u8> {
     let s = s.trim();
     (0..s.len() / 2)
@@ -342,7 +350,7 @@ pub fn run() -> Report {
     // flat blocks' 15-bit significance codes (16 x 15 = 240 bits = 30 bytes) followed by the DC
     // escapes, which is what `colour_strip` builds when every block is flat. Proving it through
     // the path that actually runs is strictly better than proving it through one that does not.
-    let mine = crate::kvino::colour_strip_from_planes(&flat_planes(128, 128, 128), 0, 0)
+    let mine = crate::kvino::colour_strip_from_planes(ridge(), &flat_planes(128, 128, 128), 0, 0)
         .expect("colour_strip");
     // Compare excluding the 2-byte tail: the reference is a sink-hook capture that carries the
     // `L-2` echo there, but on the EP08 wire those bytes are the natural row1 padding (the record
@@ -414,7 +422,9 @@ pub fn run() -> Report {
     let target_body = &target[..target.len() - 4]; // exclude the sink echo (tail), as above
     let mut chroma_match: Option<&str> = None;
     for &(name, (r, g, b)) in primaries {
-        if let Ok(s) = crate::kvino::colour_strip_from_planes(&flat_planes(r, g, b), 512, 16) {
+        if let Ok(s) =
+            crate::kvino::colour_strip_from_planes(ridge(), &flat_planes(r, g, b), 512, 16)
+        {
             if hex(&s) == target_body {
                 chroma_match = Some(name);
                 break;
@@ -465,7 +475,8 @@ pub fn run() -> Report {
                 }
             }
         }
-        let strip = crate::kvino::colour_strip_from_planes(&planes, x, y).expect("colour_strip");
+        let strip =
+            crate::kvino::colour_strip_from_planes(ridge(), &planes, x, y).expect("colour_strip");
         // The fixture's expected hex is the strip minus its 2-byte tail (a forward-length hint
         // the frame assembler overwrites); compare the body.
         let mine = hex(&strip[..strip.len() - 2]);
@@ -503,8 +514,7 @@ pub fn run() -> Report {
             rgb[i + 2] = (((x + y) * 3) & 0xff) as u8;
         }
     }
-    let (frames, _next_seq) =
-        crate::kvino::colour_frame_ep08(fw, fh, &rgb, 0).expect("colour_frame_ep08");
+    let frames = crate::kvino::colour_frame_ep08(ridge(), fw, fh, &rgb).expect("colour_frame_ep08");
     let (sx, sy) = (fw / 64, fh / 16);
     let nstrips = sx * sy;
     // Rebuild each strip independently from the same pixels (the Proof-4-verified path).
@@ -531,11 +541,13 @@ pub fn run() -> Report {
                     }
                 }
             }
-            standalone
-                .push(crate::kvino::colour_strip_blocks(&planes, ox as u16, oy as u16).unwrap());
+            standalone.push(
+                crate::kvino::colour_strip_blocks(ridge(), &planes, ox as u16, oy as u16).unwrap(),
+            );
         }
     }
     let mut frame_ok = true;
+    let steady_bit = u16::from(ridge().steady_record_sub_bit());
     // No per-transfer header now: concatenating the transfers yields DLM's continuous record stream.
     for f in &frames {
         if f.len() > 65536 {
@@ -598,8 +610,9 @@ pub fn run() -> Report {
                 println!("  *** strip {k} (record {nrecords}) strip_id/bytes/Y mismatch ***");
                 break;
             }
-            // `sub` selects the head and carries the band's parity bit.
-            if sub != (((y / 16) & 1) << 4) {
+            // `sub` selects the head, carries the band's parity bit, and -- once a stream is
+            // past its opening frames -- this dock's steady-state record bit.
+            if sub != steady_bit | (((y / 16) & 1) << 4) {
                 frame_ok = false;
                 println!(
                     "  *** record {nrecords} sub={sub:#x} does not match y={y} band parity ***"
@@ -633,11 +646,46 @@ pub fn run() -> Report {
         if frame_ok { "OK" } else { "FAIL" }
     );
 
+    // The frames that open a stream are the same records with the steady-state bit cleared, and
+    // nothing else: sending pixels that differ between the opening and the steady state would mean
+    // the bit was carrying content rather than saying where in the stream a record sits.
+    let opening = crate::kvino::colour_frame_ep08(ridge().opening(), fw, fh, &rgb)
+        .expect("colour_frame_ep08 opening");
+    let opening_stream: Vec<u8> = opening.iter().flat_map(|f| f.iter().copied()).collect();
+    let mut differ_only_in_sub = opening_stream.len() == stream.len();
+    if differ_only_in_sub {
+        let mut o = 0usize;
+        while o + 16 <= stream.len() {
+            let size = u16::from_le_bytes([stream[o + 2], stream[o + 3]]) as usize;
+            let steady_sub = u16::from_le_bytes([stream[o + 8], stream[o + 9]]);
+            let open_sub = u16::from_le_bytes([opening_stream[o + 8], opening_stream[o + 9]]);
+            let body = o + 10..o + 4 + size;
+            if steady_sub != open_sub | steady_bit
+                || open_sub & steady_bit != 0
+                || stream[o..o + 8] != opening_stream[o..o + 8]
+                || stream[body.clone()] != opening_stream[body]
+            {
+                differ_only_in_sub = false;
+                break;
+            }
+            o += size + 4;
+        }
+    }
+    if !differ_only_in_sub {
+        frame_ok = false;
+        println!("  *** the opening frame is not the steady frame less its record bit ***");
+    } else {
+        println!(
+            "  opening frame: same {} bytes with sub bit {steady_bit:#04x} cleared on every record",
+            opening_stream.len()
+        );
+    }
+
     let video_ok = video_ok && colour_ok && chroma_ok && colour_ac_pass && frame_ok;
 
     // Report the per-head 1440p flat-fill the live demo sends (2560x1440).
     let flat: Vec<u8> = [200u8, 30, 30].repeat(2560 * 1440);
-    if let Ok((frames, _)) = crate::kvino::colour_frame_ep08(2560, 1440, &flat, 0) {
+    if let Ok(frames) = crate::kvino::colour_frame_ep08(ridge(), 2560, 1440, &flat) {
         let bytes: usize = frames.iter().map(|f| f.len()).sum();
         println!(
             "  1440p flat fill: {} EP08 frame(s), {} total bytes ({} strips of 64x16)",

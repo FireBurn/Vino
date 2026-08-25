@@ -42,10 +42,15 @@ This project is **standalone**: it builds and its tests pass with no kernel tree
 checked out anywhere. It manages that by keeping its own copies of two sets of
 files that are *edited in the kernel tree*:
 
-| Vendored copy      | Upstream source              |
-|--------------------|------------------------------|
-| `module/*.rs`      | `drivers/gpu/drm/evdi/*.rs`  |
-| `chimera/vino/*.rs`| `drivers/gpu/drm/vino/*.rs`  |
+| Vendored copy         | Upstream source                |
+|-----------------------|--------------------------------|
+| `module/*.rs`         | `drivers/gpu/drm/evdi/*.rs`    |
+| `chimera/vino/**.rs`  | `drivers/gpu/drm/vino/**.rs`   |
+
+The vino copies keep the kernel's own directory shape, with one rename: a module
+loaded through `#[path]` has rustc look for its children beside the file rather
+than in a directory named after it, so `cp.rs` is vendored as `cp/mod.rs` and
+`video.rs` as `video/mod.rs`. No file's contents are touched.
 
 The kernel tree is authoritative. Refresh the copies with:
 
@@ -143,14 +148,22 @@ The same drain-then-drop path runs automatically when a dock is unplugged
 
 **Module + library:** the virtual output, live frame updates with delta damage,
 and clean dock-paired teardown have been exercised on a Dell D6000 under
-KWin/Wayland. The compatibility cursor and DDC/CI ioctls remain accepted, but
-the module advertises no cursor plane and no virtual I2C adapter in this
-revision.
+KWin/Wayland. The module advertises a real cursor plane, so the compositor keeps
+the pointer out of the primary framebuffer; cursor events are opt-in through
+`DRM_IOCTL_EVDI_ENABLE_CURSOR_EVENTS`, and a client that cannot draw the pointer
+must leave them off rather than take them and drop it. The DDC/CI response ioctl
+stays ABI-compatible but is a no-op: the module advertises no virtual I2C
+adapter, and will not invent a private I2C binding to recreate one.
 
 **Chimera:** the service connects Revdi frames to the Vino control, mode, codec,
-USB, DPMS, dynamic-topology, and session-recovery paths. It retains a
-userspace-only DDC/CI tunnel for research. Its optimized build and offline tests
-pass; this cleanup revision has not been exercised against hardware.
+USB, DPMS, cursor, dynamic-topology, and session-recovery paths. Every per-dock
+decision it makes -- strip size, record framing, what opens a stream, which sink
+states bracket a mode set, how a change is spread over the dock's buffers, the
+status and frame cadence, whether the dock has a cursor of its own or reports
+what is plugged into it -- is read from the driver's own `profile.rs`, compiled
+verbatim, so chimera and vino describe a given dock with the same bytes. It
+retains a userspace-only DDC/CI tunnel for research. Its optimized build and
+offline tests pass; this revision has not been exercised against hardware.
 
 ## License
 

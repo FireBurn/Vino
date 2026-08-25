@@ -2,11 +2,17 @@
 //! LITERAL kernel `video::haar::colour_strip`. Used by the chroma-AC RE harness to prove the
 //! in-kernel colour codec byte-exact against real DLM sink strips.
 //!
+//! Takes the dock family whose strips are being proved as its one argument (`ella`, `ridge`,
+//! `navarro`), defaulting to `ridge`: the strip's coded layout comes from the profile.
+//!
 //! Each record (whitespace ints): `X Y` then 16 blocks × 3 planes × 64 samples = 3074 ints.
 //! Planes are [Cr=64*(B-G), Cb=64*(R-G), Y=64*G+64*((Cb+Cr)>>2)]. Prints one hex strip per line.
 use std::io::Read;
 
 fn main() {
+    let dock_name = std::env::args().nth(1).unwrap_or_else(|| "ridge".into());
+    let dock =
+        vino_chimera::kvino::DockProfile::named(&dock_name).expect("a dock family vino drives");
     let mut s = String::new();
     std::io::stdin().read_to_string(&mut s).unwrap();
     let v: Vec<i32> = s.split_whitespace().map(|t| t.parse().unwrap()).collect();
@@ -31,8 +37,8 @@ fn main() {
                 }
             }
         }
-        let strip =
-            vino_chimera::kvino::colour_strip_from_planes(&planes, x, y).expect("colour_strip");
+        let strip = vino_chimera::kvino::colour_strip_from_planes(dock, &planes, x, y)
+            .expect("colour_strip");
         out.push_str(&strip.iter().map(|b| format!("{b:02x}")).collect::<String>());
         out.push('\n');
     }

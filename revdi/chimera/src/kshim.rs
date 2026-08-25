@@ -105,6 +105,15 @@ impl<T> KVec<T> {
     }
 }
 
+impl<T> IntoIterator for KVec<T> {
+    type Item = T;
+    type IntoIter = std::vec::IntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
 impl<T: Clone> KVec<T> {
     /// `KVec::from_elem(value, n, flags)` — matches the kernel signature
     /// (`ake.rs`'s zeroed-body allocator).

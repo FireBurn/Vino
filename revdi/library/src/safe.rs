@@ -288,6 +288,16 @@ impl Device {
         Ok(device)
     }
 
+    /// Ask for -- or stop asking for -- cursor shape and position out of band.
+    ///
+    /// A client that receives them is expected to draw the pointer itself, because the compositor
+    /// keeps it out of the framebuffer once its cursor plane commits. A client that cannot draw it
+    /// must turn them off here, or the pointer disappears entirely rather than merely lagging.
+    pub fn set_cursor_events(&mut self, enable: bool) {
+        // SAFETY: the owned handle remains live until `Device::drop`.
+        unsafe { evdi_enable_cursor_events(self.handle.as_ptr(), enable) };
+    }
+
     /// Advertise a connected monitor using its EDID and explicit scanout limits.
     pub fn connect(
         &mut self,

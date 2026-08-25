@@ -98,6 +98,7 @@ fn drain_once(
 /// are advanced only after a successful transfer.
 pub fn fetch_edid(
     dock: &Dock,
+    profile: kvino::DockProfile,
     ks: &[u8; 16],
     riv: &[u8; 8],
     wire_seq: &mut u32,
@@ -107,8 +108,27 @@ pub fn fetch_edid(
     let mut edid: Option<Vec<u8>> = None;
     let mut ready = false;
 
+    // A block that arrives before the dock reports its downstream read complete describes the
+    // dock's own bridge rather than the monitor, and publishing it drives the panel at a timing it
+    // never advertised. Offset 26 bit 7 of the presence reply is that report; where a dock makes
+    // it, drop anything offered ahead of it and let the engage below produce the real one. A dock
+    // that never sets the bit answers correctly anyway, and gating it discards every block.
+    let gate_on_ready = profile.edid_ready_reported();
+    macro_rules! settled {
+        () => {{
+            if gate_on_ready && !ready && edid.is_some() {
+                println!(
+                    "  chimera-edid: head {head} discarded an EDID offered before the downstream \
+                     read completed"
+                );
+                edid = None;
+            }
+            edid.is_some()
+        }};
+    }
+
     for round in 0..EARLY_ROUNDS {
-        if edid.is_some() {
+        if settled!() {
             break;
         }
         println!("  chimera-edid: early round {round}");
@@ -128,7 +148,7 @@ pub fn fetch_edid(
             kvino::get_edid_req(counter, head)
         })?;
         ready |= drain_once(dock, ks, riv, &mut edid)?;
-        if edid.is_some() {
+        if settled!() {
             break;
         }
         let wait_started = Instant::now();
@@ -147,7 +167,7 @@ pub fn fetch_edid(
         std::thread::sleep(STEP_DELAY);
     }
 
-    if edid.is_none() {
+    if !settled!() {
         let poll_started = Instant::now();
         for i in 0..POLL_ITERS {
             if edid.is_some() || ready || poll_started.elapsed() >= POLL_WALL_TIME {
@@ -181,7 +201,8 @@ pub fn fetch_edid(
     send_message(dock, ks, riv, wire_seq, inner_counter, 0x15, |counter| {
         kvino::post_edid_query(counter, head)
     })?;
-    let _ = drain_once(dock, ks, riv, &mut edid)?;
+    ready |= drain_once(dock, ks, riv, &mut edid)?;
 
+    let _ = settled!();
     edid.ok_or(FetchError::NoEdid { head })
 }

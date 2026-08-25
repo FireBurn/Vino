@@ -58,11 +58,14 @@ EP84 reports the wrong head connected.
 
 Chimera sends what the dock still needs, the way DLM does, following the
 driver's scanout engine: `chimera/src/scanout.rs` keeps a content hash per strip
-and a retransmit debt of `dock_buffers + 1`. A keyframe is presented as many
-times as the dock has buffers; a delta once, with its repeats spread over
-following frames by the debt; and a still desktop sends nothing at all. Encoded
-strip bodies are cached against the hash they were encoded from, so the
-retransmissions the debt owes do not re-run the codec.
+and a retransmit debt. All three counts come from the dock's own
+`FrameDelivery` -- how many presentations a keyframe makes, how many a delta
+makes, and how many logical frames a changed strip stays selected for -- because
+the same ring depth does not imply the same delivery choreography, and deriving
+them from it had one dock sending every ordinary update three times across four
+debt frames. A still desktop sends nothing at all. Encoded strip bodies are
+cached against the hash they were encoded from, so the retransmissions the debt
+owes do not re-run the codec.
 
 ⚠ The debt is paid per *presented* frame, so a change made just before the
 desktop goes still would strand in one dock buffer and ghost. The daemon
@@ -146,17 +149,33 @@ what is *structurally* different rather than what someone forgot to copy.
 | | vino | chimera |
 |---|---|---|
 | CP seal, HDCP, codec, record framing | `drivers/gpu/drm/vino/*.rs` | the same files, vendored and compiled verbatim |
-| Device identification | interface match → identity → family → profile | the same, in `vino-driver::profile` |
-| Connector count | from the video endpoints the device exposes | the same |
+| What a dock is | `profile.rs` | the same file, vendored and compiled verbatim |
+| Device identification | interface match → identity → family → profile | the same; `vino-driver` parses the identity descriptor and the profile table places it |
+| Connector count | from the profile, checked against the endpoints the device exposes | the same |
 | Cursor, damage/retransmit | yes | yes |
 | Software gamma/CTM | `vino/color.rs` | `evdi/color.rs`, byte-identical |
 | Firmware read and DFU update | yes | no, and deliberately: one thing should be able to flash a dock |
 | HDR / 10-bit scanout | yes | codec yes, plumbing no -- chimera's frame feeder is 8-bit packed RGB |
-| Navarro cold activation | yes | **no** |
+| Stream opening per family | yes | yes: ARM burst, DL7400 prologue, or the shared-pipe ring + configuration |
+| Dock-wide mode transaction | yes | **no** -- it declines rather than reset the dock |
 
-The last row is the real gap. Navarro's cold prelude, its dock-wide mode transaction and the
-first-video choreography live in `drm_sink.rs`, which is DRM-specific and cannot be vendored into
-userspace the way `cp.rs` and `video.rs` are. Chimera therefore speaks the Navarro protocol but
-cannot bring a DL-7400 up from cold. Closing it means either extracting the choreography into a
-vendorable module or reimplementing it in `chimera/src/session.rs`; the first is better and is not
-a small change.
+The remaining gap is the last row. A dock that reconfigures itself whole needs every lit connector
+gathered and committed together; that transaction lives in `drm_sink/activation.rs`, which is
+DRM-specific and cannot be vendored into userspace the way `cp.rs`, `video.rs` and `profile.rs`
+are. Chimera programs one connector at a time, and where the profile says the dock reconfigures
+whole it refuses a second connector rather than doing the thing that resets the dock and takes the
+desktop with it.
+
+## Chimera reads the driver's profile, it does not keep its own
+
+Every per-dock decision comes out of `profile.rs`: the strip the codec tiles, the selector a record
+carries, the ring depth and how a change is spread over it, what opens a stream, which sink states
+bracket a mode set and in which order, whether the pipe is cleared first, how much flat carrier
+precedes the first picture, how a connector blanks, the status and frame cadence, whether the dock
+composites a cursor of its own, whether its presence probe means anything, and whether an EDID
+offered before the downstream read completed may be published.
+
+That consolidation removed a second dock table that had drifted. `vino-driver` now parses the
+identity descriptor and nothing else: `Dock::open` takes a `Placement` -- a name, the video
+endpoints, the connector count -- from the caller, which gets it from the profile table. A dock
+added to the driver is a dock chimera drives, with no second edit and no second opinion.

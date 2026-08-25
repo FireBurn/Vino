@@ -2509,3 +2509,80 @@ unproven in anger. It is measured inert on a healthy dock across three cycles, a
 the KUnit cases pin that ten thousand flaps still produce exactly the repair limit.
 It is possible the EDID fixes removed the route to the failure, in which case this
 guards a path that no longer occurs.
+
+---
+
+## 2026-08-25 - Session (later) - revdi/chimera brought back to the driver
+
+### What was wrong
+
+`cargo build` in `revdi/` had not compiled for some time. `make check-sync` reported drift in
+`cp.rs`, `video.rs`, `video_arm.rs` and `module/color.rs`, and the sync script itself could not
+express the tree any more: the driver had split `cp.rs` into `cp/{cursor,edid,mode}.rs` and
+`video.rs` into `video/haar/{records,strip,transform}.rs`, and the script copied only flat files.
+
+Underneath that, chimera had a second, stale description of the hardware. `vino-driver::profile`
+carried its own `DockProfile` with eleven fields where the driver's has some sixty, no Ella entry,
+and values that had since moved. Chimera drove every dock as if it were a D6000, and by the current
+profile table three of those choices were wrong for the D6000 as well.
+
+### What was done
+
+The vendored tree now mirrors the kernel's shape, with one rename: a `#[path]` module has rustc
+look for its children beside the file, so `cp.rs` is vendored as `cp/mod.rs` and `video.rs` as
+`video/mod.rs`. The sync script carries the source/destination pairs explicitly and sweeps files
+the kernel tree no longer has. `profile.rs` is vendored too, which needed two shims for names it
+reaches into the driver's crate root for -- `firmware::Family` and `drm_sink::MAX_CONNECTORS` --
+plus the two product-id constants, whose absence silently turned `for_product`'s match arms into
+bindings and placed every device as a D6000. A test pins that.
+
+`kvino` split into a facade, the vendored tree, and the wrappers. The wrappers had to move inside
+the tree: the driver marks its items `pub(super)`, and only a descendant can reach them. That also
+fixed a real hazard -- the wrappers were previously in the module the vendored files resolve
+`use super::*` against, so every wrapper name was imported into every driver file and collided
+with the driver's own.
+
+Chimera now reads the driver's profile for every per-dock decision, through a `DockProfile` handle:
+strip size, connector selector, ring depth, `FrameDelivery`, what opens a stream, the mode-set
+bracket, blanking, cadence, cursor, presence and the EDID quirks. `vino-driver` keeps identity
+parsing and takes a `Placement` from the caller, so there is one dock table again.
+
+Four of the fixes that fell out are behaviour changes on the D6000 this rig is developed against,
+each of them the driver's measured answer:
+
+- the mode-set bracket sent `2e 3` at +9 ms and +14 ms and nothing before the timing. Ridge's
+  profile says `pre_mode_sink_state: Some(3)`, `post_mode_sink_states: [0, 0]` -- the down goes
+  *before* the set-mode, and a `3` after it leaves the sink down for the rest of the bracket.
+- the four dock-wide init records went to every dock; Ridge's `dock_wide_init` is false, and a dock
+  that does not expect them is left every later inner counter and AES block out of step.
+- the EDID fetch published whatever block came back. Ridge shares one EDID handler between its
+  connectors, so a block offered before the readiness bit describes the dock's own bridge.
+- the keepalive ran at 13 ms against the profile's 250, and the frame wait at a constant 8 ms.
+
+New in chimera, from vendored primitives: the DL7400 stream prologue, the shared-pipe ring
+descriptor and decoder configuration, the per-frame sealed stream report, `clear_mode`, the frame
+opener, and a per-connector video seal-block counter, which those messages need and which had no
+equivalent here. A frame's parts now go out in the vendor's order -- opening, ring-slot opener,
+report, image records, trailer. Blanking follows `BlankBracket`: a dock that wants its bracket held
+gets two markers and no black frames.
+
+### Tested
+
+`cargo test --workspace --all-features`: 33 pass, 0 fail, including the byte-exact DLM proofs
+(`prove::tests::kernel_cp_matches_dlm`). Proof 5 needed the steady-state record bit accounted for;
+it now proves the steady frame *and* that the opening frame is the same bytes with that bit
+cleared. `cargo test --manifest-path library/Cargo.toml`: 2 pass. `cargo fmt --all --check` clean.
+`make -C module KDIR=../../linux` builds `evdi.ko` warning-clean. `make check-sync` clean.
+
+### Not tested
+
+No hardware. Every wire-affecting change above is a change to what chimera sends, and the four
+D6000 ones are corrections whose evidence is the driver's profile rather than a capture taken here.
+The first hardware run should be a D6000 cold plug with the bracket and the dock-wide init watched
+on usbmon, because those two moved the CP counters.
+
+### Deferred
+
+The dock-wide mode transaction. A dock whose profile says it reconfigures whole needs every lit
+connector committed together; that lives in `drm_sink/activation.rs` and is DRM-specific. Chimera
+now declines a second connector on such a dock rather than resetting it.

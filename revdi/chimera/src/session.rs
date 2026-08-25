@@ -6,8 +6,10 @@
 //! through [`crate::kvino`]. This module owns transport ordering, counters, deadlines, and replies.
 
 use crate::kvino;
+use crate::kvino::DockProfile;
+use crate::MAX_CONNECTORS;
 use std::time::{Duration, Instant};
-use vino_driver::{Dock, DockProfile, Error as UsbError, MAX_CONNECTORS};
+use vino_driver::{Dock, Error as UsbError};
 
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(1);
 const REPLY_TIMEOUT: Duration = Duration::from_millis(8);
@@ -39,10 +41,31 @@ struct SessionKeys {
 /// One authenticated userspace control session.
 pub struct ControlSession {
     dock: Dock,
+    /// What this dock is, out of the driver's own profile table: strip size, record framing,
+    /// delivery counts, endpoints and every other per-dock fact this session reads.
+    profile: DockProfile,
     keys: SessionKeys,
     wire_seq: u32,
     inner_counter: u16,
     video_keys: [[u8; 24]; MAX_CONNECTORS],
+    /// Whether each connector still owes its stream a report restating the mode.
+    ///
+    /// The frame after a mode set carries it. On a dock that shares its pipes it is the only
+    /// report the stream wants, and the vendor sends fourteen across seven thousand frames.
+    mode_restate_owed: [bool; MAX_CONNECTORS],
+    /// The mode each connector was last programmed with, which its stream reports restate.
+    programmed_mode: [(u16, u16); MAX_CONNECTORS],
+    /// Which connectors currently hold a programmed mode.
+    ///
+    /// Read only by the dock-wide guard in [`ControlSession::activate_mode`]; a dock that
+    /// reconfigures itself whole cannot have one connector programmed while another is lit.
+    mode_active: [bool; MAX_CONNECTORS],
+    /// Running AES block counter of each connector's sealed video records.
+    ///
+    /// The records a connector's stream is opened with share one counter, and a message rebuilt
+    /// from block zero after the stream has started reuses a keystream block the dock has already
+    /// accounted for.
+    video_seal_seq: [u32; MAX_CONNECTORS],
     frame_seq: [u32; MAX_CONNECTORS],
     /// Per-head content shadow and retransmit ledger; see [`crate::scanout`].
     scanout: [crate::scanout::HeadScanout; MAX_CONNECTORS],
@@ -51,23 +74,45 @@ pub struct ControlSession {
 impl ControlSession {
     /// Open the dock and establish its encrypted control channel and downstream streams.
     pub fn engage() -> Result<Self, String> {
-        let dock = Dock::open().map_err(|e| format!("open DisplayLink dock: {e}"))?;
+        // The device names its own family; the driver's profile table says what that family is,
+        // and the transport is told only the endpoints that follow. A device whose family the
+        // table declines is left alone rather than driven on a guess.
+        let mut placed: Option<DockProfile> = None;
+        let dock = Dock::open(|family, product| {
+            let profile = match family {
+                Some(family) => DockProfile::for_family(family.into()),
+                None => DockProfile::for_product(product),
+            }?;
+            placed = Some(profile);
+            Some(vino_driver::Placement {
+                name: profile.name(),
+                video_endpoints: profile.video_endpoints(),
+                connectors: profile.connectors(),
+            })
+        })
+        .map_err(|e| format!("open DisplayLink dock: {e}"))?;
+        let profile = placed.expect("a placed device carries its profile");
         device_open_preamble(&dock)?;
         session_init(&dock)?;
         let mut keys = authenticate(&dock)?;
         let (wire_seq, inner_counter, video_keys, acknowledgements) =
-            configure_control(&dock, &mut keys)?;
+            configure_control(&dock, profile, &mut keys)?;
         if acknowledgements == 0 {
             return Err("dock did not acknowledge the encrypted control session".into());
         }
         Ok(Self {
             dock,
+            profile,
             keys,
             wire_seq,
             inner_counter,
             video_keys,
+            mode_restate_owed: [false; MAX_CONNECTORS],
+            programmed_mode: [(0, 0); MAX_CONNECTORS],
+            mode_active: [false; MAX_CONNECTORS],
+            video_seal_seq: [0; MAX_CONNECTORS],
             frame_seq: [0; MAX_CONNECTORS],
-            scanout: core::array::from_fn(|_| crate::scanout::HeadScanout::new()),
+            scanout: core::array::from_fn(|_| crate::scanout::HeadScanout::new(profile)),
         })
     }
 
@@ -78,14 +123,15 @@ impl ControlSession {
     }
 
     /// This dock's profile, chosen from its identity descriptor.
-    pub fn profile(&self) -> &'static DockProfile {
-        self.dock.profile()
+    pub fn profile(&self) -> DockProfile {
+        self.profile
     }
 
     /// Fetch one downstream head's EDID without losing the session counters.
     pub fn fetch_edid(&mut self, head: u8) -> Result<Vec<u8>, crate::edid_fetch::FetchError> {
         crate::edid_fetch::fetch_edid(
             &self.dock,
+            self.profile,
             &self.keys.control_key,
             &self.keys.control_nonce,
             &mut self.wire_seq,
@@ -140,6 +186,81 @@ impl ControlSession {
             .is_some_and(crate::scanout::HeadScanout::owes_retransmission)
     }
 
+    /// The surface size the codec tiles, which is the mode rounded up to whole strips.
+    ///
+    /// A partial strip at the right or bottom edge is still a whole strip on the wire, and the
+    /// strip is not the same size on every dock.
+    fn padded(&self, width: usize, height: usize) -> (usize, usize) {
+        let (strip_w, strip_h) = self.profile.strip_dims();
+        (
+            width.div_ceil(strip_w) * strip_w,
+            height.div_ceil(strip_h) * strip_h,
+        )
+    }
+
+    /// The report `head` owes its stream for the frame it is about to send.
+    ///
+    /// The frame right after a mode set restates the mode; on a dock that shares its pipes that
+    /// restatement is the only report it wants at all, and the vendor sends it with the third
+    /// frame of the stream rather than the first.
+    fn frame_report(&mut self, head: u8, mode: (u16, u16)) -> Result<Vec<u8>, String> {
+        let head_index = usize::from(head);
+        let Some((video_key, video_nonce)) = self.video_key(head_index) else {
+            return Ok(Vec::new());
+        };
+        let restate = self.mode_restate_owed[head_index];
+        if restate && self.profile.video_on_ctrl_pipe() && self.frame_seq[head_index] < 2 {
+            return Ok(Vec::new());
+        }
+        let report = kvino::stream_report(
+            self.profile,
+            head,
+            &video_key,
+            &video_nonce,
+            &mut self.video_seal_seq[head_index],
+            mode.0,
+            mode.1,
+            restate,
+        )
+        .map_err(build_error("stream report"))?;
+        if restate && report.is_some() {
+            self.mode_restate_owed[head_index] = false;
+        }
+        Ok(report.unwrap_or_default())
+    }
+
+    /// Send a shared-pipe dock's stream prologue: the ring descriptor, then its sealed decoder
+    /// configuration. Both are ordinary control records on such a dock, so they are ordered
+    /// against the mode-set markers rather than glued to the front of a frame. Docks with a video
+    /// pipe of their own carry theirs with the first frame and get nothing here.
+    fn send_stream_prologue(
+        &mut self,
+        head: u8,
+        video_key: &[u8; 16],
+        video_nonce: &[u8; 8],
+        width: u16,
+        height: u16,
+    ) -> Result<(), String> {
+        let Some(ring) = kvino::stream_ring_record(self.profile, head) else {
+            return Ok(());
+        };
+        self.send_plain_video(head, &ring)?;
+        let config = kvino::stream_config_message(
+            self.profile,
+            head,
+            video_key,
+            video_nonce,
+            &mut self.video_seal_seq[usize::from(head)],
+            width,
+            height,
+        )
+        .map_err(build_error("decoder configuration"))?;
+        if let Some(config) = config {
+            self.send_plain_video(head, &config)?;
+        }
+        Ok(())
+    }
+
     /// Return the content key and nonce for `head`.
     pub fn video_key(&self, head: usize) -> Option<([u8; 16], [u8; 8])> {
         let material = self.video_keys.get(head)?;
@@ -150,7 +271,15 @@ impl ControlSession {
         Some((key, nonce))
     }
 
-    /// Program a captured mode profile and train its video endpoint.
+    /// Program a mode and train the connector's video endpoint, following the driver's
+    /// `activate_head`.
+    ///
+    /// Every choice in the bracket below comes from the dock's own profile rather than from one
+    /// dock's measurements: which sink state precedes the timing, which two follow it, whether the
+    /// pipe is cleared first, what opens the stream, and how much flat carrier is presented before
+    /// the first picture. Sending one dock's sequence to another is not a degraded picture -- it is
+    /// a dock that accepts every byte of every frame and lights nothing, or one that resets itself
+    /// a few seconds later.
     pub fn activate_mode(
         &mut self,
         head: u8,
@@ -166,15 +295,61 @@ impl ControlSession {
         let (video_key, video_nonce) = self
             .video_key(head_index)
             .ok_or_else(|| format!("invalid Vino head {head}"))?;
-        let padded_width = width.div_ceil(64) * 64;
-        let padded_height = height.div_ceil(16) * 16;
-        let prompt = kvino::black_frame_ep08(padded_width, padded_height, head)
+        // On a dock that reconfigures itself whole, programming this connector while another is
+        // lit resets the dock and takes the desktop with it. Every lit connector has to be
+        // gathered and committed together, which this service does not do yet, so it declines
+        // rather than doing the thing that resets the dock.
+        if self.profile.dock_wide_modeset()
+            && self
+                .mode_active
+                .iter()
+                .enumerate()
+                .any(|(other, active)| *active && other != head_index)
+        {
+            return Err(format!(
+                "head {head} cannot be programmed while another connector on this dock is lit: \
+                 the dock reconfigures whole and a per-connector mode set resets it"
+            ));
+        }
+        let (padded_width, padded_height) = self.padded(width, height);
+        // Every frame here opens the stream, so none of them carries the steady-state record bit.
+        let opening_profile = self.profile.opening();
+        let prompt = kvino::black_frame_ep08(opening_profile, padded_width, padded_height, head)
             .map_err(build_error("black training frame"))?;
-        let arm = kvino::video_arm_burst(head, &video_key, &video_nonce, width16, height16)
-            .map_err(build_error("video arm sequence"))?;
+        let prefix = kvino::stream_prefix(
+            self.profile,
+            head,
+            &video_key,
+            &video_nonce,
+            &mut self.video_seal_seq[head_index],
+            width16,
+            height16,
+        )
+        .map_err(build_error("video stream opening"))?;
 
-        let mode = kvino::set_mode_profile(self.inner_counter, head, width16, height16, refresh16)
-            .map_err(build_error("mode profile"))?;
+        let mode = kvino::set_mode_profile(
+            self.profile,
+            self.inner_counter,
+            head,
+            width16,
+            height16,
+            refresh16,
+        )
+        .map_err(build_error("mode profile"))?;
+
+        // The bracket the timing is programmed inside. A connector arriving from a blank needs it
+        // exactly as much as one being configured cold, because it is the sink that has to be
+        // retrained onto the new timing.
+        self.send_marker(head, 0x2f, 1)?;
+        if let Some(state) = self.profile.pre_mode_sink_state() {
+            self.send_marker(head, 0x2e, state)?;
+        }
+        self.poll_status()?;
+        if self.profile.clear_mode_before_set() {
+            let clear =
+                kvino::clear_mode(self.inner_counter, head).map_err(build_error("clear mode"))?;
+            self.send_control(0x48, &clear)?;
+        }
         self.send_control(0x48, &mode)?;
         // Anchor AFTER the first status poll, not before it. The whole activation bracket is paced
         // against this anchor over 125 ms, but the poll's USB write can block for far longer than
@@ -187,11 +362,16 @@ impl ControlSession {
         self.wait_mode_offset(anchor, 5);
         self.send_marker(head, 0x2f, 1)?;
         self.wait_mode_offset(anchor, 9);
-        self.send_marker(head, 0x2e, 3)?;
+        self.send_marker(head, 0x2e, self.profile.post_mode_sink_state(0))?;
         self.wait_mode_offset(anchor, 12);
         self.send_marker(head, 0x2f, 1)?;
         self.wait_mode_offset(anchor, 14);
-        self.send_marker(head, 0x2e, 3)?;
+        self.send_marker(head, 0x2e, self.profile.post_mode_sink_state(1))?;
+        // A shared-pipe dock's ring descriptor and decoder configuration land here, between the
+        // fourth marker and the fifth, so the closing `2e 0` below is the last thing the dock sees
+        // before pixels. A dock told to bring its sink up after a frame has already gone out has
+        // been handed that frame with nothing scanning it out.
+        self.send_stream_prologue(head, &video_key, &video_nonce, width16, height16)?;
         self.wait_mode_offset(anchor, 20);
         self.send_marker(head, 0x2f, 1)?;
         self.poll_status()?;
@@ -212,29 +392,49 @@ impl ControlSession {
                 late.as_millis()
             ));
         }
+        self.programmed_mode[head_index] = (width16, height16);
+        self.mode_restate_owed[head_index] = true;
+        self.frame_seq[head_index] = 0;
         let mut carrier_seq: u32 = 0;
-        let opening = prefix_frame(&arm, &prompt, head, carrier_seq);
+        // The frame that carries the stream's opening carries no report: the opening has just said
+        // everything the report says, and a second copy spends a block the dock has accounted for.
+        let opening = prefix_frame(opening_profile, &prefix, &[], &prompt, head, carrier_seq);
         self.submit_video(head, &opening)?;
         for _ in 0..2 {
             let commit = kvino::stream_commit(self.inner_counter, head)
                 .map_err(build_error("stream commit"))?;
             self.send_control(0x16, &commit).map(|_| ())?;
         }
-        self.wait_mode_offset(anchor, 123);
-        self.send_marker(head, 0x2f, 0)?;
-        self.wait_mode_offset(anchor, 125);
-        self.send_marker(head, 0x2e, 0)?;
+        // A dock whose video shares the control pipe holds its bracket open instead of closing it:
+        // the closing markers are what its blank sends, and sending them here takes the sink down.
+        if !self.profile.video_on_ctrl_pipe() {
+            self.wait_mode_offset(anchor, 123);
+            self.send_marker(head, 0x2f, 0)?;
+            self.wait_mode_offset(anchor, 125);
+            self.send_marker(head, 0x2e, 0)?;
+        }
 
+        // Flat carrier frames, so the downstream link has something to train on before the first
+        // picture. Where the dock states a count, that count is the vendor's own and every extra
+        // frame walks its ring one slot further than the vendor walks it -- the dock then presents
+        // a slot holding the carrier rather than the one holding the picture. Where it states none,
+        // the carrier is bounded by the window it was measured over instead.
         let mut next_status = Instant::now();
-        while anchor.elapsed() < Duration::from_millis(700) {
+        let deadline = anchor + Duration::from_millis(700);
+        let mut frames_left = self.profile.carrier_frames();
+        while frames_left.is_none_or(|frames| frames > 0) && Instant::now() < deadline {
             carrier_seq = carrier_seq.wrapping_add(1);
-            let repeat = prefix_frame(&[], &prompt, head, carrier_seq);
+            let report = self.frame_report(head, (width16, height16))?;
+            let repeat = prefix_frame(opening_profile, &[], &report, &prompt, head, carrier_seq);
+            self.frame_seq[head_index] = self.frame_seq[head_index].wrapping_add(1);
             self.submit_video(head, &repeat)?;
+            frames_left = frames_left.map(|frames| frames - 1);
             if Instant::now() >= next_status {
                 self.poll_status()?;
                 next_status = Instant::now() + Duration::from_millis(16);
             }
         }
+        self.mode_active[head_index] = true;
         // The dock now holds the black training carrier, not a desktop, so the next presented frame
         // must be a full keyframe whatever the compositor changed.
         self.scanout[head_index].owe_keyframe();
@@ -269,8 +469,17 @@ impl ControlSession {
         // Each presentation carries the same image with a freshly advanced trailer, whose phase
         // (`seq % dock_buffers`) is how the dock steps to the next buffer.
         let sequence = self.frame_seq[head_index];
+        let mode = self.programmed_mode[head_index];
         for repeat in 0..frame.presentations {
-            let stream = prefix_frame(&[], &frame.records, head, sequence.wrapping_add(repeat));
+            let report = self.frame_report(head, mode)?;
+            let stream = prefix_frame(
+                self.profile,
+                &[],
+                &report,
+                &frame.records,
+                head,
+                sequence.wrapping_add(repeat),
+            );
             self.submit_video(head, &stream)?;
         }
         self.frame_seq[head_index] = sequence.wrapping_add(frame.presentations);
@@ -322,15 +531,29 @@ impl ControlSession {
 
     /// Blank and close a head's active stream.
     pub fn deactivate_mode(&mut self, head: u8, width: usize, height: usize) -> Result<(), String> {
-        let padded_width = width.div_ceil(64) * 64;
-        let padded_height = height.div_ceil(16) * 16;
-        let black = kvino::black_frame_ep08(padded_width, padded_height, head)
-            .map_err(build_error("black shutdown frame"))?;
-        // Everything below overwrites the dock's buffers with black, so whatever the shadow says
-        // the dock is holding stops being true here.
+        // Whatever this leaves the dock holding, it is not what the shadow says it is.
         if let Some(state) = self.scanout.get_mut(usize::from(head)) {
             state.owe_keyframe();
         }
+        if let Some(active) = self.mode_active.get_mut(usize::from(head)) {
+            *active = false;
+        }
+
+        // A dock that wants its bracket held gets two markers and then silence. Presenting black
+        // at it instead halts its shared pipe: the session dies, nothing else reaches the dock, and
+        // the panel stays lit on the last image it decoded.
+        if self.profile.blank_holds_bracket() {
+            self.send_marker(head, 0x2f, 1)?;
+            return self.send_marker(head, 0x2e, self.profile.sink_down_state());
+        }
+
+        let (padded_width, padded_height) = self.padded(width, height);
+        let black = kvino::black_frame_ep08(self.profile, padded_width, padded_height, head)
+            .map_err(build_error("black shutdown frame"))?;
+        // Present for long enough to reach every dock buffer. One presentation lands in one buffer
+        // only -- the same reason the retransmit debt exists -- so a one-shot blank leaves another
+        // buffer holding the frozen desktop and the panel alternates between black and stale
+        // content.
         let deadline = Instant::now() + Duration::from_millis(120);
         let mut next_status = Instant::now();
         while Instant::now() < deadline {
@@ -342,8 +565,10 @@ impl ControlSession {
         }
         self.send_marker(head, 0x2f, 0)?;
         self.send_marker(head, 0x2e, 0)?;
+        // Black frames alone leave the panel lit on a black image: the dock goes on scanning out
+        // whatever it last decoded, and only powering the downstream sink down ends the signal.
         self.send_marker(head, 0x2f, 1)?;
-        self.send_marker(head, 0x2e, 1)?;
+        self.send_marker(head, 0x2e, self.profile.sink_down_state())?;
         self.poll_status()?;
         self.send_marker(head, 0x2f, 0)
     }
@@ -447,6 +672,18 @@ impl ControlSession {
 
     fn wait_mode_offset(&self, anchor: Instant, offset_ms: u64) {
         wait_until(anchor, Duration::from_millis(offset_ms));
+    }
+
+    /// Write one already-framed record straight to the control endpoint.
+    ///
+    /// The stream prologue of a dock that shares its pipes is built as a complete record -- the
+    /// ring descriptor unsealed, the decoder configuration sealed with the connector's own video
+    /// key -- so it goes out as it is rather than through the control seal.
+    fn send_plain_video(&self, head: u8, record: &[u8]) -> Result<(), String> {
+        self.dock
+            .write_ctrl_raw(record)
+            .map(|_| ())
+            .map_err(|e| format!("send head {head} stream prologue: {e}"))
     }
 
     fn submit_video(&self, head: u8, frames: &[Vec<u8>]) -> Result<(), String> {
@@ -641,6 +878,7 @@ fn authenticate(dock: &Dock) -> Result<SessionKeys, String> {
 
 fn configure_control(
     dock: &Dock,
+    profile: DockProfile,
     keys: &mut SessionKeys,
 ) -> Result<(u32, u16, [[u8; 24]; MAX_CONNECTORS], usize), String> {
     send_plain(dock, &STREAM_OPEN)?;
@@ -665,22 +903,43 @@ fn configure_control(
     inner_counter = inner_counter.wrapping_add(1);
     wire_seq += 2;
 
-    for (id, sub, prefix) in [
-        (0x0014u16, 0x0030u16, &[][..]),
-        (0x0015, 0x000b, &[0x01][..]),
-        (0x0016, 0x002a, &[0x00, 0x01][..]),
-        (0x0016, 0x002a, &[0x01, 0x01][..]),
-    ] {
+    // The dock-wide records that precede the per-connector blocks, and one connector-selecting
+    // `0x16/0x2a` for every connector the dock backs -- not a fixed pair, which left a four-socket
+    // dock's last two slots uninitialised and every later counter four AES blocks adrift. A dock
+    // whose profile does not ask for them is put out of step by exactly the same amount if they
+    // are sent anyway, so this follows the profile rather than sending them to everything.
+    let dock_wide: Vec<(u16, u16, Vec<u8>)> = if profile.dock_wide_init() {
+        let mut records = vec![
+            (0x0014u16, 0x0030u16, Vec::new()),
+            (0x0015, 0x000b, vec![0x01]),
+        ];
+        records.extend(
+            (0..dock.connectors() as u8)
+                .map(|connector| (0x0016u16, 0x002au16, vec![connector, 0x01])),
+        );
+        records
+    } else {
+        Vec::new()
+    };
+    for (id, sub, prefix) in dock_wide {
         let mut content = [0; 32];
         content[..2].copy_from_slice(&id.to_le_bytes());
         content[2..4].copy_from_slice(&sub.to_le_bytes());
         content[4..6].copy_from_slice(&inner_counter.to_le_bytes());
         kvino::rng::fill(&mut content[22..]);
-        content[22..22 + prefix.len()].copy_from_slice(prefix);
+        content[22..22 + prefix.len()].copy_from_slice(&prefix);
         send_interactive(dock, keys, id, wire_seq, &content)?;
         acknowledgements += drain_acknowledgements(dock, 2);
         inner_counter = inner_counter.wrapping_add(1);
         wire_seq += 2;
+    }
+
+    // Where a dock wants its video engine brought up at this exact authenticated boundary -- after
+    // the reply to `0x15/0x0b`, before the connector-selecting records -- doing it after
+    // finalisation instead moves the same requests tens of messages later and the dock never
+    // starts its pipes.
+    if profile.commits_video_before_connector_records() {
+        commit_video_engine(dock)?;
     }
 
     // Bounded by what the device backs, not by an array size: a dock with fewer connectors must
@@ -689,6 +948,7 @@ fn configure_control(
     for head in 0..dock.connectors() {
         configure_head(
             dock,
+            profile,
             keys,
             head as u8,
             &mut wire_seq,
@@ -723,17 +983,39 @@ fn configure_control(
         wire_seq += 2;
     }
 
+    if !profile.commits_video_before_connector_records() {
+        dock.vendor_out(0x24, 0, 0, &[])
+            .map_err(|e| format!("commit encrypted session: {e}"))?;
+        dock.vendor_in(0x22, 1, 0, 28)
+            .map_err(|e| format!("read encrypted session state: {e}"))?;
+    }
+    acknowledgements += drain_acknowledgements(dock, 16);
+    Ok((wire_seq, inner_counter, video_keys, acknowledgements))
+}
+
+/// Bring the dock's video engine up: clear both video endpoints, then commit and read back the
+/// encrypted session state.
+///
+/// The pause between the two endpoint clears and the one behind the read are the vendor's own; the
+/// dock's pipes are still settling and the next record goes out into them.
+fn commit_video_engine(dock: &Dock) -> Result<(), String> {
+    dock.clear_video_halt(0)
+        .map_err(|e| format!("clear video endpoint 0: {e}"))?;
+    std::thread::sleep(Duration::from_millis(13));
+    dock.clear_video_halt(1)
+        .map_err(|e| format!("clear video endpoint 1: {e}"))?;
     dock.vendor_out(0x24, 0, 0, &[])
         .map_err(|e| format!("commit encrypted session: {e}"))?;
     dock.vendor_in(0x22, 1, 0, 28)
         .map_err(|e| format!("read encrypted session state: {e}"))?;
-    acknowledgements += drain_acknowledgements(dock, 16);
-    Ok((wire_seq, inner_counter, video_keys, acknowledgements))
+    std::thread::sleep(Duration::from_millis(3));
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
 fn configure_head(
     dock: &Dock,
+    profile: DockProfile,
     keys: &mut SessionKeys,
     head: u8,
     wire_seq: &mut u32,
@@ -754,7 +1036,7 @@ fn configure_head(
     let encrypted_km = kvino::oaep_encrypt_km(&mut keys.rsa, &km).map_err(build_error("OAEP"))?;
     let whitened_video_key = kvino::cp_session_key(&raw_video_key);
     video_key[..16].copy_from_slice(&whitened_video_key[..]);
-    video_key[16..].copy_from_slice(&kvino::video_content_nonce(&delivered_nonce, head));
+    video_key[16..].copy_from_slice(&kvino::video_content_nonce(profile, &delivered_nonce, head));
 
     let mut receiver_random = None;
     let mut encrypted_session_key = None;
@@ -774,7 +1056,7 @@ fn configure_head(
         }
 
         let content = if id == 0x0026 {
-            kvino::stream_manage_restatement(*inner_counter, head)
+            kvino::stream_manage_restatement(profile, *inner_counter, head)
                 .map_err(build_error("stream-manage restatement"))?
         } else {
             let mut content = vec![0; content_len];
@@ -1007,12 +1289,27 @@ fn build_error(label: &'static str) -> impl FnOnce(crate::kshim::Error) -> Strin
 /// The trailer is not part of the codec output -- the kernel driver appends it per frame, and its
 /// phase comes from `seq % 3`, which is how the dock rotates buffers. Omitting it, or repeating one
 /// sequence, leaves the phase pinned.
-fn prefix_frame(prefix: &[u8], frames: &[Vec<u8>], head: u8, seq: u32) -> Vec<Vec<u8>> {
+fn prefix_frame(
+    dock: DockProfile,
+    prefix: &[u8],
+    report: &[u8],
+    frames: &[Vec<u8>],
+    head: u8,
+    seq: u32,
+) -> Vec<Vec<u8>> {
     const TRANSFER_SIZE: usize = 65_536;
-    let trailer = kvino::frame_trailer(head, seq);
+    // The vendor's part order, which is also the dock's: whatever opens the stream, the record
+    // that names the ring slot this frame fills, the frame's report on the stream sub, the image
+    // records, then the trailer that closes the slot.
+    let opener = kvino::frame_opener(dock, head, seq).unwrap_or_default();
+    let trailer = kvino::frame_trailer(dock, head, seq);
     let payload_len = frames.iter().map(Vec::len).sum::<usize>();
-    let mut stream = Vec::with_capacity(prefix.len() + payload_len + trailer.len());
+    let mut stream = Vec::with_capacity(
+        prefix.len() + opener.len() + report.len() + payload_len + trailer.len(),
+    );
     stream.extend_from_slice(prefix);
+    stream.extend_from_slice(&opener);
+    stream.extend_from_slice(report);
     for frame in frames {
         stream.extend_from_slice(frame);
     }

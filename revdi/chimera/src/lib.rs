@@ -37,25 +37,22 @@ pub mod simd;
 
 /// What the vendored kernel sources reach for in the driver crate's root.
 ///
-/// The kernel files are compiled verbatim, so anything they name outside their own module has to
-/// exist here under the same path. Keeping these two definitions honest -- the same head bound,
-/// the same meaning of "debug" -- is what stops the rig from proving something about code that
-/// behaves differently in the kernel.
-pub mod drm_sink {
-    /// The largest connector count any dock profile describes; array sizes use it, loops use the
-    /// dock's own connector count. Must equal the driver's `drm_sink::MAX_CONNECTORS`.
-    ///
-    /// Spelled out rather than taken from `vino_driver`, which is optional: the vendored sources
-    /// compile for the offline proof too, with no USB transport present. The assertion below is
-    /// what keeps the two from drifting.
-    pub const MAX_CONNECTORS: usize = 4;
+/// The largest connector count any dock profile describes, from the driver's own header.
+///
+/// Array sizes use it; loops use the dock's own connector count. It is re-exported rather than
+/// restated so there is one definition of the bound in this crate, and asserted against the
+/// transport's, which sizes its endpoint table the same way.
+pub use crate::kvino::drm_sink::MAX_CONNECTORS;
 
-    #[cfg(feature = "live")]
-    const _: () = assert!(
-        MAX_CONNECTORS == vino_driver::MAX_CONNECTORS,
-        "chimera and vino-driver must agree on the connector bound"
-    );
-}
+/// The driver names two of its own modules from its crate root, and the vendored sources resolve
+/// those paths against this one. Re-exported rather than restated, so there is one definition.
+pub use crate::kvino::{drm_sink, firmware};
+
+#[cfg(feature = "live")]
+const _: () = assert!(
+    MAX_CONNECTORS == vino_driver::MAX_HEADS,
+    "chimera and vino-driver must agree on the connector bound"
+);
 
 /// Whether verbose protocol diagnostics were asked for, the rig's equivalent of the driver's
 /// `debug=1` module parameter.

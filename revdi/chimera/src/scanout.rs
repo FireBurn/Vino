@@ -15,7 +15,7 @@
 //!   client redrew, not what ended up different.
 //! * **a retransmit debt** -- the dock rotates `dock_buffers` buffers, and one presentation
 //!   reaches exactly one of them. A changed strip is therefore charged
-//!   [`kvino::damage_repeats`] transmissions and stays selected until it has paid them, which is
+//!   the dock's `damage_frames` transmissions and stays selected until it has paid them, which is
 //!   what stops a strip from ghosting between an old and a new copy on alternate refreshes.
 //!
 //! Hashes and debt are published only once the frame has actually reached the dock ([`presented`]),
@@ -49,6 +49,8 @@ pub struct Frame {
 
 /// Per-head content shadow and retransmit ledger.
 pub struct HeadScanout {
+    /// The dock being fed: it states the strip size and how a change is spread over its buffers.
+    dock: kvino::DockProfile,
     w_pad: usize,
     h_pad: usize,
     hashes: Vec<u64>,
@@ -67,15 +69,10 @@ pub struct HeadScanout {
     body_hashes: Vec<u64>,
 }
 
-impl Default for HeadScanout {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl HeadScanout {
-    pub fn new() -> Self {
+    pub fn new(dock: kvino::DockProfile) -> Self {
         Self {
+            dock,
             w_pad: 0,
             h_pad: 0,
             hashes: Vec::new(),
@@ -97,7 +94,7 @@ impl HeadScanout {
 
     /// Whether some strip still owes a transmission.
     ///
-    /// A delta pays one of its [`kvino::damage_repeats`] transmissions per presented frame, so a
+    /// A delta pays one of its the dock's `damage_frames` transmissions per presented frame, so a
     /// desktop that goes still immediately after a change would strand the rest and leave the
     /// dock's other buffers holding stale pixels -- which it shows as ghosting the moment it
     /// rotates. The caller must re-present the last surface while this holds, even though the
@@ -108,7 +105,7 @@ impl HeadScanout {
 
     /// Decide what to send for `rgb`, a padded surface of `w_pad` x `h_pad` packed RGB888.
     pub fn plan(&mut self, w_pad: usize, h_pad: usize, rgb: &[u8]) -> Plan {
-        let (strip_w, strip_h) = kvino::strip_dims();
+        let (strip_w, strip_h) = self.dock.strip_dims();
         let tiles_x = w_pad / strip_w;
         let tiles_y = h_pad / strip_h;
         let expected = tiles_x * tiles_y;
@@ -134,7 +131,7 @@ impl HeadScanout {
         // every dock buffer.
         for (i, &hash) in self.pending.iter().enumerate() {
             if self.hashes[i] != hash {
-                self.debt[i] = kvino::damage_repeats();
+                self.debt[i] = self.dock.damage_frames();
             }
         }
         let rects = owed_rects(&self.debt, tiles_x, tiles_y, strip_w, strip_h);
@@ -155,22 +152,23 @@ impl HeadScanout {
         rgb: &[u8],
         head: u8,
     ) -> Result<Option<Frame>, crate::kshim::Error> {
-        let (strip_w, strip_h) = kvino::strip_dims();
+        let (strip_w, strip_h) = self.dock.strip_dims();
         let tiles_x = self.w_pad / strip_w;
         let (coords, presentations) = match plan {
             Plan::Idle => return Ok(None),
             Plan::Damage(clips) => (
-                kvino::strip_coords(self.w_pad, self.h_pad, Some(clips))?,
-                // Consecutive copies land in the same dock buffer, so a delta is presented once
-                // and its repeats are spread across later frames by the retransmit debt.
-                1,
+                kvino::strip_coords(self.dock, self.w_pad, self.h_pad, Some(clips))?,
+                // Consecutive copies land in the same dock buffer on most hardware, so a delta is
+                // presented as few times as the dock needs and its repeats are spread across
+                // later frames by the retransmit debt.
+                self.dock.delta_presentations(),
             ),
             // A keyframe must reach EVERY dock buffer: one presentation updates only one of them,
             // and the ledger is cleared on the strength of this frame, so a keyframe that comes up
             // short leaves stale pixels nothing will ever repair.
             Plan::Keyframe => (
-                kvino::strip_coords(self.w_pad, self.h_pad, None)?,
-                kvino::dock_buffers(),
+                kvino::strip_coords(self.dock, self.w_pad, self.h_pad, None)?,
+                self.dock.keyframe_presentations(),
             ),
         };
         if coords.is_empty() {
@@ -187,7 +185,7 @@ impl HeadScanout {
             match cached {
                 Some(body) => strips.push(body.clone()),
                 None => {
-                    let body = kvino::encode_strip(self.w_pad, rgb, sx, sy)?;
+                    let body = kvino::encode_strip(self.dock, self.w_pad, rgb, sx, sy)?;
                     self.bodies[index] = Some(body.clone());
                     self.body_hashes[index] = current;
                     strips.push(body);
@@ -195,7 +193,7 @@ impl HeadScanout {
             }
         }
         Ok(Some(Frame {
-            records: kvino::frame_records(&strips, head)?,
+            records: kvino::frame_records(self.dock, &strips, head)?,
             presentations,
         }))
     }
@@ -315,9 +313,14 @@ mod tests {
         vec![fill; w * h * 3]
     }
 
+    /// A 64x16-strip, double-buffered dock, which is what these surfaces are sized for.
+    fn ridge() -> kvino::DockProfile {
+        kvino::DockProfile::for_family(kvino::Family::Ridge).expect("Ridge")
+    }
+
     #[test]
     fn first_frame_is_a_keyframe_and_clears_the_ledger() {
-        let mut head = HeadScanout::new();
+        let mut head = HeadScanout::new(ridge());
         let rgb = surface(128, 32, 0x20);
         assert_eq!(head.plan(128, 32, &rgb), Plan::Keyframe);
         head.presented(&Plan::Keyframe);
@@ -327,7 +330,7 @@ mod tests {
 
     #[test]
     fn a_changed_strip_is_resent_until_every_dock_buffer_has_it() {
-        let mut head = HeadScanout::new();
+        let mut head = HeadScanout::new(ridge());
         let mut rgb = surface(128, 32, 0x20);
         head.plan(128, 32, &rgb);
         head.presented(&Plan::Keyframe);
@@ -342,7 +345,7 @@ mod tests {
         head.presented(&plan);
 
         // Still owed on the following frames, with the surface now unchanged.
-        for _ in 1..kvino::damage_repeats() {
+        for _ in 1..ridge().damage_frames() {
             let plan = head.plan(128, 32, &rgb);
             assert_eq!(plan, Plan::Damage(vec![(0, 0, 64, 16)]));
             head.presented(&plan);
@@ -352,7 +355,7 @@ mod tests {
 
     #[test]
     fn a_reused_body_is_the_bytes_a_fresh_encode_produces() {
-        let mut head = HeadScanout::new();
+        let mut head = HeadScanout::new(ridge());
         let mut rgb = surface(128, 32, 0x20);
         let plan = head.plan(128, 32, &rgb);
         head.encode(&plan, &rgb, 0).unwrap();
@@ -378,11 +381,11 @@ mod tests {
 
     #[test]
     fn a_keyframe_reaches_every_dock_buffer() {
-        let mut head = HeadScanout::new();
+        let mut head = HeadScanout::new(ridge());
         let rgb = surface(128, 32, 0x20);
         let plan = head.plan(128, 32, &rgb);
         let frame = head.encode(&plan, &rgb, 0).unwrap().unwrap();
-        assert_eq!(frame.presentations, kvino::dock_buffers());
+        assert_eq!(frame.presentations, ridge().keyframe_presentations());
         head.presented(&plan);
         // A delta is presented once; its repeats are the debt, not back-to-back copies.
         let mut moved = rgb.clone();
@@ -393,13 +396,13 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .presentations,
-            1
+            ridge().delta_presentations()
         );
     }
 
     #[test]
     fn an_idle_frame_encodes_nothing() {
-        let mut head = HeadScanout::new();
+        let mut head = HeadScanout::new(ridge());
         let rgb = surface(128, 32, 0x20);
         let plan = head.plan(128, 32, &rgb);
         head.encode(&plan, &rgb, 0).unwrap();
@@ -411,7 +414,7 @@ mod tests {
 
     #[test]
     fn a_new_surface_size_owes_a_keyframe() {
-        let mut head = HeadScanout::new();
+        let mut head = HeadScanout::new(ridge());
         head.plan(128, 32, &surface(128, 32, 0x20));
         head.presented(&Plan::Keyframe);
         assert_eq!(head.plan(192, 32, &surface(192, 32, 0x20)), Plan::Keyframe);

@@ -18,7 +18,7 @@
 //! Video OUT frames use a bounded async submit/reap window (depth 8) matching
 //! DLM's measured submit-ahead.
 
-use crate::profile::{self, DockProfile, Identity, CLASS_VENDOR, MAX_HEADS, PROTOCOL_DL3, VID};
+use crate::profile::{Family, Identity, Placement, CLASS_VENDOR, MAX_HEADS, PROTOCOL_DL3, VID};
 use crate::{EP_IN_CTRL, EP_OUT_CTRL};
 use rusb::constants::{LIBUSB_TRANSFER_COMPLETED, LIBUSB_TRANSFER_TYPE_BULK};
 use rusb::ffi::{
@@ -69,8 +69,8 @@ pub struct Dock {
     /// Serialises host→dock bulk OUT (EP 0x02) — libusb sync bulk is thread-safe
     /// but we keep frame ordering deterministic.
     out_lock: Mutex<()>,
-    /// Which dock this is, chosen from the identity descriptor. See [`profile`].
-    profile: &'static DockProfile,
+    /// How the caller placed this device: its name and the endpoints it drives.
+    placement: Placement,
     /// What the dock said it is, or `None` if it would not answer.
     identity: Option<Identity>,
     /// Each connector's video bulk-OUT endpoint, or `None` where the device does not expose it.
@@ -312,9 +312,14 @@ impl Dock {
     ///
     /// Devices are found by *function* -- vendor `17e9` with an interface of class `0xff`,
     /// subclass `0`, protocol `0x03` -- not by a list of product IDs, which can only ever
-    /// describe the hardware somebody tested. The family then comes from the dock's own identity
-    /// descriptor. This mirrors the in-kernel driver exactly; see `docs/adding-a-device.md`.
-    pub fn open() -> Result<Self, Error> {
+    /// describe the hardware somebody tested. The family then comes from the device's own identity
+    /// descriptor, and `place` turns that into the endpoints to open. A device whose family the
+    /// caller declines is left alone rather than guessed at, because the way a dock rejects a guess
+    /// is to reset itself; a device that cannot be *asked* is offered its product id instead, so a
+    /// transient descriptor failure does not cost a known dock its displays.
+    pub fn open(
+        mut place: impl FnMut(Option<Family>, u16) -> Option<Placement>,
+    ) -> Result<Self, Error> {
         let ctx = Context::new().map_err(map_err)?;
 
         let find_open = |ctx: &Context| -> Result<(DeviceHandle<Context>, u16), Error> {
@@ -352,25 +357,18 @@ impl Dock {
         // cannot be *asked* falls back to the product-ID quirk table, so a transient descriptor
         // failure does not cost a known dock its displays.
         let identity = read_identity(&handle);
-        let profile = match identity.as_ref().and_then(Identity::family) {
-            Some(family) => match profile::for_family(family) {
-                Some(profile) => profile,
+        let family = identity.as_ref().and_then(Identity::family);
+        if family.is_none() {
+            eprintln!("[usb] identity unreadable; placing {product:04x} by its product id");
+        }
+        let Some(placement) = place(family, product) else {
+            match identity.as_ref() {
+                Some(id) => eprintln!("[usb] {id} is not a device this stack drives yet"),
                 None => {
-                    let id = identity.as_ref().expect("family implies identity");
-                    eprintln!("[usb] {id} is not a family this stack drives yet");
-                    return Err(Error::DeviceNotFound);
+                    eprintln!("[usb] no identity descriptor and no quirk entry for {product:04x}")
                 }
-            },
-            None => match profile::for_product(product) {
-                Some(profile) => {
-                    eprintln!("[usb] identity unreadable; using the quirk entry for {product:04x}");
-                    profile
-                }
-                None => {
-                    eprintln!("[usb] no identity descriptor and no quirk entry for {product:04x}");
-                    return Err(Error::DeviceNotFound);
-                }
-            },
+            }
+            return Err(Error::DeviceNotFound);
         };
         if let Some(id) = identity.as_ref() {
             eprintln!("[usb] {id} running firmware {}", id.version);
@@ -382,20 +380,23 @@ impl Dock {
         // outputs is driven with the outputs it has.
         let mut video = [None; MAX_HEADS];
         let mut connectors = 0u8;
-        for (slot, addr) in video.iter_mut().zip(profile.video_eps) {
-            if connectors >= profile.connectors || !has_endpoint(&handle, addr) {
+        for (slot, addr) in video.iter_mut().zip(placement.video_endpoints) {
+            if connectors >= placement.connectors || !has_endpoint(&handle, addr) {
                 break;
             }
             *slot = Some(addr);
             connectors += 1;
         }
         if connectors == 0 {
-            eprintln!("[usb] no video endpoint from {:#04x?}", profile.video_eps);
+            eprintln!(
+                "[usb] no video endpoint from {:#04x?}",
+                placement.video_endpoints
+            );
             return Err(Error::DeviceNotFound);
         }
         eprintln!(
-            "[usb] matched profile \"{}\", {connectors} connector(s), video endpoints {:#04x?}",
-            profile.name,
+            "[usb] matched \"{}\", {connectors} connector(s), video endpoints {:#04x?}",
+            placement.name,
             &video[..usize::from(connectors)]
         );
 
@@ -429,7 +430,7 @@ impl Dock {
             timeout: Duration::from_millis(2000),
             ep84: Mutex::new(ep84),
             out_lock: Mutex::new(()),
-            profile,
+            placement,
             identity,
             video,
             connectors,
@@ -651,9 +652,9 @@ impl Dock {
             .map_err(map_err)
     }
 
-    /// This dock's profile, chosen from its identity descriptor.
-    pub fn profile(&self) -> &'static DockProfile {
-        self.profile
+    /// How the caller placed this device.
+    pub fn placement(&self) -> Placement {
+        self.placement
     }
 
     /// What the dock said it is, or `None` if it would not answer.

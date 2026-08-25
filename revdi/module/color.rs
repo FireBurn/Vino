@@ -269,3 +269,159 @@ impl PartialEq for ColorPipeline {
         }
     }
 }
+
+// This module is shared verbatim, so the tests are gated on either driver's KUnit symbol and
+// name nothing outside it.
+#[cfg(any(CONFIG_DRM_VINO_KUNIT_TEST, CONFIG_DRM_EVDI_KUNIT_TEST))]
+use kernel::prelude::kunit_tests;
+
+#[cfg(any(CONFIG_DRM_VINO_KUNIT_TEST, CONFIG_DRM_EVDI_KUNIT_TEST))]
+#[kunit_tests(drm_color_pipeline)]
+mod tests {
+    use super::*;
+    use kernel::error::code::EINVAL;
+    use kernel::prelude::*;
+
+    /// S31.32 sign-magnitude constants: 1.0, +0.5, and -0.5 as sign bit + magnitude.
+    const CTM_ONE: u64 = 1 << 32;
+    const CTM_HALF: u64 = 1 << 31;
+    const CTM_NEG_HALF: u64 = (1u64 << 63) | (1u64 << 31);
+
+    fn ctm_diag(r: u64, g: u64, b: u64) -> ColorCtm {
+        ColorCtm::from_raw([r, 0, 0, 0, g, 0, 0, 0, b])
+    }
+
+    /// A ramp that halves every channel, at the LUT's full 16-bit precision. The `+ 1` rounds:
+    /// entry 255 is 65535/2 = 32767.5, and truncating it would make the fixture itself ask for
+    /// 127 rather than 128.
+    fn half_lut() -> KVec<ColorLut> {
+        let mut v = KVec::new();
+        for i in 0..LUT_LEN {
+            let h = ((i * 257 + 1) / 2) as u16;
+            let _ = v.push(ColorLut::new(h, h, h), GFP_KERNEL);
+        }
+        v
+    }
+
+    #[test]
+    fn ctm_decodes_sign_magnitude_not_twos_complement() -> Result {
+        // The UAPI encodes CTM entries in sign-magnitude. Reading the u64 as an i64 would make
+        // -0.5 come back as a huge positive number and saturate instead of darkening.
+        let m = ctm_diag(CTM_ONE, CTM_NEG_HALF, CTM_ONE);
+        assert_eq!(m.coefficient(0), Some(1i64 << 32));
+        assert_eq!(m.coefficient(4), Some(-(1i64 << 31)));
+        assert_eq!(m.coefficient(9), None);
+        Ok(())
+    }
+
+    #[test]
+    fn identity_transform_builds_nothing() -> Result {
+        // Turning a corrector off programs an identity matrix rather than removing the blob. If
+        // that did not collapse to None the encoder would never regain its direct-scanout path.
+        assert!(ColorPipeline::build(None, None).is_none());
+        let ident = ctm_diag(CTM_ONE, CTM_ONE, CTM_ONE);
+        assert!(ColorPipeline::build(None, Some(&ident)).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn identity_gamma_ramp_is_a_no_op() -> Result {
+        // The reason `narrow` divides by 257 and not 256. With the wrong divisor every value above
+        // about 128 came back one level high, so merely *enabling* colour management shifted the
+        // whole image even when the ramp asked for nothing.
+        let mut lut = KVec::new();
+        for i in 0..LUT_LEN {
+            let v = (i * 257) as u16;
+            let _ = lut.push(ColorLut::new(v, v, v), GFP_KERNEL);
+        }
+        let p = ColorPipeline::build(Some(&lut), None).ok_or(EINVAL)?;
+        for v in 0..=255u8 {
+            assert_eq!(p.apply(v, v, v), (v, v, v));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn gamma_only_applies_the_ramp() -> Result {
+        let lut = half_lut();
+        let p = ColorPipeline::build(Some(&lut), None).ok_or(EINVAL)?;
+        assert_eq!(p.apply(0, 0, 0), (0, 0, 0));
+        assert_eq!(p.apply(255, 255, 255), (128, 128, 128));
+        Ok(())
+    }
+
+    #[test]
+    fn diagonal_ctm_matches_the_general_matrix() -> Result {
+        // The diagonal fast path exists for speed; if it ever disagreed with the general path the
+        // colour would silently change with the optimisation rather than with the CTM.
+        let fast = ColorPipeline::build(None, Some(&ctm_diag(CTM_ONE, CTM_HALF, CTM_ONE)))
+            .ok_or(EINVAL)?;
+        // The same transform with a real off-diagonal zero-effect term, so it must take the
+        // mixing path. A sub-Q16 term would be truncated to zero and stay on the fast path.
+        let mixed =
+            ColorCtm::from_raw([CTM_ONE, 0, CTM_ONE / 65536, 0, CTM_HALF, 0, 0, 0, CTM_ONE]);
+        let slow = ColorPipeline::build(None, Some(&mixed)).ok_or(EINVAL)?;
+        for v in [0u8, 1, 63, 127, 128, 200, 254, 255] {
+            assert_eq!(fast.apply(v, v, v), slow.apply(v, v, v));
+        }
+        assert_eq!(fast.apply(255, 255, 255), (255, 128, 255));
+        Ok(())
+    }
+
+    #[test]
+    fn mixing_ctm_moves_channels() -> Result {
+        // Swap red and blue: proves the matrix is row-major and applied the way the UAPI documents.
+        let swap = ColorCtm::from_raw([0, 0, CTM_ONE, 0, CTM_ONE, 0, CTM_ONE, 0, 0]);
+        let p = ColorPipeline::build(None, Some(&swap)).ok_or(EINVAL)?;
+        assert_eq!(p.apply(200, 100, 50), (50, 100, 200));
+        Ok(())
+    }
+
+    #[test]
+    fn negative_coefficient_clamps_to_black() -> Result {
+        let p = ColorPipeline::build(None, Some(&ctm_diag(CTM_ONE, CTM_NEG_HALF, CTM_ONE)))
+            .ok_or(EINVAL)?;
+        assert_eq!(p.apply(255, 255, 255), (255, 0, 255));
+        Ok(())
+    }
+
+    #[test]
+    fn out_of_gamut_saturates_instead_of_wrapping() -> Result {
+        // An intermediate above 1.0 must clamp. Wrapping would put the brightest pixels at the
+        // opposite corner of the colour cube -- the failure looks like inverted highlights.
+        let gain4 = ctm_diag(4 * CTM_ONE, 4 * CTM_ONE, 4 * CTM_ONE);
+        let p = ColorPipeline::build(None, Some(&gain4)).ok_or(EINVAL)?;
+        assert_eq!(p.apply(200, 100, 255), (255, 255, 255));
+        assert_eq!(p.apply(0, 0, 0), (0, 0, 0));
+        Ok(())
+    }
+
+    #[test]
+    fn short_lut_extends_with_identity_not_black() -> Result {
+        // A LUT blob shorter than the advertised size must not leave the tail at zero, which would
+        // render everything above the truncation point black.
+        let mut lut = KVec::new();
+        for i in 0..4usize {
+            let v = (i * 257) as u16;
+            let _ = lut.push(ColorLut::new(v, v, v), GFP_KERNEL);
+        }
+        let p = ColorPipeline::build(Some(&lut), None).ok_or(EINVAL)?;
+        assert_eq!(p.apply(255, 255, 255), (255, 255, 255));
+        Ok(())
+    }
+
+    #[test]
+    fn transform_change_changes_the_strip_cache_tag() -> Result {
+        // The encoded-strip cache keys on source pixels, so a transform change that leaves the
+        // pixels alone must still invalidate it or the whole screen keeps its old colours.
+        let a = ColorPipeline::build(None, Some(&ctm_diag(CTM_ONE, CTM_HALF, CTM_ONE)))
+            .ok_or(EINVAL)?;
+        let b = ColorPipeline::build(None, Some(&ctm_diag(CTM_HALF, CTM_ONE, CTM_ONE)))
+            .ok_or(EINVAL)?;
+        assert_ne!(a.tag(), b.tag());
+        // `assert!` rather than `assert_ne!`: the latter needs `Debug`, and deriving it on a type
+        // holding 768-entry tables is code the driver would carry purely for one test message.
+        assert!(a != b);
+        Ok(())
+    }
+}

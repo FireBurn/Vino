@@ -1,7 +1,7 @@
 //! `vino-driver` — userspace USB transport for DisplayLink DL3 devices.
 //!
 //! Provides:
-//! - Device identification and per-dock parameters (`profile`), matching the in-kernel driver
+//! - Device identification (`profile`); what a family implies is the caller's to supply
 //! - USB device open by display function, not by product ID (`Dock::open`)
 //! - The universal DLM framing builder/parser (`Frame`)
 //! - An independent HDCP wire-message oracle used by protocol tests
@@ -15,11 +15,11 @@ pub mod profile;
 pub mod usb;
 
 pub use frame::{build_frame, Frame};
-pub use profile::{DockProfile, Family, Identity, MAX_HEADS, VID};
+pub use profile::{Family, Identity, Placement, MAX_HEADS, VID};
 pub use usb::{Dock, Error};
 
 /// Control endpoints. These are the same across every DL3 generation; the video endpoints are
-/// not, and come from the dock's [`profile`].
+/// not, and come from the [`Placement`] the caller opened the device with.
 pub const EP_OUT_CTRL: u8 = 0x02;
 pub const EP_IN_CTRL: u8 = 0x84;
 

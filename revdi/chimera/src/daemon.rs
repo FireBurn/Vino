@@ -2,13 +2,12 @@
 
 //! DisplayLinkManager-compatible Revdi-to-Vino service.
 
+use crate::kvino;
 use crate::revdi::{self, Cursor, DeviceEvent, Mode, RevdiCard};
 use crate::session::ControlSession;
+use crate::MAX_CONNECTORS;
 use std::time::{Duration, Instant};
-use vino_driver::MAX_CONNECTORS;
 
-const FRAME_WAIT: Duration = Duration::from_millis(8);
-const KEEPALIVE_PERIOD: Duration = Duration::from_millis(13);
 const HEARTBEAT_PERIOD: Duration = Duration::from_secs(3);
 const PRESENCE_PERIOD: Duration = Duration::from_secs(1);
 const PRESENCE_GRACE: Duration = Duration::from_secs(10);
@@ -45,13 +44,27 @@ fn run_session() -> Result<(), String> {
     let mut outputs: [Option<Output>; MAX_CONNECTORS] = core::array::from_fn(|_| None);
     // The dock's own connector count, not an array size: a dock with fewer outputs must not be
     // probed for connectors it does not have.
+    // Where a dock's probe says something about what is plugged in, an unoccupied connector stays
+    // disconnected rather than advertising a phantom output. Where it says nothing, every
+    // connector the dock declares is offered: such a dock answers "absent" for a socket with a
+    // live monitor on it, and its own vendor configures both connectors before any pixels.
+    let reports_presence = session.profile().reports_presence();
     for head in 0..session.connectors() {
-        if session.probe_head_present(head as u8)? == Some(true) {
+        if !reports_presence || session.probe_head_present(head as u8)? == Some(true) {
             connect_output(&mut session, &mut outputs[head], head as u8);
         }
     }
 
-    let mut next_keepalive = Instant::now() + KEEPALIVE_PERIOD;
+    // Both cadences belong to the dock, not to this loop. A dock with a video pipe of its own can
+    // be asked for status as often as is convenient and fed as fast as the encoder allows; where
+    // the two share an endpoint, a status query is bytes queued ahead of a frame and a reply the
+    // dock has to produce mid-scanout, so asking too often silences the dock rather than merely
+    // costing bandwidth.
+    let frame_wait = Duration::from_millis(session.profile().frame_period_ms().max(0) as u64);
+    let keepalive_period =
+        Duration::from_millis(session.profile().status_period_ms().max(0) as u64);
+
+    let mut next_keepalive = Instant::now() + keepalive_period;
     let mut next_heartbeat = Instant::now() + HEARTBEAT_PERIOD;
     let mut next_presence = Instant::now() + PRESENCE_PERIOD;
     loop {
@@ -62,7 +75,7 @@ fn run_session() -> Result<(), String> {
             if !output.active {
                 continue;
             }
-            let Some(frame) = output.card.next_frame(FRAME_WAIT) else {
+            let Some(frame) = output.card.next_frame(frame_wait) else {
                 // Nothing new to grab. Repeat the last surface while strips still owe a
                 // transmission, so a change made just before the desktop went still reaches every
                 // one of the dock's buffers instead of stranding in one of them.
@@ -86,7 +99,8 @@ fn run_session() -> Result<(), String> {
                 session.activate_mode(output.head, mode.width, mode.height, mode.refresh_hz)?;
                 output.mode = Some(mode);
             }
-            let (padded, padded_width, padded_height) = pad_rgb(&rgb, width, height);
+            let (padded, padded_width, padded_height) =
+                pad_rgb(session.profile(), &rgb, width, height);
             session.present_rgb(output.head, padded_width, padded_height, &padded)?;
             output.last_surface = Some((padded, padded_width, padded_height));
         }
@@ -96,14 +110,14 @@ fn run_session() -> Result<(), String> {
         }
         if Instant::now() >= next_keepalive {
             session.keepalive_poll()?;
-            next_keepalive = Instant::now() + KEEPALIVE_PERIOD;
+            next_keepalive = Instant::now() + keepalive_period;
         }
         if Instant::now() >= next_heartbeat {
             session.heartbeat()?;
             next_heartbeat = Instant::now() + HEARTBEAT_PERIOD;
         }
         if !outputs.iter().flatten().any(|output| output.active) {
-            std::thread::sleep(FRAME_WAIT);
+            std::thread::sleep(frame_wait);
         }
     }
 }
@@ -114,6 +128,10 @@ fn connect_output(session: &mut ControlSession, slot: &mut Option<Output>, head:
             .fetch_edid(head)
             .map_err(|error| format!("fetch EDID: {error}"))?;
         let mut card = RevdiCard::open().map_err(|error| format!("open Revdi output: {error}"))?;
+        // Only a dock that composites a cursor bitmap of its own asks for the pointer out of band.
+        // Where the dock has none, the compositor must go on drawing the pointer into the frame:
+        // taking the events without being able to send them loses the pointer altogether.
+        card.set_cursor_events(session.profile().hw_cursor());
         revdi::connect_monitor(&mut card, &edid)
             .map_err(|error| format!("connect Revdi output: {error}"))?;
         Ok(Output {
@@ -137,10 +155,16 @@ fn connect_output(session: &mut ControlSession, slot: &mut Option<Output>, head:
     }
 }
 
+/// Follow what is plugged into the dock, for a dock whose probe answers that question.
 fn refresh_topology(
     session: &mut ControlSession,
     outputs: &mut [Option<Output>; MAX_CONNECTORS],
 ) -> Result<(), String> {
+    // A dock whose probe says nothing about its sockets has nothing to follow: its connectors were
+    // offered at bring-up and a negative answer here would take a lit panel away.
+    if !session.profile().reports_presence() {
+        return Ok(());
+    }
     for (head, slot) in outputs.iter_mut().enumerate() {
         // A deliberate DPMS-off closes the downstream stream and can look like removal.
         if slot
@@ -213,6 +237,11 @@ fn handle_event(
             output.active = false;
         }
         DeviceEvent::Dpms(_) => {}
+        // A dock with no cursor of its own never asked for these, and must not be sent one: the
+        // bitmap is one control message of some 16 kB, which on a dock that shares its pipes is a
+        // record landing in the middle of the video stream.
+        DeviceEvent::CursorSet(_) | DeviceEvent::CursorMove(_)
+            if !session.profile().hw_cursor() => {}
         DeviceEvent::CursorSet(cursor) => {
             output.cursor_hotspot = (cursor.hot_x, cursor.hot_y);
             if cursor.enabled {
@@ -273,9 +302,20 @@ fn cursor_bgra(cursor: &Cursor) -> Result<Vec<u8>, String> {
     Ok(packed)
 }
 
-fn pad_rgb(rgb: &[u8], width: usize, height: usize) -> (Vec<u8>, usize, usize) {
-    let padded_width = width.div_ceil(64) * 64;
-    let padded_height = height.div_ceil(16) * 16;
+/// Round a surface up to whole strips of the dock it is going to.
+///
+/// A partial strip at the right or bottom edge is still a whole strip on the wire, and a strip is
+/// 64x16 px on some hardware and 128x8 on other, so the size comes from the dock rather than from
+/// a constant.
+fn pad_rgb(
+    dock: kvino::DockProfile,
+    rgb: &[u8],
+    width: usize,
+    height: usize,
+) -> (Vec<u8>, usize, usize) {
+    let (strip_w, strip_h) = dock.strip_dims();
+    let padded_width = width.div_ceil(strip_w) * strip_w;
+    let padded_height = height.div_ceil(strip_h) * strip_h;
     if padded_width == width && padded_height == height {
         return (rgb.to_vec(), width, height);
     }
@@ -296,13 +336,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pads_to_vino_strip_geometry() {
+    fn pads_to_the_docks_own_strip_geometry() {
+        let ridge = kvino::DockProfile::for_family(kvino::Family::Ridge).expect("Ridge");
         let rgb = vec![0x55; 65 * 17 * 3];
-        let (padded, width, height) = pad_rgb(&rgb, 65, 17);
+        let (padded, width, height) = pad_rgb(ridge, &rgb, 65, 17);
         assert_eq!((width, height), (128, 32));
         assert_eq!(&padded[..65 * 3], &rgb[..65 * 3]);
         assert!(padded[65 * 3..128 * 3].iter().all(|&byte| byte == 0));
         assert_eq!(padded.len(), 128 * 32 * 3);
+
+        // The DL7400 tiles the same surface into 128x8 strips, so it pads differently.
+        let navarro = kvino::DockProfile::for_family(kvino::Family::Navarro).expect("Navarro");
+        let (_, width, height) = pad_rgb(navarro, &rgb, 65, 17);
+        assert_eq!((width, height), (128, 24));
     }
 
     #[test]

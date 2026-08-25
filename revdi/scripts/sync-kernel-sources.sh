@@ -57,7 +57,28 @@ kdir="$(cd "$kdir" && pwd)"
 # driver (vino.rs, drm_sink.rs, ...) is kernel-only code that cannot compile in
 # userspace, and copying it here would only be noise. If kvino.rs grows a new
 # module, the build breaks loudly and one line gets added here.
-vino_srcs=(proto.rs cp.rs video.rs video_arm.rs ake.rs hdcp.rs)
+# Each entry is "<path under drivers/gpu/drm/vino/>|<path under chimera/vino/>".
+#
+# The two differ for exactly one reason. A module loaded with #[path] has rustc look for its
+# children next to the file rather than in a directory named after it, so the kernel's cp.rs +
+# cp/{cursor,edid,mode}.rs only resolves here if the parent is vendored as cp/mod.rs. Renaming
+# the parent is the whole difference; the children keep the kernel's own layout, and no file
+# content is touched.
+vino_srcs=(
+    "proto.rs|proto.rs"
+    "cp.rs|cp/mod.rs"
+    "cp/cursor.rs|cp/cursor.rs"
+    "cp/edid.rs|cp/edid.rs"
+    "cp/mode.rs|cp/mode.rs"
+    "video.rs|video/mod.rs"
+    "video/haar/records.rs|video/haar/records.rs"
+    "video/haar/strip.rs|video/haar/strip.rs"
+    "video/haar/transform.rs|video/haar/transform.rs"
+    "video_arm.rs|video_arm.rs"
+    "profile.rs|profile.rs"
+    "ake.rs|ake.rs"
+    "hdcp.rs|hdcp.rs"
+)
 
 drift=0
 copied=0
@@ -106,9 +127,26 @@ done
 
 echo "chimera/vino/ (compiled verbatim by chimera) <- drivers/gpu/drm/vino/"
 mkdir -p "$here/chimera/vino"
-for f in "${vino_srcs[@]}"; do
-    sync_one "$kdir/drivers/gpu/drm/vino/$f" "$here/chimera/vino/$f" "chimera/vino/$f"
+for entry in "${vino_srcs[@]}"; do
+    src="${entry%%|*}"
+    dst="${entry##*|}"
+    mkdir -p "$here/chimera/vino/$(dirname "$dst")"
+    sync_one "$kdir/drivers/gpu/drm/vino/$src" "$here/chimera/vino/$dst" "chimera/vino/$dst"
 done
+# A file the kernel tree no longer has must not linger here: it would keep compiling
+# and the proofs would go on testing code that has been deleted upstream.
+while IFS= read -r f; do
+    rel="${f#"$here"/chimera/vino/}"
+    for entry in "${vino_srcs[@]}"; do
+        [ "$rel" = "${entry##*|}" ] && continue 2
+    done
+    echo "  STALE    chimera/vino/$rel"
+    drift=1
+    if [ "$check_only" -eq 0 ]; then
+        rm -- "$f"
+        copied=$((copied + 1))
+    fi
+done < <(find "$here/chimera/vino" -name '*.rs' -type f | sort)
 
 # vino and evdi carry the same software colour pipeline. It is one algorithm -- gamma LUT, CTM,
 # the narrow()/expand() pair whose asymmetry once shifted every pixel -- and both drivers apply it

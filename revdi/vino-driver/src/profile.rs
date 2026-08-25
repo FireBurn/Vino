@@ -1,10 +1,10 @@
-//! What identifies a DisplayLink dock, and what differs between the ones this stack drives.
+//! What identifies a DisplayLink device.
 //!
-//! This mirrors the in-kernel driver's `profile` and `firmware::Identity` modules: a dock is
-//! placed by the family it reports in its own identity descriptor, not by a product ID, and the
-//! rest of the code reads the resulting profile rather than branching on the model. Keeping the
-//! two the same means a dock added on one side is a one-line change on the other, and means the
-//! two agree about what a given piece of hardware is.
+//! A device is placed by the family it reports in its own identity descriptor, not by a product
+//! id, which can only ever describe the hardware somebody tested. That is where this crate stops:
+//! what a family implies about strips, endpoints, timing or record framing belongs to the kernel
+//! driver's profile table, which chimera compiles verbatim, so the caller supplies a
+//! [`Placement`] and this crate never holds a second opinion about the hardware.
 
 /// DisplayLink's USB vendor id.
 pub const VID: u16 = 0x17e9;
@@ -135,112 +135,22 @@ impl Family {
     }
 }
 
-/// Which protocol generation a dock speaks.
+/// What the transport needs to know to open a device, supplied by the caller.
 ///
-/// Ridge and Navarro differ in more than parameter values: the initialisation sequence, the
-/// per-head HDCP framing, how a video stream is opened and how a mode is described are each
-/// distinct code paths.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Generation {
-    Ridge,
-    Navarro,
-}
-
-/// What differs between the DisplayLink docks this stack drives.
-///
-/// The field set deliberately matches the in-kernel `DockProfile`; see
-/// `drivers/gpu/drm/vino/profile.rs` for the measurement behind each value.
-#[derive(Clone, Copy)]
-pub struct DockProfile {
+/// Which dock a device is, and what follows from that, is not this crate's to decide: the kernel
+/// driver's own profile table is the one description of a DisplayLink dock, and a second copy here
+/// would be a second answer to the same question. So the caller places the device -- from its
+/// [`Family`], or from its product id when it will not say -- and hands back only the two facts a
+/// USB transport needs.
+#[derive(Clone, Copy, Debug)]
+pub struct Placement {
     /// Human name, logged so an unfamiliar unit identifies itself.
     pub name: &'static str,
-    /// Video bulk-OUT endpoint per physical connector. Navarro repeats its two addresses:
-    /// connectors 0/2 share `0x08` and connectors 1/3 share `0x0a`.
-    pub video_eps: [u8; MAX_HEADS],
-    pub generation: Generation,
-    /// How the dock encodes a head in a video record's `sub` field, as a left shift.
-    pub head_sub_shift: u8,
-    /// The bits a head's content-stream id sets over its record `sub`.
-    pub stream_id_mask: u8,
-    /// Whether an image record's `sub` carries the y-band parity.
-    pub band_parity_bit: bool,
-    /// Blocks across one strip. Ridge is 8 across x 2 down, Navarro 16 across x 1 down.
-    pub strip_blocks_x: usize,
-    /// Whether image records interlace y bands.
-    pub interlaced_bands: bool,
-    /// Number of downstream connectors the dock answers a presence probe for. This is **not**
-    /// the video-endpoint count: Navarro has four connectors feeding two endpoints.
+    /// Video bulk-OUT endpoint per connector. A device may repeat an address: the DL7400 drives
+    /// connectors 0/2 from one endpoint and 1/3 from the other.
+    pub video_endpoints: [u8; MAX_HEADS],
+    /// Number of downstream connectors the device backs. This is not the endpoint count.
     pub connectors: u8,
-    /// How many buffers the dock rotates through as it presents frames.
-    pub dock_buffers: u8,
-    /// Whether this dock can be driven at 10 bits per channel for HDR.
-    pub hdr_capable: bool,
-}
-
-impl DockProfile {
-    pub fn is_navarro(&self) -> bool {
-        matches!(self.generation, Generation::Navarro)
-    }
-
-    /// Whether per-head HDCP records select a connector as a one-hot bit at byte `22 + head`.
-    /// Ridge instead has a one-based head number at byte 23.
-    pub fn perhead_onehot(&self) -> bool {
-        self.is_navarro()
-    }
-}
-
-/// Dell D6000 and other Ridge-platform docks.
-pub static PROFILE_RIDGE: DockProfile = DockProfile {
-    name: "Dell D6000 (Ridge, DL-6xxx)",
-    video_eps: [0x08, 0x0b, 0x08, 0x0b],
-    generation: Generation::Ridge,
-    head_sub_shift: 0,
-    stream_id_mask: 0x08,
-    band_parity_bit: true,
-    strip_blocks_x: 8,
-    interlaced_bands: false,
-    connectors: 2,
-    dock_buffers: 2,
-    hdr_capable: false,
-};
-
-/// DL-7400 quad-display docks (Navarro).
-pub static PROFILE_NAVARRO: DockProfile = DockProfile {
-    name: "DL-7400 quad dock (Navarro, DL-7000)",
-    video_eps: [0x08, 0x0a, 0x08, 0x0a],
-    generation: Generation::Navarro,
-    head_sub_shift: 3,
-    stream_id_mask: 0x07,
-    band_parity_bit: false,
-    strip_blocks_x: 16,
-    interlaced_bands: true,
-    connectors: 4,
-    dock_buffers: 3,
-    hdr_capable: true,
-};
-
-/// The profile for a dock family, or `None` for a family this stack cannot drive yet.
-///
-/// Declining is deliberate: a guessed profile is worse than no driver, because the way a dock
-/// rejects a guess is to reset itself.
-pub fn for_family(family: Family) -> Option<&'static DockProfile> {
-    match family {
-        Family::Navarro => Some(&PROFILE_NAVARRO),
-        Family::Ridge => Some(&PROFILE_RIDGE),
-        Family::Ella | Family::Firefly => None,
-    }
-}
-
-/// The profile for a device whose identity descriptor could not be read.
-///
-/// The quirk table, and the only thing product IDs are still good for. A device missing from it
-/// is still driven if it names its family.
-pub fn for_product(product: u16) -> Option<&'static DockProfile> {
-    match product {
-        0x6006 => Some(&PROFILE_RIDGE),
-        0x7000 => Some(&PROFILE_NAVARRO),
-        _ => None,
-    }
 }
 
 #[cfg(test)]
@@ -260,26 +170,21 @@ mod tests {
         assert_eq!(id.family(), Some(Family::Navarro));
     }
 
-    /// A dock is placed by family; product IDs are only the fallback when it cannot be asked.
+    /// Every platform name the vendor ships places a device, in either spelling.
     #[test]
-    fn a_dock_is_placed_by_family_and_product_ids_are_only_quirks() {
-        assert!(core::ptr::eq(
-            for_family(Family::Navarro).unwrap(),
-            &PROFILE_NAVARRO
-        ));
-        assert!(core::ptr::eq(
-            for_family(Family::Ridge).unwrap(),
-            &PROFILE_RIDGE
-        ));
-        assert!(for_family(Family::Ella).is_none());
-        assert!(for_family(Family::Firefly).is_none());
-
-        assert!(core::ptr::eq(for_product(0x6006).unwrap(), &PROFILE_RIDGE));
-        assert!(core::ptr::eq(
-            for_product(0x7000).unwrap(),
-            &PROFILE_NAVARRO
-        ));
-        assert!(for_product(0x6015).is_none());
+    fn every_platform_name_names_a_family() {
+        for (name, family) in [
+            (&b"NavaDock"[..], Family::Navarro),
+            (b"Ridge", Family::Ridge),
+            (b"RidgeDoc", Family::Ridge),
+            (b"Ella", Family::Ella),
+            (b"EllaDock", Family::Ella),
+            (b"Firefly", Family::Firefly),
+            (b"FflyMoni", Family::Firefly),
+        ] {
+            assert_eq!(Family::from_identity(name), Some(family));
+        }
+        assert_eq!(Family::from_identity(b"NotADock"), None);
     }
 
     /// A truncated or malformed descriptor chain must terminate, not loop or index out of range.

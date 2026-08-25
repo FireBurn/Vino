@@ -229,8 +229,17 @@ pub mod prelude {
     pub struct KVec<T>(Vec<T>);
 
     impl<T> KVec<T> {
+        pub fn new() -> Self {
+            Self(Vec::new())
+        }
+
         pub fn with_capacity(capacity: usize, _flags: Flags) -> Result<Self> {
             Ok(Self(Vec::with_capacity(capacity)))
+        }
+
+        pub fn push(&mut self, value: T, _flags: Flags) -> Result {
+            self.0.push(value);
+            Ok(())
         }
 
         pub fn extend_from_slice(&mut self, values: &[T], _flags: Flags) -> Result
@@ -243,6 +252,21 @@ pub mod prelude {
 
         pub fn into_vec(self) -> Vec<T> {
             self.0
+        }
+    }
+
+    impl<T> Default for KVec<T> {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl<T> IntoIterator for KVec<T> {
+        type Item = T;
+        type IntoIter = std::vec::IntoIter<T>;
+
+        fn into_iter(self) -> Self::IntoIter {
+            self.0.into_iter()
         }
     }
 
