@@ -43,10 +43,12 @@ CHROMA_AC_CMAX = 10
 # chain is monotonic across all twenty strips of a row only at DC_CMAX 12 -- at 10 it inverts at
 # x=512, at 11 at x=768. See `docs/hdr.md`.
 #
-# The AC ceilings are NOT established for 10-bit: nothing in that capture produced a luma AC
-# coefficient above |273|, well inside category 9, because Windows tone-mapped the content down to
-# the sink's ~302 cd/m2 peak before it ever reached the codec. `Depth.ten()` therefore leaves them
-# at the 8-bit values and says so, rather than assuming they scale with the DC.
+# Every depth-sensitive ceiling gains two categories at 10-bit, not just the DC one: a coefficient
+# is four times the sample on the AC planes as well. Confirmed on hardware -- a DL7400 driven with
+# the AC ceilings left at their 8-bit values renders smooth gradients correctly and speckles every
+# sharp edge, because `esc` saturates a magnitude that needs twelve bits into a ten-bit field while
+# the category still fixes the length, so the bitstream stays in sync and only the high-frequency
+# values are wrong. The code table stating each ceiling has to be raised with it.
 class Depth:
     """One sample depth's escape-codebook ceilings."""
 
@@ -64,7 +66,7 @@ class Depth:
 
     @staticmethod
     def ten():
-        return Depth(10, 12, AC_CMAX, CHROMA_AC_CMAX, False)
+        return Depth(10, 12, AC_CMAX + 2, CHROMA_AC_CMAX + 2, True)
 
     def __repr__(self):
         return f"Depth({self.bits}-bit dc={self.dc} luma_ac={self.luma_ac} chroma_ac={self.chroma_ac})"
