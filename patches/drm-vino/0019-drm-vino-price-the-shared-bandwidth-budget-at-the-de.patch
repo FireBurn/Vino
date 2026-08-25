@@ -1,0 +1,274 @@
+From 9e8ccac270dcb27e15ecb09691a0a560bf146e76 Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Tue, 25 Aug 2026 21:55:03 +0100
+Subject: [PATCH] drm/vino: price the shared bandwidth budget at the depth it
+ is driven at
+
+The dock's pixel budget was measured with three bytes stored per pixel. A
+connector driven at ten bits stores four, so the same pixel costs a third more
+and the dock has room for correspondingly fewer. Admitted on the eight-bit
+budget and then driven at ten, it accepts every byte of the second stream
+without ever starting its pixel clock, which reads as a dead sink rather than
+as a mode that did not fit.
+
+Price the budget at the dock's deepest connector, and let the depth give way
+rather than the mode: a compositor handed EINVAL disables the output instead of
+asking for a shallower link, so a pair that does not fit at ten bits lights at
+eight.
+
+The decision is taken in the enable, where the connector state is present and
+where the set-mode that carries the answer to the dock is built. Taking it in
+the check would record it from commits that never reach the dock, since a check
+also runs for every page flip and for TEST_ONLY commits that are never applied,
+and the codec would then move to a depth no mode set had stated. It is priced
+from the unpriced budget for the same reason a check cannot price from a
+recorded depth: charging a depth that has already been paid for leaves nine
+sixteenths of the dock, which no pair of ten-bit connectors fits inside.
+
+Assisted-by: Claude:claude-opus-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ drivers/gpu/drm/vino/drm_sink.rs              |  8 ++++
+ drivers/gpu/drm/vino/drm_sink/limits.rs       | 37 +++++++++++++++++-
+ drivers/gpu/drm/vino/drm_sink/mode_objects.rs | 39 +++++++++++++++++++
+ drivers/gpu/drm/vino/drm_sink/settings.rs     | 29 ++++++++++++--
+ drivers/gpu/drm/vino/profile.rs               | 11 ++++--
+ 5 files changed, 116 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/gpu/drm/vino/drm_sink.rs b/drivers/gpu/drm/vino/drm_sink.rs
+index 6c46217d795b..535e7d18ff50 100644
+--- a/drivers/gpu/drm/vino/drm_sink.rs
++++ b/drivers/gpu/drm/vino/drm_sink.rs
+@@ -861,6 +861,13 @@ pub(super) struct VinoDrmData {
+     /// Deliberately separate from `connector_ten_bit`: that one says what the framebuffer holds and
+     /// decides how a pixel is decoded, this one says what the dock is told to carry.
+     connector_max_bpc: core::sync::atomic::AtomicU32,
++    /// Connectors whose requested ten-bit link does not fit the dock's shared bandwidth.
++    ///
++    /// Ten bits costs a third more per pixel, so a pair of modes that fits at eight may not fit at
++    /// ten. Refusing the mode is the wrong answer -- a compositor answers `EINVAL` by disabling the
++    /// output rather than choosing a shallower link -- so the depth gives way instead and both
++    /// connectors light at eight bits.
++    connector_deny_ten_bit: core::sync::atomic::AtomicU32,
+     /// Bit `h` set when connector `h`'s connector is being driven with the SMPTE ST 2084 (PQ)
+     /// transfer function, taken from the `HDR_OUTPUT_METADATA` blob userspace attached to it.
+     ///
+@@ -1199,6 +1206,7 @@ pub(super) fn new(
+             ),
+             connector_ten_bit: core::sync::atomic::AtomicU32::new(0),
+             connector_max_bpc: core::sync::atomic::AtomicU32::new(0),
++            connector_deny_ten_bit: core::sync::atomic::AtomicU32::new(0),
+             head_st2084: core::sync::atomic::AtomicU32::new(0),
+             // A dock that names no connector count still has to expose something, so fall back to
+             // the maximum rather than building a card with no connectors at all.
+diff --git a/drivers/gpu/drm/vino/drm_sink/limits.rs b/drivers/gpu/drm/vino/drm_sink/limits.rs
+index be3188323cc3..96d2d8dcf8c2 100644
+--- a/drivers/gpu/drm/vino/drm_sink/limits.rs
++++ b/drivers/gpu/drm/vino/drm_sink/limits.rs
+@@ -129,7 +129,7 @@ pub(super) fn adopt_programmed_mode(
+             .is_ok()
+     }
+ 
+-    /// The dock's total pixel-rate budget shared across all connectors.
++    /// The dock's total pixel-rate budget shared across all connectors, unpriced by depth.
+     ///
+     /// Zero means unknown and disables limiting.
+     pub(super) fn dock_budget(&self) -> u32 {
+@@ -137,6 +137,31 @@ pub(super) fn dock_budget(&self) -> u32 {
+             .load(core::sync::atomic::Ordering::Relaxed)
+     }
+ 
++    /// Whether a commit totalling `combined` pixels per second can be driven at ten bits.
++    ///
++    /// The answer moves the depth rather than refusing the commit: a compositor handed `EINVAL`
++    /// disables the output instead of asking for a shallower link.
++    pub(super) fn ten_bit_fits(&self, combined: u32) -> bool {
++        let raw = self.dock_budget();
++        raw == 0 || combined <= self.budget_at_depth(raw, true)
++    }
++
++    /// A budget priced for a connector driven at ten bits per channel.
++    ///
++    /// The budget was measured with the dock storing three bytes per pixel; ten bits stores four,
++    /// so the same pixel costs a third more. The whole dock is priced at its deepest connector,
++    /// because the bandwidth is shared.
++    ///
++    /// `budget` must be the unpriced [`Self::dock_budget`]. Pricing an already-priced budget leaves
++    /// nine sixteenths of the dock, which no pair of ten-bit connectors fits inside.
++    pub(super) fn budget_at_depth(&self, budget: u32, ten_bit: bool) -> u32 {
++        if budget != 0 && ten_bit {
++            budget / 4 * 3
++        } else {
++            budget
++        }
++    }
++
+     /// Record this dock's pixel-rate budget, refresh ceiling and pixel-clock ceiling.
+     pub(crate) fn set_mode_limits(
+         &self,
+@@ -448,6 +473,16 @@ fn mode_ceilings_bound_bandwidth_not_refresh() {
+             profile::PROFILE_NAVARRO.capabilities.pixel_budget,
+             2 * rate(2560, 1440, 165)
+         );
++        // That pair is admitted at 24 bpp and refused at 30, which is what the hardware does: a
++        // budget large enough to admit it deep leaves both sinks powered off with nothing logged.
++        let price = |budget: u32| budget / 4 * 3;
++        let deep = price(profile::PROFILE_NAVARRO.capabilities.pixel_budget);
++        assert!(2 * rate(2560, 1440, 165) > deep);
++        assert!(2 * rate(2560, 1440, 120) <= deep);
++        // Two 1440p120 connectors fit deep, and stop fitting the moment the price is charged
++        // twice, so a budget priced at the depth being decided withdraws the ten bits that same
++        // pair was just admitted at.
++        assert!(2 * rate(2560, 1440, 120) > price(deep));
+         assert_eq!(rate(65535, 65535, 65535), u32::MAX); // saturates, never wraps small
+         assert_eq!(rate(2560, 1440, -1), 0);
+     }
+diff --git a/drivers/gpu/drm/vino/drm_sink/mode_objects.rs b/drivers/gpu/drm/vino/drm_sink/mode_objects.rs
+index 2e60bd27ab39..fb57d779ed80 100644
+--- a/drivers/gpu/drm/vino/drm_sink/mode_objects.rs
++++ b/drivers/gpu/drm/vino/drm_sink/mode_objects.rs
+@@ -102,6 +102,20 @@ impl crtc::DriverCrtcState for VinoCrtcState {
+     type Crtc = VinoCrtc;
+ }
+ 
++/// Whether a connector state asks for a ten-bit link.
++///
++/// A compositor sets `max bpc` to ten on every connector it can, so the request alone is not the
++/// condition: the vendor moves a link to ten bits when the connector is driven in PQ. A commit
++/// carrying no connector state, which is every page flip, asks for nothing.
++fn asks_for_ten_bits(
++    conn: Option<&kernel::drm::kms::connector::OpaqueConnectorState<VinoDrmDriver>>,
++) -> bool {
++    conn.is_some_and(|conn| {
++        conn.max_requested_bpc() >= 10
++            && conn.hdr_output_eotf() == Some(connector::Eotf::SmpteSt2084)
++    })
++}
++
+ #[vtable]
+ impl crtc::DriverCrtc for VinoCrtc {
+     type Args = u8;
+@@ -133,6 +147,8 @@ fn atomic_check(check: CrtcAtomicCheck<'_, Self>) -> Result {
+         let data: &VinoDrmData = crtc.drm_dev();
+         let budget = data.dock_budget();
+         let (state, old, mut new) = check.take_all();
++        let wants_deep =
++            data.hdr_capable() && asks_for_ten_bits(state.new_connector_state_for_crtc(crtc));
+         // The colour description reaches the dock in the mode-set message, which is only sent from
+         // `atomic_enable`. Toggling HDR on a live output changes nothing the core considers a mode
+         // change, so ask for one: otherwise the compositor starts encoding PQ into a sink that was
+@@ -206,6 +222,15 @@ fn atomic_check(check: CrtcAtomicCheck<'_, Self>) -> Result {
+         }
+         let others = data.other_connectors_rate(&state, connector);
+         let combined = new_rate.saturating_add(others);
++        // Price the dock at the depth this commit drives, and at what its other connectors already
++        // hold, because the bandwidth is shared. Nothing is recorded here: a check also runs for
++        // page flips and for `TEST_ONLY` commits that are never applied, so a depth recorded from
++        // one would move the codec with no mode set to re-state it to the dock.
++        let deep = wants_deep && data.ten_bit_fits(combined);
++        let budget = data.budget_at_depth(
++            budget,
++            deep || data.other_connector_programmed_ten_bit(crtc.connector),
++        );
+         if combined > budget {
+             pr_warn!(
+                 "vino: socket {socket} combined rate {combined} exceeds {budget}\n",
+@@ -253,6 +278,19 @@ fn atomic_enable(commit: CrtcAtomicCommit<'_, Self>) {
+             .new_connector_state_for_crtc(crtc)
+             .map_or(0, |conn| conn.max_requested_bpc());
+         data.set_connector_max_bpc(connector, requested_bpc);
++        // Decide the depth rather than refuse the mode: a pair that fits at eight bits may not fit
++        // at ten, and a compositor answers a rejected mode by disabling the output. Recorded here
++        // and not in the check, so that the decision and the set-mode carrying it are one commit.
++        let combined = if new.active() {
++            let m = new.mode();
++            active_pixel_rate(m.hdisplay(), m.vdisplay(), m.vrefresh())
++        } else {
++            0
++        }
++        .saturating_add(data.other_connectors_rate(&state, connector as usize));
++        let wants_deep =
++            data.hdr_capable() && asks_for_ten_bits(state.new_connector_state_for_crtc(crtc));
++        data.set_connector_ten_bit_denied(connector, wants_deep && !data.ten_bit_fits(combined));
+         // Cache this connector's colour transform for the scanout to apply.
+         data.update_color(connector as usize, new.gamma_lut(), new.ctm());
+         // Whatever this connector's sink state was, the enable path re-runs the full bracket and
+@@ -867,6 +905,7 @@ fn mode_valid(connector: ConnectorModeValidation<'_, Self>, mode: &DisplayMode)
+         }
+         // Reject a mode only when that connector exceeds the dock's whole pixel budget. The atomic
+         // CRTC check enforces the combined rate of simultaneously active connectors.
++        //
+         let budget = data.dock_budget();
+         let connector_rate = active_pixel_rate(mode.hdisplay(), mode.vdisplay(), mode.vrefresh());
+         if budget != 0 && connector_rate > budget {
+diff --git a/drivers/gpu/drm/vino/drm_sink/settings.rs b/drivers/gpu/drm/vino/drm_sink/settings.rs
+index 2d96fd70015e..2142b5f20230 100644
+--- a/drivers/gpu/drm/vino/drm_sink/settings.rs
++++ b/drivers/gpu/drm/vino/drm_sink/settings.rs
+@@ -205,8 +205,8 @@ pub(super) fn connector_buffer_depth(&self, connector: u8) -> crate::video::haar
+     /// Whether this connector's link is driven at ten bits per channel.
+     ///
+     /// True when the framebuffer is already ten-bit, and when userspace asks for a ten-bit link
+-    /// through `max bpc` on a dock that can carry one. An eight-bit surface over a ten-bit link is
+-    /// the ordinary case on every other driver.
++    /// through `max bpc` on a dock that can carry one and is driving the connector in PQ. An
++    /// eight-bit surface over a ten-bit link is the ordinary case on every other driver.
+     ///
+     /// This is the decision, not the depth in force. Read it only where a mode set carries the
+     /// answer to the dock; everything else wants [`Self::connector_programmed_ten_bit`].
+@@ -214,9 +214,32 @@ pub(super) fn connector_wire_ten_bit(&self, connector: u8) -> bool {
+         if self.connector_ten_bit.load(Ordering::Acquire) & (1u32 << u32::from(connector)) != 0 {
+             return true;
+         }
++        if self.connector_deny_ten_bit.load(Ordering::Acquire) & (1u32 << u32::from(connector)) != 0
++        {
++            return false;
++        }
+         let shift = u32::from(connector) * 4;
+         let requested = (self.connector_max_bpc.load(Ordering::Acquire) >> shift) & 0xf;
+-        self.hdr_capable() && requested >= 10
++        self.hdr_capable() && requested >= 10 && self.connector_is_st2084(connector as usize)
++    }
++
++    /// Record whether this connector's ten-bit link fits the dock's shared bandwidth.
++    pub(super) fn set_connector_ten_bit_denied(&self, connector: u8, denied: bool) {
++        let bit = 1u32 << u32::from(connector);
++        if denied {
++            self.connector_deny_ten_bit.fetch_or(bit, Ordering::Release);
++        } else {
++            self.connector_deny_ten_bit
++                .fetch_and(!bit, Ordering::Release);
++        }
++    }
++
++    /// Whether any connector other than `connector` is programmed at ten bits per channel.
++    ///
++    /// The dock's bandwidth is shared, so a commit is priced at the dock's deepest connector.
++    pub(super) fn other_connector_programmed_ten_bit(&self, connector: u8) -> bool {
++        (0..self.connector_count())
++            .any(|c| c as u8 != connector && self.connector_programmed_ten_bit(c as u8))
+     }
+ 
+     /// Whether the mode this connector was last programmed with drives ten bits per channel.
+diff --git a/drivers/gpu/drm/vino/profile.rs b/drivers/gpu/drm/vino/profile.rs
+index abb694326131..ee0fbda084d1 100644
+--- a/drivers/gpu/drm/vino/profile.rs
++++ b/drivers/gpu/drm/vino/profile.rs
+@@ -244,10 +244,13 @@ pub(crate) struct Capabilities {
+     pub(crate) max_connector_clock_khz: u32,
+     /// Dock-wide pixel-rate budget in pixels per second, shared across all connectors.
+     ///
+-    /// The DL7400's is the dual-connector rate DLM was measured sustaining. Ridge's is the highest
+-    /// combined rate measured driving cleanly, 2560x1440p144 beside 2560x1440p120. That is a floor
+-    /// on the dock's real ceiling rather than the ceiling itself: no pair of sinks to hand can ask
+-    /// for more, so what lies above it is untested.
++    /// The DL7400's is the dual-connector rate DLM was measured sustaining, and it is also what
++    /// bounds the depth: three quarters of it is what a 30 bpp connector is priced against, which
++    /// puts two connectors at 2560x1440p165 outside 30 bpp. Raising it to the dock's rated
++    /// four-connector 4K60 load admits that pair and the sinks then power off with nothing logged,
++    /// so the rated figure is not a bound this budget can borrow. Ridge's is the highest combined
++    /// rate measured driving cleanly, 2560x1440p144 beside 2560x1440p120. Both are floors on the
++    /// dock's real ceiling rather than the ceiling itself.
+     ///
+     /// Do not mistake DLM's declared per-connector `pixel_per_second_limit` for the bound. It
+     /// clamps every Ridge connector to 120 Hz as policy, and the dock drives a single connector a

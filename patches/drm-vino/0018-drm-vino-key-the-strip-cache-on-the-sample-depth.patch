@@ -1,0 +1,49 @@
+From c0fd4195dcc2fbe50bca7341addddffd3ad1a725 Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Tue, 25 Aug 2026 21:54:28 +0100
+Subject: [PATCH] drm/vino: key the strip cache on the sample depth
+
+An encoded strip body is reused whenever the framebuffer pixels behind it are
+unchanged, guarded by a tag naming everything else the encoded bytes depend
+on. The tag carried the colour transform but not the sample depth, and depth
+is the same hazard in a sharper form: changing it re-maps every sample on the
+way into the codec and moves the escape ceiling while leaving the framebuffer
+byte for byte identical. The content hash therefore matched, the tag matched,
+and bodies encoded at the old depth went out inside a stream declared at the
+new one.
+
+Fold the depth into the tag.
+
+Assisted-by: Claude:claude-opus-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ drivers/gpu/drm/vino/drm_sink/scanout.rs | 16 +++++++++++++---
+ 1 file changed, 13 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/gpu/drm/vino/drm_sink/scanout.rs b/drivers/gpu/drm/vino/drm_sink/scanout.rs
+index 94097dbc1a27..de29847bfd2b 100644
+--- a/drivers/gpu/drm/vino/drm_sink/scanout.rs
++++ b/drivers/gpu/drm/vino/drm_sink/scanout.rs
+@@ -1115,9 +1115,19 @@ fn encode_and_send_haar(
+     // What the encoded bytes depend on besides the strip pixels themselves; see
+     // `StripHashState::tag`. Identity rotation is a precondition of caching at all, so it needs no
+     // representation here.
+-    let gamma_tag = match &src.color {
+-        Some(pipeline) => pipeline.tag(),
+-        None => 0,
++    let gamma_tag = {
++        let gamma = match &src.color {
++            Some(pipeline) => pipeline.tag(),
++            None => 0,
++        };
++        // The sample depth belongs here for the same reason gamma does, and is the more dangerous
++        // of the two: changing it re-maps every sample on the way into the codec and moves the
++        // escape ceiling, while leaving the framebuffer byte for byte identical. A cache keyed on
++        // the raw pixels alone therefore serves bodies encoded at the old depth inside a stream
++        // declared at the new one, and the dock decodes half a frame correctly and the rest as
++        // noise.
++        let deep = matches!(src.depth, crate::video::haar::Depth::Ten);
++        gamma ^ (u64::from(deep) << 63) ^ (u64::from(deep) * 0x9e37_79b9_7f4a_7c15)
+     };
+     // Strips carried over verbatim from the previous frame's encode, and the strips actually
+     // handed to the codec; kept for the post-send cache publish below.

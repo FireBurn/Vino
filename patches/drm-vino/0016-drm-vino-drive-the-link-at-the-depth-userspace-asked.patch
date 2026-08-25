@@ -1,6 +1,6 @@
-From b98fa8b6ef814fc8aaf02b7dcff89eb1fbd7cad0 Mon Sep 17 00:00:00 2001
+From 1357a134b38c18e5846a7745be0c26ead6262558 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
-Date: Mon, 24 Aug 2026 18:51:55 +0100
+Date: Tue, 25 Aug 2026 21:52:57 +0100
 Subject: [PATCH] drm/vino: drive the link at the depth userspace asked for
 
 The sample depth the dock was told to carry came from the committed
@@ -21,13 +21,21 @@ Widening replicates the top bits into the low ones rather than shifting, so
 both endpoints stay exact: a plain shift leaves full white three codes short
 and tints every highlight.
 
+The codec reads the depth back from the mode the connector was last programmed
+with, not from the request. The two agree at a mode set and nowhere else: the
+framebuffer's format is recorded on every page flip, so a request that moves
+between mode sets would leave the encoder coding against escape ceilings the
+dock was never told about, which it answers by reconstructing every sharp edge
+from a truncated magnitude.
+
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/drm_sink/mode_objects.rs | 13 +++-
- drivers/gpu/drm/vino/drm_sink/scanout.rs      | 62 ++++++++++++++++++-
- drivers/gpu/drm/vino/drm_sink/settings.rs     | 55 +++++++++++++++-
- 3 files changed, 123 insertions(+), 7 deletions(-)
+ drivers/gpu/drm/vino/drm_sink/scanout.rs      | 62 +++++++++++++++-
+ drivers/gpu/drm/vino/drm_sink/settings.rs     | 73 ++++++++++++++++++-
+ drivers/gpu/drm/vino/drm_sink/stream.rs       | 11 +--
+ 4 files changed, 143 insertions(+), 16 deletions(-)
 
 diff --git a/drivers/gpu/drm/vino/drm_sink/mode_objects.rs b/drivers/gpu/drm/vino/drm_sink/mode_objects.rs
 index a53de7a7a7d4..2e60bd27ab39 100644
@@ -177,7 +185,7 @@ index 68f9e689629b..94097dbc1a27 100644
      ///
      /// The rectangle list is an intermediate representation between the per-strip hash comparison
 diff --git a/drivers/gpu/drm/vino/drm_sink/settings.rs b/drivers/gpu/drm/vino/drm_sink/settings.rs
-index 9fd13c9a4347..91763b7a05c9 100644
+index 9fd13c9a4347..2d96fd70015e 100644
 --- a/drivers/gpu/drm/vino/drm_sink/settings.rs
 +++ b/drivers/gpu/drm/vino/drm_sink/settings.rs
 @@ -144,7 +144,7 @@ pub(crate) fn split_full_packet_frame(&self) -> bool {
@@ -189,10 +197,11 @@ index 9fd13c9a4347..91763b7a05c9 100644
      }
  
      /// Whether `connector`'s connector is being driven in PQ; see [`Self::set_connector_st2084`].
-@@ -166,13 +166,64 @@ pub(super) fn set_connector_st2084(&self, connector: u8, on: bool) {
+@@ -166,13 +166,80 @@ pub(super) fn set_connector_st2084(&self, connector: u8, on: bool) {
          }
      }
  
+-    /// This device's codec geometry at one connector's committed sample depth.
 +    /// Record the link depth userspace asked this connector to carry.
 +    ///
 +    /// Four bits per connector is enough for every value `max bpc` takes, and keeping them in one
@@ -231,11 +240,13 @@ index 9fd13c9a4347..91763b7a05c9 100644
 +
 +    /// Whether this connector's link is driven at ten bits per channel.
 +    ///
-+    /// True when the framebuffer is already ten-bit, and also when userspace asked for a ten-bit
-+    /// link through `max bpc` on a dock that can carry one. An eight-bit surface over a ten-bit
-+    /// link is the ordinary case on every other driver, and refusing it here is what left a
-+    /// connector driven in PQ at eight bits with nothing reporting why.
-+    fn connector_wire_ten_bit(&self, connector: u8) -> bool {
++    /// True when the framebuffer is already ten-bit, and when userspace asks for a ten-bit link
++    /// through `max bpc` on a dock that can carry one. An eight-bit surface over a ten-bit link is
++    /// the ordinary case on every other driver.
++    ///
++    /// This is the decision, not the depth in force. Read it only where a mode set carries the
++    /// answer to the dock; everything else wants [`Self::connector_programmed_ten_bit`].
++    pub(super) fn connector_wire_ten_bit(&self, connector: u8) -> bool {
 +        if self.connector_ten_bit.load(Ordering::Acquire) & (1u32 << u32::from(connector)) != 0 {
 +            return true;
 +        }
@@ -244,14 +255,51 @@ index 9fd13c9a4347..91763b7a05c9 100644
 +        self.hdr_capable() && requested >= 10
 +    }
 +
-     /// This device's codec geometry at one connector's committed sample depth.
++    /// Whether the mode this connector was last programmed with drives ten bits per channel.
++    ///
++    /// The depth the dock is decoding at, so the only one the codec may encode at and the only one
++    /// the set-mode and the decoder configuration may state. Deliberately not
++    /// [`Self::connector_wire_ten_bit`], which moves between mode sets.
++    pub(super) fn connector_programmed_ten_bit(&self, connector: u8) -> bool {
++        self.last_timing
++            .lock()
++            .get(connector as usize)
++            .copied()
++            .flatten()
++            .is_some_and(|t| t.ten_bit)
++    }
++
++    /// This device's codec geometry at one connector's programmed sample depth.
      ///
      /// Every path that touches pixels wants this rather than [`Self::geometry`]: the depth decides
      /// the entropy coder's escape ceiling, and getting it wrong desynchronises the dock's decoder
      /// rather than merely degrading the picture. See [`crate::video::haar::Depth`].
      pub(super) fn geometry_for_connector(&self, connector: u8) -> crate::video::haar::Geometry {
 -        let ten = self.connector_ten_bit.load(Ordering::Acquire) & (1 << u32::from(connector)) != 0;
-+        let ten = self.connector_wire_ten_bit(connector);
++        let ten = self.connector_programmed_ten_bit(connector);
          self.geometry().with_depth(if ten {
              crate::video::haar::Depth::Ten
          } else {
+diff --git a/drivers/gpu/drm/vino/drm_sink/stream.rs b/drivers/gpu/drm/vino/drm_sink/stream.rs
+index 7b1f9ec568d6..1adb37de980e 100644
+--- a/drivers/gpu/drm/vino/drm_sink/stream.rs
++++ b/drivers/gpu/drm/vino/drm_sink/stream.rs
+@@ -208,15 +208,10 @@ pub(super) fn send_stream_config(&self, dev: &BoundInterface<'_>, connector: u8)
+     /// whose 1080-line modes are stated as 1088.
+     /// Whether this connector is being driven at 30 bpp.
+     ///
+-    /// The decoder configuration and the set-mode both state the depth, and both read it here so
+-    /// that they cannot disagree.
++    /// The decoder configuration, the set-mode and the codec all state the depth, and all read it
++    /// from [`Self::connector_programmed_ten_bit`] so that they cannot disagree.
+     fn connector_ten_bit(&self, connector: usize) -> bool {
+-        self.last_timing
+-            .lock()
+-            .get(connector)
+-            .copied()
+-            .flatten()
+-            .is_some_and(|t| t.ten_bit)
++        u8::try_from(connector).is_ok_and(|c| self.connector_programmed_ten_bit(c))
+     }
+ 
+     fn stream_mode_header(&self, connector: usize) -> Result<[u8; 26]> {

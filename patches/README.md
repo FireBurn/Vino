@@ -17,7 +17,7 @@ series and others -- which are dependencies to base on, never patches to post.
 | `rust-drm` | 25 | rust-core |
 | `rust-firmware` | 1 | rust-core |
 | `drm-tyr` | 1 | none |
-| `drm-vino` | 17 | rust-core, rust-crypto, rust-usb, rust-drm, rust-firmware |
+| `drm-vino` | 19 | rust-core, rust-crypto, rust-usb, rust-drm, rust-firmware |
 | `drm-evdi` | 1 | rust-core, rust-drm |
 
 Apply order is the table order. Base: `integration/base-20260809`.
