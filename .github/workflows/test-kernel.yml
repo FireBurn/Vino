@@ -103,6 +103,10 @@ jobs:
           fi
 
           echo "release=$(make -s LLVM=$LLVM_SUFFIX kernelrelease)" >> "$GITHUB_OUTPUT"
+          # The deb package name is already linux-image-$(KERNELRELEASE), so putting the release
+          # in the version too prints it twice in every filename. Debian's own kernels carry the
+          # upstream version there instead; "~rc" so a release candidate sorts below the release.
+          echo "version=$(make -s kernelversion | sed 's/-rc/~rc/')" >> "$GITHUB_OUTPUT"
           echo "base=$base" >> "$GITHUB_OUTPUT"
 
       - name: Build the kernel
@@ -114,7 +118,7 @@ jobs:
       - name: Build the deb
         working-directory: linux
         env:
-          KDEB_PKGVERSION: ${{ steps.cfg.outputs.release }}-1
+          KDEB_PKGVERSION: ${{ steps.cfg.outputs.version }}-1
         run: make LLVM=$LLVM_SUFFIX -j"$(nproc)" bindeb-pkg
 
       - name: Build the rpm
