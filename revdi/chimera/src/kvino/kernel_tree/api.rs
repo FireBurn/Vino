@@ -227,18 +227,34 @@ pub fn stream_manage_restatement(dock: DockProfile, counter: u16, head: u8) -> R
     .into_vec())
 }
 
-/// The fresh per-head `rrx` from an `AKE_Send_rrx` push, if this frame is one.
+/// `cp::connector_marker` -- address a restatement to one downstream connector.
 ///
-/// The kernel decodes every downstream-HDCP push through one parser and dispatches on the HDCP
-/// message id; the rig needs only `AKE_Send_rrx` (`0x06`), whose payload starts with the eight
-/// `rrx` bytes.
-pub fn perhead_rrx(ks: &[u8; 16], out_riv: &[u8; 8], wire: &[u8]) -> Option<[u8; 8]> {
+/// Two encodings, and the profile decides which: a dock that selects its connectors one-hot sets a
+/// flag byte at the connector's own offset, and the rest write a one-based index one byte further
+/// in. A record carrying the wrong one still acknowledges, so the only symptom is that the dock
+/// never answers the authentication the record was supposed to start.
+pub fn connector_marker(dock: DockProfile, content: &mut [u8], head: u8) {
+    cp::connector_marker(content, head, dock.profile.protocol.per_connector_onehot)
+}
+
+/// A downstream-HDCP push from the dock: its message id and payload.
+///
+/// The kernel decodes every such push through one parser and dispatches on the message id. A
+/// caller that recognises only one id has to guess when the rest have gone by, which is what
+/// leaves a connector's authentication reading replies one or more frames stale.
+pub fn perhead_push(ks: &[u8; 16], out_riv: &[u8; 8], wire: &[u8]) -> Option<(u8, Vec<u8>)> {
     let push = cp::per_connector_hdcp_push(ks, out_riv, wire)?;
-    if push.msg_id != 0x06 || push.payload_len < 8 {
+    Some((push.msg_id, push.payload[..push.payload_len].to_vec()))
+}
+
+/// The fresh per-head `rrx` from an `AKE_Send_rrx` push, if this frame is one.
+pub fn perhead_rrx(ks: &[u8; 16], out_riv: &[u8; 8], wire: &[u8]) -> Option<[u8; 8]> {
+    let (msg_id, payload) = perhead_push(ks, out_riv, wire)?;
+    if msg_id != ake::id::AKE_SEND_RRX || payload.len() < 8 {
         return None;
     }
     let mut rrx = [0u8; 8];
-    rrx.copy_from_slice(&push.payload[..8]);
+    rrx.copy_from_slice(&payload[..8]);
     Some(rrx)
 }
 
@@ -260,6 +276,9 @@ pub struct DockProfile {
     /// Whether the frames being built are the ones that open a stream; see
     /// [`DockProfile::opening`].
     opening: bool,
+    /// Whether this connector's link is being driven at ten bits per channel; see
+    /// [`DockProfile::ten_bit`].
+    ten_bit: bool,
 }
 
 impl DockProfile {
@@ -270,6 +289,7 @@ impl DockProfile {
     pub fn for_family(family: Family) -> Option<Self> {
         profile::for_family(family).map(|profile| Self {
             profile,
+            ten_bit: false,
             opening: false,
         })
     }
@@ -285,6 +305,28 @@ impl DockProfile {
             opening: true,
             ..self
         }
+    }
+
+    /// The same dock with this connector's link driven at ten bits per channel.
+    ///
+    /// The depth is not a flag on the wire but a set of agreements: the DMA format, the colour
+    /// depth word, the framebuffer allocation, and the escape ceiling of every plane in the entropy
+    /// coder. They are stated from here so that they cannot be set apart from one another.
+    pub fn ten_bit(self) -> Self {
+        Self {
+            ten_bit: true,
+            ..self
+        }
+    }
+
+    /// Whether this dock is being driven at ten bits per channel.
+    pub fn is_ten_bit(&self) -> bool {
+        self.ten_bit
+    }
+
+    /// Whether this dock can carry ten bits per channel at all.
+    pub fn hdr_capable(&self) -> bool {
+        self.profile.capabilities.hdr_capable
     }
 
     /// The same dock once its stream is past that opening.
@@ -314,6 +356,7 @@ impl DockProfile {
     pub fn for_product(product: u16) -> Option<Self> {
         profile::for_product(product).map(|profile| Self {
             profile,
+            ten_bit: false,
             opening: false,
         })
     }
@@ -524,12 +567,27 @@ impl DockProfile {
         self.profile.protocol.reports_presence
     }
 
+    /// Whether this dock selects a downstream connector one-hot, and answers its authentication
+    /// with a push per step rather than with whatever happens to be queued.
+    pub fn per_connector_onehot(&self) -> bool {
+        self.profile.protocol.per_connector_onehot
+    }
+
+    /// The platform's `strm2` marker byte. A per-platform constant, not a connector count.
+    pub fn strm2_marker(&self) -> u8 {
+        self.profile.protocol.strm2_marker
+    }
+
     /// This dock's codec geometry.
     ///
-    /// Chimera feeds 8-bit packed RGB, so this is the profile's own geometry unchanged; a 10-bit
-    /// feeder would carry `Depth::Ten` here, which is what moves the codec's escape ceilings.
+    /// The depth belongs here because it moves the entropy coder's escape ceilings, and a ceiling
+    /// the dock was not told about does not degrade the picture: it desynchronises the decoder.
     pub(crate) fn geometry(&self) -> video::haar::Geometry {
-        let geometry = self.profile.geometry();
+        let geometry = self.profile.geometry().with_depth(if self.ten_bit {
+            video::haar::Depth::Ten
+        } else {
+            video::haar::Depth::Eight
+        });
         if self.opening {
             geometry.opening()
         } else {
@@ -566,14 +624,26 @@ pub fn colour_strip_from_planes(
 /// A packed 8-bit RGB reader over `width*height*3` bytes in R,G,B raster order.
 ///
 /// The codec takes code words at the plane's own depth, so each channel widens unchanged.
-fn rgb_reader(width: usize, rgb: &[u8]) -> impl FnMut(usize, usize) -> (u16, u16, u16) + '_ {
+/// Read packed 8-bit RGB as samples of the depth the link is being driven at.
+///
+/// Widening replicates the top bits into the low ones rather than shifting, so both endpoints stay
+/// exact: a plain shift leaves full white three codes short and tints every highlight.
+fn rgb_reader(
+    ten_bit: bool,
+    width: usize,
+    rgb: &[u8],
+) -> impl FnMut(usize, usize) -> (u16, u16, u16) + '_ {
+    let widen = move |v: u8| -> u16 {
+        let v = u16::from(v);
+        if ten_bit {
+            (v << 2) | (v >> 6)
+        } else {
+            v
+        }
+    };
     move |x, y| {
         let i = (y * width + x) * 3;
-        (
-            u16::from(rgb[i]),
-            u16::from(rgb[i + 1]),
-            u16::from(rgb[i + 2]),
-        )
+        (widen(rgb[i]), widen(rgb[i + 1]), widen(rgb[i + 2]))
     }
 }
 
@@ -609,7 +679,7 @@ pub fn colour_frame_ep08_head(
         width,
         height,
         head,
-        rgb_reader(width, rgb),
+        rgb_reader(dock.ten_bit, width, rgb),
     )?))
 }
 
@@ -641,7 +711,7 @@ pub fn encode_strip(
     sx: usize,
     sy: usize,
 ) -> Result<Vec<u8>> {
-    let mut px = rgb_reader(width, rgb);
+    let mut px = rgb_reader(dock.ten_bit, width, rgb);
     Ok(video::haar::colour_strip_at(dock.geometry(), sx, sy, &mut px)?.into_vec())
 }
 
@@ -770,8 +840,12 @@ pub fn set_mode_profile(
         _ => return Err(kernel::error::code::EOPNOTSUPP),
     };
     let mode = kernel::drm::kms::modes::DisplayMode(raw);
-    // Chimera's frame feeder is 8-bit packed RGB, so the timing is programmed for 24 bpp.
-    let timing = cp::timing_from_drm_mode(&mode, &dock.profile.protocol.allocation, false)?;
+    let mut timing =
+        cp::timing_from_drm_mode(&mode, &dock.profile.protocol.allocation, dock.ten_bit)?;
+    // A ten-bit link on this hardware is an HDR one: the depth and the transfer function are the
+    // pair the dock's flags word carries, and stating one without the other drives a sink in PQ at
+    // eight bits or at ten bits with an SDR curve.
+    timing.st2084 = dock.ten_bit;
     Ok(cp::set_mode(counter, head, &timing)?.into_vec())
 }
 
@@ -794,7 +868,7 @@ pub fn video_arm_burst(
         pad(width, geom.strip_w()),
         pad(height, geom.strip_h()),
         dock.profile.protocol.layout_word,
-        false,
+        dock.ten_bit,
     );
     let mut output = Vec::with_capacity(2560);
     let mut seal_seq = 0;
@@ -859,8 +933,7 @@ fn stream_mode_header(dock: DockProfile, width: u16, height: u16) -> [u8; 26] {
         pad(width, geom.strip_w()),
         pad(height, geom.strip_h()),
         dock.profile.protocol.layout_word,
-        // Chimera's frame feeder is 8-bit packed RGB, so a connector is never opened for 30 bpp.
-        false,
+        dock.ten_bit,
     )
 }
 

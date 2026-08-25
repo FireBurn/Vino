@@ -17,6 +17,13 @@ const HDCP_HPRIME_WAIT: Duration = Duration::from_micros(165_000);
 /// How long to keep draining EP84 for the reply that echoes a request's counter. The driver allows
 /// the same 64 ms before calling a probe round unanswered.
 const PROBE_REPLY_DEADLINE: Duration = Duration::from_millis(64);
+/// How long to wait on a single EP84 read while a downstream connector is authenticating.
+///
+/// The driver's own per-connector wait. A dock that answers each step with a push takes longer than
+/// the ordinary reply timeout to produce one, so the shorter value reads empty and moves on.
+const PERHEAD_READ_WAIT: Duration = Duration::from_millis(30);
+/// How long to keep waiting for the push a step expects before giving up on it.
+const PERHEAD_PUSH_WAIT: Duration = Duration::from_millis(480);
 /// Frames to drain from EP84 after each control message, matching the kernel driver's
 /// `drain_ep84`. The dock queues unprompted pushes alongside acknowledgements.
 const EP84_DRAIN_READS: usize = 16;
@@ -92,6 +99,14 @@ impl ControlSession {
         })
         .map_err(|e| format!("open DisplayLink dock: {e}"))?;
         let profile = placed.expect("a placed device carries its profile");
+        // Drive the link as deep as the dock can carry. The depth reaches the dock through the
+        // set-mode, the decoder configuration and the codec's escape ceilings, and this is the one
+        // place that decides it so those three cannot disagree.
+        let profile = if profile.hdr_capable() {
+            profile.ten_bit()
+        } else {
+            profile
+        };
         device_open_preamble(&dock)?;
         session_init(&dock)?;
         let mut keys = authenticate(&dock)?;
@@ -280,13 +295,59 @@ impl ControlSession {
     /// the first picture. Sending one dock's sequence to another is not a degraded picture -- it is
     /// a dock that accepts every byte of every frame and lights nothing, or one that resets itself
     /// a few seconds later.
+    /// Program every connector this dock should be driving, in one reconfiguration.
+    ///
+    /// A dock that reconfigures itself whole cannot have one connector programmed while another is
+    /// lit: doing so resets it and takes the desktop with it. So every lit connector comes down
+    /// first and the whole set is programmed from dark, which is what the vendor does and what
+    /// `activate_mode` declines to do on its own.
+    pub fn activate_modes(&mut self, requests: &[(u8, usize, usize, u32)]) -> Result<(), String> {
+        for head in 0..MAX_CONNECTORS {
+            if self.mode_active[head] {
+                let (width, height) = self.programmed_mode[head];
+                self.deactivate_mode(head as u8, usize::from(width), usize::from(height))?;
+            }
+        }
+        for &(head, width, height, refresh_hz) in requests {
+            self.program_mode(head, width, height, refresh_hz)?;
+        }
+        Ok(())
+    }
+
+    /// Program one connector's mode.
+    ///
+    /// `Ok(false)` means the dock declined it rather than that anything failed: see the
+    /// dock-wide guard below.
     pub fn activate_mode(
         &mut self,
         head: u8,
         width: usize,
         height: usize,
         refresh_hz: u32,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
+        // On a dock that reconfigures itself whole, one connector cannot be programmed while
+        // another is lit. Say so rather than resetting the dock; the caller gathers the whole set
+        // and comes back through `activate_modes`.
+        if self.profile.dock_wide_modeset()
+            && self
+                .mode_active
+                .iter()
+                .enumerate()
+                .any(|(other, active)| *active && other != usize::from(head))
+        {
+            return Ok(false);
+        }
+        self.program_mode(head, width, height, refresh_hz)
+    }
+
+    /// Program one connector's mode, with no regard for what else this dock is driving.
+    fn program_mode(
+        &mut self,
+        head: u8,
+        width: usize,
+        height: usize,
+        refresh_hz: u32,
+    ) -> Result<bool, String> {
         let width16 = u16::try_from(width).map_err(|_| "mode width exceeds the wire format")?;
         let height16 = u16::try_from(height).map_err(|_| "mode height exceeds the wire format")?;
         let refresh16 =
@@ -295,22 +356,6 @@ impl ControlSession {
         let (video_key, video_nonce) = self
             .video_key(head_index)
             .ok_or_else(|| format!("invalid Vino head {head}"))?;
-        // On a dock that reconfigures itself whole, programming this connector while another is
-        // lit resets the dock and takes the desktop with it. Every lit connector has to be
-        // gathered and committed together, which this service does not do yet, so it declines
-        // rather than doing the thing that resets the dock.
-        if self.profile.dock_wide_modeset()
-            && self
-                .mode_active
-                .iter()
-                .enumerate()
-                .any(|(other, active)| *active && other != head_index)
-        {
-            return Err(format!(
-                "head {head} cannot be programmed while another connector on this dock is lit: \
-                 the dock reconfigures whole and a per-connector mode set resets it"
-            ));
-        }
         let (padded_width, padded_height) = self.padded(width, height);
         // Every frame here opens the stream, so none of them carries the steady-state record bit.
         let opening_profile = self.profile.opening();
@@ -438,7 +483,7 @@ impl ControlSession {
         // The dock now holds the black training carrier, not a desktop, so the next presented frame
         // must be a full keyframe whatever the compositor changed.
         self.scanout[head_index].owe_keyframe();
-        Ok(())
+        Ok(true)
     }
 
     /// Encode and present one padded RGB frame, sending only what the dock still needs.
@@ -945,8 +990,9 @@ fn configure_control(
     // Bounded by what the device backs, not by an array size: a dock with fewer connectors must
     // not be sent per-head setup for connectors it does not have.
     let mut video_keys = [[0u8; 24]; MAX_CONNECTORS];
+    let mut authenticated = [false; MAX_CONNECTORS];
     for head in 0..dock.connectors() {
-        configure_head(
+        authenticated[head] = configure_head(
             dock,
             profile,
             keys,
@@ -956,15 +1002,21 @@ fn configure_control(
             &mut video_keys[head],
             &mut acknowledgements,
         )?;
+        if !authenticated[head] {
+            eprintln!("chimera: socket {} has no downstream sink", head + 1);
+        }
     }
 
     // Three finalization messages per head, head-major, exactly as the driver repeats
-    // `CP_SETUP_FINALIZE_STEPS` for each connector that authenticated.
-    let finalize = (0..dock.connectors() as u8).flat_map(|head| {
-        kvino::CP_SETUP_FINALIZE_STEPS
-            .iter()
-            .map(move |&(id, sub)| (id, sub, head))
-    });
+    // `CP_SETUP_FINALIZE_STEPS` for each connector that authenticated. A connector that never
+    // authenticated has nothing to finalise.
+    let finalize = (0..dock.connectors() as u8)
+        .filter(|head| authenticated[*head as usize])
+        .flat_map(|head| {
+            kvino::CP_SETUP_FINALIZE_STEPS
+                .iter()
+                .map(move |&(id, sub)| (id, sub, head))
+        });
     for (id, sub, selector) in finalize {
         let mut content = [0; 32];
         content[..2].copy_from_slice(&id.to_le_bytes());
@@ -1012,6 +1064,25 @@ fn commit_video_engine(dock: &Dock) -> Result<(), String> {
     Ok(())
 }
 
+/// The downstream-HDCP push a dock that answers per step sends back for setup message `index`.
+///
+/// Steps past the authentication exchange are acknowledged rather than pushed to, so they have no
+/// expected id and are drained as before.
+fn perhead_expected_push(index: usize) -> Option<u8> {
+    use kvino::ake::id;
+    /// DisplayLink's `AKE_Receiver_Info`, the dock's answer to the transmitter info this sends.
+    const AKE_RECEIVER_INFO: u8 = 0x14;
+    Some(match index {
+        0 => id::AKE_SEND_CERT,
+        1 => AKE_RECEIVER_INFO,
+        2 => id::AKE_SEND_RRX,
+        3 => id::LC_SEND_L_PRIME,
+        4 => id::REPEATERAUTH_SEND_RECEIVERID_LIST,
+        5 => id::RECEIVER_AUTH_STATUS,
+        _ => return None,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn configure_head(
     dock: &Dock,
@@ -1022,7 +1093,7 @@ fn configure_head(
     inner_counter: &mut u16,
     video_key: &mut [u8; 24],
     acknowledgements: &mut usize,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let mut rtx = [0; 8];
     let mut km = [0; 16];
     let mut rn = [0; 8];
@@ -1043,7 +1114,14 @@ fn configure_head(
     let mut v_ack = None;
     for (index, (id, sub, content_len)) in kvino::CP_SETUP_PER_HEAD.into_iter().enumerate() {
         if index >= 3 && encrypted_session_key.is_none() {
-            let rrx = receiver_random.ok_or("downstream receiver did not provide Rrx")?;
+            // No Rrx means this connector never began a downstream authentication, which is what an
+            // empty DisplayPort socket looks like: the vendor runs one AKE for the dock and none for
+            // a connector with no sink. Leave the connector unauthenticated and carry on, rather
+            // than failing the device -- aborting here took the whole dock down whenever a single
+            // socket was empty, so a dock with a monitor on one connector never came up at all.
+            let Some(rrx) = receiver_random else {
+                return Ok(false);
+            };
             let kd = kvino::derive_kd(&km, &rtx, &rrx).map_err(build_error("derive head kd"))?;
             encrypted_session_key = Some(
                 kvino::compute_eks(&km, &rtx, &rrx, &rn, &raw_video_key)
@@ -1065,7 +1143,7 @@ fn configure_head(
             content[4..6].copy_from_slice(&inner_counter.to_le_bytes());
             match index {
                 0..=5 => {
-                    content[23] = head + 1;
+                    kvino::connector_marker(profile, &mut content, head);
                     content[27] = [0x02, 0x13, 0x04, 0x09, 0x0b, 0x0f][index];
                     match index {
                         0 => {
@@ -1104,7 +1182,9 @@ fn configure_head(
                 7 => kvino::rng::fill(&mut content[22..]),
                 8 => {
                     content[22] = head;
-                    content[24] = 0x06;
+                    // A per-platform constant, not a connector count: two-connector docks send
+                    // 0x06 and 0x10, and the four-connector one sends 0x0c.
+                    content[24] = profile.strm2_marker();
                     content[25] = head * 4;
                     content[26] = 0x04;
                     kvino::rng::fill(&mut content[27..]);
@@ -1121,20 +1201,55 @@ fn configure_head(
         // so reading a single reply per message leaves the rest queued and every later read is one
         // or more frames stale. That desynchronisation is what made head 1 miss its Rrx while head
         // 0, which happened to receive its push inside the index-2 burst, succeeded.
+        //
+        // A dock that answers each step with a push of its own is waited on for the push that step
+        // expects, rather than for whatever arrives inside one short window. Its replies are the
+        // slower of the two by more than a drain's worth of timeout, so a blind drain returns empty
+        // and the authentication fails at the first field it needed.
+        let expected = if profile.per_connector_onehot() {
+            perhead_expected_push(index)
+        } else {
+            None
+        };
+        let deadline = Instant::now() + PERHEAD_PUSH_WAIT;
+        let mut seen = None;
         for _ in 0..EP84_DRAIN_READS {
-            let Some(reply) = receive_optional(dock, Duration::from_millis(10))? else {
-                break;
+            let Some(reply) = receive_optional(dock, PERHEAD_READ_WAIT)? else {
+                if expected.is_none() || Instant::now() >= deadline {
+                    break;
+                }
+                continue;
             };
-            receiver_random = receiver_random
-                .or_else(|| kvino::perhead_rrx(&keys.control_key, &keys.control_nonce, &reply));
+            if let Some((msg_id, payload)) =
+                kvino::perhead_push(&keys.control_key, &keys.control_nonce, &reply)
+            {
+                if msg_id == kvino::ake::id::AKE_SEND_RRX && payload.len() >= 8 && receiver_random.is_none() {
+                    let mut rrx = [0u8; 8];
+                    rrx.copy_from_slice(&payload[..8]);
+                    receiver_random = Some(rrx);
+                }
+                seen = Some(msg_id);
+                if expected == Some(msg_id) {
+                    break;
+                }
+                continue;
+            }
             if is_control_ack(&reply) {
                 *acknowledgements += 1;
             }
         }
+        if let (Some(want), None) = (expected, seen.filter(|id| expected == Some(*id))) {
+            // Not fatal on its own: an empty connector answers nothing at all, and the caller
+            // decides that from the missing Rrx rather than from any single step.
+            eprintln!("chimera: head {head} step {index} expected HDCP push {want:#04x}, none arrived");
+        }
         if index == 2 {
+            // The dock computes H' before it will answer anything else, and the wait is the
+            // vendor's own. Skipping it because this step's own push already arrived sends LC_Init
+            // into a dock still finishing the AKE, which then answers no L' at all.
             wait_until(sent_at, HDCP_HPRIME_WAIT);
             for _ in 0..EP84_DRAIN_READS {
-                let Some(reply) = receive_optional(dock, Duration::from_millis(10))? else {
+                let Some(reply) = receive_optional(dock, PERHEAD_READ_WAIT)? else {
                     break;
                 };
                 receiver_random = receiver_random
@@ -1149,7 +1264,7 @@ fn configure_head(
             "downstream head {head} authentication did not complete"
         ));
     }
-    Ok(())
+    Ok(true)
 }
 
 fn send_interactive(

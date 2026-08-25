@@ -23,6 +23,9 @@ struct Output {
     /// compositor is producing nothing; see [`crate::scanout::HeadScanout::owes_retransmission`].
     last_surface: Option<(Vec<u8>, usize, usize)>,
     cursor_hotspot: (i32, i32),
+    /// A mode this connector wants but could not be given on its own, because the dock
+    /// reconfigures whole and another connector was lit. Cleared by the batch that programs it.
+    deferred_mode: Option<Mode>,
     presence_debounce: u8,
     silent_probes: u8,
     presence_grace_until: Instant,
@@ -44,15 +47,13 @@ fn run_session() -> Result<(), String> {
     let mut outputs: [Option<Output>; MAX_CONNECTORS] = core::array::from_fn(|_| None);
     // The dock's own connector count, not an array size: a dock with fewer outputs must not be
     // probed for connectors it does not have.
-    // Where a dock's probe says something about what is plugged in, an unoccupied connector stays
-    // disconnected rather than advertising a phantom output. Where it says nothing, every
-    // connector the dock declares is offered: such a dock answers "absent" for a socket with a
-    // live monitor on it, and its own vendor configures both connectors before any pixels.
-    let reports_presence = session.profile().reports_presence();
+    //
+    // Discovery is the EDID fetch itself, not the presence probe. The probe reports a socket as
+    // occupied only once that connector's EDID handler has been engaged, and the engage is part of
+    // the fetch, so gating the fetch on the probe leaves every socket reading empty forever. A
+    // recovered EDID is the presence signal here; the probe is what follows a socket afterwards.
     for head in 0..session.connectors() {
-        if !reports_presence || session.probe_head_present(head as u8)? == Some(true) {
-            connect_output(&mut session, &mut outputs[head], head as u8);
-        }
+        connect_output(&mut session, &mut outputs[head], head as u8);
     }
 
     // Both cadences belong to the dock, not to this loop. A dock with a video pipe of its own can
@@ -104,6 +105,32 @@ fn run_session() -> Result<(), String> {
             session.present_rgb(output.head, padded_width, padded_height, &padded)?;
             output.last_surface = Some((padded, padded_width, padded_height));
         }
+        // A connector that could not be programmed on its own is owed the whole dock's
+        // reconfiguration. Done here rather than inside the event handler because it programs every
+        // connector, and the handler holds only the one the event arrived on.
+        if outputs
+            .iter()
+            .flatten()
+            .any(|output| output.deferred_mode.is_some())
+        {
+            let mut requests = Vec::new();
+            for output in outputs.iter().flatten() {
+                if let Some(mode) = output.deferred_mode.or(output.mode) {
+                    requests.push((output.head, mode.width, mode.height, mode.refresh_hz));
+                }
+            }
+            session.activate_modes(&requests)?;
+            for output in outputs.iter_mut().flatten() {
+                if let Some(mode) = output.deferred_mode.take().or(output.mode) {
+                    println!(
+                        "head {}: active at {}x{}@{}",
+                        output.head, mode.width, mode.height, mode.refresh_hz
+                    );
+                    output.mode = Some(mode);
+                    output.active = true;
+                }
+            }
+        }
         if Instant::now() >= next_presence {
             refresh_topology(&mut session, &mut outputs)?;
             next_presence = Instant::now() + PRESENCE_PERIOD;
@@ -127,7 +154,10 @@ fn connect_output(session: &mut ControlSession, slot: &mut Option<Output>, head:
         let edid = session
             .fetch_edid(head)
             .map_err(|error| format!("fetch EDID: {error}"))?;
-        let mut card = RevdiCard::open().map_err(|error| format!("open Revdi output: {error}"))?;
+        // A card of this output's own, and the same one again after a reconnect: several outputs
+        // are driven at once, and `open` hands the same card to every caller.
+        let mut card = RevdiCard::open_nth(usize::from(head))
+            .map_err(|error| format!("open Revdi output: {error}"))?;
         // Only a dock that composites a cursor bitmap of its own asks for the pointer out of band.
         // Where the dock has none, the compositor must go on drawing the pointer into the frame:
         // taking the events without being able to send them loses the pointer altogether.
@@ -141,6 +171,7 @@ fn connect_output(session: &mut ControlSession, slot: &mut Option<Output>, head:
             active: false,
             last_surface: None,
             cursor_hotspot: (0, 0),
+            deferred_mode: None,
             presence_debounce: 0,
             silent_probes: 0,
             presence_grace_until: Instant::now() + PRESENCE_GRACE,
@@ -213,19 +244,24 @@ fn handle_event(
 ) -> Result<(), String> {
     match event {
         DeviceEvent::Mode(mode) if Some(mode) != output.mode => {
-            session.activate_mode(output.head, mode.width, mode.height, mode.refresh_hz)?;
-            println!(
-                "head {}: active at {}x{}@{}",
-                output.head, mode.width, mode.height, mode.refresh_hz
-            );
-            output.mode = Some(mode);
-            output.active = true;
+            if session.activate_mode(output.head, mode.width, mode.height, mode.refresh_hz)? {
+                println!(
+                    "head {}: active at {}x{}@{}",
+                    output.head, mode.width, mode.height, mode.refresh_hz
+                );
+                output.mode = Some(mode);
+                output.active = true;
+            } else {
+                // Owed to the whole dock rather than to this connector; the batch below programs
+                // every connector together, from dark.
+                output.deferred_mode = Some(mode);
+            }
         }
         DeviceEvent::Mode(_) | DeviceEvent::CrtcState(_) => {}
         DeviceEvent::Dpms(0) if !output.active => {
             if let Some(mode) = output.mode {
-                session.activate_mode(output.head, mode.width, mode.height, mode.refresh_hz)?;
-                output.active = true;
+                output.active =
+                    session.activate_mode(output.head, mode.width, mode.height, mode.refresh_hz)?;
             }
         }
         DeviceEvent::Dpms(0) => {}

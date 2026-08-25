@@ -21,6 +21,10 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 const BUFFER_ID: c_int = 1;
+/// How long to wait for a freshly added card's node to appear, and how often to look.
+const ADD_SETTLE_POLLS: usize = 50;
+const ADD_SETTLE_DELAY: Duration = Duration::from_millis(20);
+
 const MAX_DEVICE_INDEX: c_int = 64;
 const MAX_DAMAGE_RECTS: usize = 16;
 
@@ -261,21 +265,47 @@ pub struct Device {
     mode: Option<Mode>,
 }
 
+/// Every Revdi card index the module currently exposes.
+///
+/// `evdi_check_device` reports whether a card is one of ours, not whether anybody is driving it, so
+/// this is a census and never an availability test.
+fn present_cards() -> Vec<i32> {
+    (0..MAX_DEVICE_INDEX)
+        .filter(|&index| evdi_check_device(index) == evdi_device_status::AVAILABLE)
+        .collect()
+}
+
 impl Device {
-    /// Open an available Revdi card, creating one through sysfs if necessary.
+    /// Open the first Revdi card, creating one through sysfs if necessary.
+    ///
+    /// A client driving more than one output wants [`Self::open_nth`] instead.
     pub fn open() -> Result<Self, Error> {
-        let find_available = || {
-            (0..MAX_DEVICE_INDEX)
-                .find(|&index| evdi_check_device(index) == evdi_device_status::AVAILABLE)
-        };
-        let mut index = find_available();
-        if index.is_none() {
+        Self::open_nth(0)
+    }
+
+    /// Open the `nth` Revdi card, creating cards until there is one.
+    ///
+    /// A client driving several outputs needs one card per output, and cannot get them from
+    /// [`Self::open`]: the ABI can only be asked which cards exist, never which are free, so that
+    /// returns the same card to every caller. Asking by position gives each output a card of its
+    /// own and gives it the same one again after a reconnect, which matters because nothing removes
+    /// a single card -- a client that added one per attempt would accumulate them.
+    pub fn open_nth(nth: usize) -> Result<Self, Error> {
+        for _ in 0..ADD_SETTLE_POLLS {
+            if let Some(&index) = present_cards().get(nth) {
+                return Self::open_index(index);
+            }
             if evdi_add_device() < 0 {
                 return Err(Error::AddDevice);
             }
-            index = find_available();
+            // The card node appears once the module has registered it, which is not synchronous
+            // with the sysfs write that asked for it.
+            std::thread::sleep(ADD_SETTLE_DELAY);
         }
-        let index = index.ok_or(Error::NoAvailableDevice)?;
+        Err(Error::NoAvailableDevice)
+    }
+
+    fn open_index(index: i32) -> Result<Self, Error> {
         let handle = NonNull::new(evdi_open(index)).ok_or(Error::OpenDevice(index))?;
         let device = Self {
             handle,
