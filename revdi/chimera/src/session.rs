@@ -732,10 +732,20 @@ impl ControlSession {
     }
 
     fn submit_video(&self, head: u8, frames: &[Vec<u8>]) -> Result<(), String> {
-        self.dock
-            .write_video_frame(usize::from(head), frames)
-            .map(|_| ())
-            .map_err(|e| format!("submit head {head} video: {e}"))
+        match self.dock.write_video_frame(usize::from(head), frames) {
+            Ok(_) => Ok(()),
+            // A dock that has just been opened can hold its video endpoints stalled for a second or
+            // two before it accepts anything on them, and answers a write in that window by not
+            // completing it. Offer the frame once more rather than tearing the session down: the
+            // stall clears itself, and rebuilding the session pays for a whole authentication to
+            // arrive back at the same endpoint.
+            Err(UsbError::Timeout) => self
+                .dock
+                .write_video_frame(usize::from(head), frames)
+                .map(|_| ())
+                .map_err(|e| format!("submit head {head} video: {e}")),
+            Err(e) => Err(format!("submit head {head} video: {e}")),
+        }
     }
 }
 
