@@ -1,0 +1,12 @@
+From: Mike Lothian <mike@fireburn.co.uk>
+Subject: [PATCH 0/1] drm/tyr: mark the Rust DRM driver as non-KMS
+
+Depends on: none
+Base:       integration/base-20260809
+
+*** BLURB HERE ***
+
+Mike Lothian (1):
+  drm/tyr: mark the Rust DRM driver as non-KMS
+
+ 1 file(s) changed, 3 insertion(s)(+), 0 deletion(s)(-)

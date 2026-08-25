@@ -1,0 +1,12 @@
+From: Mike Lothian <mike@fireburn.co.uk>
+Subject: [PATCH 0/1] drm/evdi: a Rust virtual display driver
+
+Depends on: rust-core, rust-drm
+Base:       integration/base-20260809
+
+*** BLURB HERE ***
+
+Mike Lothian (1):
+  drm/evdi: add the Rust virtual display driver
+
+ 13 file(s) changed, 2488 insertion(s)(+), 0 deletion(s)(-)

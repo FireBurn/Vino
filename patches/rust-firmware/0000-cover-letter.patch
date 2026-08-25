@@ -1,0 +1,12 @@
+From: Mike Lothian <mike@fireburn.co.uk>
+Subject: [PATCH 0/1] rust: firmware: the firmware upload abstraction
+
+Depends on: rust-core
+Base:       integration/base-20260809
+
+*** BLURB HERE ***
+
+Mike Lothian (1):
+  rust: firmware: add the firmware upload abstraction
+
+ 1 file(s) changed, 237 insertion(s)(+), 0 deletion(s)(-)

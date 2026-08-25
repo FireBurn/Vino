@@ -1,0 +1,719 @@
+From d7319d876d6b66f3c9ba36917f92170300128592 Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Mon, 24 Aug 2026 01:41:09 +0100
+Subject: [PATCH] drm/vino: read the dock's firmware version, and update it
+ over DFU
+
+A DisplayLink dock does not advance bcdDevice when its firmware changes, so
+that cannot answer whether an update is due. The version lives in a 16-byte
+vendor descriptor inside the configuration descriptor, alongside a platform
+name that selects the package targeting the hardware; the shipped
+*-release.spkg packages carry theirs in a tagged table under `VE`, at no
+fixed offset -- 100 in one shipped image and 24574 in another.
+
+Add both parsers, request the matching firmware by the vendor's own
+filename so a distribution can install the package unmodified, and update
+only when the packaged version is strictly newer. A current dock therefore
+costs one descriptor read and no writes, and a missing firmware file is not
+an error: a dock runs on the firmware it shipped with.
+
+The transfer is USB DFU 1.1 on the dock's DFU interface, matching the
+vendor updater recorded end to end: DFU_DETACH, then the package verbatim
+in 4096-byte blocks with an ascending wValue, each followed by
+DFU_GETSTATUS, then a zero-length DFU_DNLOAD to manifest. There is no bus
+reset between the detach and the first block -- the dock takes the download
+in its runtime interface -- and it re-enumerates once the image is
+manifested.
+
+The functional descriptor clears bitCanUpload, so the running image cannot
+be read back and there is no host-side restore path; and it clears
+bitManifestationTolerant. Hence the strictly-newer rule and the package
+magic check before any byte is written.
+
+Userspace can also push an image on demand through the firmware loader's
+upload interface, for a dock whose packaged firmware a distribution does
+not ship.
+
+Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ drivers/gpu/drm/vino/firmware.rs | 670 +++++++++++++++++++++++++++++++
+ 1 file changed, 670 insertions(+)
+ create mode 100644 drivers/gpu/drm/vino/firmware.rs
+
+diff --git a/drivers/gpu/drm/vino/firmware.rs b/drivers/gpu/drm/vino/firmware.rs
+new file mode 100644
+index 000000000000..13c9cff55ae4
+--- /dev/null
++++ b/drivers/gpu/drm/vino/firmware.rs
+@@ -0,0 +1,670 @@
++// SPDX-License-Identifier: GPL-2.0
++//! Dock firmware: identity, package parsing, and the USB DFU update.
++//!
++//! A DisplayLink dock carries its firmware version in a vendor descriptor rather than in
++//! `bcdDevice`, which does not change across an update. The shipped `*-release.spkg` packages carry
++//! theirs in a tagged table. Comparing the two says whether an update is due; the transfer itself
++//! is textbook USB DFU 1.1 on the dock's DFU interface.
++
++use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
++use kernel::device::Device;
++#[cfg(CONFIG_RUST_FW_LOADER_ABSTRACTIONS)]
++use kernel::firmware::Firmware;
++use kernel::prelude::*;
++use kernel::sync::{Arc, ArcBorrow};
++use kernel::time::Delta;
++use kernel::usb;
++
++/// The dock's DFU interface: `bInterfaceClass 0xfe`, `bInterfaceSubClass 1`, and the interface
++/// number every DFU class request is addressed to.
++pub(crate) const DFU_INTERFACE: u8 = 1;
++
++/// Vendor descriptor carrying the platform name and running firmware version.
++///
++/// `bcdDevice` does not change when a dock is updated, so it cannot answer "is an update due".
++/// This descriptor can: it is 16 bytes, `[len, 0x40, major, minor, patch, ..., name(8)]`, and the
++/// name selects the package that targets this hardware.
++pub(crate) const DESCRIPTOR_IDENTITY: u8 = 0x40;
++const IDENTITY_LEN: usize = 16;
++const IDENTITY_NAME: usize = 8;
++
++/// A dock's platform name and the firmware version it is running.
++#[derive(Clone, Copy, PartialEq, Eq)]
++pub(crate) struct Identity {
++    pub(crate) version: Version,
++    name: [u8; IDENTITY_NAME],
++}
++
++/// A three-part firmware version, ordered major-minor-patch.
++#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
++pub(crate) struct Version(pub(crate) u8, pub(crate) u8, pub(crate) u8);
++
++impl kernel::fmt::Display for Version {
++    fn fmt(&self, f: &mut kernel::fmt::Formatter<'_>) -> kernel::fmt::Result {
++        write!(f, "{}.{}.{}", self.0, self.1, self.2)
++    }
++}
++
++impl Identity {
++    /// Parse the identity descriptor out of a device's raw configuration descriptors.
++    pub(crate) fn parse(raw: &[u8]) -> Option<Self> {
++        let mut i = 0usize;
++        while i + 2 <= raw.len() {
++            let len = usize::from(raw[i]);
++            if len < 2 || i + len > raw.len() {
++                return None;
++            }
++            if raw[i + 1] == DESCRIPTOR_IDENTITY && len >= IDENTITY_LEN {
++                let d = &raw[i..i + IDENTITY_LEN];
++                let mut name = [0u8; IDENTITY_NAME];
++                name.copy_from_slice(&d[8..16]);
++                return Some(Self {
++                    version: Version(d[2], d[3], d[4]),
++                    name,
++                });
++            }
++            i += len;
++        }
++        None
++    }
++
++    /// The platform name, trimmed of its padding.
++    pub(crate) fn platform(&self) -> &[u8] {
++        let end = self
++            .name
++            .iter()
++            .position(|&c| c == 0 || c == b' ')
++            .unwrap_or(IDENTITY_NAME);
++        &self.name[..end]
++    }
++
++    /// Which dock family this is.
++    pub(crate) fn family(&self) -> Option<Family> {
++        Family::from_identity(self.platform())
++    }
++
++    /// The firmware file that targets this platform, under `/lib/firmware`.
++    pub(crate) fn firmware_name(&self) -> Option<&'static CStr> {
++        Some(self.family()?.firmware_name())
++    }
++}
++
++impl kernel::fmt::Display for Identity {
++    /// Names the hardware the way its documentation does, falling back to the raw identity tag
++    /// for a device this driver does not recognise.
++    fn fmt(&self, f: &mut kernel::fmt::Formatter<'_>) -> kernel::fmt::Result {
++        match self.family() {
++            Some(family) => write!(f, "{}", family.description()),
++            None => match core::str::from_utf8(self.platform()) {
++                Ok(name) => write!(f, "unrecognised device {name}"),
++                Err(_) => write!(f, "unrecognised device {:02x?}", self.platform()),
++            },
++        }
++    }
++}
++
++/// A dock family: the hardware a firmware package targets.
++///
++/// Only `NavaDock` has been read off real hardware; the spellings for the other three come from
++/// the vendor's firmware packages and are unverified.
++#[derive(Clone, Copy, PartialEq, Eq)]
++pub(crate) enum Family {
++    /// DL-3x00 dock, e.g. the HP 3005pr.
++    Ella,
++    /// DL-6xxx dock, e.g. the Dell D6000.
++    Ridge,
++    /// DL-7400 quad dock.
++    Navarro,
++    /// Firefly monitor.
++    Firefly,
++}
++
++impl Family {
++    /// From the device's identity descriptor name.
++    pub(crate) fn from_identity(name: &[u8]) -> Option<Self> {
++        match name {
++            b"NavaDock" => Some(Self::Navarro),
++            b"Ridge" | b"RidgeDoc" => Some(Self::Ridge),
++            b"Ella" | b"EllaDock" => Some(Self::Ella),
++            b"Firefly" | b"FflyMoni" => Some(Self::Firefly),
++            _ => None,
++        }
++    }
++
++    /// How this family is described in a log line, including what kind of device it is.
++    ///
++    /// The device's own identity string is an eight-character tag -- "NavaDock", "FflyMoni" --
++    /// which is not what the hardware is called anywhere else.
++    fn description(self) -> &'static str {
++        match self {
++            Self::Navarro => "Navarro dock",
++            Self::Ridge => "Ridge dock",
++            Self::Ella => "Ella dock",
++            Self::Firefly => "Firefly monitor",
++        }
++    }
++
++    /// The file that carries this family's firmware, under `/lib/firmware`.
++    ///
++    /// Named after the package DisplayLink ships for the platform, so a distribution can drop the
++    /// vendor's own file in unmodified.
++    pub(crate) fn firmware_name(self) -> &'static CStr {
++        match self {
++            Self::Navarro => c"vino/navarro-dock-release.spkg",
++            Self::Ridge => c"vino/ridge-dock-release.spkg",
++            Self::Ella => c"vino/ella-dock-release.spkg",
++            Self::Firefly => c"vino/firefly-monitor-release.spkg",
++        }
++    }
++
++    /// From a package's `RD` tag.
++    pub(crate) fn from_package(rd: &[u8]) -> Option<Self> {
++        Self::from_identity(rd)
++    }
++}
++
++/// The dock family a package targets, from its `RD` tag.
++///
++/// This is what stops a Ridge image being written to a Navarro dock: the package says who it is
++/// for, so an image pushed in by hand can be checked without trusting the filename.
++pub(crate) fn package_family(image: &[u8]) -> Option<Family> {
++    const TAG: [u8; 4] = [b'R', b'D', 8, 0];
++    let w = image
++        .windows(TAG.len() + 8)
++        .find(|w| w[..TAG.len()] == TAG)?;
++    let name = &w[4..12];
++    let end = name.iter().position(|&c| c == 0).unwrap_or(name.len());
++    Family::from_package(&name[..end])
++}
++
++/// Standard `GET_DESCRIPTOR` for the configuration descriptor, which the identity blob rides in.
++const GET_DESCRIPTOR: u8 = 6;
++const DEVICE_TO_HOST_STANDARD: u8 = 0x80;
++const DESCRIPTOR_CONFIG: u16 = 0x0200;
++/// Enough for any configuration this hardware reports; the dock's is well under 1 KiB.
++const CONFIG_DESCRIPTOR_MAX: usize = 1024;
++
++/// Read the dock's identity by walking its configuration descriptor.
++///
++/// The blob is a vendor descriptor inside the configuration, not a separately addressable one, so
++/// the whole configuration is fetched and walked. `usb_device::rawdescriptors` holds the same bytes
++/// already, but no binding exposes them and one standard control read costs nothing on probe.
++pub(crate) fn read_identity(io: &usb::Io<'_>) -> Result<Identity> {
++    let mut connector = [0u8; 9];
++    io.control_recv(
++        GET_DESCRIPTOR,
++        DEVICE_TO_HOST_STANDARD,
++        DESCRIPTOR_CONFIG,
++        0,
++        &mut connector,
++        XFER_TIMEOUT,
++        GFP_KERNEL,
++    )?;
++    let total = usize::from(u16::from_le_bytes([connector[2], connector[3]]));
++    if total < connector.len() || total > CONFIG_DESCRIPTOR_MAX {
++        return Err(EINVAL);
++    }
++    let mut all = KVec::with_capacity(total, GFP_KERNEL)?;
++    all.resize(total, 0u8, GFP_KERNEL)?;
++    io.control_recv(
++        GET_DESCRIPTOR,
++        DEVICE_TO_HOST_STANDARD,
++        DESCRIPTOR_CONFIG,
++        0,
++        &mut all,
++        XFER_TIMEOUT,
++        GFP_KERNEL,
++    )?;
++    Identity::parse(&all).ok_or(ENODEV)
++}
++
++/// The version a `.spkg` will install.
++///
++/// The package is a tagged table: a two-byte ASCII tag, a `u16` length, then the value. `VE` holds
++/// the three version bytes. Its offset differs per package -- 100 in one shipped image and 24574 in
++/// another -- so it is searched for rather than assumed.
++pub(crate) fn package_version(image: &[u8]) -> Option<Version> {
++    const TAG: [u8; 4] = [b'V', b'E', 3, 0];
++    image
++        .windows(TAG.len() + 3)
++        .find(|w| w[..TAG.len()] == TAG)
++        .map(|w| Version(w[4], w[5], w[6]))
++}
++
++/// `.spkg` container magic, checked before anything is written to a dock.
++const PACKAGE_MAGIC: &[u8; 4] = b"ELLA";
++
++/// Whether `image` is a firmware package at all.
++pub(crate) fn is_package(image: &[u8]) -> bool {
++    image.len() > 8 && &image[..4] == PACKAGE_MAGIC
++}
++
++// USB DFU 1.1 class requests, on the dock's DFU interface.
++const DFU_OUT: u8 = 0x21; // host-to-device, class, interface
++const DFU_IN: u8 = 0xa1; // device-to-host, class, interface
++const DFU_DETACH: u8 = 0;
++const DFU_DNLOAD: u8 = 1;
++const DFU_GETSTATUS: u8 = 3;
++
++/// Payload per `DFU_DNLOAD`.
++///
++/// The DFU functional descriptor advertises a 16384-byte `wTransferSize`, but the vendor's own
++/// updater sends 4096 and the dock is only known to accept that.
++const BLOCK: usize = 4096;
++
++/// `wValue` of `DFU_DETACH`, in milliseconds. The vendor sends 100.
++const DETACH_TIMEOUT_MS: u16 = 100;
++
++/// How long a single control transfer may take.
++const XFER_TIMEOUT: Delta = Delta::from_secs(5);
++
++/// `DFU_GETSTATUS` reply: `bStatus, bwPollTimeout[3], bState, iString`.
++const STATUS_LEN: usize = 6;
++const STATUS_OK: u8 = 0;
++const STATE_DNLOAD_IDLE: u8 = 5;
++const STATE_DNBUSY: u8 = 4;
++const STATE_MANIFEST_SYNC: u8 = 6;
++const STATE_MANIFEST: u8 = 7;
++
++/// Poll `DFU_GETSTATUS` until the dock leaves `dfuDNBUSY`, honouring its own poll timeout.
++fn wait_ready(io: &usb::Io<'_>, iface: u16) -> Result<u8> {
++    for _ in 0..1000 {
++        let mut st = [0u8; STATUS_LEN];
++        io.control_recv(
++            DFU_GETSTATUS,
++            DFU_IN,
++            0,
++            iface,
++            &mut st,
++            XFER_TIMEOUT,
++            GFP_KERNEL,
++        )?;
++        if st[0] != STATUS_OK {
++            pr_err!(
++                "vino: firmware update rejected: DFU status {} in state {}\n",
++                st[0],
++                st[4]
++            );
++            return Err(EIO);
++        }
++        // bwPollTimeout is a 24-bit little-endian millisecond count the device asks us to wait.
++        let poll = u32::from(st[1]) | u32::from(st[2]) << 8 | u32::from(st[3]) << 16;
++        if st[4] != STATE_DNBUSY && st[4] != STATE_MANIFEST {
++            return Ok(st[4]);
++        }
++        kernel::time::delay::fsleep(Delta::from_millis(poll.clamp(1, 1000) as i64));
++    }
++    Err(ETIMEDOUT)
++}
++
++/// Write `image` to the dock over USB DFU.
++///
++/// This is not reversible from the host. The DFU functional descriptor clears
++/// `bitCanUpload`, so the running firmware cannot be read back and there is nothing to restore
++/// from; and it sets `bitManifestationTolerant = 0`, so the dock re-enumerates when the image is
++/// manifested. An interrupted write leaves the dock with a partial image.
++///
++/// The sequence is the vendor updater's, recorded end to end: `DFU_DETACH`, then the whole package
++/// verbatim in 4096-byte blocks with an ascending `wValue`, each followed by `DFU_GETSTATUS`, then
++/// a zero-length `DFU_DNLOAD` to manifest. There is no bus reset between the detach and the first
++/// block -- the dock accepts the download in its runtime interface.
++pub(crate) fn flash(io: &usb::Io<'_>, iface: u16, image: &[u8]) -> Result {
++    if !is_package(image) {
++        pr_err!("vino: refusing to flash: not a DisplayLink firmware package\n");
++        return Err(EINVAL);
++    }
++    let blocks = image.len().div_ceil(BLOCK);
++    if blocks > usize::from(u16::MAX) {
++        return Err(EFBIG);
++    }
++    pr_info!(
++        "vino: flashing {} bytes of dock firmware in {} block(s) -- do not disconnect\n",
++        image.len(),
++        blocks
++    );
++
++    io.control_send(
++        DFU_DETACH,
++        DFU_OUT,
++        DETACH_TIMEOUT_MS,
++        iface,
++        &[],
++        XFER_TIMEOUT,
++        GFP_KERNEL,
++    )?;
++
++    for (n, chunk) in image.chunks(BLOCK).enumerate() {
++        io.control_send(
++            DFU_DNLOAD,
++            DFU_OUT,
++            n as u16,
++            iface,
++            chunk,
++            XFER_TIMEOUT,
++            GFP_KERNEL,
++        )?;
++        let state = wait_ready(io, iface)?;
++        if state != STATE_DNLOAD_IDLE {
++            pr_err!("vino: firmware block {n} left the dock in DFU state {state}\n");
++            return Err(EIO);
++        }
++    }
++
++    // Zero-length download: the image is complete, manifest it. The dock re-enumerates from here,
++    // so a failure to read status back afterwards is expected rather than an error.
++    io.control_send(DFU_DNLOAD, DFU_OUT, 0, iface, &[], XFER_TIMEOUT, GFP_KERNEL)?;
++    match wait_ready(io, iface) {
++        Ok(state) if state == STATE_MANIFEST_SYNC || state == STATE_DNLOAD_IDLE => {}
++        Ok(state) => pr_info!("vino: dock manifested in DFU state {state}\n"),
++        Err(_) => pr_info!("vino: dock stopped answering after manifest, as it re-enumerates\n"),
++    }
++    pr_info!("vino: dock firmware written; it will re-enumerate to run it\n");
++    Ok(())
++}
++
++/// Decide whether `dev` needs an update, and apply one if it does.
++///
++/// An update is applied only when the packaged version is strictly newer than the one the dock
++/// reports, so the ordinary path on a current dock is one descriptor read and no writes at all. A
++/// missing firmware file is not an error: a dock runs perfectly well on the firmware it shipped
++/// with, and most systems will never carry the package.
++#[cfg(not(CONFIG_RUST_FW_LOADER_ABSTRACTIONS))]
++pub(crate) fn update_if_newer(
++    _io: &usb::Io<'_>,
++    dev: &Device,
++    identity: &Identity,
++    _iface: u16,
++    _force: bool,
++) -> Result {
++    vino_dev_debug!(
++        dev,
++        "dock firmware {}; updates need CONFIG_RUST_FW_LOADER_ABSTRACTIONS\n",
++        identity.version
++    );
++    Ok(())
++}
++
++/// Automatic updates attempted for one device: the device-name hash in the high 32 bits, the
++/// attempt count in the low 32.
++///
++/// A dock that re-enumerates still reporting the old version is otherwise rewritten on every
++/// probe, without end. One slot is enough, because the device that is looping is the one being
++/// probed; another device simply takes the slot over and starts its own count.
++#[cfg(CONFIG_RUST_FW_LOADER_ABSTRACTIONS)]
++static UPDATE_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
++#[cfg(CONFIG_RUST_FW_LOADER_ABSTRACTIONS)]
++const ATTEMPT_KEY_MASK: u64 = 0xffff_ffff_0000_0000;
++
++/// How many automatic writes one device is given before the driver leaves it on what it runs.
++///
++/// A write that takes effect is visible on the very next probe, so a device that has been given
++/// this many and still reports the old version is not going to accept another one.
++#[cfg(CONFIG_RUST_FW_LOADER_ABSTRACTIONS)]
++const MAX_UPDATE_ATTEMPTS: u32 = 2;
++
++/// FNV-1a over the device name, which only has to tell one device's slot from another's. The name
++/// is the bus path, so it survives the re-enumeration a write causes.
++#[cfg(CONFIG_RUST_FW_LOADER_ABSTRACTIONS)]
++fn attempt_key(dev: &Device) -> u64 {
++    let mut h: u32 = 0x811c_9dc5;
++    for b in dev.name().to_bytes() {
++        h ^= u32::from(*b);
++        h = h.wrapping_mul(0x0100_0193);
++    }
++    u64::from(h) << 32
++}
++
++#[cfg(CONFIG_RUST_FW_LOADER_ABSTRACTIONS)]
++/// Whether `dev` has an automatic write left, without consuming one.
++fn update_attempts_left(dev: &Device) -> bool {
++    let key = attempt_key(dev);
++    let slot = UPDATE_ATTEMPTS.load(Ordering::Acquire);
++    slot & ATTEMPT_KEY_MASK != key || (slot as u32) < MAX_UPDATE_ATTEMPTS
++}
++
++#[cfg(CONFIG_RUST_FW_LOADER_ABSTRACTIONS)]
++/// Count another automatic write against `dev`, or report that it has had its share.
++fn claim_update_attempt(dev: &Device) -> bool {
++    let key = attempt_key(dev);
++    let slot = UPDATE_ATTEMPTS.load(Ordering::Acquire);
++    let count = if slot & ATTEMPT_KEY_MASK == key {
++        slot as u32
++    } else {
++        0
++    };
++    if count >= MAX_UPDATE_ATTEMPTS {
++        return false;
++    }
++    UPDATE_ATTEMPTS.store(key | u64::from(count + 1), Ordering::Release);
++    true
++}
++
++/// Forget the attempts recorded against `dev`, once it is seen running what the package offers.
++#[cfg(CONFIG_RUST_FW_LOADER_ABSTRACTIONS)]
++fn clear_update_attempts(dev: &Device) {
++    let key = attempt_key(dev);
++    if UPDATE_ATTEMPTS.load(Ordering::Acquire) & ATTEMPT_KEY_MASK == key {
++        UPDATE_ATTEMPTS.store(0, Ordering::Release);
++    }
++}
++
++#[cfg(CONFIG_RUST_FW_LOADER_ABSTRACTIONS)]
++pub(crate) fn update_if_newer(
++    io: &usb::Io<'_>,
++    dev: &Device,
++    identity: &Identity,
++    iface: u16,
++    force: bool,
++) -> Result {
++    let Some(name) = identity.firmware_name() else {
++        return Ok(());
++    };
++    let Ok(fw) = Firmware::request_nowarn(name, dev) else {
++        vino_dev_debug!(
++            dev,
++            "no {} available; leaving the dock on {}\n",
++            name,
++            identity.version
++        );
++        return Ok(());
++    };
++    let Some(packaged) = package_version(fw.data()) else {
++        dev_warn!(dev, "{} carries no version tag; ignoring it\n", name);
++        return Ok(());
++    };
++    if packaged <= identity.version && !force {
++        clear_update_attempts(dev);
++        vino_dev_debug!(dev, "firmware is current ({} offers {})\n", name, packaged);
++        return Ok(());
++    }
++    // A write that does not take leaves the dock reporting the old version, which is the same
++    // state that asked for the write in the first place. Bound it, or the dock is rewritten on
++    // every probe for as long as it stays plugged in. The forced path is a deliberate act and is
++    // not limited.
++    if !force && !claim_update_attempt(dev) {
++        dev_warn!(
++            dev,
++            "dock still reports firmware {} after {} update attempt(s); leaving it alone\n",
++            identity.version,
++            MAX_UPDATE_ATTEMPTS
++        );
++        return Ok(());
++    }
++    dev_info!(
++        dev,
++        "updating dock firmware {} -> {}{}\n",
++        identity.version,
++        packaged,
++        if force { " (forced)" } else { "" }
++    );
++    flash(io, iface, fw.data())
++}
++
++/// Whether the automatic check will write this device the next time it runs.
++///
++/// A write reboots the dock, so the display function asks before establishing a control session
++/// that the dock is about to drop. Deliberately does not consume an attempt; the write does that.
++#[cfg(CONFIG_RUST_FW_LOADER_ABSTRACTIONS)]
++pub(crate) fn update_pending(dev: &Device, identity: &Identity, force: bool) -> bool {
++    let Some(name) = identity.firmware_name() else {
++        return false;
++    };
++    let Ok(fw) = Firmware::request_nowarn(name, dev) else {
++        return false;
++    };
++    // Mirror every test the write itself makes, so this cannot claim a write that will not happen
++    // and leave the display function unbound waiting for it.
++    if !is_package(fw.data()) {
++        return false;
++    }
++    let Some(packaged) = package_version(fw.data()) else {
++        return false;
++    };
++    if packaged <= identity.version && !force {
++        return false;
++    }
++    force || update_attempts_left(dev)
++}
++
++#[cfg(not(CONFIG_RUST_FW_LOADER_ABSTRACTIONS))]
++pub(crate) fn update_pending(_dev: &Device, _identity: &Identity, _force: bool) -> bool {
++    false
++}
++
++/// The `/sys/class/firmware/vino-<dock>/` upload interface.
++///
++/// This is the deliberate path: userspace hands vino an image and it is written, whatever version
++/// it is. That is what makes a re-flash of the running version, or an attempted downgrade,
++/// possible at all -- [`update_if_newer`] refuses both by design.
++///
++/// The checks below are the only thing between a mistyped `cat` and a dock that no longer works:
++/// the DFU interface does not support upload, so the running image cannot be read back and there
++/// is nothing to restore from.
++pub(crate) struct Upload;
++
++/// What an upload needs to reach the dock, and the cancel flag userspace can set.
++pub(crate) struct UploadCtx {
++    /// The window the dock's I/O is issued through, so a write can be refused once it closes.
++    pub(crate) window: Arc<usb::IoWindow>,
++    /// Set by `cancel`, observed between blocks.
++    pub(crate) cancelled: AtomicBool,
++    /// The family this dock is, which an image must match.
++    pub(crate) family: Family,
++}
++
++impl kernel::firmware::upload::Upload for Upload {
++    type Data = Arc<UploadCtx>;
++
++    fn prepare(
++        ctx: ArcBorrow<'_, UploadCtx>,
++        image: &[u8],
++    ) -> core::result::Result<(), kernel::firmware::upload::Error> {
++        use kernel::firmware::upload::Error as UErr;
++        ctx.cancelled.store(false, Ordering::Release);
++        if !is_package(image) {
++            pr_err!("vino: refusing upload: not a DisplayLink firmware package\n");
++            return Err(UErr::InvalidFirmware);
++        }
++        // The package says which dock it is for. Writing another family's image is the one
++        // mistake here that cannot be undone, so it is refused before the dock is touched.
++        match package_family(image) {
++            Some(f) if f == ctx.family => {}
++            _ => {
++                pr_err!("vino: refusing upload: image is not for this dock family\n");
++                return Err(UErr::InvalidFirmware);
++            }
++        }
++        if let Some(v) = package_version(image) {
++            pr_info!("vino: upload accepted: firmware {v}\n");
++        }
++        Ok(())
++    }
++
++    fn write(
++        ctx: ArcBorrow<'_, UploadCtx>,
++        image: &[u8],
++        offset: u32,
++        _chunk: &[u8],
++    ) -> core::result::Result<u32, kernel::firmware::upload::Error> {
++        use kernel::firmware::upload::Error as UErr;
++        // The dock takes the package as a whole -- block numbers are an index into the image, and
++        // the transfer ends with a manifest -- so it is written in one pass on the first call
++        // rather than chunk by chunk as the core offers it.
++        if offset != 0 {
++            return Ok(image.len() as u32 - offset);
++        }
++        if ctx.cancelled.load(Ordering::Acquire) {
++            return Err(UErr::Canceled);
++        }
++        let Ok(io) = ctx.window.enter() else {
++            return Err(UErr::Hardware);
++        };
++        match flash(&io, u16::from(DFU_INTERFACE), image) {
++            Ok(()) => Ok(image.len() as u32),
++            Err(e) => {
++                pr_err!("vino: firmware upload failed ({e:?})\n");
++                Err(UErr::ReadWrite)
++            }
++        }
++    }
++
++    fn poll_complete(
++        _ctx: ArcBorrow<'_, UploadCtx>,
++    ) -> core::result::Result<(), kernel::firmware::upload::Error> {
++        // `flash()` is synchronous and has already polled the dock's own DFU status to completion.
++        Ok(())
++    }
++
++    fn cancel(ctx: ArcBorrow<'_, UploadCtx>) {
++        // Runs on another thread. The write loop reads this between blocks; a transfer already in
++        // flight still completes, because abandoning one mid-image is what leaves a dock unusable.
++        ctx.cancelled.store(true, Ordering::Release);
++        pr_info!("vino: firmware upload cancellation requested\n");
++    }
++}
++
++#[cfg(CONFIG_DRM_VINO_KUNIT_TEST)]
++#[kunit_tests(vino_firmware)]
++mod tests {
++    use super::*;
++    use kernel::error::code::EINVAL;
++
++    #[test]
++    fn firmware_identity_and_package_versions_parse() -> Result {
++        // The dock's identity descriptor, as read from a DL-7400: 16 bytes, type 0x40, the running
++        // version at offsets 2..5, and the platform name at 8..16.
++        let raw = [
++            0x09u8, 0x02, 0x20, 0x00, 0x01, 0x01, 0x00, 0x80,
++            0x32, // a config descriptor first
++            0x10, 0x40, 0x0c, 0x02, 0x1a, 0x0b, 0x03, 0x22, b'N', b'a', b'v', b'a', b'D', b'o',
++            b'c', b'k',
++        ];
++        let id = Identity::parse(&raw).ok_or(EINVAL)?;
++        assert_eq!(id.version, Version(12, 2, 26));
++        assert_eq!(id.platform(), b"NavaDock");
++        assert_eq!(
++            id.firmware_name().ok_or(EINVAL)?,
++            c"vino/navarro-dock-release.spkg"
++        );
++
++        // A package's version is a `VE` tag with a three-byte value, at no fixed offset -- the
++        // shipped images carry it at 100 and at 24574.
++        let mut pkg = KVec::new();
++        pkg.extend_from_slice(b"ELLA\0\0\0\0", GFP_KERNEL)?;
++        pkg.extend_from_slice(&[0u8; 64], GFP_KERNEL)?;
++        pkg.extend_from_slice(b"VE\x03\0", GFP_KERNEL)?;
++        pkg.extend_from_slice(&[12, 2, 27], GFP_KERNEL)?;
++        assert!(is_package(&pkg));
++        assert_eq!(package_version(&pkg).ok_or(EINVAL)?, Version(12, 2, 27));
++
++        // Ordering is major-minor-patch, which is what decides whether an update is due.
++        assert!(Version(12, 2, 27) > Version(12, 2, 26));
++        assert!(Version(12, 3, 0) > Version(12, 2, 99));
++        assert!(Version(13, 0, 0) > Version(12, 9, 9));
++        assert!(!(Version(12, 2, 26) > Version(12, 2, 26)));
++
++        // Anything that is not a package must be refused before a byte reaches the dock.
++        assert!(!is_package(b"not a firmware image"));
++        Ok(())
++    }
++}

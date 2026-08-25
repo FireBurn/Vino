@@ -1,0 +1,36 @@
+From: Mike Lothian <mike@fireburn.co.uk>
+Subject: [PATCH 0/25] rust: drm: KMS abstractions for a Rust display driver
+
+Depends on: rust-core
+Base:       integration/base-20260809
+
+*** BLURB HERE ***
+
+Mike Lothian (25):
+  rust: drm: kms: adapt Lyude's KMS series to current DRM APIs
+  rust: drm: kms: tie mode-object references to their owners
+  rust: drm: kms: constrain connector encoder attachment
+  rust: drm: reject cross-device GEM handle creation
+  rust: drm: kms: add common state and connector helpers
+  rust: drm: add typed RAII event channels
+  rust: drm: expose HDCP 2.2 message identifiers
+  rust: drm: kms: add typed color and rotation properties
+  rust: drm: kms: add connector detect() and mode_valid() hooks
+  rust: drm: kms: add plane damage-clip accessors
+  rust: drm: add private ioctl compat translations
+  rust: drm: framebuffer: add validated shmem scanout views
+  rust: drm: kms: expose checked plane geometry
+  rust: drm: kms: add owned CRTC and vblank references
+  rust: drm: kms: plane: add FB_DAMAGE_CLIPS property support
+  rust: drm: add a safe constructor for owned registration data
+  rust: drm: pin the owner while DRM files remain open
+  rust: drm: kms: add the plane blend-mode property
+  rust: drm: add an owned display mode constructor
+  rust: drm: expose mode flags and CTA VIC matching
+  rust: drm: expose CRTC mode changes
+  rust: drm: kms: add synthesized CVT connector modes
+  rust: drm: kms: read a connector's colorimetry and HDR metadata
+  rust: drm: kms: walk the CRTCs an atomic commit carries
+  rust: drm: kms: expose a connector's requested link depth
+
+ 24 file(s) changed, 2696 insertion(s)(+), 104 deletion(s)(-)

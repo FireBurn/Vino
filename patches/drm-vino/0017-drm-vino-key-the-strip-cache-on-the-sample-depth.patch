@@ -1,0 +1,343 @@
+From 58954356cf8b04382db4abbffc7b8be2a89d844d Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Tue, 25 Aug 2026 02:03:49 +0100
+Subject: [PATCH] drm/vino: key the strip cache on the sample depth
+
+An encoded strip body is reused whenever the framebuffer pixels behind it are
+unchanged, guarded by a tag naming everything else the encoded bytes depend
+on. The tag carried the colour transform but not the sample depth, and depth
+is the same hazard in a sharper form: changing it re-maps every sample on the
+way into the codec and moves the escape ceiling while leaving the framebuffer
+byte for byte identical. The content hash therefore matched, the tag matched,
+and bodies encoded at the old depth went out inside a stream declared at the
+new one.
+
+Fold the depth into the tag.
+
+Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ drivers/gpu/drm/vino/drm_sink.rs              |  8 +++
+ drivers/gpu/drm/vino/drm_sink/limits.rs       | 32 +++++++++-
+ drivers/gpu/drm/vino/drm_sink/mode_objects.rs | 19 ++++++
+ drivers/gpu/drm/vino/drm_sink/scanout.rs      | 16 ++++-
+ drivers/gpu/drm/vino/drm_sink/settings.rs     | 31 ++++++++-
+ drivers/gpu/drm/vino/profile.rs               | 11 ++--
+ drivers/gpu/drm/vino/video/haar/strip.rs      |  4 +-
+ drivers/gpu/drm/vino/video/haar/transform.rs  | 64 +++++++++++++++++--
+ 8 files changed, 168 insertions(+), 17 deletions(-)
+
+diff --git a/drivers/gpu/drm/vino/drm_sink.rs b/drivers/gpu/drm/vino/drm_sink.rs
+index 6c46217d795b..535e7d18ff50 100644
+--- a/drivers/gpu/drm/vino/drm_sink.rs
++++ b/drivers/gpu/drm/vino/drm_sink.rs
+@@ -861,6 +861,13 @@ pub(super) struct VinoDrmData {
+     /// Deliberately separate from `connector_ten_bit`: that one says what the framebuffer holds and
+     /// decides how a pixel is decoded, this one says what the dock is told to carry.
+     connector_max_bpc: core::sync::atomic::AtomicU32,
++    /// Connectors whose requested ten-bit link does not fit the dock's shared bandwidth.
++    ///
++    /// Ten bits costs a third more per pixel, so a pair of modes that fits at eight may not fit at
++    /// ten. Refusing the mode is the wrong answer -- a compositor answers `EINVAL` by disabling the
++    /// output rather than choosing a shallower link -- so the depth gives way instead and both
++    /// connectors light at eight bits.
++    connector_deny_ten_bit: core::sync::atomic::AtomicU32,
+     /// Bit `h` set when connector `h`'s connector is being driven with the SMPTE ST 2084 (PQ)
+     /// transfer function, taken from the `HDR_OUTPUT_METADATA` blob userspace attached to it.
+     ///
+@@ -1199,6 +1206,7 @@ pub(super) fn new(
+             ),
+             connector_ten_bit: core::sync::atomic::AtomicU32::new(0),
+             connector_max_bpc: core::sync::atomic::AtomicU32::new(0),
++            connector_deny_ten_bit: core::sync::atomic::AtomicU32::new(0),
+             head_st2084: core::sync::atomic::AtomicU32::new(0),
+             // A dock that names no connector count still has to expose something, so fall back to
+             // the maximum rather than building a card with no connectors at all.
+diff --git a/drivers/gpu/drm/vino/drm_sink/limits.rs b/drivers/gpu/drm/vino/drm_sink/limits.rs
+index be3188323cc3..28974b43f615 100644
+--- a/drivers/gpu/drm/vino/drm_sink/limits.rs
++++ b/drivers/gpu/drm/vino/drm_sink/limits.rs
+@@ -133,8 +133,31 @@ pub(super) fn adopt_programmed_mode(
+     ///
+     /// Zero means unknown and disables limiting.
+     pub(super) fn dock_budget(&self) -> u32 {
+-        self.dock_pixel_budget
+-            .load(core::sync::atomic::Ordering::Relaxed)
++        let budget = self
++            .dock_pixel_budget
++            .load(core::sync::atomic::Ordering::Relaxed);
++        // The budget is a bandwidth limit expressed in pixels, and it was measured with the dock
++        // storing three bytes for each one. A connector driven at ten bits stores four, so the
++        // same pixel costs a third more and the dock has room for correspondingly fewer.
++        //
++        // Price the whole dock at its deepest connector, because the bandwidth is shared: a pair
++        // admitted on the eight-bit budget and then driven at ten leaves the dock accepting every
++        // byte of the second stream without ever starting its pixel clock, which looks like a dead
++        // sink rather than a mode that did not fit.
++        self.budget_at_depth(budget, self.any_connector_ten_bit())
++    }
++
++    /// The dock's budget priced for a commit that is about to drive ten bits per channel.
++    ///
++    /// `dock_budget` prices from recorded state, which an atomic check cannot use: the depth for
++    /// the commit being checked is not recorded until it is enabled. A check that asks at the old
++    /// depth admits a pair that only fits at eight bits and then drives it at ten.
++    pub(super) fn budget_at_depth(&self, budget: u32, ten_bit: bool) -> u32 {
++        if budget != 0 && ten_bit {
++            budget / 4 * 3
++        } else {
++            budget
++        }
+     }
+ 
+     /// Record this dock's pixel-rate budget, refresh ceiling and pixel-clock ceiling.
+@@ -448,6 +471,11 @@ fn mode_ceilings_bound_bandwidth_not_refresh() {
+             profile::PROFILE_NAVARRO.capabilities.pixel_budget,
+             2 * rate(2560, 1440, 165)
+         );
++        // That pair is admitted at 24 bpp and refused at 30, which is what the hardware does: a
++        // budget large enough to admit it deep leaves both sinks powered off with nothing logged.
++        let deep = profile::PROFILE_NAVARRO.capabilities.pixel_budget / 4 * 3;
++        assert!(2 * rate(2560, 1440, 165) > deep);
++        assert!(2 * rate(2560, 1440, 120) <= deep);
+         assert_eq!(rate(65535, 65535, 65535), u32::MAX); // saturates, never wraps small
+         assert_eq!(rate(2560, 1440, -1), 0);
+     }
+diff --git a/drivers/gpu/drm/vino/drm_sink/mode_objects.rs b/drivers/gpu/drm/vino/drm_sink/mode_objects.rs
+index 2e60bd27ab39..11b268f394d8 100644
+--- a/drivers/gpu/drm/vino/drm_sink/mode_objects.rs
++++ b/drivers/gpu/drm/vino/drm_sink/mode_objects.rs
+@@ -201,6 +201,25 @@ fn atomic_check(check: CrtcAtomicCheck<'_, Self>) -> Result {
+             );
+             return Err(EINVAL);
+         }
++        // Price the budget for the depth this commit will actually be driven at. The recorded
++        // depth is a commit behind -- it is written when a connector is enabled -- so asking for it
++        // here admits a pair on the eight-bit budget and then drives it at ten, which the dock
++        // answers by accepting every byte of the second stream and never lighting it.
++        // Decide the link depth here rather than refusing the mode. Ten bits costs a third more
++        // per pixel, so a pair that fits at eight may not fit at ten; a compositor answers a
++        // rejected mode by disabling the output, so the depth gives way and both connectors light.
++        if budget != 0 {
++            let wants_deep = state
++                .new_connector_state_for_crtc(crtc)
++                .is_some_and(|conn| {
++                    conn.max_requested_bpc() >= 10
++                        && conn.hdr_output_eotf() == Some(connector::Eotf::SmpteSt2084)
++                });
++            let combined_now =
++                new_rate.saturating_add(data.other_connectors_rate(&state, connector));
++            let fits_deep = combined_now <= data.budget_at_depth(budget, true);
++            data.set_connector_ten_bit_denied(connector as u8, wants_deep && !fits_deep);
++        }
+         if budget == 0 || new_rate <= old_rate {
+             return Ok(());
+         }
+diff --git a/drivers/gpu/drm/vino/drm_sink/scanout.rs b/drivers/gpu/drm/vino/drm_sink/scanout.rs
+index 94097dbc1a27..de29847bfd2b 100644
+--- a/drivers/gpu/drm/vino/drm_sink/scanout.rs
++++ b/drivers/gpu/drm/vino/drm_sink/scanout.rs
+@@ -1115,9 +1115,19 @@ fn encode_and_send_haar(
+     // What the encoded bytes depend on besides the strip pixels themselves; see
+     // `StripHashState::tag`. Identity rotation is a precondition of caching at all, so it needs no
+     // representation here.
+-    let gamma_tag = match &src.color {
+-        Some(pipeline) => pipeline.tag(),
+-        None => 0,
++    let gamma_tag = {
++        let gamma = match &src.color {
++            Some(pipeline) => pipeline.tag(),
++            None => 0,
++        };
++        // The sample depth belongs here for the same reason gamma does, and is the more dangerous
++        // of the two: changing it re-maps every sample on the way into the codec and moves the
++        // escape ceiling, while leaving the framebuffer byte for byte identical. A cache keyed on
++        // the raw pixels alone therefore serves bodies encoded at the old depth inside a stream
++        // declared at the new one, and the dock decodes half a frame correctly and the rest as
++        // noise.
++        let deep = matches!(src.depth, crate::video::haar::Depth::Ten);
++        gamma ^ (u64::from(deep) << 63) ^ (u64::from(deep) * 0x9e37_79b9_7f4a_7c15)
+     };
+     // Strips carried over verbatim from the previous frame's encode, and the strips actually
+     // handed to the codec; kept for the post-send cache publish below.
+diff --git a/drivers/gpu/drm/vino/drm_sink/settings.rs b/drivers/gpu/drm/vino/drm_sink/settings.rs
+index 91763b7a05c9..302ca2c217cc 100644
+--- a/drivers/gpu/drm/vino/drm_sink/settings.rs
++++ b/drivers/gpu/drm/vino/drm_sink/settings.rs
+@@ -208,13 +208,40 @@ pub(super) fn connector_buffer_depth(&self, connector: u8) -> crate::video::haar
+     /// link through `max bpc` on a dock that can carry one. An eight-bit surface over a ten-bit
+     /// link is the ordinary case on every other driver, and refusing it here is what left a
+     /// connector driven in PQ at eight bits with nothing reporting why.
+-    fn connector_wire_ten_bit(&self, connector: u8) -> bool {
++    pub(super) fn connector_wire_ten_bit(&self, connector: u8) -> bool {
+         if self.connector_ten_bit.load(Ordering::Acquire) & (1u32 << u32::from(connector)) != 0 {
+             return true;
+         }
+         let shift = u32::from(connector) * 4;
+         let requested = (self.connector_max_bpc.load(Ordering::Acquire) >> shift) & 0xf;
+-        self.hdr_capable() && requested >= 10
++        // A compositor sets `max bpc` to ten on every connector it can, whether or not that
++        // connector is showing HDR, so the request on its own is not the vendor's condition: the
++        // vendor moves a link to ten bits when the connector is driven in PQ and leaves it at
++        // eight otherwise. Follow that, or an ordinary SDR desktop is re-encoded at a depth
++        // nothing asked for.
++        if self.connector_deny_ten_bit.load(Ordering::Acquire) & (1u32 << u32::from(connector)) != 0
++        {
++            return false;
++        }
++        self.hdr_capable() && requested >= 10 && self.connector_is_st2084(connector as usize)
++    }
++
++    /// Record whether this connector's ten-bit link fits the dock's shared bandwidth.
++    pub(super) fn set_connector_ten_bit_denied(&self, connector: u8, denied: bool) {
++        let bit = 1u32 << u32::from(connector);
++        if denied {
++            self.connector_deny_ten_bit.fetch_or(bit, Ordering::Release);
++        } else {
++            self.connector_deny_ten_bit
++                .fetch_and(!bit, Ordering::Release);
++        }
++    }
++
++    /// Whether any connector on this dock is driven at ten bits per channel.
++    ///
++    /// The dock's bandwidth is shared, so its budget has to be priced at its deepest connector.
++    pub(super) fn any_connector_ten_bit(&self) -> bool {
++        (0..self.connector_count()).any(|c| self.connector_wire_ten_bit(c as u8))
+     }
+ 
+     /// This device's codec geometry at one connector's committed sample depth.
+diff --git a/drivers/gpu/drm/vino/profile.rs b/drivers/gpu/drm/vino/profile.rs
+index abb694326131..ee0fbda084d1 100644
+--- a/drivers/gpu/drm/vino/profile.rs
++++ b/drivers/gpu/drm/vino/profile.rs
+@@ -244,10 +244,13 @@ pub(crate) struct Capabilities {
+     pub(crate) max_connector_clock_khz: u32,
+     /// Dock-wide pixel-rate budget in pixels per second, shared across all connectors.
+     ///
+-    /// The DL7400's is the dual-connector rate DLM was measured sustaining. Ridge's is the highest
+-    /// combined rate measured driving cleanly, 2560x1440p144 beside 2560x1440p120. That is a floor
+-    /// on the dock's real ceiling rather than the ceiling itself: no pair of sinks to hand can ask
+-    /// for more, so what lies above it is untested.
++    /// The DL7400's is the dual-connector rate DLM was measured sustaining, and it is also what
++    /// bounds the depth: three quarters of it is what a 30 bpp connector is priced against, which
++    /// puts two connectors at 2560x1440p165 outside 30 bpp. Raising it to the dock's rated
++    /// four-connector 4K60 load admits that pair and the sinks then power off with nothing logged,
++    /// so the rated figure is not a bound this budget can borrow. Ridge's is the highest combined
++    /// rate measured driving cleanly, 2560x1440p144 beside 2560x1440p120. Both are floors on the
++    /// dock's real ceiling rather than the ceiling itself.
+     ///
+     /// Do not mistake DLM's declared per-connector `pixel_per_second_limit` for the bound. It
+     /// clamps every Ridge connector to 120 Hz as policy, and the dock drives a single connector a
+diff --git a/drivers/gpu/drm/vino/video/haar/strip.rs b/drivers/gpu/drm/vino/video/haar/strip.rs
+index a51b87986e2e..9930063b6226 100644
+--- a/drivers/gpu/drm/vino/video/haar/strip.rs
++++ b/drivers/gpu/drm/vino/video/haar/strip.rs
+@@ -321,11 +321,11 @@ pub(crate) fn colour_strip(
+     }
+     let mut row0 = Bits::new(coding);
+     for b in &blocks[..STRIP_ROW_BLOCKS] {
+-        row0.colour_block_ac(&b.qcr, &b.qcb, &b.qy, b.lcr, b.lcb, b.ly)?;
++        row0.colour_block_ac(&b.qcr, &b.qcb, &b.qy, b.lcr, b.lcb, b.ly, geometry.depth())?;
+     }
+     let mut row1 = Bits::new(coding);
+     for b in &blocks[STRIP_ROW_BLOCKS..] {
+-        row1.colour_block_ac(&b.qcr, &b.qcb, &b.qy, b.lcr, b.lcb, b.ly)?;
++        row1.colour_block_ac(&b.qcr, &b.qcb, &b.qy, b.lcr, b.lcb, b.ly, geometry.depth())?;
+     }
+ 
+     // `Bits` buffers into a word, so `out` is only complete once finished -- take all three
+diff --git a/drivers/gpu/drm/vino/video/haar/transform.rs b/drivers/gpu/drm/vino/video/haar/transform.rs
+index ecab15b2fba2..4425e1988226 100644
+--- a/drivers/gpu/drm/vino/video/haar/transform.rs
++++ b/drivers/gpu/drm/vino/video/haar/transform.rs
+@@ -281,10 +281,38 @@ impl Depth {
+     /// under every candidate and keeping the one that stays monotonic
+     /// (`tools/codec/depth-probe.py`).
+     #[inline]
++    /// Maximum escape category for a luma AC coefficient.
++    ///
++    /// Unlike [`Self::dc_cmax`] this does **not** scale with the sample depth. Raising it two
++    /// categories to match the DC ceiling was tried against the hardware and desynchronises the
++    /// dock: at the maximum category the escape omits its unary terminator, so a ceiling above the
++    /// dock's makes every coefficient below it carry a terminator the dock reads as an offset bit,
++    /// and the picture breaks into horizontal bands.
++    ///
++    /// Saturating at the eight-bit ceiling clips the largest coefficients of ten-bit content
++    /// instead, which is the conservative failure. Settling the real value needs a capture of the
++    /// vendor driving AC-heavy HDR content, which has never been taken.
++    pub(crate) fn ac_cmax(self) -> u32 {
++        match self {
++            Depth::Eight => AC_CMAX,
++            // A coefficient is four times the sample, so every ceiling the depth moves gains two
++            // categories. The code table stating this one is raised with it.
++            Depth::Ten => AC_CMAX + 2,
++        }
++    }
++
++    /// Maximum escape category for a chroma AC coefficient at this depth; see [`Self::ac_cmax`].
++    pub(crate) fn chroma_ac_cmax(self) -> u32 {
++        match self {
++            Depth::Eight => CHROMA_AC_CMAX,
++            Depth::Ten => CHROMA_AC_CMAX + 2,
++        }
++    }
++
+     pub(crate) fn dc_cmax(self) -> u32 {
+         match self {
+             Depth::Eight => SOLID_DC_CMAX,
+-            Depth::Ten => 12,
++            Depth::Ten => SOLID_DC_CMAX + 2,
+         }
+     }
+ 
+@@ -497,11 +525,12 @@ pub(crate) fn colour_block_ac(
+         lcr: usize,
+         lcb: usize,
+         ly: usize,
++        depth: Depth,
+     ) -> Result {
+         for &(q, last, cmax) in &[
+-            (qcr, lcr, CHROMA_AC_CMAX),
+-            (qcb, lcb, CHROMA_AC_CMAX),
+-            (qy, ly, AC_CMAX),
++            (qcr, lcr, depth.chroma_ac_cmax()),
++            (qcb, lcb, depth.chroma_ac_cmax()),
++            (qy, ly, depth.ac_cmax()),
+         ] {
+             for i in 1..=last {
+                 if q[i] == 0 {
+@@ -527,6 +556,33 @@ mod tests {
+     /// of the same capture only at 10. Getting this wrong does not degrade the picture, it
+     /// desynchronises the dock's decoder -- at the maximum category `esc` omits the unary
+     /// 0-terminator, so the next value's first bit is read as an offset bit.
++    /// The AC ceilings scale with the sample depth, exactly as the DC ceiling does.
++    ///
++    /// A ten-bit sample makes every coefficient four times larger, which is two categories. Held
++    /// at their eight-bit values the escape saturates the bulk of the AC energy rather than just
++    /// the extremes, and the picture breaks up into blocks. The vendor's own stress content states
++    /// the same scaling: a two-pixel grating that is category 9 in SDR is category 11 in HDR.
++    #[test]
++    fn haar_depth_selects_the_ac_codebooks() {
++        use Depth;
++        assert_eq!(Depth::Eight.ac_cmax(), 9);
++        assert_eq!(Depth::Ten.ac_cmax(), 11);
++        assert_eq!(Depth::Eight.chroma_ac_cmax(), 10);
++        assert_eq!(Depth::Ten.chroma_ac_cmax(), 12);
++        // An AC ceiling left behind stays in step, because the category fixes the field width,
++        // and reconstructs every sharp edge from a truncated magnitude instead.
++        assert_eq!(Depth::Ten.ac_cmax(), Depth::Eight.ac_cmax() + 2);
++        assert_eq!(
++            Depth::Ten.chroma_ac_cmax(),
++            Depth::Eight.chroma_ac_cmax() + 2
++        );
++        assert_eq!(Depth::Ten.dc_cmax(), Depth::Eight.dc_cmax() + 2);
++        // Chroma stays one category above luma, so a coefficient at luma's ceiling still carries
++        // the unary terminator on the chroma planes.
++        assert_eq!(Depth::Eight.chroma_ac_cmax(), Depth::Eight.ac_cmax() + 1);
++        assert_eq!(Depth::Ten.chroma_ac_cmax(), Depth::Ten.ac_cmax() + 1);
++    }
++
+     #[test]
+     fn haar_depth_selects_the_dc_codebook() {
+         use Depth;

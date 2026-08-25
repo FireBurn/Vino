@@ -1,0 +1,112 @@
+From 2ebc63a49e4bfed0b306e04c0474a215e6047e0f Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Thu, 2 Jul 2026 06:19:08 +0100
+Subject: [PATCH] rust: platform: add runtime platform device creation
+
+Add the provider side of the Rust platform abstraction for virtual
+drivers that create devices at runtime.
+
+RegisteredDevice owns a platform_device_register_full() result and
+unregisters it on drop. Its constructor accepts the name, ID, parent,
+and DMA mask, and exposes the DEVID_AUTO and DEVID_NONE constants.
+
+Assisted-by: Claude:claude-opus-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/kernel/platform.rs | 86 +++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 86 insertions(+)
+
+diff --git a/rust/kernel/platform.rs b/rust/kernel/platform.rs
+index 9b362e0495d3..4a818fc3f18f 100644
+--- a/rust/kernel/platform.rs
++++ b/rust/kernel/platform.rs
+@@ -571,3 +571,89 @@ unsafe impl Sync for Device {}
+ // SAFETY: Same as `Device<Normal>` -- the underlying `struct platform_device` is the same;
+ // `Bound` is a zero-sized type-state marker that does not affect thread safety.
+ unsafe impl Sync for Device<device::Bound> {}
++
++/// The instance identifier of a runtime-created platform device.
++#[derive(Copy, Clone)]
++pub enum DeviceId {
++    /// Auto-assign a unique instance identifier (`PLATFORM_DEVID_AUTO`).
++    Auto,
++    /// Create an unnumbered device (`PLATFORM_DEVID_NONE`).
++    None,
++    /// Use the given non-negative instance identifier.
++    Fixed(u32),
++}
++
++/// An owned platform device created and registered at runtime.
++///
++/// This is the *provider* side of the platform bus: whereas [`Driver`] binds to devices the bus
++/// hands it, [`RegisteredDevice`] *creates* a `struct platform_device` and adds it to the bus,
++/// which then binds any matching [`Driver`] (calling its `probe`). Virtual drivers such as
++/// DisplayLink's `evdi` use this to spawn their DRM card devices on demand (from a sysfs `add`
++/// attribute or at module init).
++///
++/// [`RegisteredDevice::new`] wraps `platform_device_register_full()`; dropping the handle calls
++/// `platform_device_unregister()`, which unbinds the bound driver and releases the device.
++pub struct RegisteredDevice {
++    pdev: NonNull<bindings::platform_device>,
++}
++
++// SAFETY: `platform_device_register_full()`/`platform_device_unregister()` are internally
++// synchronized by the driver core and safe to call from any thread; the handle only unregisters.
++unsafe impl Send for RegisteredDevice {}
++// SAFETY: See `Send`; `&RegisteredDevice` exposes only the thread-safe `Device<Normal>`.
++unsafe impl Sync for RegisteredDevice {}
++
++impl RegisteredDevice {
++    /// Create and register a new platform device.
++    ///
++    /// `name` is the platform device name, which the platform bus also uses to match a [`Driver`].
++    /// If `parent` is given, the new device is created as its child. `dma_mask` is the DMA mask to
++    /// assign to the device; `None` leaves the platform default.
++    #[inline]
++    pub fn new(
++        name: &CStr,
++        id: DeviceId,
++        parent: Option<&device::Device>,
++        dma_mask: Option<u64>,
++    ) -> Result<Self> {
++        let id = match id {
++            DeviceId::Auto => bindings::PLATFORM_DEVID_AUTO,
++            DeviceId::None => bindings::PLATFORM_DEVID_NONE,
++            DeviceId::Fixed(id) => i32::try_from(id).map_err(|_| EINVAL)?,
++        };
++        let info = bindings::platform_device_info {
++            parent: parent.map_or(core::ptr::null_mut(), |p| p.as_raw()),
++            name: name.as_char_ptr(),
++            id,
++            dma_mask: dma_mask.unwrap_or(0),
++            ..Default::default()
++        };
++
++        // SAFETY: `info` is fully initialized (all remaining fields zeroed) and only borrowed for
++        // the duration of the call, which copies out the fields it needs.
++        let pdev = unsafe { bindings::platform_device_register_full(&info) };
++        let pdev = crate::error::from_err_ptr(pdev)?;
++
++        Ok(Self {
++            // A successful `platform_device_register_full()` returns a valid, non-null pointer.
++            pdev: NonNull::new(pdev).ok_or(ENOMEM)?,
++        })
++    }
++
++    /// Return a reference to the created platform [`Device`].
++    #[inline]
++    pub fn device(&self) -> &Device {
++        // SAFETY: `self.pdev` points to a valid, registered `struct platform_device` owned by
++        // `self`; `Device` is a transparent wrapper over `struct platform_device`.
++        unsafe { &*self.pdev.as_ptr().cast::<Device>() }
++    }
++}
++
++impl Drop for RegisteredDevice {
++    #[inline]
++    fn drop(&mut self) {
++        // SAFETY: `self.pdev` was returned by `platform_device_register_full()` and has not been
++        // unregistered yet; this consumes that registration exactly once.
++        unsafe { bindings::platform_device_unregister(self.pdev.as_ptr()) };
++    }
++}

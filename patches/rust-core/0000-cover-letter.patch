@@ -1,0 +1,23 @@
+From: Mike Lothian <mike@fireburn.co.uk>
+Subject: [PATCH 0/12] rust: core abstractions for a USB display driver
+
+Depends on: none
+Base:       integration/base-20260809
+
+*** BLURB HERE ***
+
+Mike Lothian (12):
+  rust: platform: add runtime platform device creation
+  rust: sysfs: add root-device attribute groups
+  rust: sync: completion: add single-shot and timed operations
+  rust: hrtimer: add ArcHrTimerHandle::restart
+  rust: random: add a safe get_random_bytes wrapper
+  rust: xxhash: add a safe xxh64 wrapper
+  rust: workqueue: make OwnedQueue thread-safe
+  rust: io: add checked offset copy helpers
+  rust: hrtimer: expose interrupt state in hard callbacks
+  rust: error: expose EPROTO
+  rust: fpu: add a safe kernel-FPU section guard
+  rust: time: add ktime_get_real_seconds
+
+ 15 file(s) changed, 806 insertion(s)(+), 2 deletion(s)(-)

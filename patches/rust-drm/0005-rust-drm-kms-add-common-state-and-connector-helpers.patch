@@ -1,0 +1,321 @@
+From 84063ff38f44dbde902c65d7b4960ac33e882fc5 Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Wed, 22 Jul 2026 18:45:48 +0100
+Subject: [PATCH] rust: drm: kms: add common state and connector helpers
+
+Add safe KMS helpers for hotplug events, mode timings, CRTC modes,
+plane destination sizes, and EDID mode enumeration.
+
+Propagate drm_edid_connector_update() failures and release the
+temporary EDID on every path.
+
+Assisted-by: Claude:claude-opus-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/kernel/drm/kms.rs           | 18 +++++---
+ rust/kernel/drm/kms/connector.rs | 35 ++++++++++++++-
+ rust/kernel/drm/kms/crtc.rs      | 12 ++++-
+ rust/kernel/drm/kms/encoder.rs   |  9 +---
+ rust/kernel/drm/kms/modes.rs     | 77 +++++++++++++++++++++++++++++++-
+ rust/kernel/drm/kms/plane.rs     | 14 +++++-
+ rust/kernel/drm/kms/vblank.rs    |  2 +-
+ 7 files changed, 148 insertions(+), 19 deletions(-)
+
+diff --git a/rust/kernel/drm/kms.rs b/rust/kernel/drm/kms.rs
+index 8baf9c2906f5..c10b2488af9b 100644
+--- a/rust/kernel/drm/kms.rs
++++ b/rust/kernel/drm/kms.rs
+@@ -77,7 +77,7 @@ unsafe fn setup_kms(_drm: &Device<Self::Driver>) -> Result<ModeConfigInfo> {
+ /// generate said functions for any kind of type which the original mode object driver trait can be
+ /// derived from. All conversions check the mode object's vtable. For example:
+ ///
+-/// ```compile_fail
++/// ```ignore
+ /// impl<'a, T: DriverConnectorState> ConnectorState<T> {
+ ///     impl_from_opaque_mode_obj! {
+ ///         // | An optional lifetime and param-variables to declare for each function
+@@ -245,10 +245,7 @@ pub trait KmsDriver: Driver {
+     type Encoder: encoder::DriverEncoder<Driver = Self>;
+ 
+     /// Return a [`ModeConfigInfo`] structure for this [`device::Device`].
+-    fn mode_config_info(
+-        dev: &device::Device,
+-        drm_data: &Self::Data,
+-    ) -> Result<ModeConfigInfo>;
++    fn mode_config_info(dev: &device::Device, drm_data: &Self::Data) -> Result<ModeConfigInfo>;
+ 
+     /// Create mode objects like [`crtc::Crtc`], [`plane::Plane`], etc. for this device
+     fn create_objects(drm: &UnregisteredKmsDevice<'_, Self>) -> Result
+@@ -360,6 +357,17 @@ impl<T: Driver> private::KmsImpl for PhantomData<T> {
+ 
+ impl<T: Driver> KmsImpl for PhantomData<T> {}
+ 
++impl<T: KmsDriver, C: crate::drm::device::DeviceContext> Device<T, C> {
++    /// Send a hotplug uevent to userspace, prompting it to re-probe connector state.
++    ///
++    /// This is useful for drivers which detect connector changes out of band, for example when a
++    /// dock supplies an EDID after bring-up.
++    pub fn hotplug_event(&self) {
++        // SAFETY: `self.as_raw()` is a live KMS-capable DRM device.
++        unsafe { bindings::drm_kms_helper_hotplug_event(self.as_raw()) };
++    }
++}
++
+ /// Various device-wide information for a [`Device`] that is provided during initialization.
+ #[derive(Copy, Clone)]
+ pub struct ModeConfigInfo {
+diff --git a/rust/kernel/drm/kms/connector.rs b/rust/kernel/drm/kms/connector.rs
+index b36d138ae950..793a7bb5bfef 100644
+--- a/rust/kernel/drm/kms/connector.rs
++++ b/rust/kernel/drm/kms/connector.rs
+@@ -5,7 +5,7 @@
+ //! C header: [`include/drm/drm_connector.h`](srctree/include/drm/drm_connector.h)
+ 
+ use super::{
+-    atomic::*, encoder::*, KmsDriver, ModeConfigGuard, ModeObject, ModeObjectVtable, Sealed
++    atomic::*, encoder::*, KmsDriver, ModeConfigGuard, ModeObject, ModeObjectVtable, Sealed,
+ };
+ use crate::{
+     alloc::KBox,
+@@ -587,6 +587,39 @@ pub fn set_preferred_mode(&self, (h_pref, w_pref): (u32, u32)) {
+         // SAFETY: We hold the locks required to call this via our type invariants.
+         unsafe { bindings::drm_set_preferred_mode(self.as_raw(), h_pref, w_pref) }
+     }
++
++    /// Parse an EDID, update the connector information, and add its advertised modes.
++    ///
++    /// Returns the number of modes added.
++    pub fn add_edid_modes(&self, edid: &[u8]) -> Result<i32> {
++        const EDID_BASE_BLOCK_LEN: usize = 128;
++
++        if edid.len() < EDID_BASE_BLOCK_LEN {
++            return Err(EINVAL);
++        }
++
++        // SAFETY: `edid` points to `edid.len()` initialized bytes, which the helper copies.
++        let drm_edid = unsafe { bindings::drm_edid_alloc(edid.as_ptr().cast(), edid.len()) };
++        if drm_edid.is_null() {
++            return Err(ENOMEM);
++        }
++
++        // SAFETY: The connector is live and the guard holds the mode-config lock. `drm_edid`
++        // points to an allocation returned by `drm_edid_alloc` above.
++        let ret = unsafe { bindings::drm_edid_connector_update(self.as_raw(), drm_edid) };
++        if let Err(err) = to_result(ret) {
++            // SAFETY: `drm_edid` was allocated above and has not been freed.
++            unsafe { bindings::drm_edid_free(drm_edid) };
++            return Err(err);
++        }
++
++        // SAFETY: The connector information was successfully updated from this EDID above.
++        let count = unsafe { bindings::drm_edid_connector_add_modes(self.as_raw()) };
++        // SAFETY: `drm_edid` was allocated above and is no longer needed.
++        unsafe { bindings::drm_edid_free(drm_edid) };
++
++        Ok(count)
++    }
+ }
+ 
+ /// A trait implemented by any type which can produce a reference to a
+diff --git a/rust/kernel/drm/kms/crtc.rs b/rust/kernel/drm/kms/crtc.rs
+index 683d9ee4ec25..a3217f8c55e8 100644
+--- a/rust/kernel/drm/kms/crtc.rs
++++ b/rust/kernel/drm/kms/crtc.rs
+@@ -5,8 +5,8 @@
+ //! C header: [`include/drm/drm_crtc.h`](srctree/include/drm/drm_crtc.h)
+ 
+ use super::{
+-    atomic::*, plane::*, vblank::*, KmsDriver, ModeObject, ModeObjectVtable, StaticModeObject,
+-    UnregisteredKmsDevice, Sealed,
++    atomic::*, modes::DisplayMode, plane::*, vblank::*, KmsDriver, ModeObject, ModeObjectVtable,
++    Sealed, StaticModeObject, UnregisteredKmsDevice,
+ };
+ use crate::{
+     alloc::KBox,
+@@ -644,6 +644,7 @@ pub trait AsRawCrtcState: private::AsRawCrtcState {
+ pub(crate) mod private {
+     use super::*;
+ 
++    /// The raw-pointer half of [`AsRawCrtcState`](super::AsRawCrtcState).
+     #[allow(unreachable_pub)]
+     pub trait AsRawCrtcState {
+         /// Return a raw pointer to the DRM CRTC state
+@@ -678,6 +679,13 @@ fn active(&self) -> bool {
+         // this access is serialized
+         unsafe { (*self.as_raw()).active }
+     }
++
++    /// Return the display mode programmed into this CRTC state.
++    fn mode(&self) -> &DisplayMode {
++        // SAFETY: `mode` is embedded in the CRTC state and therefore has the same lifetime. The
++        // atomic-state API serializes access while the mode can be changed.
++        unsafe { DisplayMode::as_ref(core::ptr::addr_of!((*self.as_raw()).mode)) }
++    }
+ }
+ impl<T: AsRawCrtcState> RawCrtcState for T {}
+ 
+diff --git a/rust/kernel/drm/kms/encoder.rs b/rust/kernel/drm/kms/encoder.rs
+index f90d139cdb04..8758a9459bcc 100644
+--- a/rust/kernel/drm/kms/encoder.rs
++++ b/rust/kernel/drm/kms/encoder.rs
+@@ -5,7 +5,7 @@
+ //! C header: [`include/drm/drm_encoder.h`](srctree/include/drm/drm_encoder.h)
+ 
+ use super::{
+-    KmsDriver, ModeObject, ModeObjectVtable, StaticModeObject, UnregisteredKmsDevice, Sealed
++    KmsDriver, ModeObject, ModeObjectVtable, Sealed, StaticModeObject, UnregisteredKmsDevice,
+ };
+ use crate::{
+     alloc::KBox,
+@@ -15,12 +15,7 @@
+     types::{NotThreadSafe, Opaque},
+ };
+ use bindings;
+-use core::{
+-    marker::*,
+-    mem,
+-    ops::Deref,
+-    ptr::null,
+-};
++use core::{marker::*, mem, ops::Deref, ptr::null};
+ use macros::paste;
+ 
+ /// A macro for generating our type ID enumerator.
+diff --git a/rust/kernel/drm/kms/modes.rs b/rust/kernel/drm/kms/modes.rs
+index 0f29a9c00062..cc3c486eecf1 100644
+--- a/rust/kernel/drm/kms/modes.rs
++++ b/rust/kernel/drm/kms/modes.rs
+@@ -1,7 +1,12 @@
+ // SPDX-License-Identifier: GPL-2.0
++//!
++//! DRM display modes.
++//!
++//! C header: [`include/drm/drm_modes.h`](srctree/include/drm/drm_modes.h)
++
+ use bindings;
+ 
+-use crate::{prelude::*, types::Opaque};
++use crate::types::Opaque;
+ 
+ /// DRM kernel-internal display mode structure.
+ ///
+@@ -73,4 +78,74 @@ pub fn crtc_vtotal(&self) -> u16 {
+         // SAFETY: Reading these fields is safe via our type invariants
+         unsafe { (*self.as_raw()).crtc_vtotal }
+     }
++
++    /// Return the horizontal active pixels.
++    #[inline]
++    pub fn hdisplay(&self) -> u16 {
++        // SAFETY: Reading this field is safe via the type invariants.
++        unsafe { (*self.as_raw()).hdisplay }
++    }
++
++    /// Return the start of the horizontal sync pulse.
++    #[inline]
++    pub fn hsync_start(&self) -> u16 {
++        // SAFETY: Reading this field is safe via the type invariants.
++        unsafe { (*self.as_raw()).hsync_start }
++    }
++
++    /// Return the end of the horizontal sync pulse.
++    #[inline]
++    pub fn hsync_end(&self) -> u16 {
++        // SAFETY: Reading this field is safe via the type invariants.
++        unsafe { (*self.as_raw()).hsync_end }
++    }
++
++    /// Return the total horizontal pixels including blanking.
++    #[inline]
++    pub fn htotal(&self) -> u16 {
++        // SAFETY: Reading this field is safe via the type invariants.
++        unsafe { (*self.as_raw()).htotal }
++    }
++
++    /// Return the vertical active scanlines.
++    #[inline]
++    pub fn vdisplay(&self) -> u16 {
++        // SAFETY: Reading this field is safe via the type invariants.
++        unsafe { (*self.as_raw()).vdisplay }
++    }
++
++    /// Return the start of the vertical sync pulse.
++    #[inline]
++    pub fn vsync_start(&self) -> u16 {
++        // SAFETY: Reading this field is safe via the type invariants.
++        unsafe { (*self.as_raw()).vsync_start }
++    }
++
++    /// Return the end of the vertical sync pulse.
++    #[inline]
++    pub fn vsync_end(&self) -> u16 {
++        // SAFETY: Reading this field is safe via the type invariants.
++        unsafe { (*self.as_raw()).vsync_end }
++    }
++
++    /// Return the total vertical scanlines including blanking.
++    #[inline]
++    pub fn vtotal(&self) -> u16 {
++        // SAFETY: Reading this field is safe via the type invariants.
++        unsafe { (*self.as_raw()).vtotal }
++    }
++
++    /// Return the pixel clock in kHz.
++    #[inline]
++    pub fn clock(&self) -> i32 {
++        // SAFETY: Reading this field is safe via the type invariants.
++        unsafe { (*self.as_raw()).clock }
++    }
++
++    /// Return the refresh rate in Hz as computed by DRM.
++    #[inline]
++    pub fn vrefresh(&self) -> i32 {
++        // SAFETY: `drm_mode_vrefresh` only reads this valid display mode.
++        unsafe { bindings::drm_mode_vrefresh(self.as_raw()) }
++    }
+ }
+diff --git a/rust/kernel/drm/kms/plane.rs b/rust/kernel/drm/kms/plane.rs
+index f52f9c872de3..3a95c45b6728 100644
+--- a/rust/kernel/drm/kms/plane.rs
++++ b/rust/kernel/drm/kms/plane.rs
+@@ -5,8 +5,8 @@
+ //! C header: [`include/drm/drm_plane.h`](srctree/include/drm/drm_plane.h)
+ 
+ use super::{
+-    atomic::*, crtc::*, framebuffer::*, KmsDriver, ModeObject, ModeObjectVtable, StaticModeObject,
+-    UnregisteredKmsDevice, Sealed
++    atomic::*, crtc::*, framebuffer::*, KmsDriver, ModeObject, ModeObjectVtable, Sealed,
++    StaticModeObject, UnregisteredKmsDevice,
+ };
+ use crate::{
+     alloc::KBox,
+@@ -617,6 +617,16 @@ fn plane(&self) -> &Self::Plane {
+         unsafe { Self::Plane::from_raw(self.as_raw().plane) }
+     }
+ 
++    /// Return the width of this plane's destination rectangle in CRTC pixels.
++    fn crtc_w(&self) -> u32 {
++        self.as_raw().crtc_w
++    }
++
++    /// Return the height of this plane's destination rectangle in CRTC pixels.
++    fn crtc_h(&self) -> u32 {
++        self.as_raw().crtc_h
++    }
++
+     /// Return the current [`OpaqueCrtc`] assigned to this plane, if there is one.
+     ///
+     /// The returned CRTC reference cannot outlive the plane-state borrow:
+diff --git a/rust/kernel/drm/kms/vblank.rs b/rust/kernel/drm/kms/vblank.rs
+index dc34e02e8ccb..a725a46110d8 100644
+--- a/rust/kernel/drm/kms/vblank.rs
++++ b/rust/kernel/drm/kms/vblank.rs
+@@ -4,7 +4,7 @@
+ //!
+ //! C header: [`include/drm/drm_vblank.h`](srcfree/include/drm/drm_vblank.h)
+ 
+-use super::{crtc::*, ModeObject, modes::*, Sealed};
++use super::{crtc::*, modes::*, ModeObject};
+ use bindings;
+ use core::{
+     marker::*,

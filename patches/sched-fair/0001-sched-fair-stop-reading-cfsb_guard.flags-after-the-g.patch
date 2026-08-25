@@ -1,0 +1,68 @@
+From cb68808ce3d7991a12f7b2de867b757f96204ba3 Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Wed, 1 Jul 2026 22:40:29 +0100
+Subject: [PATCH] sched/fair: stop reading cfsb_guard.flags after the guard
+ drops it
+
+"locking: Switch to _irq_{disable,enable}() variants in cleanup guards"
+removed the flags field from the raw_spinlock_irqsave/spinlock_irqsave
+CLASS() guards (the new *_irq_disable()/*_irq_enable() primitives don't
+need explicit flags storage), but sched_cfs_period_timer() is the one
+place in the tree that still read cfsb_guard.flags directly. A tree-wide
+grep for CLASS(raw_spinlock_irqsave, ...) and CLASS(spinlock_irqsave,
+...) turns up no other consumer relying on the removed field.
+
+Desugar this one call site back to plain raw_spin_lock_irqsave() /
+raw_spin_unlock_irqrestore(), bypassing the guard macro instead of
+the struct field it no longer provides. No behavioural change: the
+lock is still held for the same span (through both return paths),
+and do_sched_cfs_period_timer() still gets the same flags value.
+
+Needed as a prerequisite for the irq/locking-guard series this pulls
+in; not a vino-specific fix.
+
+Assisted-by: Claude:claude-opus-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ kernel/sched/fair.c | 12 ++++++++----
+ 1 file changed, 8 insertions(+), 4 deletions(-)
+
+diff --git a/kernel/sched/fair.c b/kernel/sched/fair.c
+index d78467ec6ee1..91b175ba2f3d 100644
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -7350,15 +7350,16 @@ static enum hrtimer_restart sched_cfs_period_timer(struct hrtimer *timer)
+ 	int overrun;
+ 	int idle = 0;
+ 	int count = 0;
++	unsigned long flags;
+ 
+-	CLASS(raw_spinlock_irqsave, cfsb_guard)(&cfs_b->lock);
++	raw_spin_lock_irqsave(&cfs_b->lock, flags);
+ 
+ 	for (;;) {
+ 		overrun = hrtimer_forward_now(timer, cfs_b->period);
+ 		if (!overrun)
+ 			break;
+ 
+-		idle = do_sched_cfs_period_timer(cfs_b, overrun, cfsb_guard.flags);
++		idle = do_sched_cfs_period_timer(cfs_b, overrun, flags);
+ 
+ 		if (++count > 3) {
+ 			u64 new, old = ktime_to_ns(cfs_b->period);
+@@ -7392,10 +7393,13 @@ static enum hrtimer_restart sched_cfs_period_timer(struct hrtimer *timer)
+ 		}
+ 	}
+ 
+-	if (idle) {
++	if (idle)
+ 		cfs_b->period_active = 0;
++
++	raw_spin_unlock_irqrestore(&cfs_b->lock, flags);
++
++	if (idle)
+ 		return HRTIMER_NORESTART;
+-	}
+ 
+ 	return HRTIMER_RESTART;
+ }

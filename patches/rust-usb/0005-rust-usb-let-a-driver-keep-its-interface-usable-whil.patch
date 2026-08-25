@@ -1,0 +1,57 @@
+From 3f61477d68a4651aeee4d2ebf726a9cd98f7a92f Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Mon, 17 Aug 2026 17:47:49 +0100
+Subject: [PATCH] rust: usb: let a driver keep its interface usable while
+ unbinding
+
+The USB core kills every outstanding URB and disables an interface's
+endpoints before it calls any driver callback. A driver with something
+left to say to the device on the way out therefore cannot say it: the
+transfer names an endpoint that no longer exists and is refused.
+
+Expose the core's soft-unbind flag as a driver constant. Setting it
+defers that teardown until the callbacks return, which makes cancelling
+outstanding transfers the driver's own responsibility.
+
+This matters to a driver that leaves the device in a state a user can
+see. A display bridge that simply stops sending pixels leaves the
+monitor lit on whatever it decoded last.
+
+Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/kernel/usb.rs | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/rust/kernel/usb.rs b/rust/kernel/usb.rs
+index 1f1d19621631..ddd144fe480e 100644
+--- a/rust/kernel/usb.rs
++++ b/rust/kernel/usb.rs
+@@ -107,6 +107,7 @@ unsafe fn register(
+             (*udrv.get()).pre_reset = Some(Self::pre_reset_callback);
+             (*udrv.get()).post_reset = Some(Self::post_reset_callback);
+             (*udrv.get()).id_table = T::ID_TABLE.as_ptr();
++            (*udrv.get()).set_soft_unbind(T::SOFT_UNBIND as core::ffi::c_uint);
+         }
+ 
+         // SAFETY: `udrv` is guaranteed to be a valid `DriverType`.
+@@ -474,6 +475,19 @@ pub trait Driver {
+     /// The table of device ids supported by the driver.
+     const ID_TABLE: IdTable<Self::IdInfo>;
+ 
++    /// Whether the USB core must leave this interface usable until the driver has let go of it.
++    ///
++    /// By default the core kills every outstanding URB and disables the interface's endpoints
++    /// *before* it calls any driver callback, so a driver that has something to say to the device
++    /// on the way out cannot say it: the transfer is refused with [`ENOENT`] because the endpoint
++    /// it names no longer exists. Setting this defers that teardown until after the callbacks
++    /// return, which makes cancelling outstanding transfers the driver's own responsibility.
++    ///
++    /// Only useful to a driver that leaves the device in a state a user can see -- a display that
++    /// otherwise goes on scanning out its last frame, an interface that must be told to power
++    /// down.
++    const SOFT_UNBIND: bool = false;
++
+     /// USB driver probe.
+     ///
+     /// Called when a new USB interface is bound to this driver.

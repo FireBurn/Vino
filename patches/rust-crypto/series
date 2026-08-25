@@ -1,0 +1,3 @@
+0000-cover-letter.patch
+0001-rust-crypto-add-AES-128-AES-CMAC-SHA-256-and-HMAC-bi.patch
+0002-rust-crypto-add-synchronous-RSA-akcipher-support.patch

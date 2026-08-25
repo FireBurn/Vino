@@ -1,0 +1,16 @@
+From: Mike Lothian <mike@fireburn.co.uk>
+Subject: [PATCH 0/5] rust: usb: host-side abstractions for a bulk-endpoint driver
+
+Depends on: rust-core
+Base:       integration/base-20260809
+
+*** BLURB HERE ***
+
+Mike Lothian (5):
+  rust: usb: add revocable typed interface I/O
+  rust: usb: add reusable URBs and persistent bulk queues
+  rust: usb: add topology lookup and removal notification
+  rust: usb: add a vendor-and-interface-info device id constructor
+  rust: usb: let a driver keep its interface usable while unbinding
+
+ 3 file(s) changed, 1697 insertion(s)(+), 26 deletion(s)(-)

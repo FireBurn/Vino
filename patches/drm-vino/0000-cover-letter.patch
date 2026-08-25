@@ -1,0 +1,28 @@
+From: Mike Lothian <mike@fireburn.co.uk>
+Subject: [PATCH 0/17] drm/vino: a Rust driver for DisplayLink DL3 docks
+
+Depends on: rust-core, rust-crypto, rust-usb, rust-drm, rust-firmware
+Base:       integration/base-20260809
+
+*** BLURB HERE ***
+
+Mike Lothian (17):
+  drm/vino: add the DL3 wire framing
+  drm/vino: add the USB transport
+  drm/vino: add the crypto primitives and the HDCP 2.2 AKE
+  drm/vino: add the encrypted control plane
+  drm/vino: add the dock profiles
+  drm/vino: add the video codec
+  drm/vino: add control-session bring-up
+  drm/vino: add the KMS device and the atomic path
+  drm/vino: add the dock activation and scanout path
+  drm/vino: read the dock's firmware version, and update it over DFU
+  drm/vino: add the USB driver frontend
+  drm/vino: allow the driver to be built
+  Documentation/gpu: document the Vino driver
+  drm/vino: say which sample depth a connector is being driven at
+  drm/vino: publish the plane's format modifier
+  drm/vino: drive the link at the depth userspace asked for
+  drm/vino: key the strip cache on the sample depth
+
+ 43 file(s) changed, 23838 insertion(s)(+), 32 deletion(s)(-)

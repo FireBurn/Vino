@@ -1,0 +1,12 @@
+From: Mike Lothian <mike@fireburn.co.uk>
+Subject: [PATCH 0/1] sched/fair: stop reading a guard flag after the guard drops it
+
+Depends on: none
+Base:       integration/base-20260809
+
+*** BLURB HERE ***
+
+Mike Lothian (1):
+  sched/fair: stop reading cfsb_guard.flags after the guard drops it
+
+ 1 file(s) changed, 8 insertion(s)(+), 4 deletion(s)(-)

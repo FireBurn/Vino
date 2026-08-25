@@ -1,0 +1,115 @@
+From 0721c0efed178d5378c864cf8204bfd7970eee2e Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Mon, 24 Aug 2026 01:41:11 +0100
+Subject: [PATCH] drm/vino: allow the driver to be built
+
+Add the Kconfig entry, the Makefile rule and the MAINTAINERS record, so the
+preceding commits become a module.
+
+Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ MAINTAINERS                   |  6 ++++++
+ drivers/gpu/drm/Kconfig       |  1 +
+ drivers/gpu/drm/Makefile      |  1 +
+ drivers/gpu/drm/vino/Kconfig  | 40 +++++++++++++++++++++++++++++++++++
+ drivers/gpu/drm/vino/Makefile |  2 ++
+ 5 files changed, 50 insertions(+)
+ create mode 100644 drivers/gpu/drm/vino/Kconfig
+ create mode 100644 drivers/gpu/drm/vino/Makefile
+
+diff --git a/MAINTAINERS b/MAINTAINERS
+index 2b548bba6525..79ccf112fabd 100644
+--- a/MAINTAINERS
++++ b/MAINTAINERS
+@@ -8537,6 +8537,12 @@ S:	Supported
+ T:	git https://gitlab.freedesktop.org/drm/misc/kernel.git
+ F:	drivers/gpu/drm/udl/
+ 
++DRM DRIVER FOR VINO DISPLAYLINK DL3 DEVICES
++M:	Mike Lothian <mike@fireburn.co.uk>
++L:	dri-devel@lists.freedesktop.org
++S:	Maintained
++F:	drivers/gpu/drm/vino/
++
+ DRM DRIVER FOR VIRTUAL KERNEL MODESETTING (VKMS)
+ M:	Louis Chauvet <louis.chauvet@bootlin.com>
+ R:	Haneen Mohammed <hamohammed.sa@gmail.com>
+diff --git a/drivers/gpu/drm/Kconfig b/drivers/gpu/drm/Kconfig
+index 323422861e8f..ac73fc425c59 100644
+--- a/drivers/gpu/drm/Kconfig
++++ b/drivers/gpu/drm/Kconfig
+@@ -358,6 +358,7 @@ source "drivers/gpu/drm/vboxvideo/Kconfig"
+ source "drivers/gpu/drm/vc4/Kconfig"
+ source "drivers/gpu/drm/verisilicon/Kconfig"
+ source "drivers/gpu/drm/vgem/Kconfig"
++source "drivers/gpu/drm/vino/Kconfig"
+ source "drivers/gpu/drm/virtio/Kconfig"
+ source "drivers/gpu/drm/vkms/Kconfig"
+ source "drivers/gpu/drm/vmwgfx/Kconfig"
+diff --git a/drivers/gpu/drm/Makefile b/drivers/gpu/drm/Makefile
+index e635fcffd379..29ab96f6e8de 100644
+--- a/drivers/gpu/drm/Makefile
++++ b/drivers/gpu/drm/Makefile
+@@ -185,6 +185,7 @@ obj-$(CONFIG_DRM_VC4)  += vc4/
+ obj-$(CONFIG_DRM_VMWGFX)+= vmwgfx/
+ obj-$(CONFIG_DRM_VGEM)	+= vgem/
+ obj-$(CONFIG_DRM_VKMS)	+= vkms/
++obj-$(CONFIG_DRM_VINO)	+= vino/
+ obj-$(CONFIG_DRM_NOUVEAU) +=nouveau/
+ # nova-drm is built from drivers/gpu/Makefile together with nova-core.
+ obj-$(CONFIG_DRM_EXYNOS) +=exynos/
+diff --git a/drivers/gpu/drm/vino/Kconfig b/drivers/gpu/drm/vino/Kconfig
+new file mode 100644
+index 000000000000..7251a0941383
+--- /dev/null
++++ b/drivers/gpu/drm/vino/Kconfig
+@@ -0,0 +1,40 @@
++# SPDX-License-Identifier: GPL-2.0
++config DRM_VINO
++	tristate "DisplayLink DL3 (Vino) open driver"
++	depends on USB
++	depends on DRM
++	depends on RUST
++	# RUST_DRM_GEM_SHMEM_HELPER depends on MMU; inherit that dependency here so the
++	# select below cannot generate an unmet-direct-dependency warning on nommu.
++	depends on MMU
++	select DRM_KMS_HELPER
++	select RUST_DRM_GEM_SHMEM_HELPER
++	select CRYPTO_RSA
++	select RUST_CRYPTO_AKCIPHER
++	select RUST_CRYPTO_LIB_AES
++	select RUST_CRYPTO_LIB_SHA256
++	select FW_LOADER
++	select RUST_FW_LOADER_ABSTRACTIONS
++	select FW_UPLOAD
++	help
++	  Open in-kernel Rust driver for DisplayLink DL3 docks: the Dell
++	  Universal Dock D6000 (USB ID 17e9:6006, DL-6xxx silicon) and the
++	  DL-7400 quad-display docks (USB ID 17e9:7000, DL-7000 silicon).
++
++	  It binds the dock over USB, runs the HDCP 2.2 control plane, mode-set
++	  and the Vino codec, and registers a DRM/KMS sink that scans out to the
++	  dock's video endpoints.
++
++	  To compile this as a module, choose M here: the module is called vino.
++
++	  If unsure, say N.
++
++config DRM_VINO_KUNIT_TEST
++	bool "KUnit tests for the Vino driver"
++	depends on DRM_VINO && KUNIT
++	help
++	  Build Vino's protocol, crypto and codec unit tests into the driver.
++	  The tests run when the driver is loaded, so this option is intended
++	  for driver development and test kernels rather than normal use.
++
++	  If in doubt, say N.
+diff --git a/drivers/gpu/drm/vino/Makefile b/drivers/gpu/drm/vino/Makefile
+new file mode 100644
+index 000000000000..6e39668040f3
+--- /dev/null
++++ b/drivers/gpu/drm/vino/Makefile
+@@ -0,0 +1,2 @@
++# SPDX-License-Identifier: GPL-2.0
++obj-$(CONFIG_DRM_VINO) += vino.o

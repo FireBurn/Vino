@@ -1,0 +1,257 @@
+From cb5cc798e8d1f7199558fcc03b897d37165ee860 Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Mon, 24 Aug 2026 18:51:55 +0100
+Subject: [PATCH] drm/vino: drive the link at the depth userspace asked for
+
+The sample depth the dock was told to carry came from the committed
+framebuffer's format alone, so a connector was driven at eight bits per
+channel however deep a link userspace asked for. A compositor that enables
+HDR sets `max bpc` to 10 and attaches the PQ metadata while continuing to
+scan out an eight-bit surface, which is what every other driver expects: the
+property describes the link, not the buffer. The result was a connector
+carrying ST2084 and BT.2020 over an eight-bit link, with nothing reporting
+the mismatch.
+
+Separate the two. The framebuffer's format still decides how a pixel is
+decoded, and the link's depth now decides what the dock is told and what the
+codec emits. Where they differ the sample is widened after decoding, so the
+encoder only ever sees the link's depth.
+
+Widening replicates the top bits into the low ones rather than shifting, so
+both endpoints stay exact: a plain shift leaves full white three codes short
+and tints every highlight.
+
+Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ drivers/gpu/drm/vino/drm_sink/mode_objects.rs | 13 +++-
+ drivers/gpu/drm/vino/drm_sink/scanout.rs      | 62 ++++++++++++++++++-
+ drivers/gpu/drm/vino/drm_sink/settings.rs     | 55 +++++++++++++++-
+ 3 files changed, 123 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/gpu/drm/vino/drm_sink/mode_objects.rs b/drivers/gpu/drm/vino/drm_sink/mode_objects.rs
+index a53de7a7a7d4..2e60bd27ab39 100644
+--- a/drivers/gpu/drm/vino/drm_sink/mode_objects.rs
++++ b/drivers/gpu/drm/vino/drm_sink/mode_objects.rs
+@@ -246,6 +246,13 @@ fn atomic_enable(commit: CrtcAtomicCommit<'_, Self>) {
+             .and_then(|conn| conn.hdr_output_eotf())
+             == Some(connector::Eotf::SmpteSt2084);
+         data.set_connector_st2084(connector, st2084);
++        // The link depth userspace asked for, which is a separate question from the framebuffer's
++        // format: an eight-bit surface over a ten-bit link is the ordinary case, and reading the
++        // format alone silently ignores the request.
++        let requested_bpc = state
++            .new_connector_state_for_crtc(crtc)
++            .map_or(0, |conn| conn.max_requested_bpc());
++        data.set_connector_max_bpc(connector, requested_bpc);
+         // Cache this connector's colour transform for the scanout to apply.
+         data.update_color(connector as usize, new.gamma_lut(), new.ctm());
+         // Whatever this connector's sink state was, the enable path re-runs the full bracket and
+@@ -278,11 +285,13 @@ fn atomic_enable(commit: CrtcAtomicCommit<'_, Self>) {
+             }
+         };
+         vino_debug!(
+-            "vino: KMS CRTC enable -- connector {} display ON, mode {}x{}@{} (scanout begins)\n",
++            "vino: KMS CRTC enable -- connector {} display ON, mode {}x{}@{} {} bpc{} (scanout begins)\n",
+             connector,
+             timing.hactive,
+             timing.vactive,
+-            timing.refresh_hz
++            timing.refresh_hz,
++            if timing.ten_bit { 10 } else { 8 },
++            if timing.st2084 { " PQ" } else { "" }
+         );
+         // Publish the desired timing; atomic callbacks must not block on USB.
+         let mode_key = timing_key(&timing);
+diff --git a/drivers/gpu/drm/vino/drm_sink/scanout.rs b/drivers/gpu/drm/vino/drm_sink/scanout.rs
+index 68f9e689629b..94097dbc1a27 100644
+--- a/drivers/gpu/drm/vino/drm_sink/scanout.rs
++++ b/drivers/gpu/drm/vino/drm_sink/scanout.rs
+@@ -106,6 +106,7 @@ pub(super) fn run_pending_scanout(
+             direct,
+             hashes,
+             depth: data.geometry_for_connector(frame.connector).depth(),
++            source_depth: data.connector_buffer_depth(frame.connector),
+         },
+         GFP_KERNEL,
+     ) {
+@@ -530,6 +531,12 @@ pub(super) struct PixelSource {
+     /// depth-agnostic and only the unpack here differs: `XRGB8888` is three bytes in the low 24
+     /// bits, `XRGB2101010` three 10-bit fields in the low 30.
+     depth: crate::video::haar::Depth,
++    /// Bits per channel of the framebuffer itself, which decides how a pixel is decoded.
++    ///
++    /// Equal to `depth` except when userspace asked for a deeper link than the surface it handed
++    /// over, which is the ordinary way a compositor drives a ten-bit link from an eight-bit
++    /// desktop. Samples are widened after decoding so the codec always sees `depth`.
++    source_depth: crate::video::haar::Depth,
+ }
+ 
+ /// Whether the encoder can read output pixels straight out of the snapshot. See
+@@ -545,11 +552,39 @@ fn direct_pixel_map(
+     color.is_none() && rotation == plane::Rotation::ROTATE_0 && output_w == w && output_h == h
+ }
+ 
++/// Widen an eight-bit sample to ten bits.
++///
++/// Replicating the top two bits into the low ones keeps both endpoints exact: black stays zero and
++/// full white stays full white, where a plain shift would land three codes short of it and tint
++/// every highlight.
++#[inline]
++fn widen_8_to_10(v: u16) -> u16 {
++    (v << 2) | (v >> 6)
++}
++
+ impl PixelSource {
+     /// Split one packed 32-bit pixel into channels at this source's depth.
+     #[inline]
+     fn unpack(&self, p: u32) -> (u16, u16, u16) {
+-        match self.depth {
++        let (r, g, b) = self.unpack_source(p);
++        self.widen(r, g, b)
++    }
++
++    /// Widen a decoded sample from the framebuffer's depth to the link's.
++    #[inline]
++    fn widen(&self, r: u16, g: u16, b: u16) -> (u16, u16, u16) {
++        match (self.source_depth, self.depth) {
++            (crate::video::haar::Depth::Eight, crate::video::haar::Depth::Ten) => {
++                (widen_8_to_10(r), widen_8_to_10(g), widen_8_to_10(b))
++            }
++            _ => (r, g, b),
++        }
++    }
++
++    /// Split one packed 32-bit pixel into channels at the framebuffer's own depth.
++    #[inline]
++    fn unpack_source(&self, p: u32) -> (u16, u16, u16) {
++        match self.source_depth {
+             // Little-endian XRGB8888.
+             crate::video::haar::Depth::Eight => (
+                 ((p >> 16) & 0xff) as u16,
+@@ -622,9 +657,9 @@ fn px(&self, dx: usize, dy: usize) -> (u16, u16, u16) {
+             let Some(chunk) = self.pixels.get(off..off + 4) else {
+                 return (0, 0, 0);
+             };
+-            if let crate::video::haar::Depth::Eight = self.depth {
++            if let crate::video::haar::Depth::Eight = self.source_depth {
+                 // Little-endian XRGB8888: byte 0 is blue, 1 green, 2 red.
+-                return (chunk[2] as u16, chunk[1] as u16, chunk[0] as u16);
++                return self.widen(chunk[2] as u16, chunk[1] as u16, chunk[0] as u16);
+             }
+             let Ok(bytes) = <[u8; 4]>::try_from(chunk) else {
+                 return (0, 0, 0);
+@@ -865,6 +900,7 @@ pub(crate) fn parallel_rotation_matches_serial(rotation: plane::Rotation) -> Res
+             direct: direct_pixel_map(rotation, &None, w, h, output_w, output_h),
+             hashes: KVVec::new(),
+             depth: crate::video::haar::Depth::Eight,
++            source_depth: crate::video::haar::Depth::Eight,
+         },
+         GFP_KERNEL,
+     )?;
+@@ -1788,6 +1824,26 @@ mod tests {
+     use super::*;
+     use crate::*;
+ 
++    /// An eight-bit desktop driven over a ten-bit link must keep both endpoints exact.
++    ///
++    /// A plain shift leaves full white at 1020 of 1023, which tints every highlight and is the
++    /// kind of error that looks like a panel problem rather than an encoder one.
++    #[test]
++    fn widening_an_eight_bit_sample_keeps_the_endpoints() {
++        assert_eq!(widen_8_to_10(0), 0);
++        assert_eq!(widen_8_to_10(255), 1023);
++        // Mid grey stays mid grey rather than drifting low.
++        assert_eq!(widen_8_to_10(128), 514);
++        // Monotonic, and never outside the ten-bit range.
++        let mut previous = 0;
++        for v in 0..=255u16 {
++            let w = widen_8_to_10(v);
++            assert!(w <= 1023);
++            assert!(v == 0 || w > previous);
++            previous = w;
++        }
++    }
++
+     /// Scattered damage must cost the strips it touches, not the surface.
+     ///
+     /// The rectangle list is an intermediate representation between the per-strip hash comparison
+diff --git a/drivers/gpu/drm/vino/drm_sink/settings.rs b/drivers/gpu/drm/vino/drm_sink/settings.rs
+index 9fd13c9a4347..91763b7a05c9 100644
+--- a/drivers/gpu/drm/vino/drm_sink/settings.rs
++++ b/drivers/gpu/drm/vino/drm_sink/settings.rs
+@@ -144,7 +144,7 @@ pub(crate) fn split_full_packet_frame(&self) -> bool {
+     /// plane will actually send: the dock sizes its buffer from the pair and mis-sizes it if they
+     /// disagree.
+     pub(super) fn connector_is_ten_bit(&self, connector: usize) -> bool {
+-        self.connector_ten_bit.load(Ordering::Acquire) & (1u32 << connector) != 0
++        self.connector_wire_ten_bit(connector as u8)
+     }
+ 
+     /// Whether `connector`'s connector is being driven in PQ; see [`Self::set_connector_st2084`].
+@@ -166,13 +166,64 @@ pub(super) fn set_connector_st2084(&self, connector: u8, on: bool) {
+         }
+     }
+ 
++    /// Record the link depth userspace asked this connector to carry.
++    ///
++    /// Four bits per connector is enough for every value `max bpc` takes, and keeping them in one
++    /// word means the scanout path reads the whole set with a single load.
++    pub(super) fn set_connector_max_bpc(&self, connector: u8, bpc: u32) {
++        let shift = u32::from(connector) * 4;
++        let field = bpc.min(15) << shift;
++        let mask = !(0xfu32 << shift);
++        let mut current = self.connector_max_bpc.load(Ordering::Acquire);
++        loop {
++            let next = (current & mask) | field;
++            match self.connector_max_bpc.compare_exchange_weak(
++                current,
++                next,
++                Ordering::AcqRel,
++                Ordering::Acquire,
++            ) {
++                Ok(_) => break,
++                Err(seen) => current = seen,
++            }
++        }
++    }
++
++    /// The sample depth of the framebuffer this connector is scanning out.
++    ///
++    /// This is how a pixel must be *decoded*; [`Self::geometry_for_connector`] says what the dock
++    /// is told to carry, and the two differ whenever userspace asks for a deeper link than the
++    /// surface it hands over.
++    pub(super) fn connector_buffer_depth(&self, connector: u8) -> crate::video::haar::Depth {
++        if self.connector_ten_bit.load(Ordering::Acquire) & (1u32 << u32::from(connector)) != 0 {
++            crate::video::haar::Depth::Ten
++        } else {
++            crate::video::haar::Depth::Eight
++        }
++    }
++
++    /// Whether this connector's link is driven at ten bits per channel.
++    ///
++    /// True when the framebuffer is already ten-bit, and also when userspace asked for a ten-bit
++    /// link through `max bpc` on a dock that can carry one. An eight-bit surface over a ten-bit
++    /// link is the ordinary case on every other driver, and refusing it here is what left a
++    /// connector driven in PQ at eight bits with nothing reporting why.
++    fn connector_wire_ten_bit(&self, connector: u8) -> bool {
++        if self.connector_ten_bit.load(Ordering::Acquire) & (1u32 << u32::from(connector)) != 0 {
++            return true;
++        }
++        let shift = u32::from(connector) * 4;
++        let requested = (self.connector_max_bpc.load(Ordering::Acquire) >> shift) & 0xf;
++        self.hdr_capable() && requested >= 10
++    }
++
+     /// This device's codec geometry at one connector's committed sample depth.
+     ///
+     /// Every path that touches pixels wants this rather than [`Self::geometry`]: the depth decides
+     /// the entropy coder's escape ceiling, and getting it wrong desynchronises the dock's decoder
+     /// rather than merely degrading the picture. See [`crate::video::haar::Depth`].
+     pub(super) fn geometry_for_connector(&self, connector: u8) -> crate::video::haar::Geometry {
+-        let ten = self.connector_ten_bit.load(Ordering::Acquire) & (1 << u32::from(connector)) != 0;
++        let ten = self.connector_wire_ten_bit(connector);
+         self.geometry().with_depth(if ten {
+             crate::video::haar::Depth::Ten
+         } else {

@@ -1,0 +1,13 @@
+From: Mike Lothian <mike@fireburn.co.uk>
+Subject: [PATCH 0/2] rust: crypto: AES, CMAC, SHA-256, HMAC and RSA bindings
+
+Depends on: rust-core
+Base:       integration/base-20260809
+
+*** BLURB HERE ***
+
+Mike Lothian (2):
+  rust: crypto: add AES-128, AES-CMAC, SHA-256, and HMAC bindings
+  rust: crypto: add synchronous RSA akcipher support
+
+ 9 file(s) changed, 585 insertion(s)(+), 5 deletion(s)(-)
