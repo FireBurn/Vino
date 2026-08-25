@@ -52,8 +52,19 @@ fn run_session() -> Result<(), String> {
     // occupied only once that connector's EDID handler has been engaged, and the engage is part of
     // the fetch, so gating the fetch on the probe leaves every socket reading empty forever. A
     // recovered EDID is the presence signal here; the probe is what follows a socket afterwards.
+    //
+    // Not where the connectors share one EDID handler. Fetching an unoccupied socket there answers
+    // with the other connector's monitor, so a blind fetch per connector invents an output. Such a
+    // dock keeps the probe as the gate, and answers it without needing the engage first.
+    let discover_by_edid = !session.profile().shared_edid_handler();
+    let reports_presence = session.profile().reports_presence();
     for head in 0..session.connectors() {
-        connect_output(&mut session, &mut outputs[head], head as u8);
+        if discover_by_edid
+            || !reports_presence
+            || session.probe_head_present(head as u8)? == Some(true)
+        {
+            connect_output(&mut session, &mut outputs[head], head as u8);
+        }
     }
 
     // Both cadences belong to the dock, not to this loop. A dock with a video pipe of its own can
