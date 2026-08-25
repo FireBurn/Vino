@@ -139,6 +139,19 @@ jobs:
           # break a toolchain. kernel-devel/linux-headers are the ones that build modules; keep those.
           find . -name '*.deb' -o -name '*.rpm' \
             | grep -vE 'dbg|debuginfo|linux-libc-dev|kernel-headers' | xargs -r cp -t out
+
+          # dpkg always writes <package>_<version>_<arch>.deb, and the package name already carries
+          # the kernel release, so the version restates what the name has said. Drop it from the
+          # published filename: dpkg reads the version out of the archive, not off the name, so
+          # `dpkg -i` is unaffected. The rpms keep their own naming, which does not repeat itself.
+          for deb in out/*.deb; do
+              [ -e "$deb" ] || continue
+              name="$(dpkg-deb -f "$deb" Package)"
+              arch="$(dpkg-deb -f "$deb" Architecture)"
+              [ -n "$name" ] && [ -n "$arch" ] || { echo "::error::cannot read fields from $deb"; exit 1; }
+              target="out/${name}_${arch}.deb"
+              [ "$deb" = "$target" ] || mv -- "$deb" "$target"
+          done
           ls -la out
 
       - uses: actions/upload-artifact@v4
