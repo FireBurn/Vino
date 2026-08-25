@@ -467,18 +467,34 @@ impl ControlSession {
         let mut next_status = Instant::now();
         let deadline = anchor + Duration::from_millis(700);
         let mut frames_left = self.profile.carrier_frames();
-        while frames_left.is_none_or(|frames| frames > 0) && Instant::now() < deadline {
+        // A stated count is sent in full. It walks the dock's ring by exactly as many slots as the
+        // vendor walks it, so stopping short leaves the ring behind where the dock expects it and
+        // the first picture is written to a slot it is not reading -- which it answers by not
+        // completing the transfer at all. Bounding a stated count by a deadline made that depend on
+        // how busy the machine was in the preceding hundred milliseconds.
+        while frames_left.is_none_or(|frames| frames > 0) {
+            if frames_left.is_none() && Instant::now() >= deadline {
+                break;
+            }
             carrier_seq = carrier_seq.wrapping_add(1);
             let report = self.frame_report(head, (width16, height16))?;
             let repeat = prefix_frame(opening_profile, &[], &report, &prompt, head, carrier_seq);
-            self.frame_seq[head_index] = self.frame_seq[head_index].wrapping_add(1);
             self.submit_video(head, &repeat)?;
+            // Advanced behind the submission, never ahead of it: a sequence spent on a frame that
+            // did not reach the dock leaves its ring a slot ahead of what it has been sent.
+            self.frame_seq[head_index] = carrier_seq;
             frames_left = frames_left.map(|frames| frames - 1);
             if Instant::now() >= next_status {
                 self.poll_status()?;
                 next_status = Instant::now() + Duration::from_millis(16);
             }
         }
+        // The first picture takes the sequence after the last carrier, not the same one. The
+        // trailer's phase (`seq % dock_buffers`) is how the dock steps buffers, so repeating the
+        // sequence writes the picture into the buffer the dock is still presenting, and it answers
+        // by not completing the transfer -- but only when the repeat lands on that buffer, which is
+        // why it came and went with how many carrier frames the bracket had time for.
+        self.frame_seq[head_index] = carrier_seq.wrapping_add(1);
         self.mode_active[head_index] = true;
         // The dock now holds the black training carrier, not a desktop, so the next presented frame
         // must be a full keyframe whatever the compositor changed.
