@@ -4,7 +4,22 @@ Subject: [PATCH 0/5] rust: usb: host-side abstractions for a bulk-endpoint drive
 Depends on: rust-core
 Base:       integration/base-20260809
 
-*** BLURB HERE ***
+Host-side USB abstractions for a driver whose device is a bulk-endpoint pipe
+rather than a class device.
+
+  - Revocable typed interface I/O, so an interface cannot be used after the
+    core has taken it back.
+  - Reusable URBs and persistent bulk queues, which is what keeps a video
+    stream in flight without allocating per transfer.
+  - Topology lookup and removal notification.
+  - A device id constructor matching on vendor together with interface class,
+    subclass and protocol, for a composite device whose function is not
+    identified by the product id alone.
+  - Letting a driver keep its interface usable while unbinding, so teardown can
+    still talk to the device it is releasing.
+
+These build on the USB abstractions already merged; the consumer is the
+DisplayLink driver in a later series.
 
 These patches were written with the assistance of Claude (Anthropic), used
 through Claude Code as an interactive coding assistant, across the design, the

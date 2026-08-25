@@ -4,7 +4,22 @@ Subject: [PATCH 0/1] sched/fair: stop reading a guard flag after the guard drops
 Depends on: none
 Base:       integration/base-20260809
 
-*** BLURB HERE ***
+"locking: Switch to _irq_{disable,enable}() variants in cleanup guards" removed
+the flags field from the raw_spinlock_irqsave and spinlock_irqsave CLASS()
+guards, since the new primitives do not need explicit flags storage.
+sched_cfs_period_timer() is the one place left in the tree that still read
+cfsb_guard.flags directly, so it stops building once that lands.
+
+A tree-wide grep for CLASS(raw_spinlock_irqsave, ...) and
+CLASS(spinlock_irqsave, ...) turns up no other consumer of the removed field.
+This desugars that one call site back to raw_spin_lock_irqsave() and
+raw_spin_unlock_irqrestore(). No behavioural change: the lock is held over the
+same span through both return paths, and do_sched_cfs_period_timer() still gets
+the same flags value.
+
+Sent separately because it belongs to the scheduler rather than to the driver
+work that found it, and because it is a build fix for a series already in
+flight.
 
 These patches were written with the assistance of Claude (Anthropic), used
 through Claude Code as an interactive coding assistant, across the design, the

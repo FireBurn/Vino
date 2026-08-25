@@ -4,7 +4,25 @@ Subject: [PATCH 0/12] rust: core abstractions for a USB display driver
 Depends on: none
 Base:       integration/base-20260809
 
-*** BLURB HERE ***
+Core Rust abstractions needed by a USB display driver written in safe Rust.
+They are separated from the driver because none of them are display-specific:
+each covers a kernel facility that has C callers today and no Rust binding.
+
+  - platform: create a platform device at runtime, for a driver that publishes
+    virtual devices rather than binding to firmware-described ones.
+  - sysfs: attribute groups on a root device.
+  - sync: single-shot and timed completions.
+  - hrtimer: restart an ArcHrTimerHandle, and see the interrupt state inside a
+    hard callback.
+  - random, xxhash, time: safe wrappers over get_random_bytes(), xxh64() and
+    ktime_get_real_seconds().
+  - workqueue: make OwnedQueue thread-safe.
+  - io: offset copy helpers that check the bounds they are given.
+  - error: expose EPROTO.
+  - fpu: an RAII guard for a kernel FPU section.
+
+Each is small and independently reviewable, and each has a user in the driver
+series that follows.
 
 These patches were written with the assistance of Claude (Anthropic), used
 through Claude Code as an interactive coding assistant, across the design, the

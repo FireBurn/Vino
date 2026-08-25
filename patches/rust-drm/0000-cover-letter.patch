@@ -4,7 +4,32 @@ Subject: [PATCH 0/25] rust: drm: KMS abstractions for a Rust display driver
 Depends on: rust-core
 Base:       integration/base-20260809
 
-*** BLURB HERE ***
+KMS abstractions for a Rust display driver, continuing Lyude Paul's KMS series
+rather than replacing it. The first patch adapts that work to the DRM APIs as
+they stand today; the rest add what a real driver turned out to need.
+
+Broadly they fall into four groups:
+
+  - Lifetime and ownership: mode-object references tied to their owners, owned
+    CRTC and vblank references, a safe constructor for owned registration data,
+    pinning the owner while DRM files remain open, and rejecting cross-device
+    GEM handle creation.
+  - Properties a driver must read or publish: typed colour and rotation, plane
+    blend mode, FB_DAMAGE_CLIPS, connector colorimetry and HDR metadata, and a
+    connector's requested link depth.
+  - Callbacks and state: connector detect() and mode_valid(), common state and
+    connector helpers, checked plane geometry, walking the CRTCs an atomic
+    commit carries, and CRTC mode changes.
+  - Modes and framebuffers: an owned display mode constructor, mode flags and
+    CTA VIC matching, synthesized CVT connector modes, and validated shmem
+    scanout views.
+
+Also here: typed RAII event channels, private ioctl compat translations, and
+the HDCP 2.2 message identifiers, which are DRM UAPI rather than driver
+constants.
+
+The consumers are the two drivers in the series that follow, both of which
+contain no unsafe block and no direct bindings:: call.
 
 These patches were written with the assistance of Claude (Anthropic), used
 through Claude Code as an interactive coding assistant, across the design, the

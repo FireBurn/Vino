@@ -4,7 +4,16 @@ Subject: [PATCH 0/2] rust: crypto: AES, CMAC, SHA-256, HMAC and RSA bindings
 Depends on: rust-core
 Base:       integration/base-20260809
 
-*** BLURB HERE ***
+Synchronous crypto bindings for a driver that has to authenticate a device
+before it can drive it.
+
+The first patch covers AES-128, AES-CMAC, SHA-256 and HMAC over the existing
+synchronous crypto API. The second adds RSA through akcipher, which HDCP 2.2
+needs to verify a device certificate and wrap a session key.
+
+The consumer is the DisplayLink driver in a later series, whose control plane
+is sealed with AES-CTR and keyed by an HDCP 2.2 exchange. The bindings
+themselves are generic and carry no knowledge of that protocol.
 
 These patches were written with the assistance of Claude (Anthropic), used
 through Claude Code as an interactive coding assistant, across the design, the

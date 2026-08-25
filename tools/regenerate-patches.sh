@@ -72,6 +72,149 @@ depends() {
 # unwritten blurb is visible rather than silently absent.
 blurb() {
     case "$1" in
+    sched-fair) cat <<'BLURB'
+"locking: Switch to _irq_{disable,enable}() variants in cleanup guards" removed
+the flags field from the raw_spinlock_irqsave and spinlock_irqsave CLASS()
+guards, since the new primitives do not need explicit flags storage.
+sched_cfs_period_timer() is the one place left in the tree that still read
+cfsb_guard.flags directly, so it stops building once that lands.
+
+A tree-wide grep for CLASS(raw_spinlock_irqsave, ...) and
+CLASS(spinlock_irqsave, ...) turns up no other consumer of the removed field.
+This desugars that one call site back to raw_spin_lock_irqsave() and
+raw_spin_unlock_irqrestore(). No behavioural change: the lock is held over the
+same span through both return paths, and do_sched_cfs_period_timer() still gets
+the same flags value.
+
+Sent separately because it belongs to the scheduler rather than to the driver
+work that found it, and because it is a build fix for a series already in
+flight.
+BLURB
+        ;;
+    rust-core) cat <<'BLURB'
+Core Rust abstractions needed by a USB display driver written in safe Rust.
+They are separated from the driver because none of them are display-specific:
+each covers a kernel facility that has C callers today and no Rust binding.
+
+  - platform: create a platform device at runtime, for a driver that publishes
+    virtual devices rather than binding to firmware-described ones.
+  - sysfs: attribute groups on a root device.
+  - sync: single-shot and timed completions.
+  - hrtimer: restart an ArcHrTimerHandle, and see the interrupt state inside a
+    hard callback.
+  - random, xxhash, time: safe wrappers over get_random_bytes(), xxh64() and
+    ktime_get_real_seconds().
+  - workqueue: make OwnedQueue thread-safe.
+  - io: offset copy helpers that check the bounds they are given.
+  - error: expose EPROTO.
+  - fpu: an RAII guard for a kernel FPU section.
+
+Each is small and independently reviewable, and each has a user in the driver
+series that follows.
+BLURB
+        ;;
+    rust-crypto) cat <<'BLURB'
+Synchronous crypto bindings for a driver that has to authenticate a device
+before it can drive it.
+
+The first patch covers AES-128, AES-CMAC, SHA-256 and HMAC over the existing
+synchronous crypto API. The second adds RSA through akcipher, which HDCP 2.2
+needs to verify a device certificate and wrap a session key.
+
+The consumer is the DisplayLink driver in a later series, whose control plane
+is sealed with AES-CTR and keyed by an HDCP 2.2 exchange. The bindings
+themselves are generic and carry no knowledge of that protocol.
+BLURB
+        ;;
+    rust-usb) cat <<'BLURB'
+Host-side USB abstractions for a driver whose device is a bulk-endpoint pipe
+rather than a class device.
+
+  - Revocable typed interface I/O, so an interface cannot be used after the
+    core has taken it back.
+  - Reusable URBs and persistent bulk queues, which is what keeps a video
+    stream in flight without allocating per transfer.
+  - Topology lookup and removal notification.
+  - A device id constructor matching on vendor together with interface class,
+    subclass and protocol, for a composite device whose function is not
+    identified by the product id alone.
+  - Letting a driver keep its interface usable while unbinding, so teardown can
+    still talk to the device it is releasing.
+
+These build on the USB abstractions already merged; the consumer is the
+DisplayLink driver in a later series.
+BLURB
+        ;;
+    rust-drm) cat <<'BLURB'
+KMS abstractions for a Rust display driver, continuing Lyude Paul's KMS series
+rather than replacing it. The first patch adapts that work to the DRM APIs as
+they stand today; the rest add what a real driver turned out to need.
+
+Broadly they fall into four groups:
+
+  - Lifetime and ownership: mode-object references tied to their owners, owned
+    CRTC and vblank references, a safe constructor for owned registration data,
+    pinning the owner while DRM files remain open, and rejecting cross-device
+    GEM handle creation.
+  - Properties a driver must read or publish: typed colour and rotation, plane
+    blend mode, FB_DAMAGE_CLIPS, connector colorimetry and HDR metadata, and a
+    connector's requested link depth.
+  - Callbacks and state: connector detect() and mode_valid(), common state and
+    connector helpers, checked plane geometry, walking the CRTCs an atomic
+    commit carries, and CRTC mode changes.
+  - Modes and framebuffers: an owned display mode constructor, mode flags and
+    CTA VIC matching, synthesized CVT connector modes, and validated shmem
+    scanout views.
+
+Also here: typed RAII event channels, private ioctl compat translations, and
+the HDCP 2.2 message identifiers, which are DRM UAPI rather than driver
+constants.
+
+The consumers are the two drivers in the series that follow, both of which
+contain no unsafe block and no direct bindings:: call.
+BLURB
+        ;;
+    rust-firmware) cat <<'BLURB'
+request_firmware() covers "pull an image from /lib/firmware".
+firmware_upload_register() covers the other half: userspace hands the driver an
+image to write. It publishes /sys/class/firmware/<name>/ with the loading and
+data handshake plus status, error, remaining_size and cancel, and is what a
+driver uses when an image has to be written on demand rather than only when a
+newer one appears.
+
+This adds an Upload trait mirroring struct fw_upload_ops, a Registration that
+unregisters on drop, and an Error enum whose values are the fw_upload_err codes
+userspace already reads back out of the error attribute.
+
+The consumer is the DisplayLink driver, which writes dock firmware over DFU.
+BLURB
+        ;;
+    drm-tyr) cat <<'BLURB'
+The KMS registration trait gains a required Kms associated type. Tyr is a
+render-only driver, so it selects the non-KMS PhantomData implementation just as
+Nova does.
+
+A build fix for the KMS series rather than a change to Tyr's behaviour, sent on
+its own so it can go through whichever tree takes it first.
+BLURB
+        ;;
+    drm-evdi) cat <<'BLURB'
+A Rust implementation of EVDI that preserves the established libevdi and
+DisplayLinkManager display ABI, so existing userspace keeps working unchanged.
+The ABI is installed as a normal DRM UAPI header with generated Rust bindings,
+and its pointer-bearing ioctls are translated for 32-bit clients.
+
+Cards are created through the established platform sysfs interface and expose
+the expected DRM ioctls and events. The driver uses owned DRM, KMS, event,
+framebuffer and sysfs abstractions throughout: it contains no unsafe block, no
+direct bindings:: call and no reconstructed object lifetime.
+
+Scanout uses a bounded four-entry pool with owned shmem mappings, so compositor
+swapchain buffers are mapped before the client is notified and reused for later
+flips and GRABPIX calls. The bandwidth limits userspace supplies are enforced as
+given, without a driver-invented multiplier.
+BLURB
+        ;;
     drm-vino) cat <<'BLURB'
 Vino is a DRM/KMS driver for DisplayLink DL3 docks. These devices carry no
 standard display protocol: the host encodes each frame with a vendor codec and

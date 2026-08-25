@@ -4,7 +4,18 @@ Subject: [PATCH 0/1] rust: firmware: the firmware upload abstraction
 Depends on: rust-core
 Base:       integration/base-20260809
 
-*** BLURB HERE ***
+request_firmware() covers "pull an image from /lib/firmware".
+firmware_upload_register() covers the other half: userspace hands the driver an
+image to write. It publishes /sys/class/firmware/<name>/ with the loading and
+data handshake plus status, error, remaining_size and cancel, and is what a
+driver uses when an image has to be written on demand rather than only when a
+newer one appears.
+
+This adds an Upload trait mirroring struct fw_upload_ops, a Registration that
+unregisters on drop, and an Error enum whose values are the fw_upload_err codes
+userspace already reads back out of the error attribute.
+
+The consumer is the DisplayLink driver, which writes dock firmware over DFU.
 
 These patches were written with the assistance of Claude (Anthropic), used
 through Claude Code as an interactive coding assistant, across the design, the
