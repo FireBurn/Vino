@@ -1,4 +1,4 @@
-From cb5cc798e8d1f7199558fcc03b897d37165ee860 Mon Sep 17 00:00:00 2001
+From 2dccbab1936572b550ba34eb64f156801454e696 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 18:51:55 +0100
 Subject: [PATCH] drm/vino: drive the link at the depth userspace asked for
@@ -21,7 +21,7 @@ Widening replicates the top bits into the low ones rather than shifting, so
 both endpoints stay exact: a plain shift leaves full white three codes short
 and tints every highlight.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/drm_sink/mode_objects.rs | 13 +++-

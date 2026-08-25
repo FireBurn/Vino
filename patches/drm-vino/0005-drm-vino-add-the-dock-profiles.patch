@@ -1,4 +1,4 @@
-From 33612f1cfa1470f6adcce0c96e74b6e1244a5990 Mon Sep 17 00:00:00 2001
+From 7f67de6b50d521f5fcdbb7caa1ca59216d9ac9c6 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:54 +0100
 Subject: [PATCH] drm/vino: add the dock profiles
@@ -14,7 +14,7 @@ Add the profile: every such difference as data, keyed by device family so
 that hardware nobody has tested is still offered to the driver rather than
 being invisible to it.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/profile.rs | 1152 +++++++++++++++++++++++++++++++

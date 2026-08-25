@@ -1,4 +1,4 @@
-From ad30db1a2d93bebc2888c0d861dab27602d663a5 Mon Sep 17 00:00:00 2001
+From 0db53de8ebb1103d2547096a265e8fe8ea1e7e14 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 16:27:50 +0100
 Subject: [PATCH] rust: drm: kms: add connector detect() and mode_valid() hooks

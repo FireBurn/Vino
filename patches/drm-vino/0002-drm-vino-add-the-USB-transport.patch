@@ -1,4 +1,4 @@
-From 868046715d103b90090f68bff2d3292800e96eac Mon Sep 17 00:00:00 2001
+From 4e6d1a73ef685f115067698cab44dc695901f780 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:35 +0100
 Subject: [PATCH] drm/vino: add the USB transport
@@ -13,7 +13,7 @@ Add the link: a bound-interface wrapper that opens those pipes, submits
 video as a queue of pipelined URBs, and reports a stall as a stall rather
 than retrying into a wedged dock.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/usb_link.rs | 250 +++++++++++++++++++++++++++++++

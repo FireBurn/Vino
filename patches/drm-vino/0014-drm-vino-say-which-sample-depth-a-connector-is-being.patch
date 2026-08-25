@@ -1,4 +1,4 @@
-From 687b607986f3aa2379b28aa3958a177c25c978f7 Mon Sep 17 00:00:00 2001
+From 199f2c342d48d9d51fb171f0d63749796a70f848 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 18:38:16 +0100
 Subject: [PATCH] drm/vino: say which sample depth a connector is being driven
@@ -14,7 +14,7 @@ difference shows is on the panel.
 Report the transition. It costs nothing when the depth does not change,
 which is the ordinary case.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/drm_sink/bracket.rs  |  7 ++++++-

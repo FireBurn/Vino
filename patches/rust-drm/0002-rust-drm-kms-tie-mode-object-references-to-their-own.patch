@@ -1,4 +1,4 @@
-From b226e10ab120f5f19d1bcd467075f902b61479fa Mon Sep 17 00:00:00 2001
+From 9b347f95650c8e550867a587e51fd7780029d8a8 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:35:15 +0100
 Subject: [PATCH] rust: drm: kms: tie mode-object references to their owners

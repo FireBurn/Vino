@@ -1,4 +1,4 @@
-From 7927b4719aa61e5e510af0b7f5aaed58b973a000 Mon Sep 17 00:00:00 2001
+From 75dfc997fb803862cf2425d0da2cb0178b538593 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:36 +0100
 Subject: [PATCH] drm/vino: add the crypto primitives and the HDCP 2.2 AKE
@@ -14,7 +14,7 @@ Add the AES, CMAC and RNG wrappers, the HDCP key hierarchy documented once
 in one place, and the AKE itself, with the KUnit known-answer vectors that
 pin them.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/ake.rs    | 175 +++++++++++++++++++++++++++++++++

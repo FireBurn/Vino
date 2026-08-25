@@ -1,4 +1,4 @@
-From a4b5f3a815d25189b645b059f100c25d36e5b596 Mon Sep 17 00:00:00 2001
+From 3223665f9415b386f785cd5b921dd56786aa6a45 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sun, 23 Aug 2026 15:42:27 +0100
 Subject: [PATCH] rust: drm: kms: walk the CRTCs an atomic commit carries
@@ -16,7 +16,7 @@ for_each_new_crtc_in_state(), on both the state and its mutator. The CRTC is
 handed over alongside its new state because the driver-private data that names
 what a CRTC drives hangs off the CRTC, not off the state.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/kernel/drm/kms/atomic.rs | 52 +++++++++++++++++++++++++++++++++++

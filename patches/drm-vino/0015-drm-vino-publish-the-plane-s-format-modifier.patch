@@ -1,4 +1,4 @@
-From 3e68490c400e68b3eba91c6548d55eaa18cbab54 Mon Sep 17 00:00:00 2001
+From a093a1aa69bae7c4cb850752f9953db7577d09de Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 18:51:55 +0100
 Subject: [PATCH] drm/vino: publish the plane's format modifier
@@ -10,7 +10,7 @@ from the bare format list.
 
 State it.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/drm_sink.rs        | 12 ++++++++++++

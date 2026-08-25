@@ -1,4 +1,4 @@
-From 5aed4e40710e6f5a3cfb7763d3ab125a114c27f3 Mon Sep 17 00:00:00 2001
+From 5d377fce67ba97ef0786740eae053fff89c665e6 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:06 +0100
 Subject: [PATCH] rust: firmware: add the firmware upload abstraction
@@ -14,7 +14,7 @@ Add an Upload trait mirroring struct fw_upload_ops, a Registration that
 unregisters on drop, and an Error enum whose values are the fw_upload_err
 codes userspace already reads back out of the error attribute.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/kernel/firmware.rs | 237 ++++++++++++++++++++++++++++++++++++++++

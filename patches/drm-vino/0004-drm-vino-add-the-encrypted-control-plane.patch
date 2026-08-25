@@ -1,4 +1,4 @@
-From 939741b78a7282727c9b5a2f3a374a799142c805 Mon Sep 17 00:00:00 2001
+From 3d6357e4894dfc370a5270b6e9c15bc0dce2306f Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:49 +0100
 Subject: [PATCH] drm/vino: add the encrypted control plane
@@ -16,7 +16,7 @@ tests here compare each builder byte for byte against a decrypted capture,
 because a malformed message is acknowledged like any other and then simply
 never acted on.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/cp.rs        | 1590 +++++++++++++++++++++++++++++

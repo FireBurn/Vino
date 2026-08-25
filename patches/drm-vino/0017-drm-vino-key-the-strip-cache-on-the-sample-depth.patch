@@ -1,4 +1,4 @@
-From 58954356cf8b04382db4abbffc7b8be2a89d844d Mon Sep 17 00:00:00 2001
+From 50f3cff3176f2a823a66358067b93bf88ad9dfa8 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 25 Aug 2026 02:03:49 +0100
 Subject: [PATCH] drm/vino: key the strip cache on the sample depth
@@ -14,7 +14,7 @@ new one.
 
 Fold the depth into the tag.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/drm_sink.rs              |  8 +++

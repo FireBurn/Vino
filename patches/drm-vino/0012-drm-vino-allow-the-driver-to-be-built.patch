@@ -1,4 +1,4 @@
-From 0721c0efed178d5378c864cf8204bfd7970eee2e Mon Sep 17 00:00:00 2001
+From 8cee73094be3a6b896dc3741f2d03e9dd54b8eb6 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:11 +0100
 Subject: [PATCH] drm/vino: allow the driver to be built
@@ -6,7 +6,7 @@ Subject: [PATCH] drm/vino: allow the driver to be built
 Add the Kconfig entry, the Makefile rule and the MAINTAINERS record, so the
 preceding commits become a module.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  MAINTAINERS                   |  6 ++++++

@@ -1,4 +1,4 @@
-From bcfd4df1cd05bd2114009625a6dad2cc546fbf66 Mon Sep 17 00:00:00 2001
+From 577d96a8074b0efa41148ddf8bd1ee7b4bf38764 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:14 +0100
 Subject: [PATCH] drm/evdi: add the Rust virtual display driver
@@ -43,7 +43,7 @@ DDC/CI remains an ABI-compatible no-op: the driver does not register a
 virtual I2C adapter until a Rust I2C provider API can express the adapter
 lifetime safely.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  MAINTAINERS                     |   6 +

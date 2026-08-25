@@ -1,4 +1,4 @@
-From 3f61477d68a4651aeee4d2ebf726a9cd98f7a92f Mon Sep 17 00:00:00 2001
+From eb6ea993cc279bd54cbb8bc1d8ad2cda0ae72613 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 17 Aug 2026 17:47:49 +0100
 Subject: [PATCH] rust: usb: let a driver keep its interface usable while
@@ -17,7 +17,7 @@ This matters to a driver that leaves the device in a state a user can
 see. A display bridge that simply stops sending pixels leaves the
 monitor lit on whatever it decoded last.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/kernel/usb.rs | 14 ++++++++++++++

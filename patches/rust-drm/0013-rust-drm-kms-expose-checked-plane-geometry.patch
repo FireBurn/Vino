@@ -1,4 +1,4 @@
-From b8761acd4fefed19899c23ed550cfd9370c56c66 Mon Sep 17 00:00:00 2001
+From 8c149970924fd400f2fde7dcb4cf318e7a67f232 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 19:24:16 +0100
 Subject: [PATCH] rust: drm: kms: expose checked plane geometry

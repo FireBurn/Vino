@@ -1,4 +1,4 @@
-From d7319d876d6b66f3c9ba36917f92170300128592 Mon Sep 17 00:00:00 2001
+From 163951b7d506814af5595b5a0cf3c6c511b05b3d Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:09 +0100
 Subject: [PATCH] drm/vino: read the dock's firmware version, and update it
@@ -34,7 +34,7 @@ Userspace can also push an image on demand through the firmware loader's
 upload interface, for a dock whose packaged firmware a distribution does
 not ship.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/firmware.rs | 670 +++++++++++++++++++++++++++++++

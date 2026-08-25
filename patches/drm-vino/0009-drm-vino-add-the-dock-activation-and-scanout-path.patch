@@ -1,4 +1,4 @@
-From 873a2c58a6220354039e5f4112b219e593ea87d0 Mon Sep 17 00:00:00 2001
+From 0f7e6af7b9a658972f548ab59bde47366d31d03a Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:40:47 +0100
 Subject: [PATCH] drm/vino: add the dock activation and scanout path
@@ -26,7 +26,7 @@ EDID fetch and sink engage before it programs a timing, and so does this. A
 dock woken without them comes back slowly, or not at all once the sink has
 been down long enough for the dock to have let go of it.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/drm_sink.rs            |   11 +

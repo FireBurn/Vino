@@ -1,4 +1,4 @@
-From 5ab1e4e192e3fb49a9401e1b4102072926f21ef4 Mon Sep 17 00:00:00 2001
+From ba9a32ec1c0ca2d0b582a7a492c173bd21de2964 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:10 +0100
 Subject: [PATCH] drm/vino: add the USB driver frontend
@@ -18,7 +18,7 @@ protocol found the same split independently: interface protocol 0x03 is a
 DL3 display function, and 0x00 is the older udl hardware, which is a
 different driver's problem.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/vino.rs | 1615 ++++++++++++++++++++++++++++++++++

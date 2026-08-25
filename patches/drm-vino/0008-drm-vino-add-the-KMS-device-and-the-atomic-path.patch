@@ -1,4 +1,4 @@
-From f9973c2b4511fa33977eaab9423c8859005501f3 Mon Sep 17 00:00:00 2001
+From 5469f6509aeefb8add8c4b8192186d6833e7c122 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:40:37 +0100
 Subject: [PATCH] drm/vino: add the KMS device and the atomic path
@@ -17,7 +17,7 @@ overwritten rather than queued behind the state that replaced it.
 The dock-facing half of the sink -- activation, presence, the streams and
 the encoder feed -- follows in the next commit.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/drm_sink.rs              | 1848 +++++++++++++++++

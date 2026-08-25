@@ -1,4 +1,4 @@
-From 6835dc3b88736f5d2f2e5695e0f5ae7dcb154b67 Mon Sep 17 00:00:00 2001
+From 1510ce40f80d6ba6eb1808837ec4bd86b45b5cd0 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 22:52:04 +0100
 Subject: [PATCH] rust: drm: add an owned display mode constructor

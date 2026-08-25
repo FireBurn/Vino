@@ -1,4 +1,4 @@
-From 8d701271be209ca73f6e5f4bae71b1d05703a839 Mon Sep 17 00:00:00 2001
+From 518ab75afe348d87dfdcebb8dc3261b5fb5091cf Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 18:51:55 +0100
 Subject: [PATCH] rust: drm: kms: expose a connector's requested link depth
@@ -13,7 +13,7 @@ Add the accessor, and make the linear format modifier nameable outside the
 crate so a driver that accepts only linear scanout can say so in its plane's
 modifier list rather than leaving userspace to infer it.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/kernel/drm/fourcc.rs        |  5 ++++-

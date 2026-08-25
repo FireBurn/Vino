@@ -1,4 +1,4 @@
-From b5c065fd172430467a35f60dd47a1ffda0ab39c7 Mon Sep 17 00:00:00 2001
+From 88a4dbb8f8843a43f0e0c80ee2c517ae5b9f9687 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:13 +0100
 Subject: [PATCH] Documentation/gpu: document the Vino driver
@@ -8,7 +8,7 @@ product ID, what the driver implements in-kernel in place of EVDI and
 DisplayLinkManager, and the module parameters an unfamiliar dock or a
 converter with broken DDC may need.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  Documentation/gpu/drivers.rst |   1 +

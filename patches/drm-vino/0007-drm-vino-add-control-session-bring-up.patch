@@ -1,4 +1,4 @@
-From fd596eb64defca2e4867095f46ccbff2482ab7d5 Mon Sep 17 00:00:00 2001
+From 8b5da16740e383d9d7810353de0f53ab8d1403b6 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:33:12 +0100
 Subject: [PATCH] drm/vino: add control-session bring-up
@@ -13,7 +13,7 @@ Add the three stages as three modules, and the interrupt-endpoint reader
 that decodes what the dock pushes rather than counting it and discarding
 the bytes.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/session.rs         |  625 ++++++++++

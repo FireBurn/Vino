@@ -1,4 +1,4 @@
-From d49062e6953a0f04a19df608deda473d91c45126 Mon Sep 17 00:00:00 2001
+From 026ef5f349890b92ab77381708af3cd66ca40f71 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:33:09 +0100
 Subject: [PATCH] drm/vino: add the video codec
@@ -23,7 +23,7 @@ whole frames against a captured stream for that reason.
 color.rs is shared verbatim with drm/evdi, which needs the same correction
 for the same reason and cannot share a crate with this one.
 
-Assisted-by: Claude:claude-opus-5 [Claude-Code]
+Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/color.rs                | 427 ++++++++
