@@ -2480,3 +2480,32 @@ Both diagnostic module parameters are gone and the behaviour is unconditional. T
 now states the +2 rule. Selftests pass with no failures.
 
 ⚠ Both panels cap at 10 bpc (EDID byte 0x14 = 0xb5), so a 12 bpp path cannot be exercised here.
+
+## 2026-08-25 (later) -- a sink that will not settle is repaired
+
+The presence worker absorbed every flap that healed on its own, which is right for
+a blip and wrong forever: a connector the dock reports present while nothing
+drives its sink never reaches the sustained-absence deadline, so nothing repairs
+it and the panel stays dark through a bring-up that reports complete success. That
+is the failure seen twice after handing the dock to another host and back --
+correct EDID, correct mode, dock-wide activation run on both connectors, both
+panels dark, and a second mode set clearing it.
+
+`FlapTracker` counts flaps that heal on their own; three inside a minute means the
+sink is not settling, and the connector is dropped so the compositor puts it back.
+Bounded at three repairs per connector, because the repair is a dock-wide
+re-activation and a dock that flaps as a matter of course must not be able to hold
+vino in a loop of them. The budget resets when a connector is re-established.
+
+Thresholds are measured, not guessed: a lit dock produced no flap at all over
+seventy seconds, and one left dark by a warm plug produced nine a minute on both
+connectors. An older comment in this file claimed twenty-nine absent runs over
+three minutes on a lit dock; that does not match this firmware and should not be
+used as a baseline.
+
+⚠ **The repair path has not run on hardware.** Two warm plugs since have both come
+up clean -- no flap, no repair -- so the failure did not reproduce and the fix is
+unproven in anger. It is measured inert on a healthy dock across three cycles, and
+the KUnit cases pin that ten thousand flaps still produce exactly the repair limit.
+It is possible the EDID fixes removed the route to the failure, in which case this
+guards a path that no longer occurs.

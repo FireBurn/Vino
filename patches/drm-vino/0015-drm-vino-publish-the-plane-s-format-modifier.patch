@@ -1,4 +1,4 @@
-From a093a1aa69bae7c4cb850752f9953db7577d09de Mon Sep 17 00:00:00 2001
+From 0801f0bfc039b85a81c339f929e7ddd820f7453d Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 18:51:55 +0100
 Subject: [PATCH] drm/vino: publish the plane's format modifier

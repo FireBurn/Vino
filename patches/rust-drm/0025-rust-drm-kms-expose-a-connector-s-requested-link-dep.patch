@@ -1,4 +1,4 @@
-From 518ab75afe348d87dfdcebb8dc3261b5fb5091cf Mon Sep 17 00:00:00 2001
+From 6a55018da9addc5c4c5ebae503ff801f9a12bcfe Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 18:51:55 +0100
 Subject: [PATCH] rust: drm: kms: expose a connector's requested link depth

@@ -1,4 +1,4 @@
-From ba9a32ec1c0ca2d0b582a7a492c173bd21de2964 Mon Sep 17 00:00:00 2001
+From bfd917153ca9050013e8a99f67a6c9d12f0b47c6 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:10 +0100
 Subject: [PATCH] drm/vino: add the USB driver frontend
@@ -18,19 +18,29 @@ protocol found the same split independently: interface protocol 0x03 is a
 DL3 display function, and 0x00 is the older udl hardware, which is a
 different driver's problem.
 
+The presence worker absorbs a sink that drops and returns within a second
+or two, because the dock does that on its own and the repair costs a
+dock-wide re-activation. A sink that keeps flapping is not settling: the
+dock reports the connector present while nothing drives it, and the panel
+stays dark through a bring-up that reports success. Repair that one by
+taking the connector away, so the compositor puts it back and the mode set
+that answers re-drives the sink. The number of repairs is bounded, so a
+dock that flaps as a matter of course cannot hold the driver in a loop of
+re-activations, which would leave neither panel lit.
+
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- drivers/gpu/drm/vino/vino.rs | 1615 ++++++++++++++++++++++++++++++++++
- 1 file changed, 1615 insertions(+)
+ drivers/gpu/drm/vino/vino.rs | 1747 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 1747 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/vino.rs
 
 diff --git a/drivers/gpu/drm/vino/vino.rs b/drivers/gpu/drm/vino/vino.rs
 new file mode 100644
-index 000000000000..e15f1d3d7c98
+index 000000000000..d716189fc188
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/vino.rs
-@@ -0,0 +1,1615 @@
+@@ -0,0 +1,1747 @@
 +// SPDX-License-Identifier: GPL-2.0
 +// SPDX-FileCopyrightText: Copyright (C) 2026 Mike Lothian
 +
@@ -409,6 +419,60 @@ index 000000000000..e15f1d3d7c98
 +    }
 +}
 +
++/// How often one connector's sink has flapped, and how often vino has repaired it.
++///
++/// A sink that drops and returns within a second or two heals on its own, and a repair costs a
++/// dock-wide re-activation, so a single flap is absorbed. One that keeps flapping is not settling:
++/// after the dock is handed to another host and back it reports a connector present while nothing
++/// drives its sink, and the panel stays dark through a bring-up that reports success. Measured on a
++/// lit dock, no flap at all over seventy seconds; on one left dark that way, nine a minute on both
++/// connectors.
++#[derive(Copy, Clone)]
++struct FlapTracker {
++    seen: u32,
++    since: Option<Instant<Monotonic>>,
++    repairs: u32,
++}
++
++impl FlapTracker {
++    /// Flaps inside [`Self::WINDOW`] after which the sink is repaired rather than absorbed.
++    const REPAIR_COUNT: u32 = 3;
++    const WINDOW_MS: i64 = 60_000;
++    /// Repairs one connector may take before vino leaves it alone.
++    ///
++    /// A dock that flaps as a matter of course must not be able to hold vino in a loop of
++    /// re-activations: a bounded few and then silence is recoverable, an unbounded stream is worse
++    /// than the fault it is answering.
++    const REPAIR_LIMIT: u32 = 3;
++
++    const fn new() -> Self {
++        Self {
++            seen: 0,
++            since: None,
++            repairs: 0,
++        }
++    }
++
++    /// Record a flap that healed on its own, and say whether this is the one to repair on.
++    fn healed(&mut self, now: Instant<Monotonic>) -> bool {
++        if self
++            .since
++            .is_none_or(|t| (now - t).as_millis() >= Self::WINDOW_MS)
++        {
++            self.since = Some(now);
++            self.seen = 0;
++        }
++        self.seen += 1;
++        if self.seen < Self::REPAIR_COUNT || self.repairs >= Self::REPAIR_LIMIT {
++            return false;
++        }
++        self.seen = 0;
++        self.since = None;
++        self.repairs += 1;
++        true
++    }
++}
++
 +impl WorkItem for BringUp {
 +    type Pointer = Arc<BringUp>;
 +
@@ -779,6 +843,7 @@ index 000000000000..e15f1d3d7c98
 +            // discovery was deferred is retried at a bounded cadence until the probe answers.
 +            const REENGAGE_RETRY: Delta = Delta::from_millis(4000);
 +            let mut next_reengage = [Instant::<Monotonic>::now(); VinoDriver::CP_SETUP_CONNECTORS];
++            let mut flap = [FlapTracker::new(); VinoDriver::CP_SETUP_CONNECTORS];
 +            /// Settling period after re-engagement during which a negative probe is ignored.
 +            const PRESENCE_GRACE: Delta = Delta::from_millis(10_000);
 +            let mut presence_grace = [Instant::<Monotonic>::now(); VinoDriver::CP_SETUP_CONNECTORS];
@@ -1060,6 +1125,24 @@ index 000000000000..e15f1d3d7c98
 +                            // drop that does *not* heal still falls through to the timed removal
 +                            // below.
 +                            if present && connector_absent_since[h].take().is_some() {
++                                let now = Instant::<Monotonic>::now();
++                                if flap[h].healed(now) {
++                                    // Take the connector away so the compositor puts it back: the
++                                    // mode set that answers is what re-drives the sink, and it is
++                                    // the same repair a sustained absence gets below.
++                                    connector_known[h] = false;
++                                    connector_debounce[h] = 0;
++                                    next_reengage[h] = now + REENGAGE_RETRY;
++                                    data.set_disconnected(h);
++                                    dev_info!(
++                                        cdev,
++                                        "socket {socket} sink will not settle; dropping the connector so it is re-driven\n"
++                                    );
++                                    hotplug_due = None;
++                                    drm_dev.hotplug_event();
++                                    next_presence = Instant::<Monotonic>::now() + PRESENCE_PERIOD;
++                                    continue;
++                                }
 +                                vino_dev_debug!(
 +                                    cdev,
 +                                    "socket {socket} sink flap healed on its own\n"
@@ -1125,6 +1208,7 @@ index 000000000000..e15f1d3d7c98
 +                            data.set_connected(h);
 +                            connector_known[h] = true;
 +                            connector_ever_known[h] = true;
++                            flap[h] = FlapTracker::new();
 +                            next_reengage[h] = Instant::<Monotonic>::now() + REENGAGE_RETRY;
 +                            presence_grace[h] = Instant::<Monotonic>::now() + PRESENCE_GRACE;
 +                            dev_info!(cdev, "socket {socket} monitor connected\n");
@@ -1645,4 +1729,62 @@ index 000000000000..e15f1d3d7c98
 +            description: "Bitmask of connectors whose EDID the dock cannot read, typically behind a DP-to-HDMI converter that mangles DDC, and which are described by DRM's EDID override instead",
 +        },
 +    },
++}
++
++#[cfg(CONFIG_DRM_VINO_KUNIT_TEST)]
++#[kunit_tests(vino_presence_flap)]
++mod tests {
++    use super::*;
++
++    /// Flaps `n` times `apart_ms` apart, and reports how many repairs that asked for.
++    fn flaps(n: u32, apart_ms: i64) -> u32 {
++        let mut tracker = FlapTracker::new();
++        let start = Instant::<Monotonic>::now();
++        let mut repairs = 0;
++        for i in 0..n {
++            if tracker.healed(start + Delta::from_millis(apart_ms * i64::from(i))) {
++                repairs += 1;
++            }
++        }
++        repairs
++    }
++
++    #[test]
++    fn a_blip_is_absorbed_and_sustained_flapping_is_repaired() {
++        // One flap, and a second a long way after it, are blips: the dock brings the sink back on
++        // its own and a repair would cost a dock-wide re-activation for nothing.
++        assert_eq!(flaps(1, 0), 0);
++        assert_eq!(flaps(2, 1_000), 0);
++        // Flaps spread wider than the window never accumulate, however many there are.
++        assert_eq!(flaps(20, FlapTracker::WINDOW_MS), 0);
++
++        // A sink that will not settle is repaired. Nine a minute is what a connector left dark by a
++        // warm plug produces, and it asks for a repair rather than being absorbed forever.
++        assert!(flaps(FlapTracker::REPAIR_COUNT, 1_000) > 0);
++        assert!(flaps(30, 6_500) > 0);
++    }
++
++    #[test]
++    fn a_flapping_dock_cannot_hold_vino_in_a_repair_loop() {
++        // The repair is a dock-wide re-activation. However long the flapping goes on, the number of
++        // them is bounded: a dock that flaps as a matter of course gets a few and then silence.
++        assert_eq!(flaps(10_000, 1_000), FlapTracker::REPAIR_LIMIT);
++    }
++
++    #[test]
++    fn a_connector_that_comes_back_starts_again() {
++        // The tracker is reset when a connector is re-established, so a dock that misbehaves once
++        // is still repairable the next time rather than having spent its budget for the session.
++        let mut tracker = FlapTracker::new();
++        let now = Instant::<Monotonic>::now();
++        for _ in 0..FlapTracker::REPAIR_LIMIT * FlapTracker::REPAIR_COUNT {
++            tracker.healed(now);
++        }
++        assert!(!tracker.healed(now));
++        tracker = FlapTracker::new();
++        for _ in 0..FlapTracker::REPAIR_COUNT - 1 {
++            assert!(!tracker.healed(now));
++        }
++        assert!(tracker.healed(now));
++    }
 +}

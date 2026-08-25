@@ -69,4 +69,4 @@ Mike Lothian (17):
   drm/vino: drive the link at the depth userspace asked for
   drm/vino: key the strip cache on the sample depth
 
- 43 file(s) changed, 23838 insertion(s)(+), 32 deletion(s)(-)
+ 43 file(s) changed, 23970 insertion(s)(+), 32 deletion(s)(-)

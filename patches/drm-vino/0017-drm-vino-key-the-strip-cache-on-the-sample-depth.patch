@@ -1,4 +1,4 @@
-From 50f3cff3176f2a823a66358067b93bf88ad9dfa8 Mon Sep 17 00:00:00 2001
+From f541aaa801cd1c27a2ba5440c036bd8054fae696 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 25 Aug 2026 02:03:49 +0100
 Subject: [PATCH] drm/vino: key the strip cache on the sample depth
