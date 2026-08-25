@@ -68,6 +68,56 @@ depends() {
     esac
 }
 
+# Cover-letter text. A series with nothing here gets the placeholder, so an
+# unwritten blurb is visible rather than silently absent.
+blurb() {
+    case "$1" in
+    drm-vino) cat <<'BLURB'
+Vino is a DRM/KMS driver for DisplayLink DL3 docks. These devices carry no
+standard display protocol: the host encodes each frame with a vendor codec and
+ships it over bulk USB, inside a control plane sealed with AES-CTR and keyed by
+an HDCP 2.2 authentication exchange. Until now the only way to drive one on Linux
+was an out-of-tree kernel module paired with a closed-source userspace daemon.
+Everything here is reverse-engineered from the wire and from the vendor
+binaries; there is no vendor documentation for any of it.
+
+Three generations are supported, and they differ in more than identifiers:
+
+  - DL-3x00 (Ella), which shares one pipe between control and video, states its
+    decoder tables in a narrow form, and must never be blanked by painting black.
+  - DL-6xxx (Ridge), including the Dell D6000, which serves both connectors from
+    a single EDID handler.
+  - DL-7400 (Navarro), four connectors over two video endpoints, 10 Gbps.
+
+The differences are data. A dock is placed by family into a DockProfile carrying
+its endpoints, codec geometry, allocation rules and quirks, and there is one code
+path through the driver for all three -- no per-device branches, no module
+parameters selecting behaviour.
+
+The driver reads the dock's running firmware version and can update it over DFU
+through the firmware upload API, which is how a dock too old to enumerate its
+connectors is brought forward.
+
+On DL-7400 the driver drives 30 bpp in PQ: 2560x1440p120 on two connectors, with
+the sink reporting 10 bit. Depth is not a flag on the wire but a set of
+agreements -- the DMA format, the colour-depth word, the framebuffer allocation,
+and the entropy coder's escape ceilings, each of which is stated to the dock by
+its own decoder code table. Getting one of them wrong is not a clean failure: a
+DC ceiling the dock was not told about desynchronises the bitstream mid-record,
+and an AC one stays in step while reconstructing every sharp edge from a
+truncated magnitude.
+
+Tested on all three generations with monitors attached, driving a desktop.
+
+The protocol was reverse engineered from captured wire traffic and from the
+vendor binaries; the assistance noted below covers that work as well as the
+implementation, and every constant here came from a measurement.
+BLURB
+        ;;
+    *) printf '*** BLURB HERE ***\n' ;;
+    esac
+}
+
 rm -rf -- "$output"
 mkdir -p "$output"
 
@@ -105,7 +155,20 @@ for group in "${series_order[@]}"; do
         printf 'Subject: [PATCH 0/%d] %s\n\n' "$count" "$(title "$group")"
         printf 'Depends on: %s\n' "$(depends "$group")"
         printf 'Base:       %s\n\n' "$kernel_base"
-        printf '*** BLURB HERE ***\n\n'
+        blurb "$group"
+        printf '\n'
+        # Documentation/process/generated-content.rst asks for the disclosure in the
+        # cover letter, not only in the per-patch trailer.
+        if grep -lq '^Assisted-by:' "$dir"/[0-9][0-9][0-9][0-9]-*.patch 2>/dev/null; then
+            cat <<'DISCLOSURE'
+These patches were written with the assistance of Claude (Anthropic), used
+through Claude Code as an interactive coding assistant, across the design, the
+implementation and the tests. Every patch it contributed to carries an
+Assisted-by trailer. The Signed-off-by is mine: I have reviewed and tested what
+is here and I stand behind it.
+
+DISCLOSURE
+        fi
         printf 'Mike Lothian (%d):\n' "$count"
         for sha in $shas; do
             git -C "$kernel_tree" show -s --format='  %s' "$sha"

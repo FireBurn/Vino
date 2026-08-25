@@ -6,6 +6,12 @@ Base:       integration/base-20260809
 
 *** BLURB HERE ***
 
+These patches were written with the assistance of Claude (Anthropic), used
+through Claude Code as an interactive coding assistant, across the design, the
+implementation and the tests. Every patch it contributed to carries an
+Assisted-by trailer. The Signed-off-by is mine: I have reviewed and tested what
+is here and I stand behind it.
+
 Mike Lothian (1):
   rust: firmware: add the firmware upload abstraction
 
