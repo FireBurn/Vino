@@ -335,6 +335,57 @@ pub fn run() -> Report {
         println!("  (no builder-reproducible frames in this capture window)");
     }
 
+    // ---- proof 2b: the per-connector selector, against DLM's own bytes ------
+    // The fixture is a D6000 cold plug, so it carries DLM's downstream-authentication burst for a
+    // Ridge-family dock. That is the one selector encoding no hardware here can exercise: the dock
+    // to hand addresses its connectors one-hot, and a record carrying the wrong encoding is
+    // acknowledged either way, so only the vendor's bytes can say which is right for a dock that
+    // is not plugged in.
+    println!("\n== Proof 2b: kernel connector selector matches DLM's, per family ==");
+    let ridge_dock = ridge();
+    let mut selector = (0usize, 0usize);
+    let mut strm2 = (0usize, 0usize);
+    for (_, content) in &recovered {
+        if content.len() < 32 {
+            continue;
+        }
+        let id = le16(content, 0);
+        let sub = le16(content, 2);
+        let Some(index) = kvino::CP_SETUP_PER_HEAD
+            .iter()
+            .position(|&(pid, psub, _)| pid == id && psub == sub)
+        else {
+            continue;
+        };
+        // The AKE restatements carry the selector; the connector they name is what the selector
+        // itself says, so read it back rather than assuming which connector DLM was driving.
+        if index <= 5 {
+            for connector in 0..ridge_dock.connectors() {
+                let mut mine = vec![0u8; content.len()];
+                kvino::connector_marker(ridge_dock, &mut mine, connector as u8);
+                if mine[22..24] == content[22..24] {
+                    selector.0 += 1;
+                    break;
+                }
+            }
+            selector.1 += 1;
+        }
+        if index == 8 {
+            strm2.1 += 1;
+            if content[24] == ridge_dock.strm2_marker() {
+                strm2.0 += 1;
+            }
+        }
+    }
+    if selector.1 == 0 && strm2.1 == 0 {
+        println!("  no per-connector setup burst in this fixture; selector unverified here");
+    } else {
+        println!(
+            "  selector bytes: {}/{} match DLM, strm2 marker: {}/{}",
+            selector.0, selector.1, strm2.0, strm2.1
+        );
+    }
+
     // ---- proof 3: video codec (solid colour) -------------------------------
     // The kernel `video::haar::solid_strip` is KUnit-verified byte-exact vs DLM
     // (14/14 colours; 3508/3508 strips of the grey128 capture). Here the chimera
