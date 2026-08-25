@@ -1052,6 +1052,13 @@ fn configure_control(
             .map_err(|e| format!("read encrypted session state: {e}"))?;
     }
     acknowledgements += drain_acknowledgements(dock, 16);
+    // The other placement: a dock that wants its video engine brought up once the session is
+    // finalised gets it here. Skipping it entirely, which is what happened while only the boundary
+    // placement was implemented, leaves such a dock with its pipes never started.
+    if !profile.commits_video_before_connector_records() {
+        commit_video_engine(dock)?;
+    }
+
     Ok((wire_seq, inner_counter, video_keys, acknowledgements))
 }
 
