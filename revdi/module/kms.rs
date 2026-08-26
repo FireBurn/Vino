@@ -45,6 +45,14 @@ use kernel::{
 use crate::painter::PainterState;
 
 /// Cursor-plane format list. libevdi reports the format to the client, which expects ARGB.
+/// The only layout this driver's framebuffer path accepts.
+///
+/// Advertised rather than left implicit: a plane that names no modifier carries no `IN_FORMATS`,
+/// and a compositor that allocates with an explicit modifier has nothing to match against, so it
+/// passes the plane over. For the cursor plane that means no hardware pointer and -- because this
+/// driver has been asked for cursor events out of band -- no pointer drawn into the frame either.
+static LINEAR_MODIFIER: [u64; 1] = [drm::fourcc::FORMAT_MOD_LINEAR];
+
 static CURSOR_FORMATS: [u32; 1] = [drm::fourcc::ARGB8888];
 
 static PRIMARY_FORMATS: [u32; 8] = [
@@ -359,7 +367,7 @@ impl KmsDriver for EvdiDrmDriver {
             dev,
             1,
             &PRIMARY_FORMATS,
-            None,
+            Some(&LINEAR_MODIFIER[..]),
             plane::Type::Primary,
             None,
             false,
@@ -379,7 +387,7 @@ impl KmsDriver for EvdiDrmDriver {
             dev,
             1,
             &CURSOR_FORMATS,
-            None,
+            Some(&LINEAR_MODIFIER[..]),
             plane::Type::Cursor,
             None,
             true,
