@@ -1,4 +1,4 @@
-From 83e9d17caeb82d947e538045de3ef311511f3445 Mon Sep 17 00:00:00 2001
+From b9368fc1e97ed6c7d554c6f4e5346cfe34f66861 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:31 +0100
 Subject: [PATCH] drm/vino: add the DL3 wire framing

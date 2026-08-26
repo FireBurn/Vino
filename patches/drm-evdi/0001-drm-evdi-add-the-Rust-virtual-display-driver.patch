@@ -1,4 +1,4 @@
-From 93aa5c5d74ab4f906f35d025c5a1ceb9e8c756f5 Mon Sep 17 00:00:00 2001
+From 5458111fabaf97207d97eae2787570477907f949 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:14 +0100
 Subject: [PATCH] drm/evdi: add the Rust virtual display driver
@@ -923,7 +923,7 @@ index 000000000000..6ad4345d70c1
 +}
 diff --git a/drivers/gpu/drm/evdi/ioctl.rs b/drivers/gpu/drm/evdi/ioctl.rs
 new file mode 100644
-index 000000000000..2d1e58e92d6c
+index 000000000000..30a27705a3ec
 --- /dev/null
 +++ b/drivers/gpu/drm/evdi/ioctl.rs
 @@ -0,0 +1,270 @@
@@ -1035,7 +1035,7 @@ index 000000000000..2d1e58e92d6c
 +
 +    let data: &EvdiDrmData = dev;
 +    // No frame has been flipped in yet (or the pipe is down, e.g. DPMS off): report zero rects.
-+    // NOT -EAGAIN -- libevdi's `drm_ioctl` retries EAGAIN in a tight loop, which would busy-spin
++    // Not -EAGAIN -- libevdi's `drm_ioctl` retries EAGAIN in a tight loop, which would busy-spin
 +    // a core until the next flip.
 +    let Some(scanout) = data.prepared_scanout() else {
 +        arg.num_rects = 0;

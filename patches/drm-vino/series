@@ -12,9 +12,3 @@
 0011-drm-vino-add-the-USB-driver-frontend.patch
 0012-drm-vino-allow-the-driver-to-be-built.patch
 0013-Documentation-gpu-document-the-Vino-driver.patch
-0014-drm-vino-say-which-sample-depth-a-connector-is-being.patch
-0015-drm-vino-publish-the-plane-s-format-modifier.patch
-0016-drm-vino-drive-the-link-at-the-depth-userspace-asked.patch
-0017-drm-vino-scale-the-entropy-coder-s-escape-ceilings-w.patch
-0018-drm-vino-key-the-strip-cache-on-the-sample-depth.patch
-0019-drm-vino-price-the-shared-bandwidth-budget-at-the-de.patch

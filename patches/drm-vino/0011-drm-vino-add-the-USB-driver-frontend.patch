@@ -1,4 +1,4 @@
-From bfd917153ca9050013e8a99f67a6c9d12f0b47c6 Mon Sep 17 00:00:00 2001
+From 85b63ec65d8c096268d704a82805a3ddb2f05774 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:10 +0100
 Subject: [PATCH] drm/vino: add the USB driver frontend
@@ -37,7 +37,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 
 diff --git a/drivers/gpu/drm/vino/vino.rs b/drivers/gpu/drm/vino/vino.rs
 new file mode 100644
-index 000000000000..d716189fc188
+index 000000000000..0813faa43c03
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/vino.rs
 @@ -0,0 +1,1747 @@
@@ -1714,19 +1714,19 @@ index 000000000000..d716189fc188
 +        },
 +        trace_crypto: u8 {
 +            default: 0,
-+            description: "Diagnostic: disclose ephemeral control/video keys and nonces for one decryptable usbmon capture",
++            description: "Diagnostic: disclose one session's keys to decrypt a USB capture",
 +        },
 +        rtc_utc_offset_minutes: i32 {
 +            default: 0,
-+            description: "Local UTC offset used by Navarro RTC synchronization (minutes east of UTC)",
++            description: "Minutes east of UTC, for a dock's real-time clock",
 +        },
 +        force_flash: u8 {
 +            default: 0,
-+            description: "Write the packaged dock firmware even when the dock already runs that version or newer. For recovering a damaged dock: DFU upload is unsupported, so there is no restore path",
++            description: "Write the packaged dock firmware even if the dock is not older",
 +        },
 +        edid_override: u8 {
 +            default: 0,
-+            description: "Bitmask of connectors whose EDID the dock cannot read, typically behind a DP-to-HDMI converter that mangles DDC, and which are described by DRM's EDID override instead",
++            description: "Bitmask of connectors whose EDID comes from DRM's override",
 +        },
 +    },
 +}

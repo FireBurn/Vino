@@ -1,4 +1,4 @@
-From 5469f6509aeefb8add8c4b8192186d6833e7c122 Mon Sep 17 00:00:00 2001
+From 742dc59eb921cb3322349fa7270942cd8a480eee Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:40:37 +0100
 Subject: [PATCH] drm/vino: add the KMS device and the atomic path
@@ -14,20 +14,35 @@ should be doing and wakes a worker; each operation class owns one slot,
 which makes publication infallible and lets a stale cursor position be
 overwritten rather than queued behind the state that replaced it.
 
+Sample depth is decided here too, and from `max bpc` rather than from
+the committed framebuffer's format: a compositor drives a ten-bit link
+from an eight-bit surface, which is what the property means everywhere
+else. The dock's pixel budget is shared and was measured with three
+bytes stored per pixel, so a ten-bit connector costs a third more and
+the whole dock is priced at its deepest one. Where a pair does not fit,
+the depth gives way rather than the mode: a compositor handed EINVAL
+disables the output instead of asking for a shallower link. The decision
+is taken in the enable, beside the mode set that carries it to the dock,
+because a check also runs for page flips and for TEST_ONLY commits that
+are never applied.
+
+The planes publish the single modifier scanout accepts, so userspace reads
+IN_FORMATS rather than inferring what will be taken from the format list.
+
 The dock-facing half of the sink -- activation, presence, the streams and
 the encoder feed -- follows in the next commit.
 
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- drivers/gpu/drm/vino/drm_sink.rs              | 1848 +++++++++++++++++
+ drivers/gpu/drm/vino/drm_sink.rs              | 1868 +++++++++++++++++
  drivers/gpu/drm/vino/drm_sink/dispatch.rs     |  446 ++++
- drivers/gpu/drm/vino/drm_sink/driver.rs       |  208 ++
- drivers/gpu/drm/vino/drm_sink/limits.rs       |  454 ++++
- drivers/gpu/drm/vino/drm_sink/mode_objects.rs |  934 +++++++++
- drivers/gpu/drm/vino/drm_sink/settings.rs     |  473 +++++
+ drivers/gpu/drm/vino/drm_sink/driver.rs       |  211 ++
+ drivers/gpu/drm/vino/drm_sink/limits.rs       |  489 +++++
+ drivers/gpu/drm/vino/drm_sink/mode_objects.rs |  978 +++++++++
+ drivers/gpu/drm/vino/drm_sink/settings.rs     |  574 +++++
  drivers/gpu/drm/vino/drm_sink/worker.rs       |  571 +++++
- 7 files changed, 4934 insertions(+)
+ 7 files changed, 5137 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/drm_sink.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink/dispatch.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink/driver.rs
@@ -38,10 +53,10 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 
 diff --git a/drivers/gpu/drm/vino/drm_sink.rs b/drivers/gpu/drm/vino/drm_sink.rs
 new file mode 100644
-index 000000000000..a6752ce118d7
+index 000000000000..86708db89699
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink.rs
-@@ -0,0 +1,1848 @@
+@@ -0,0 +1,1868 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! DRM/KMS integration for Vino.
@@ -115,6 +130,12 @@ index 000000000000..a6752ce118d7
 +/// `XRGB8888` stays first: it is what every ordinary desktop commits, and a compositor choosing
 +/// between them should not be pushed towards the deeper one by list order alone.
 +static PRIMARY_FORMATS_HDR: [u32; 2] = [drm::fourcc::XRGB8888, drm::fourcc::XRGB2101010];
++
++/// The only framebuffer layout any of these planes accepts.
++///
++/// Publishing it gives userspace an `IN_FORMATS` property; without it the plane advertises formats
++/// with no modifier information at all.
++static LINEAR_MODIFIER: [u64; 1] = [drm::fourcc::FORMAT_MOD_LINEAR];
 +
 +/// Cursor-plane format list.
 +static CURSOR_FORMATS: [u32; 1] = [drm::fourcc::ARGB8888];
@@ -883,6 +904,18 @@ index 000000000000..a6752ce118d7
 +    /// is neither device-wide nor fixed: the DL7400 negotiates depth per connector, measured on
 +    /// Windows holding one connector at 8 bits while the other ran at 10.
 +    connector_ten_bit: core::sync::atomic::AtomicU32,
++    /// Bits per channel userspace asked the link to carry, one byte per connector, from `max bpc`.
++    ///
++    /// Deliberately separate from `connector_ten_bit`: that one says what the framebuffer holds and
++    /// decides how a pixel is decoded, this one says what the dock is told to carry.
++    connector_max_bpc: core::sync::atomic::AtomicU32,
++    /// Connectors whose requested ten-bit link does not fit the dock's shared bandwidth.
++    ///
++    /// Ten bits costs a third more per pixel, so a pair of modes that fits at eight may not fit at
++    /// ten. Refusing the mode is the wrong answer -- a compositor answers `EINVAL` by disabling the
++    /// output rather than choosing a shallower link -- so the depth gives way instead and both
++    /// connectors light at eight bits.
++    connector_deny_ten_bit: core::sync::atomic::AtomicU32,
 +    /// Bit `h` set when connector `h`'s connector is being driven with the SMPTE ST 2084 (PQ)
 +    /// transfer function, taken from the `HDR_OUTPUT_METADATA` blob userspace attached to it.
 +    ///
@@ -1220,6 +1253,8 @@ index 000000000000..a6752ce118d7
 +                super::profile::ProbeBracket::Always as u8
 +            ),
 +            connector_ten_bit: core::sync::atomic::AtomicU32::new(0),
++            connector_max_bpc: core::sync::atomic::AtomicU32::new(0),
++            connector_deny_ten_bit: core::sync::atomic::AtomicU32::new(0),
 +            head_st2084: core::sync::atomic::AtomicU32::new(0),
 +            // A dock that names no connector count still has to expose something, so fall back to
 +            // the maximum rather than building a card with no connectors at all.
@@ -2344,10 +2379,10 @@ index 000000000000..bd759ad4bc99
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink/driver.rs b/drivers/gpu/drm/vino/drm_sink/driver.rs
 new file mode 100644
-index 000000000000..b08082f0f05f
+index 000000000000..aed8339f6336
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink/driver.rs
-@@ -0,0 +1,208 @@
+@@ -0,0 +1,211 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! Registration: the DRM driver description, its GEM object and file types, and the KMS
@@ -2454,7 +2489,10 @@ index 000000000000..b08082f0f05f
 +                } else {
 +                    &PRIMARY_FORMATS[..]
 +                },
-+                None,
++                // Scanout is linear and nothing else is accepted: `Framebuffer` rejects any other
++                // modifier outright. Saying so publishes IN_FORMATS, so a compositor picks a format
++                // knowing what the plane takes rather than inferring it from the bare format list.
++                Some(&LINEAR_MODIFIER[..]),
 +                plane::Type::Primary,
 +                None,
 +                PlaneArgs {
@@ -2491,7 +2529,7 @@ index 000000000000..b08082f0f05f
 +                    dev,
 +                    crtc_mask,
 +                    &CURSOR_FORMATS,
-+                    None,
++                    Some(&LINEAR_MODIFIER[..]),
 +                    plane::Type::Cursor,
 +                    None,
 +                    PlaneArgs {
@@ -2558,10 +2596,10 @@ index 000000000000..b08082f0f05f
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink/limits.rs b/drivers/gpu/drm/vino/drm_sink/limits.rs
 new file mode 100644
-index 000000000000..be3188323cc3
+index 000000000000..96d2d8dcf8c2
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink/limits.rs
-@@ -0,0 +1,454 @@
+@@ -0,0 +1,489 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! What a dock will accept: pixel-clock ceilings, refresh ceilings and the shared bandwidth
@@ -2693,12 +2731,37 @@ index 000000000000..be3188323cc3
 +            .is_ok()
 +    }
 +
-+    /// The dock's total pixel-rate budget shared across all connectors.
++    /// The dock's total pixel-rate budget shared across all connectors, unpriced by depth.
 +    ///
 +    /// Zero means unknown and disables limiting.
 +    pub(super) fn dock_budget(&self) -> u32 {
 +        self.dock_pixel_budget
 +            .load(core::sync::atomic::Ordering::Relaxed)
++    }
++
++    /// Whether a commit totalling `combined` pixels per second can be driven at ten bits.
++    ///
++    /// The answer moves the depth rather than refusing the commit: a compositor handed `EINVAL`
++    /// disables the output instead of asking for a shallower link.
++    pub(super) fn ten_bit_fits(&self, combined: u32) -> bool {
++        let raw = self.dock_budget();
++        raw == 0 || combined <= self.budget_at_depth(raw, true)
++    }
++
++    /// A budget priced for a connector driven at ten bits per channel.
++    ///
++    /// The budget was measured with the dock storing three bytes per pixel; ten bits stores four,
++    /// so the same pixel costs a third more. The whole dock is priced at its deepest connector,
++    /// because the bandwidth is shared.
++    ///
++    /// `budget` must be the unpriced [`Self::dock_budget`]. Pricing an already-priced budget leaves
++    /// nine sixteenths of the dock, which no pair of ten-bit connectors fits inside.
++    pub(super) fn budget_at_depth(&self, budget: u32, ten_bit: bool) -> u32 {
++        if budget != 0 && ten_bit {
++            budget / 4 * 3
++        } else {
++            budget
++        }
 +    }
 +
 +    /// Record this dock's pixel-rate budget, refresh ceiling and pixel-clock ceiling.
@@ -3012,16 +3075,26 @@ index 000000000000..be3188323cc3
 +            profile::PROFILE_NAVARRO.capabilities.pixel_budget,
 +            2 * rate(2560, 1440, 165)
 +        );
++        // That pair is admitted at 24 bpp and refused at 30, which is what the hardware does: a
++        // budget large enough to admit it deep leaves both sinks powered off with nothing logged.
++        let price = |budget: u32| budget / 4 * 3;
++        let deep = price(profile::PROFILE_NAVARRO.capabilities.pixel_budget);
++        assert!(2 * rate(2560, 1440, 165) > deep);
++        assert!(2 * rate(2560, 1440, 120) <= deep);
++        // Two 1440p120 connectors fit deep, and stop fitting the moment the price is charged
++        // twice, so a budget priced at the depth being decided withdraws the ten bits that same
++        // pair was just admitted at.
++        assert!(2 * rate(2560, 1440, 120) > price(deep));
 +        assert_eq!(rate(65535, 65535, 65535), u32::MAX); // saturates, never wraps small
 +        assert_eq!(rate(2560, 1440, -1), 0);
 +    }
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink/mode_objects.rs b/drivers/gpu/drm/vino/drm_sink/mode_objects.rs
 new file mode 100644
-index 000000000000..a53de7a7a7d4
+index 000000000000..d3ec818ec1da
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink/mode_objects.rs
-@@ -0,0 +1,934 @@
+@@ -0,0 +1,978 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! The KMS objects the compositor drives: CRTC, primary and cursor planes, encoder and connector,
@@ -3126,6 +3199,20 @@ index 000000000000..a53de7a7a7d4
 +    type Crtc = VinoCrtc;
 +}
 +
++/// Whether a connector state asks for a ten-bit link.
++///
++/// A compositor sets `max bpc` to ten on every connector it can, so the request alone is not the
++/// condition: the vendor moves a link to ten bits when the connector is driven in PQ. A commit
++/// carrying no connector state, which is every page flip, asks for nothing.
++fn asks_for_ten_bits(
++    conn: Option<&kernel::drm::kms::connector::OpaqueConnectorState<VinoDrmDriver>>,
++) -> bool {
++    conn.is_some_and(|conn| {
++        conn.max_requested_bpc() >= 10
++            && conn.hdr_output_eotf() == Some(connector::Eotf::SmpteSt2084)
++    })
++}
++
 +#[vtable]
 +impl crtc::DriverCrtc for VinoCrtc {
 +    type Args = u8;
@@ -3157,6 +3244,8 @@ index 000000000000..a53de7a7a7d4
 +        let data: &VinoDrmData = crtc.drm_dev();
 +        let budget = data.dock_budget();
 +        let (state, old, mut new) = check.take_all();
++        let wants_deep =
++            data.hdr_capable() && asks_for_ten_bits(state.new_connector_state_for_crtc(crtc));
 +        // The colour description reaches the dock in the mode-set message, which is only sent from
 +        // `atomic_enable`. Toggling HDR on a live output changes nothing the core considers a mode
 +        // change, so ask for one: otherwise the compositor starts encoding PQ into a sink that was
@@ -3230,6 +3319,15 @@ index 000000000000..a53de7a7a7d4
 +        }
 +        let others = data.other_connectors_rate(&state, connector);
 +        let combined = new_rate.saturating_add(others);
++        // Price the dock at the depth this commit drives, and at what its other connectors already
++        // hold, because the bandwidth is shared. Nothing is recorded here: a check also runs for
++        // page flips and for `TEST_ONLY` commits that are never applied, so a depth recorded from
++        // one would move the codec with no mode set to re-state it to the dock.
++        let deep = wants_deep && data.ten_bit_fits(combined);
++        let budget = data.budget_at_depth(
++            budget,
++            deep || data.other_connector_programmed_ten_bit(crtc.connector),
++        );
 +        if combined > budget {
 +            pr_warn!(
 +                "vino: socket {socket} combined rate {combined} exceeds {budget}\n",
@@ -3270,6 +3368,26 @@ index 000000000000..a53de7a7a7d4
 +            .and_then(|conn| conn.hdr_output_eotf())
 +            == Some(connector::Eotf::SmpteSt2084);
 +        data.set_connector_st2084(connector, st2084);
++        // The link depth userspace asked for, which is a separate question from the framebuffer's
++        // format: an eight-bit surface over a ten-bit link is the ordinary case, and reading the
++        // format alone silently ignores the request.
++        let requested_bpc = state
++            .new_connector_state_for_crtc(crtc)
++            .map_or(0, |conn| conn.max_requested_bpc());
++        data.set_connector_max_bpc(connector, requested_bpc);
++        // Decide the depth rather than refuse the mode: a pair that fits at eight bits may not fit
++        // at ten, and a compositor answers a rejected mode by disabling the output. Recorded here
++        // and not in the check, so that the decision and the set-mode carrying it are one commit.
++        let combined = if new.active() {
++            let m = new.mode();
++            active_pixel_rate(m.hdisplay(), m.vdisplay(), m.vrefresh())
++        } else {
++            0
++        }
++        .saturating_add(data.other_connectors_rate(&state, connector as usize));
++        let wants_deep =
++            data.hdr_capable() && asks_for_ten_bits(state.new_connector_state_for_crtc(crtc));
++        data.set_connector_ten_bit_denied(connector, wants_deep && !data.ten_bit_fits(combined));
 +        // Cache this connector's colour transform for the scanout to apply.
 +        data.update_color(connector as usize, new.gamma_lut(), new.ctm());
 +        // Whatever this connector's sink state was, the enable path re-runs the full bracket and
@@ -3302,11 +3420,13 @@ index 000000000000..a53de7a7a7d4
 +            }
 +        };
 +        vino_debug!(
-+            "vino: KMS CRTC enable -- connector {} display ON, mode {}x{}@{} (scanout begins)\n",
++            "vino: KMS CRTC enable -- connector {} display ON, mode {}x{}@{} {} bpc{} (scanout begins)\n",
 +            connector,
 +            timing.hactive,
 +            timing.vactive,
-+            timing.refresh_hz
++            timing.refresh_hz,
++            if timing.ten_bit { 10 } else { 8 },
++            if timing.st2084 { " PQ" } else { "" }
 +        );
 +        // Publish the desired timing; atomic callbacks must not block on USB.
 +        let mode_key = timing_key(&timing);
@@ -3891,16 +4011,13 @@ index 000000000000..a53de7a7a7d4
 +    }
 +}
 +
-+/// Apply the cached gamma ramp (three 256-entry 8-bit LUTs) to an `(r, g, b)` pixel, or return it
-+/// unchanged when no gamma is programmed.
-+#[inline]
-+
 +/// Map an output pixel `(dx, dy)` back to its source-framebuffer pixel `(sx, sy)` under a DRM
 +/// plane `rotation` bitmask (`DRM_MODE_ROTATE_*` | `DRM_MODE_REFLECT_*`, the values the
-+/// standard `drm_plane_create_rotation_property` exposes). `sw`/`sh` are the SOURCE
++/// standard `drm_plane_create_rotation_property` exposes). `sw`/`sh` are the source
 +/// (framebuffer) dimensions. Rotation is clockwise; reflection is applied in source space
 +/// after rotation. Pure and total (saturating), so it is unit-tested directly. Applied per source
 +/// pixel in [`encode_and_send`]/[`encode_and_send_haar`] for the plane's rotation property.
++#[inline]
 +pub(crate) fn rot_src(
 +    rotation: plane::Rotation,
 +    dx: usize,
@@ -3958,10 +4075,10 @@ index 000000000000..a53de7a7a7d4
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink/settings.rs b/drivers/gpu/drm/vino/drm_sink/settings.rs
 new file mode 100644
-index 000000000000..b9291af29cbd
+index 000000000000..2142b5f20230
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink/settings.rs
-@@ -0,0 +1,473 @@
+@@ -0,0 +1,574 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! The runtime knobs a matched dock profile installs on the KMS device.
@@ -4108,7 +4225,7 @@ index 000000000000..b9291af29cbd
 +    /// plane will actually send: the dock sizes its buffer from the pair and mis-sizes it if they
 +    /// disagree.
 +    pub(super) fn connector_is_ten_bit(&self, connector: usize) -> bool {
-+        self.connector_ten_bit.load(Ordering::Acquire) & (1u32 << connector) != 0
++        self.connector_wire_ten_bit(connector as u8)
 +    }
 +
 +    /// Whether `connector`'s connector is being driven in PQ; see [`Self::set_connector_st2084`].
@@ -4130,13 +4247,103 @@ index 000000000000..b9291af29cbd
 +        }
 +    }
 +
-+    /// This device's codec geometry at one connector's committed sample depth.
++    /// Record the link depth userspace asked this connector to carry.
++    ///
++    /// Four bits per connector is enough for every value `max bpc` takes, and keeping them in one
++    /// word means the scanout path reads the whole set with a single load.
++    pub(super) fn set_connector_max_bpc(&self, connector: u8, bpc: u32) {
++        let shift = u32::from(connector) * 4;
++        let field = bpc.min(15) << shift;
++        let mask = !(0xfu32 << shift);
++        let mut current = self.connector_max_bpc.load(Ordering::Acquire);
++        loop {
++            let next = (current & mask) | field;
++            match self.connector_max_bpc.compare_exchange_weak(
++                current,
++                next,
++                Ordering::AcqRel,
++                Ordering::Acquire,
++            ) {
++                Ok(_) => break,
++                Err(seen) => current = seen,
++            }
++        }
++    }
++
++    /// The sample depth of the framebuffer this connector is scanning out.
++    ///
++    /// This is how a pixel must be *decoded*; [`Self::geometry_for_connector`] says what the dock
++    /// is told to carry, and the two differ whenever userspace asks for a deeper link than the
++    /// surface it hands over.
++    pub(super) fn connector_buffer_depth(&self, connector: u8) -> crate::video::haar::Depth {
++        if self.connector_ten_bit.load(Ordering::Acquire) & (1u32 << u32::from(connector)) != 0 {
++            crate::video::haar::Depth::Ten
++        } else {
++            crate::video::haar::Depth::Eight
++        }
++    }
++
++    /// Whether this connector's link is driven at ten bits per channel.
++    ///
++    /// True when the framebuffer is already ten-bit, and when userspace asks for a ten-bit link
++    /// through `max bpc` on a dock that can carry one and is driving the connector in PQ. An
++    /// eight-bit surface over a ten-bit link is the ordinary case on every other driver.
++    ///
++    /// This is the decision, not the depth in force. Read it only where a mode set carries the
++    /// answer to the dock; everything else wants [`Self::connector_programmed_ten_bit`].
++    pub(super) fn connector_wire_ten_bit(&self, connector: u8) -> bool {
++        if self.connector_ten_bit.load(Ordering::Acquire) & (1u32 << u32::from(connector)) != 0 {
++            return true;
++        }
++        if self.connector_deny_ten_bit.load(Ordering::Acquire) & (1u32 << u32::from(connector)) != 0
++        {
++            return false;
++        }
++        let shift = u32::from(connector) * 4;
++        let requested = (self.connector_max_bpc.load(Ordering::Acquire) >> shift) & 0xf;
++        self.hdr_capable() && requested >= 10 && self.connector_is_st2084(connector as usize)
++    }
++
++    /// Record whether this connector's ten-bit link fits the dock's shared bandwidth.
++    pub(super) fn set_connector_ten_bit_denied(&self, connector: u8, denied: bool) {
++        let bit = 1u32 << u32::from(connector);
++        if denied {
++            self.connector_deny_ten_bit.fetch_or(bit, Ordering::Release);
++        } else {
++            self.connector_deny_ten_bit
++                .fetch_and(!bit, Ordering::Release);
++        }
++    }
++
++    /// Whether any connector other than `connector` is programmed at ten bits per channel.
++    ///
++    /// The dock's bandwidth is shared, so a commit is priced at the dock's deepest connector.
++    pub(super) fn other_connector_programmed_ten_bit(&self, connector: u8) -> bool {
++        (0..self.connector_count())
++            .any(|c| c as u8 != connector && self.connector_programmed_ten_bit(c as u8))
++    }
++
++    /// Whether the mode this connector was last programmed with drives ten bits per channel.
++    ///
++    /// The depth the dock is decoding at, so the only one the codec may encode at and the only one
++    /// the set-mode and the decoder configuration may state. Deliberately not
++    /// [`Self::connector_wire_ten_bit`], which moves between mode sets.
++    pub(super) fn connector_programmed_ten_bit(&self, connector: u8) -> bool {
++        self.last_timing
++            .lock()
++            .get(connector as usize)
++            .copied()
++            .flatten()
++            .is_some_and(|t| t.ten_bit)
++    }
++
++    /// This device's codec geometry at one connector's programmed sample depth.
 +    ///
 +    /// Every path that touches pixels wants this rather than [`Self::geometry`]: the depth decides
 +    /// the entropy coder's escape ceiling, and getting it wrong desynchronises the dock's decoder
 +    /// rather than merely degrading the picture. See [`crate::video::haar::Depth`].
 +    pub(super) fn geometry_for_connector(&self, connector: u8) -> crate::video::haar::Geometry {
-+        let ten = self.connector_ten_bit.load(Ordering::Acquire) & (1 << u32::from(connector)) != 0;
++        let ten = self.connector_programmed_ten_bit(connector);
 +        self.geometry().with_depth(if ten {
 +            crate::video::haar::Depth::Ten
 +        } else {
@@ -4152,7 +4359,7 @@ index 000000000000..b9291af29cbd
 +    /// offers `XRGB8888` means this never sees one.
 +    pub(super) fn set_connector_depth(&self, connector: u8, depth: crate::video::haar::Depth) {
 +        let bit = 1u32 << u32::from(connector);
-+        match depth {
++        let previous = match depth {
 +            crate::video::haar::Depth::Ten => {
 +                self.connector_ten_bit.fetch_or(bit, Ordering::Release)
 +            }
@@ -4160,6 +4367,17 @@ index 000000000000..b9291af29cbd
 +                self.connector_ten_bit.fetch_and(!bit, Ordering::Release)
 +            }
 +        };
++        // Report the change, because this is the only place the sample depth is decided and
++        // nothing else on the wire says what was chosen. A connector that advertises ten bits and
++        // is driven in ST2084 still goes out at eight if the compositor never hands over a
++        // ten-bit framebuffer, and that difference is otherwise visible only on the panel.
++        let was_ten = previous & bit != 0;
++        let now_ten = matches!(depth, crate::video::haar::Depth::Ten);
++        if was_ten != now_ten {
++            let socket = connector + 1;
++            let bits = if now_ten { 10 } else { 8 };
++            vino_debug!("vino: socket {socket} scanout depth is now {bits} bits per channel\n");
++        }
 +    }
 +
 +    /// Record the mode-programming and blanking behaviour this dock wants.

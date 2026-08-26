@@ -1,4 +1,4 @@
-From 4e6d1a73ef685f115067698cab44dc695901f780 Mon Sep 17 00:00:00 2001
+From 6ec6e5c62836b5da9378a1052413203a4295162a Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:35 +0100
 Subject: [PATCH] drm/vino: add the USB transport

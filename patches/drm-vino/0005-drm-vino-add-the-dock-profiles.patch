@@ -1,4 +1,4 @@
-From 7f67de6b50d521f5fcdbb7caa1ca59216d9ac9c6 Mon Sep 17 00:00:00 2001
+From 14105ae739d85a084d7db864e889627628f41a41 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:54 +0100
 Subject: [PATCH] drm/vino: add the dock profiles
@@ -17,16 +17,16 @@ being invisible to it.
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- drivers/gpu/drm/vino/profile.rs | 1152 +++++++++++++++++++++++++++++++
- 1 file changed, 1152 insertions(+)
+ drivers/gpu/drm/vino/profile.rs | 1155 +++++++++++++++++++++++++++++++
+ 1 file changed, 1155 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/profile.rs
 
 diff --git a/drivers/gpu/drm/vino/profile.rs b/drivers/gpu/drm/vino/profile.rs
 new file mode 100644
-index 000000000000..abb694326131
+index 000000000000..e90330820e12
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/profile.rs
-@@ -0,0 +1,1152 @@
+@@ -0,0 +1,1155 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! What distinguishes one DisplayLink dock from another.
@@ -273,10 +273,13 @@ index 000000000000..abb694326131
 +    pub(crate) max_connector_clock_khz: u32,
 +    /// Dock-wide pixel-rate budget in pixels per second, shared across all connectors.
 +    ///
-+    /// The DL7400's is the dual-connector rate DLM was measured sustaining. Ridge's is the highest
-+    /// combined rate measured driving cleanly, 2560x1440p144 beside 2560x1440p120. That is a floor
-+    /// on the dock's real ceiling rather than the ceiling itself: no pair of sinks to hand can ask
-+    /// for more, so what lies above it is untested.
++    /// The DL7400's is the dual-connector rate DLM was measured sustaining, and it is also what
++    /// bounds the depth: three quarters of it is what a 30 bpp connector is priced against, which
++    /// puts two connectors at 2560x1440p165 outside 30 bpp. Raising it to the dock's rated
++    /// four-connector 4K60 load admits that pair and the sinks then power off with nothing logged,
++    /// so the rated figure is not a bound this budget can borrow. Ridge's is the highest combined
++    /// rate measured driving cleanly, 2560x1440p144 beside 2560x1440p120. Both are floors on the
++    /// dock's real ceiling rather than the ceiling itself.
 +    ///
 +    /// Do not mistake DLM's declared per-connector `pixel_per_second_limit` for the bound. It
 +    /// clamps every Ridge connector to 120 Hz as policy, and the dock drives a single connector a
@@ -717,8 +720,8 @@ index 000000000000..abb694326131
 +        //
 +        // A bucket of 24 MB refilling at 8 MB/s reproduces that curve: 32 MB in a second against
 +        // the vendor's 34.4, 40 in two against 36.2, 64 in five against 42.8. Deliberately at the
-+        // vendor's shoulder rather than under it, because what used to halt the endpoint was a
-+        // frame ending on a full packet, not volume, and a ceiling below the vendor's own demand is
++        // vendor's shoulder rather than under it, because what halts the endpoint is a frame
++        // ending on a full packet, not volume, and a ceiling below the vendor's own demand is
 +        // a ceiling the desktop feels.
 +        stream_pacing: StreamPacing::new(8_000_000, 24_000_000),
 +        allocation: Allocation::Derived {

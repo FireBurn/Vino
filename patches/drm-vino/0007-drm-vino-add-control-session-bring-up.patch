@@ -1,4 +1,4 @@
-From 8b5da16740e383d9d7810353de0f53ab8d1403b6 Mon Sep 17 00:00:00 2001
+From e4440d4061ce800e0f042e21e4fc3a0bba6fc7de Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:33:12 +0100
 Subject: [PATCH] drm/vino: add control-session bring-up

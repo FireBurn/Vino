@@ -1,4 +1,4 @@
-From 3d6357e4894dfc370a5270b6e9c15bc0dce2306f Mon Sep 17 00:00:00 2001
+From 0a584fa27498a2373018f593eec64d6b43371108 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:49 +0100
 Subject: [PATCH] drm/vino: add the encrypted control plane
@@ -31,7 +31,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 
 diff --git a/drivers/gpu/drm/vino/cp.rs b/drivers/gpu/drm/vino/cp.rs
 new file mode 100644
-index 000000000000..8aaf4d186add
+index 000000000000..0afbf64974db
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/cp.rs
 @@ -0,0 +1,1590 @@
@@ -491,7 +491,7 @@ index 000000000000..8aaf4d186add
 +                let Ok(plaintext) = open_in(ks, &riv, seq, &wire[16..]) else {
 +                    continue;
 +                };
-+                // The verified Dl3Cmac identifies a genuine frame. Inner offsets 6..7 must NOT be
++                // The verified Dl3Cmac identifies a genuine frame. Inner offsets 6..7 must not be
 +                // tested as padding: Navarro stores connector selector bits there for the third
 +                // and fourth per-connector HDCP bursts, and rejecting on them dropped those
 +                // connectors' authentic pushes.

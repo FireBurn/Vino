@@ -1,4 +1,4 @@
-From 0f7e6af7b9a658972f548ab59bde47366d31d03a Mon Sep 17 00:00:00 2001
+From 2bc3863d5e1a218b5e9334dc6552fd880b8e8cd3 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:40:47 +0100
 Subject: [PATCH] drm/vino: add the dock activation and scanout path
@@ -19,6 +19,15 @@ compositor's buffer, damage selection over the dock's own strip grid, and a
 per-strip retransmit debt, because a dock holds more than one buffer and a
 delta that reaches only one of them ghosts.
 
+The encoder only ever sees the link's depth. Where userspace asked for a
+deeper link than the surface it handed over, a sample is widened after
+decoding by replicating its top bits into the low ones, so both
+endpoints stay exact where a plain shift would leave full white three
+codes short and tint every highlight. The strip cache is keyed on that
+depth alongside the colour transform, since changing it re-maps every
+sample on the way into the codec while leaving the framebuffer byte for
+byte identical.
+
 Waking a connector whose blank held its markers is a re-engage rather than
 just a bracket close: the blank powered its downstream sink down, and the
 closing markers do not bring it back. The vendor follows them with a probe,
@@ -30,14 +39,14 @@ Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/drm_sink.rs            |   11 +
- drivers/gpu/drm/vino/drm_sink/activation.rs | 1196 ++++++++++++
- drivers/gpu/drm/vino/drm_sink/bracket.rs    |  364 ++++
+ drivers/gpu/drm/vino/drm_sink/activation.rs | 1196 +++++++++++
+ drivers/gpu/drm/vino/drm_sink/bracket.rs    |  369 ++++
  drivers/gpu/drm/vino/drm_sink/cp_session.rs |  414 ++++
- drivers/gpu/drm/vino/drm_sink/presence.rs   |  435 +++++
- drivers/gpu/drm/vino/drm_sink/scanout.rs    | 1894 +++++++++++++++++++
- drivers/gpu/drm/vino/drm_sink/stream.rs     |  475 +++++
+ drivers/gpu/drm/vino/drm_sink/presence.rs   |  435 ++++
+ drivers/gpu/drm/vino/drm_sink/scanout.rs    | 1959 +++++++++++++++++++
+ drivers/gpu/drm/vino/drm_sink/stream.rs     |  470 +++++
  drivers/gpu/drm/vino/drm_sink/timeline.rs   |  571 ++++++
- 8 files changed, 5360 insertions(+)
+ 8 files changed, 5425 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/drm_sink/activation.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink/bracket.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink/cp_session.rs
@@ -47,7 +56,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  create mode 100644 drivers/gpu/drm/vino/drm_sink/timeline.rs
 
 diff --git a/drivers/gpu/drm/vino/drm_sink.rs b/drivers/gpu/drm/vino/drm_sink.rs
-index a6752ce118d7..c793bac624f9 100644
+index 86708db89699..535e7d18ff50 100644
 --- a/drivers/gpu/drm/vino/drm_sink.rs
 +++ b/drivers/gpu/drm/vino/drm_sink.rs
 @@ -46,11 +46,18 @@
@@ -1284,10 +1293,10 @@ index 000000000000..e505d80ed80d
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink/bracket.rs b/drivers/gpu/drm/vino/drm_sink/bracket.rs
 new file mode 100644
-index 000000000000..8e80fef8ffde
+index 000000000000..e18a698ca16b
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink/bracket.rs
-@@ -0,0 +1,364 @@
+@@ -0,0 +1,369 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! Taking a connector's sink down and back up, and the brackets around a mode set.
@@ -1538,7 +1547,12 @@ index 000000000000..8e80fef8ffde
 +        //
 +        // Best effort: a connector whose monitor genuinely went away while it was blanked belongs
 +        // to the presence watcher, and the mode set below is what reports a wake that failed.
-+        if self.reengage_connector(dev, connector).is_err() {
++        //
++        // Not on a dock whose video shares the control pipe, for the same reason `sustain_window`
++        // is withheld there: the seven paced messages are taken directly from the pipe the wake is
++        // also driving pixels down, and this dock answers by going silent rather than by dropping
++        // a frame.
++        if !self.video_on_ctrl_pipe() && self.reengage_connector(dev, connector).is_err() {
 +            vino_debug!("vino: socket {socket} wake re-engage failed; the mode set will retry\n");
 +        }
 +        // A wake is still not a cold plug: the re-engage above restores the sink, so the
@@ -2074,7 +2088,7 @@ index 000000000000..36b3a46026a5
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink/presence.rs b/drivers/gpu/drm/vino/drm_sink/presence.rs
 new file mode 100644
-index 000000000000..af01cede188b
+index 000000000000..6e58f5729223
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink/presence.rs
 @@ -0,0 +1,435 @@
@@ -2233,7 +2247,7 @@ index 000000000000..af01cede188b
 +                Ok(true)
 +            }
 +            None => {
-+                // Deliberately NOT published here, even under `edid_override`. A connector that
++                // Deliberately not published here, even under `edid_override`. A connector that
 +                // reports connected with no modes is immediately mode-set by fbdev emulation at
 +                // its own 640x480 default, and driving that at the dock resets it -- measured, in
 +                // a 25 s re-enumeration loop. The connector stays disconnected until userspace has
@@ -2515,10 +2529,10 @@ index 000000000000..af01cede188b
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink/scanout.rs b/drivers/gpu/drm/vino/drm_sink/scanout.rs
 new file mode 100644
-index 000000000000..68f9e689629b
+index 000000000000..e5f6e6e7eb6e
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink/scanout.rs
-@@ -0,0 +1,1894 @@
+@@ -0,0 +1,1959 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! Turning a committed framebuffer into bytes on a video endpoint.
@@ -2627,6 +2641,7 @@ index 000000000000..68f9e689629b
 +            direct,
 +            hashes,
 +            depth: data.geometry_for_connector(frame.connector).depth(),
++            source_depth: data.connector_buffer_depth(frame.connector),
 +        },
 +        GFP_KERNEL,
 +    ) {
@@ -2810,7 +2825,7 @@ index 000000000000..68f9e689629b
 +/// codec) stays in the worker and reads this private surface instead of the compositor's live
 +/// buffer.
 +///
-+/// The traversal is **band-major**: for each row of strips, the source's rows are pulled into
++/// The traversal is band-major: for each row of strips, the source's rows are pulled into
 +/// [`ShadowSurface::band`] a full row per read, and only then are that band's strips hashed and --
 +/// where the hash moved -- copied on into `pixels`. The obvious strip-major order costs far more
 +/// for the same result, because a strip is 64 px wide but the source row is `pitch` bytes apart: it
@@ -2820,7 +2835,7 @@ index 000000000000..68f9e689629b
 +/// read went to a fragment-sized scratch that could not be kept.
 +///
 +/// Strips whose hash is unchanged are still not written, so an idle desktop moves no more memory
-+/// than before; a busy one no longer reads the source twice.
++/// than the strip-major order would, and a busy one reads the source once.
 +#[inline(never)]
 +pub(super) fn snapshot_to_shadow(
 +    geometry: crate::video::haar::Geometry,
@@ -2922,11 +2937,11 @@ index 000000000000..68f9e689629b
 +
 +/// Convert changed strip hashes into a compact set of damage rectangles.
 +///
-+/// The rectangles are built on the **macro-tile** grid, not the strip grid, because a touched
++/// The rectangles are built on the macro-tile grid, not the strip grid, because a touched
 +/// macro-tile is resent whole either way -- see `Geometry::macro_w`. Describing damage at a
 +/// granularity finer than it is transmitted at costs nothing and fragments the list by up to the
-+/// sixteen strips a macro-tile holds, which is how a handful of scattered updates used to exhaust
-+/// the rectangle ceiling and take the whole surface with them.
++/// sixteen strips a macro-tile holds, which is enough for a handful of scattered updates to
++/// exhaust the rectangle ceiling and take the whole surface with them.
 +///
 +/// Horizontal runs are joined, then equal runs on adjacent macro-rows are extended vertically. A
 +/// frame still fragmented past the ceiling falls back to one full-output rectangle rather than
@@ -3051,6 +3066,12 @@ index 000000000000..68f9e689629b
 +    /// depth-agnostic and only the unpack here differs: `XRGB8888` is three bytes in the low 24
 +    /// bits, `XRGB2101010` three 10-bit fields in the low 30.
 +    depth: crate::video::haar::Depth,
++    /// Bits per channel of the framebuffer itself, which decides how a pixel is decoded.
++    ///
++    /// Equal to `depth` except when userspace asked for a deeper link than the surface it handed
++    /// over, which is the ordinary way a compositor drives a ten-bit link from an eight-bit
++    /// desktop. Samples are widened after decoding so the codec always sees `depth`.
++    source_depth: crate::video::haar::Depth,
 +}
 +
 +/// Whether the encoder can read output pixels straight out of the snapshot. See
@@ -3066,11 +3087,39 @@ index 000000000000..68f9e689629b
 +    color.is_none() && rotation == plane::Rotation::ROTATE_0 && output_w == w && output_h == h
 +}
 +
++/// Widen an eight-bit sample to ten bits.
++///
++/// Replicating the top two bits into the low ones keeps both endpoints exact: black stays zero and
++/// full white stays full white, where a plain shift would land three codes short of it and tint
++/// every highlight.
++#[inline]
++fn widen_8_to_10(v: u16) -> u16 {
++    (v << 2) | (v >> 6)
++}
++
 +impl PixelSource {
 +    /// Split one packed 32-bit pixel into channels at this source's depth.
 +    #[inline]
 +    fn unpack(&self, p: u32) -> (u16, u16, u16) {
-+        match self.depth {
++        let (r, g, b) = self.unpack_source(p);
++        self.widen(r, g, b)
++    }
++
++    /// Widen a decoded sample from the framebuffer's depth to the link's.
++    #[inline]
++    fn widen(&self, r: u16, g: u16, b: u16) -> (u16, u16, u16) {
++        match (self.source_depth, self.depth) {
++            (crate::video::haar::Depth::Eight, crate::video::haar::Depth::Ten) => {
++                (widen_8_to_10(r), widen_8_to_10(g), widen_8_to_10(b))
++            }
++            _ => (r, g, b),
++        }
++    }
++
++    /// Split one packed 32-bit pixel into channels at the framebuffer's own depth.
++    #[inline]
++    fn unpack_source(&self, p: u32) -> (u16, u16, u16) {
++        match self.source_depth {
 +            // Little-endian XRGB8888.
 +            crate::video::haar::Depth::Eight => (
 +                ((p >> 16) & 0xff) as u16,
@@ -3108,7 +3157,7 @@ index 000000000000..68f9e689629b
 +            // scaled back. That loses up to two low bits of a corrected pixel -- but ignoring the
 +            // correction instead would leave a compositor's night-colour shift silently unapplied
 +            // on exactly the outputs most likely to be colour-managed. Revisit with a 10-bit LUT if
-+            // banding is ever measured on a corrected HDR connector; see `docs/hdr.md`.
++            // banding is ever measured on a corrected HDR connector.
 +            Some(pipeline) => match self.depth {
 +                crate::video::haar::Depth::Eight => {
 +                    let (r, g, b) = pipeline.apply(r as u8, g as u8, b as u8);
@@ -3143,9 +3192,9 @@ index 000000000000..68f9e689629b
 +            let Some(chunk) = self.pixels.get(off..off + 4) else {
 +                return (0, 0, 0);
 +            };
-+            if let crate::video::haar::Depth::Eight = self.depth {
++            if let crate::video::haar::Depth::Eight = self.source_depth {
 +                // Little-endian XRGB8888: byte 0 is blue, 1 green, 2 red.
-+                return (chunk[2] as u16, chunk[1] as u16, chunk[0] as u16);
++                return self.widen(chunk[2] as u16, chunk[1] as u16, chunk[0] as u16);
 +            }
 +            let Ok(bytes) = <[u8; 4]>::try_from(chunk) else {
 +                return (0, 0, 0);
@@ -3162,11 +3211,11 @@ index 000000000000..68f9e689629b
 +
 +/// vino's own workqueue for the parallel strip encode.
 +///
-+/// The encode ran on `system_unbound`, where its CPU time is anonymous: the kernel composes worker
-+/// thread names from the workqueue's, so shared-pool work appears only as
++/// On the shared `system_unbound` pool the encode's CPU time is anonymous: the kernel
++/// composes worker thread names from the workqueue's, so shared-pool work appears only as
 +/// `kworker/uN:M-events_unbound`, indistinguishable from every other user of that pool. On a queue
-+/// of our own the same threads appear as **`kworker/uN:M-vino_encode`**, so `ps`/`top`/`perf`
-+/// attribute the codec's cost to vino, and the fan-out no longer competes with unrelated work for
++/// of our own the same threads appear as `kworker/uN:M-vino_encode`, so `ps`/`top`/`perf`
++/// attribute the codec's cost to vino, and the fan-out does not compete with unrelated work for
 +/// the shared pool's concurrency budget.
 +///
 +/// `WQ_UNBOUND` because strip encoding is pure compute with no CPU affinity worth preserving --
@@ -3275,7 +3324,7 @@ index 000000000000..68f9e689629b
 +    }
 +}
 +
-+/// Encode `coords` across CPUs and return the strip bodies in the **same** order.
++/// Encode `coords` across CPUs and return the strip bodies in the same order.
 +///
 +/// Order is not a nicety: [`crate::video::haar::frame_records`] groups strips into one wire record
 +/// per single-Y band and needs them x-ordered within a band, so the chunks are contiguous slices
@@ -3386,6 +3435,7 @@ index 000000000000..68f9e689629b
 +            direct: direct_pixel_map(rotation, &None, w, h, output_w, output_h),
 +            hashes: KVVec::new(),
 +            depth: crate::video::haar::Depth::Eight,
++            source_depth: crate::video::haar::Depth::Eight,
 +        },
 +        GFP_KERNEL,
 +    )?;
@@ -3600,9 +3650,18 @@ index 000000000000..68f9e689629b
 +    // What the encoded bytes depend on besides the strip pixels themselves; see
 +    // `StripHashState::tag`. Identity rotation is a precondition of caching at all, so it needs no
 +    // representation here.
-+    let gamma_tag = match &src.color {
-+        Some(pipeline) => pipeline.tag(),
-+        None => 0,
++    let encode_tag = {
++        let gamma = match &src.color {
++            Some(pipeline) => pipeline.tag(),
++            None => 0,
++        };
++        // The sample depth belongs here for the same reason the colour transform does, and is the
++        // more dangerous of the two: changing it re-maps every sample on the way into the codec
++        // and moves the escape ceiling, while leaving the framebuffer byte for byte identical. A
++        // cache keyed on the pixels alone therefore serves bodies encoded at the old depth inside
++        // a stream declared at the new one, and the dock decodes part of the frame as noise.
++        let deep = matches!(src.depth, crate::video::haar::Depth::Ten);
++        gamma ^ (u64::from(deep) * 0x9e37_79b9_7f4a_7c15)
 +    };
 +    // Strips carried over verbatim from the previous frame's encode, and the strips actually
 +    // handed to the codec; kept for the post-send cache publish below.
@@ -3656,7 +3715,7 @@ index 000000000000..68f9e689629b
 +            let usable = cache[connector_index].as_ref().filter(|c| {
 +                c.padded_width == padded_width
 +                    && c.padded_height == padded_height
-+                    && c.tag == gamma_tag
++                    && c.tag == encode_tag
 +            });
 +            for &(sx, sy) in coords.iter() {
 +                let idx =
@@ -4201,7 +4260,7 @@ index 000000000000..68f9e689629b
 +    }
 +    // Publish the content shadow, and with it the encoded body of every strip this frame carried,
 +    // so the retransmissions `damage_frames` owes can re-use the bytes instead of re-running the
-+    // codec (see `StripHashState::bodies`). Bodies for strips this frame did NOT touch are carried
++    // codec (see `StripHashState::bodies`). Bodies for strips this frame did not touch are carried
 +    // forward from the previous state -- they are still what the dock holds, and a later debt pass
 +    // may select them. Best-effort throughout: a failed allocation costs a cache miss, never a
 +    // frame, so the hashes are published either way.
@@ -4212,7 +4271,7 @@ index 000000000000..68f9e689629b
 +            .filter(|c| {
 +                c.padded_width == padded_width
 +                    && c.padded_height == padded_height
-+                    && c.tag == gamma_tag
++                    && c.tag == encode_tag
 +            })
 +            .map(|c| (c.bodies, c.hashes));
 +        state[connector_index] = content_hashes.map(|hashes| {
@@ -4257,7 +4316,7 @@ index 000000000000..68f9e689629b
 +                padded_height,
 +                hashes,
 +                bodies,
-+                tag: gamma_tag,
++                tag: encode_tag,
 +            }
 +        });
 +    }
@@ -4308,6 +4367,26 @@ index 000000000000..68f9e689629b
 +mod tests {
 +    use super::*;
 +    use crate::*;
++
++    /// An eight-bit desktop driven over a ten-bit link must keep both endpoints exact.
++    ///
++    /// A plain shift leaves full white at 1020 of 1023, which tints every highlight and is the
++    /// kind of error that looks like a panel problem rather than an encoder one.
++    #[test]
++    fn widening_an_eight_bit_sample_keeps_the_endpoints() {
++        assert_eq!(widen_8_to_10(0), 0);
++        assert_eq!(widen_8_to_10(255), 1023);
++        // Mid grey stays mid grey rather than drifting low.
++        assert_eq!(widen_8_to_10(128), 514);
++        // Monotonic, and never outside the ten-bit range.
++        let mut previous = 0;
++        for v in 0..=255u16 {
++            let w = widen_8_to_10(v);
++            assert!(w <= 1023);
++            assert!(v == 0 || w > previous);
++            previous = w;
++        }
++    }
 +
 +    /// Scattered damage must cost the strips it touches, not the surface.
 +    ///
@@ -4415,10 +4494,10 @@ index 000000000000..68f9e689629b
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink/stream.rs b/drivers/gpu/drm/vino/drm_sink/stream.rs
 new file mode 100644
-index 000000000000..7b1f9ec568d6
+index 000000000000..1adb37de980e
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink/stream.rs
-@@ -0,0 +1,475 @@
+@@ -0,0 +1,470 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! Opening a connector's video stream, and the records that frame it.
@@ -4629,15 +4708,10 @@ index 000000000000..7b1f9ec568d6
 +    /// whose 1080-line modes are stated as 1088.
 +    /// Whether this connector is being driven at 30 bpp.
 +    ///
-+    /// The decoder configuration and the set-mode both state the depth, and both read it here so
-+    /// that they cannot disagree.
++    /// The decoder configuration, the set-mode and the codec all state the depth, and all read it
++    /// from [`Self::connector_programmed_ten_bit`] so that they cannot disagree.
 +    fn connector_ten_bit(&self, connector: usize) -> bool {
-+        self.last_timing
-+            .lock()
-+            .get(connector)
-+            .copied()
-+            .flatten()
-+            .is_some_and(|t| t.ten_bit)
++        u8::try_from(connector).is_ok_and(|c| self.connector_programmed_ten_bit(c))
 +    }
 +
 +    fn stream_mode_header(&self, connector: usize) -> Result<[u8; 26]> {
