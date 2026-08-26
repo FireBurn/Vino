@@ -26,6 +26,9 @@ const FRAMES: &str = include_str!("../fixtures/coldref-out-cp.hex");
 /// Real DLM colour sink strips (cramp256/bramp256/rramp256) + their per-plane samples, for the
 /// colour-AC proof. Triples of `# name` / `X Y <16*3*64 ints>` / `<expected hex minus tail>`.
 const COLOUR_STRIPS: &str = include_str!("../fixtures/colour-strips.txt");
+/// DLM's downstream-authentication burst on a DL-3x00, decrypted from
+/// `captures/ella-socket1-20260817`. One inner plaintext record per line, in the order sent.
+const ELLA_PERHEAD: &str = include_str!("../fixtures/ella-perhead.hex");
 
 /// CP `sub` ids seen on the wire — a recovered plaintext whose `sub` is one of
 /// these (and whose post-counter pad word is zero) is the right (ks,riv).
@@ -365,6 +368,48 @@ pub fn run() -> Report {
         .filter(|chunk| chunk.len() == declared.len() && *chunk == declared.as_slice())
         .count();
     println!("  downstream burst: {in_order}/{complete} in the order the driver sends it");
+
+    // The third family, from its own capture. Its records are sent in the clear, so the fixture is
+    // the plaintext rather than sealed frames, but the questions are the same: does each record
+    // name the connector the way this driver names it, and in the order this driver sends it.
+    let ella = kvino::DockProfile::for_family(kvino::Family::Ella).expect("Ella profile");
+    let ella_records: Vec<Vec<u8>> = ELLA_PERHEAD
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| unhex(l.trim()))
+        .collect();
+    // The upstream authentication uses a selector of its own; only the per-connector records carry
+    // a connector, and the connector each one names is read back from the record rather than
+    // assumed.
+    let mut ella_sel = (0usize, 0usize);
+    let mut ella_ids = (0usize, 0usize);
+    const HDCP_IDS: [u8; 6] = [0x02, 0x13, 0x04, 0x09, 0x0b, 0x0f];
+    for record in &ella_records {
+        if record.len() < 28 || record[22..24] == [0x30, 0x00] {
+            continue;
+        }
+        ella_sel.1 += 1;
+        for connector in 0..ella.connectors() {
+            let mut mine = vec![0u8; record.len()];
+            kvino::connector_marker(ella, &mut mine, connector as u8);
+            if mine[22..24] == record[22..24] {
+                ella_sel.0 += 1;
+                break;
+            }
+        }
+        // The stream-manage restatement is assembled by its own builder rather than from the
+        // table of AKE message ids, so it is not one of the records this checks.
+        if le16(record, 0) != 0x0026 {
+            ella_ids.1 += 1;
+            if HDCP_IDS.contains(&record[27]) {
+                ella_ids.0 += 1;
+            }
+        }
+    }
+    println!(
+        "  third family: selector {}/{} match DLM, HDCP message ids {}/{}",
+        ella_sel.0, ella_sel.1, ella_ids.0, ella_ids.1
+    );
 
     let ridge_dock = ridge();
     let mut selector = (0usize, 0usize);
