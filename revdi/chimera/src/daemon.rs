@@ -108,8 +108,14 @@ fn run_session() -> Result<(), String> {
                 continue;
             };
             if Some(mode) != output.mode {
-                session.activate_mode(output.head, mode.width, mode.height, mode.refresh_hz)?;
-                output.mode = Some(mode);
+                // A dock that reconfigures whole declines a connector programmed beside a lit one,
+                // and says so rather than failing. Recording the mode anyway would leave frames
+                // going out against a timing the dock was never given.
+                if session.activate_mode(output.head, mode.width, mode.height, mode.refresh_hz)? {
+                    output.mode = Some(mode);
+                } else {
+                    output.deferred_mode = Some(mode);
+                }
             }
             let (padded, padded_width, padded_height) =
                 pad_rgb(session.profile(), &rgb, width, height);
