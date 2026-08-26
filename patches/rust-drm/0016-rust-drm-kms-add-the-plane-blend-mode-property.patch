@@ -1,4 +1,4 @@
-From adb1af657d39d097bc8ac2331724af3e195ab13f Mon Sep 17 00:00:00 2001
+From 1cd73792864faa6629156276cff36b884deb8788 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 22:51:17 +0100
 Subject: [PATCH v3 16/23] rust: drm: kms: add the plane blend-mode property

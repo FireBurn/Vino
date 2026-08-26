@@ -91,12 +91,12 @@ Changes since v2:
   The related series are linked and Vino is named as the user for all of them,
     which Miguel Ojeda asked for
 
-One thing to object to before anyone has to. There is a trace_crypto module
-parameter, default off, which discloses one session's keys so a USB capture can
-be decrypted. It exists because that is the only way anyone with a DisplayLink
-dock nobody here owns can produce a capture that says anything, and this whole
-driver is built out of such captures. I would rather argue for keeping it than
-have it found
+The trace_crypto module parameter, default off, deliberately logs one session's
+keys so that a USB capture of that session can be decrypted. Every constant in
+this driver came from such a capture, and it is the only way somebody holding a
+DisplayLink dock nobody here owns can produce one that says anything. It is
+flagged here rather than left to be found, because a kernel option that
+discloses key material is a fair thing to argue about
 
 The protocol was reverse engineered from captured wire traffic and from the
 vendor binaries. There is no vendor documentation for any of it, every constant
@@ -114,9 +114,8 @@ The rest of the posting, which is one series per subsystem:
   rust-firmware, 1 patch, to linux-kernel and rust-for-linux, not sent yet
   drm-vino, 13 patches, this one
 
-Vino is the user for every one of them. The abstractions are generic and carry
-no knowledge of DisplayLink, but none of them are here speculatively: each one
-exists because the driver could not be written in safe Rust without it
+Vino is the user for all of them. The abstractions themselves are generic and
+carry no knowledge of DisplayLink
 
 The whole thing is one branch, base and prerequisites included, which is the
 quickest way to read it:
@@ -127,51 +126,44 @@ quickest way to read it:
   make LLVM=1 -j$(nproc)
   make LLVM=1 -j$(nproc) modules
 
-CONFIG_RUST=y and CONFIG_DRM_VINO=m are the two that matter, and DRM_VINO
-selects the rest of what it needs. Check CONFIG_DRM_VINO survived olddefconfig
-before believing a clean build: if the Rust toolchain is not available the
-symbol quietly disappears and everything still exits 0
+CONFIG_RUST=y and CONFIG_DRM_VINO=m are the two to set; DRM_VINO selects the
+rest of what it needs
 
-On top of what is posted, that branch carries two build fixes and nothing else:
-one scheduler call site that stops compiling under the locking-guard series, and
-the Kms associated type Tyr needs once the KMS registration trait requires one.
-Neither enables any part of Vino, so neither is sent with it
+It is the exact tree these patches were generated from, at 4c9ba407018e, the
+drm-rust-next tip of 2026-08-06. drm-next has moved on since, and this follows
+drm-rust-next deliberately: the KMS layer underneath this work lives only there,
+and that tree picks up drm-next on its own schedule
 
-That branch is the exact tree these patches were generated from, at
-4c9ba407018e, which is the drm-rust-next tip of 2026-08-06. drm-next has moved
-on since; this deliberately follows drm-rust-next instead, because the KMS layer
-underneath this work lives only there and that tree picks up drm-next on its own
-schedule
+Two commits on the branch are not in any of the series above, because they
+enable no part of Vino: a scheduler call site that stops compiling under the
+locking-guard series, and the Kms associated type Tyr needs once the KMS
+registration trait requires one
 
-Other people's unmerged work the branch carries, which is a dependency to base
-on rather than anything being posted here:
+It applies to the base above plus this, and nothing else:
 
-  Lyude Paul, Rust bindings for KMS + RVKMS, 43 commits
+  Lyude Paul, Rust bindings for KMS + RVKMS
   https://lore.kernel.org/r/20250305230406.567126-1-lyude@redhat.com
 
-  Colin Braun, rust: usb: add usb request block abstractions, 3 commits
+  Colin Braun, rust: usb: add usb request block abstractions
   https://lore.kernel.org/r/20260712-urb-abstraction-v1-v1-0-9fa011634ead@gmail.com
 
-  Boqun Feng's counted interrupt disabling series, which SpinLockIrq needs,
-  9 commits. One patch of it is already in tip locking/core as e901c1510e24
+  Alice Ryhl, Creation of workqueues in Rust, plus Onur Ozkan's cancel_sync
+  https://lore.kernel.org/r/20260312-create-workqueue-v4-0-ea39c351c38f@google.com
 
-  Alice Ryhl's owned workqueue series, 3 commits, and Onur Ozkan's cancel_sync
+The reference branch also carries Boqun Feng's counted interrupt disabling
+series, which SpinLockIrq needs. One patch of it is already in tip locking/core
+as e901c1510e24
 
-Every one of those keeps its author, its message and its tags, and none of them
-carries a trailer of mine
-
-On the workqueue side, Danilo Krummrich's OwnedQueue, ScopedQueue and ScopedWork
-series supersedes some of what is carried here, and it is the better answer.
-Vino calls Work::cancel_sync() in seven places to make teardown wait for its own
-work items, and ScopedWork cancels on drop, which is that idiom done properly
-rather than by hand
+Danilo Krummrich's OwnedQueue, ScopedQueue and ScopedWork series supersedes part
+of the workqueue work carried here, and is the better answer: Vino calls
+Work::cancel_sync() in seven places to make teardown wait for its own work
+items, and ScopedWork cancels on drop, which is that idiom done properly
 
   https://lore.kernel.org/r/20260807165252.3849875-1-dakr@kernel.org
 
-It was still moving when this was cut, so this posting uses what is available
-today. When it lands the swap goes in as one commit that moves the prerequisites
-and migrates the call sites together, because splitting those two halves would
-leave the tree not building in between
+It was still moving when this was cut, so this uses what is available today.
+When it lands the swap goes in as one commit moving the prerequisites and the
+call sites together, since either half alone leaves the tree not building
 
 These patches were written with the assistance of Claude (Anthropic), used
 through Claude Code as an interactive coding assistant, across the design, the
@@ -194,6 +186,9 @@ Mike Lothian (13):
   drm/vino: allow the driver to be built
   Documentation/gpu: document the Vino driver
 
- 43 files changed, 24059 insertions(+), 4 deletions(-)
+ 43 files changed, 24047 insertions(+), 4 deletions(-)
 
 base-commit: 4c9ba407018e8deb06dbc643112bac8f40404f95
+prerequisite-message-id: <20250305230406.567126-1-lyude@redhat.com>
+prerequisite-message-id: <20260712-urb-abstraction-v1-v1-0-9fa011634ead@gmail.com>
+prerequisite-message-id: <20260312-create-workqueue-v4-0-ea39c351c38f@google.com>

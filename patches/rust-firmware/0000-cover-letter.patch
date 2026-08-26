@@ -29,9 +29,8 @@ The rest of the posting, which is one series per subsystem:
   rust-firmware, 1 patch, this one
   drm-vino, 13 patches, to dri-devel, not sent yet
 
-Vino is the user for every one of them. The abstractions are generic and carry
-no knowledge of DisplayLink, but none of them are here speculatively: each one
-exists because the driver could not be written in safe Rust without it
+Vino is the user for all of them. The abstractions themselves are generic and
+carry no knowledge of DisplayLink
 
 The whole thing is one branch, base and prerequisites included, which is the
 quickest way to read it:
@@ -42,38 +41,25 @@ quickest way to read it:
   make LLVM=1 -j$(nproc)
   make LLVM=1 -j$(nproc) modules
 
-CONFIG_RUST=y and CONFIG_DRM_VINO=m are the two that matter, and DRM_VINO
-selects the rest of what it needs. Check CONFIG_DRM_VINO survived olddefconfig
-before believing a clean build: if the Rust toolchain is not available the
-symbol quietly disappears and everything still exits 0
+CONFIG_RUST=y and CONFIG_DRM_VINO=m are the two to set; DRM_VINO selects the
+rest of what it needs
 
-On top of what is posted, that branch carries two build fixes and nothing else:
-one scheduler call site that stops compiling under the locking-guard series, and
-the Kms associated type Tyr needs once the KMS registration trait requires one.
-Neither enables any part of Vino, so neither is sent with it
+It is the exact tree these patches were generated from, at 4c9ba407018e, the
+drm-rust-next tip of 2026-08-06. drm-next has moved on since, and this follows
+drm-rust-next deliberately: the KMS layer underneath this work lives only there,
+and that tree picks up drm-next on its own schedule
 
-That branch is the exact tree these patches were generated from, at
-4c9ba407018e, which is the drm-rust-next tip of 2026-08-06. drm-next has moved
-on since; this deliberately follows drm-rust-next instead, because the KMS layer
-underneath this work lives only there and that tree picks up drm-next on its own
-schedule
+Two commits on the branch are not in any of the series above, because they
+enable no part of Vino: a scheduler call site that stops compiling under the
+locking-guard series, and the Kms associated type Tyr needs once the KMS
+registration trait requires one
 
-Other people's unmerged work the branch carries, which is a dependency to base
-on rather than anything being posted here:
+It applies to the base above on its own, with no unmerged work under it, so it
+can be taken without waiting for anything else here
 
-  Lyude Paul, Rust bindings for KMS + RVKMS, 43 commits
-  https://lore.kernel.org/r/20250305230406.567126-1-lyude@redhat.com
-
-  Colin Braun, rust: usb: add usb request block abstractions, 3 commits
-  https://lore.kernel.org/r/20260712-urb-abstraction-v1-v1-0-9fa011634ead@gmail.com
-
-  Boqun Feng's counted interrupt disabling series, which SpinLockIrq needs,
-  9 commits. One patch of it is already in tip locking/core as e901c1510e24
-
-  Alice Ryhl's owned workqueue series, 3 commits, and Onur Ozkan's cancel_sync
-
-Every one of those keeps its author, its message and its tags, and none of them
-carries a trailer of mine
+The reference branch also carries Boqun Feng's counted interrupt disabling
+series, which SpinLockIrq needs. One patch of it is already in tip locking/core
+as e901c1510e24
 
 These patches were written with the assistance of Claude (Anthropic), used
 through Claude Code as an interactive coding assistant, across the design, the

@@ -11,10 +11,10 @@ series and others -- which are dependencies to base on, never patches to post.
 | series | patches | version | list | depends on |
 |---|---|---|---|---|
 | `rust-core` | 9 |  | rust-for-linux and linux-kernel | none |
-| `rust-crypto` | 2 | v3 | linux-crypto and rust-for-linux | rust-core |
-| `rust-usb` | 5 | v3 | linux-usb and rust-for-linux | rust-core |
-| `rust-drm` | 23 | v3 | dri-devel and rust-for-linux | rust-core |
-| `rust-firmware` | 1 |  | linux-kernel and rust-for-linux | rust-core |
+| `rust-crypto` | 2 | v3 | linux-crypto and rust-for-linux | none |
+| `rust-usb` | 5 | v3 | linux-usb and rust-for-linux | none |
+| `rust-drm` | 23 | v3 | dri-devel and rust-for-linux | none |
+| `rust-firmware` | 1 |  | linux-kernel and rust-for-linux | none |
 | `drm-vino` | 13 | v3 | dri-devel | rust-core, rust-crypto, rust-usb, rust-drm, rust-firmware |
 
 Apply order is the table order, and it is also send order: each cover letter

@@ -110,11 +110,37 @@ lists() {
     esac
 }
 
+# What a series needs under it, verified by applying it to the base plus that and
+# nothing else. Two of them need nothing at all, which is worth a maintainer's
+# time to know: they can be taken on their own.
 depends() {
     case "$1" in
-    rust-crypto|rust-usb|rust-drm|rust-firmware) printf 'rust-core' ;;
-    drm-vino)  printf 'rust-core, rust-crypto, rust-usb, rust-drm, rust-firmware' ;;
-    *)         printf 'none' ;;
+    drm-vino) printf 'rust-core, rust-crypto, rust-usb, rust-drm, rust-firmware' ;;
+    *)        printf 'none' ;;
+    esac
+}
+
+# The third-party series a group needs, as "message-id|description" lines.
+prereqs_of() {
+    case "$1" in
+    rust-core) cat <<'P'
+20260312-create-workqueue-v4-0-ea39c351c38f@google.com|Alice Ryhl, Creation of workqueues in Rust, plus Onur Ozkan's cancel_sync
+P
+        ;;
+    rust-usb) cat <<'P'
+20260712-urb-abstraction-v1-v1-0-9fa011634ead@gmail.com|Colin Braun, rust: usb: add usb request block abstractions
+P
+        ;;
+    rust-drm) cat <<'P'
+20250305230406.567126-1-lyude@redhat.com|Lyude Paul, Rust bindings for KMS + RVKMS
+P
+        ;;
+    drm-vino) cat <<'P'
+20250305230406.567126-1-lyude@redhat.com|Lyude Paul, Rust bindings for KMS + RVKMS
+20260712-urb-abstraction-v1-v1-0-9fa011634ead@gmail.com|Colin Braun, rust: usb: add usb request block abstractions
+20260312-create-workqueue-v4-0-ea39c351c38f@google.com|Alice Ryhl, Creation of workqueues in Rust, plus Onur Ozkan's cancel_sync
+P
+        ;;
     esac
 }
 
@@ -147,9 +173,8 @@ siblings() {
     done
     printf '\n'
     cat <<'SIBTAIL'
-Vino is the user for every one of them. The abstractions are generic and carry
-no knowledge of DisplayLink, but none of them are here speculatively: each one
-exists because the driver could not be written in safe Rust without it
+Vino is the user for all of them. The abstractions themselves are generic and
+carry no knowledge of DisplayLink
 SIBTAIL
 }
 
@@ -164,59 +189,57 @@ quickest way to read it:
   make LLVM=1 -j\$(nproc)
   make LLVM=1 -j\$(nproc) modules
 
-CONFIG_RUST=y and CONFIG_DRM_VINO=m are the two that matter, and DRM_VINO
-selects the rest of what it needs. Check CONFIG_DRM_VINO survived olddefconfig
-before believing a clean build: if the Rust toolchain is not available the
-symbol quietly disappears and everything still exits 0
+CONFIG_RUST=y and CONFIG_DRM_VINO=m are the two to set; DRM_VINO selects the
+rest of what it needs
 
-On top of what is posted, that branch carries two build fixes and nothing else:
-one scheduler call site that stops compiling under the locking-guard series, and
-the Kms associated type Tyr needs once the KMS registration trait requires one.
-Neither enables any part of Vino, so neither is sent with it
+It is the exact tree these patches were generated from, at $base_short, the
+drm-rust-next tip of 2026-08-06. drm-next has moved on since, and this follows
+drm-rust-next deliberately: the KMS layer underneath this work lives only there,
+and that tree picks up drm-next on its own schedule
 
-That branch is the exact tree these patches were generated from, at
-$base_short, which is the drm-rust-next tip of 2026-08-06. drm-next has moved
-on since; this deliberately follows drm-rust-next instead, because the KMS layer
-underneath this work lives only there and that tree picks up drm-next on its own
-schedule
+Two commits on the branch are not in any of the series above, because they
+enable no part of Vino: a scheduler call site that stops compiling under the
+locking-guard series, and the Kms associated type Tyr needs once the KMS
+registration trait requires one
 TREE
 }
 
 prereq_block() {
-    cat <<'PREREQ'
-Other people's unmerged work the branch carries, which is a dependency to base
-on rather than anything being posted here:
-
-  Lyude Paul, Rust bindings for KMS + RVKMS, 43 commits
-  https://lore.kernel.org/r/20250305230406.567126-1-lyude@redhat.com
-
-  Colin Braun, rust: usb: add usb request block abstractions, 3 commits
-  https://lore.kernel.org/r/20260712-urb-abstraction-v1-v1-0-9fa011634ead@gmail.com
-
-  Boqun Feng's counted interrupt disabling series, which SpinLockIrq needs,
-  9 commits. One patch of it is already in tip locking/core as e901c1510e24
-
-  Alice Ryhl's owned workqueue series, 3 commits, and Onur Ozkan's cancel_sync
-
-Every one of those keeps its author, its message and its tags, and none of them
-carries a trailer of mine
-PREREQ
+    local group="$1" id desc had=0
+    while IFS='|' read -r id desc; do
+        [ -n "$id" ] || continue
+        if [ "$had" -eq 0 ]; then
+            printf 'It applies to the base above plus this, and nothing else:\n\n'
+            had=1
+        fi
+        printf '  %s\n  https://lore.kernel.org/r/%s\n\n' "$desc" "$id"
+    done < <(prereqs_of "$group")
+    if [ "$had" -eq 0 ]; then
+        cat <<'NONE'
+It applies to the base above on its own, with no unmerged work under it, so it
+can be taken without waiting for anything else here
+NONE
+        printf '\n'
+    fi
+    cat <<'TAIL'
+The reference branch also carries Boqun Feng's counted interrupt disabling
+series, which SpinLockIrq needs. One patch of it is already in tip locking/core
+as e901c1510e24
+TAIL
 }
 
 danilo_block() {
     cat <<'DANILO'
-On the workqueue side, Danilo Krummrich's OwnedQueue, ScopedQueue and ScopedWork
-series supersedes some of what is carried here, and it is the better answer.
-Vino calls Work::cancel_sync() in seven places to make teardown wait for its own
-work items, and ScopedWork cancels on drop, which is that idiom done properly
-rather than by hand
+Danilo Krummrich's OwnedQueue, ScopedQueue and ScopedWork series supersedes part
+of the workqueue work carried here, and is the better answer: Vino calls
+Work::cancel_sync() in seven places to make teardown wait for its own work
+items, and ScopedWork cancels on drop, which is that idiom done properly
 
   https://lore.kernel.org/r/20260807165252.3849875-1-dakr@kernel.org
 
-It was still moving when this was cut, so this posting uses what is available
-today. When it lands the swap goes in as one commit that moves the prerequisites
-and migrates the call sites together, because splitting those two halves would
-leave the tree not building in between
+It was still moving when this was cut, so this uses what is available today.
+When it lands the swap goes in as one commit moving the prerequisites and the
+call sites together, since either half alone leaves the tree not building
 DANILO
 }
 
@@ -302,8 +325,8 @@ Changes since v2:
   There is no private RSA primitive either. Modexp goes through
     crypto_alloc_akcipher("rsa"), and OAEP padding and the HDCP key material
     are held in a memory-wiping secret type
-  The three patches are two: the CMAC fix belonged in the commit that
-    introduced the CMAC, not after it
+  v2's separate CMAC fix is folded into the commit that introduces the CMAC,
+    so this is two patches rather than three
 
 Nothing here knows what HDCP is. The consumer is the DisplayLink driver at the
 end of the chain, whose control plane is sealed with AES-CTR and keyed by an
@@ -326,7 +349,7 @@ rather than a class device
   Letting a driver keep its interface usable while unbinding, so teardown can
     still talk to the device it is releasing
 
-Changes since v2, which is where the real review happened:
+Changes since v2:
 
   v2 10/11, "keep usb::Device private and gate ...", is dropped entirely.
     Oliver Neukum was right that it was conceptually wrong: USB does device
@@ -396,7 +419,7 @@ Changes since v2:
   The hardware-cursor support that was a separate v2 patch is folded into the
     plane work it belongs to
 
-Two overlaps worth flagging rather than being told about. Alvin Sun's
+Two overlaps worth naming. Alvin Sun's
 "Fix missing fops.owner in Rust DRM/misc abstractions" fixes the same bug as
 "rust: drm: pin the owner while DRM files remain open", from the other end,
 through ModuleMetadata rather than by threading an owning module through
@@ -519,12 +542,12 @@ Changes since v2:
   The related series are linked and Vino is named as the user for all of them,
     which Miguel Ojeda asked for
 
-One thing to object to before anyone has to. There is a trace_crypto module
-parameter, default off, which discloses one session's keys so a USB capture can
-be decrypted. It exists because that is the only way anyone with a DisplayLink
-dock nobody here owns can produce a capture that says anything, and this whole
-driver is built out of such captures. I would rather argue for keeping it than
-have it found
+The trace_crypto module parameter, default off, deliberately logs one session's
+keys so that a USB capture of that session can be decrypted. Every constant in
+this driver came from such a capture, and it is the only way somebody holding a
+DisplayLink dock nobody here owns can produce one that says anything. It is
+flagged here rather than left to be found, because a kernel option that
+discloses key material is a fair thing to argue about
 
 The protocol was reverse engineered from captured wire traffic and from the
 vendor binaries. There is no vendor documentation for any of it, every constant
@@ -619,7 +642,7 @@ for group in "${series_order[@]}"; do
         printf '\n'
         tree_block
         printf '\n'
-        prereq_block
+        prereq_block "$group"
         printf '\n'
         case "$group" in
         rust-core|drm-vino) danilo_block; printf '\n' ;;
@@ -637,6 +660,9 @@ for group in "${series_order[@]}"; do
         printf '\n'
         diffstat_of "$shas"
         printf '\nbase-commit: %s\n' "$base_sha"
+        while IFS='|' read -r pid _; do
+            [ -n "$pid" ] && printf 'prerequisite-message-id: <%s>\n' "$pid"
+        done < <(prereqs_of "$group")
     } >"$dir/0000-cover-letter.patch"
 
     printf '%-14s %2d %-7s %-8s depends: %s\n' \

@@ -1,18 +1,15 @@
-From efd4fcd7bde52dbc58f6658ea3e799f1bb96751c Mon Sep 17 00:00:00 2001
+From 4a022b3338d60dcbe75c8fc784ee0b7b30f9718d Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 17:13:59 +0100
 Subject: [PATCH v3 14/23] rust: drm: add a safe constructor for owned registration data
 
-drm: add a safe constructor for owned registration data
-
-A DRM registration whose associated data is 'static cannot outlive
-any references held by that data. Add a safe constructor for this
-common case so drivers do not have to promise manually that their
-registration will never be forgotten.
+A DRM registration whose associated data is 'static cannot outlive any
+references held by that data. Add a safe constructor for this common
+case so drivers do not have to promise manually that their registration
+will never be forgotten.
 
 Keep the existing unsafe constructor for registration data which
-genuinely borrows from the bus binding. Convert the Vino and revdi
-users, whose registration data is ().
+genuinely borrows from the bus binding.
 
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>

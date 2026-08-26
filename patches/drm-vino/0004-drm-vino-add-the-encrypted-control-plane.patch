@@ -1,4 +1,4 @@
-From 1369ae03e24b1d45c81f7b98d0ce3d54e5d98668 Mon Sep 17 00:00:00 2001
+From 357c0b2f90a9884394d59b1d3bd73655ab0cecbd Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:49 +0100
 Subject: [PATCH v3 4/13] drm/vino: add the encrypted control plane
@@ -22,8 +22,8 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  drivers/gpu/drm/vino/cp.rs        | 1590 +++++++++++++++++++++++++++++
  drivers/gpu/drm/vino/cp/cursor.rs |  158 +++
  drivers/gpu/drm/vino/cp/edid.rs   |  464 +++++++++
- drivers/gpu/drm/vino/cp/mode.rs   |  876 ++++++++++++++++
- 4 files changed, 3088 insertions(+)
+ drivers/gpu/drm/vino/cp/mode.rs   |  874 ++++++++++++++++
+ 4 files changed, 3086 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/cp.rs
  create mode 100644 drivers/gpu/drm/vino/cp/cursor.rs
  create mode 100644 drivers/gpu/drm/vino/cp/edid.rs
@@ -2261,10 +2261,10 @@ index 000000000000..0e7b765f3546
 +}
 diff --git a/drivers/gpu/drm/vino/cp/mode.rs b/drivers/gpu/drm/vino/cp/mode.rs
 new file mode 100644
-index 000000000000..a361f6c6e81c
+index 000000000000..91f4fc5d3625
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/cp/mode.rs
-@@ -0,0 +1,876 @@
+@@ -0,0 +1,874 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! Describing a mode to the dock.
@@ -2352,8 +2352,6 @@ index 000000000000..a361f6c6e81c
 +/// `0x0600`, so `0x0200` is the vertical flag and swapping the two would predict `0x0500`.
 +/// DLM's own bit test confirms both independently; see [`SYNC_FLAGS_BASE`].
 +fn sync_flags(mode: &kernel::drm::kms::modes::DisplayMode) -> u16 {
-+    // Named through the same path as the parameter type rather than a `use`: the chimera rig
-+    // compiles this file verbatim against a shim where a `use kernel::...` is ambiguous.
 +    type ModeFlags = kernel::drm::kms::modes::ModeFlags;
 +
 +    let flags = mode.flags();

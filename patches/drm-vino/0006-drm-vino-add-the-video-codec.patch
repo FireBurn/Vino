@@ -1,4 +1,4 @@
-From ae322f4169086a3624eddd5b9474d45c7218e600 Mon Sep 17 00:00:00 2001
+From 808418eb0e71d4696b7de94d2abae29a48bfd940 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:33:09 +0100
 Subject: [PATCH v3 6/13] drm/vino: add the video codec
@@ -30,20 +30,17 @@ terminator, so a DC ceiling that disagrees desynchronises the dock's
 decoder outright, while an AC one that is left behind stays in step and
 reconstructs every sharp edge from a truncated magnitude.
 
-color.rs is shared verbatim with drm/evdi, which needs the same correction
-for the same reason and cannot share a crate with this one.
-
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- drivers/gpu/drm/vino/color.rs                | 427 ++++++++
+ drivers/gpu/drm/vino/color.rs                | 420 ++++++++
  drivers/gpu/drm/vino/cp.rs                   |   8 +-
  drivers/gpu/drm/vino/video.rs                | 436 ++++++++
  drivers/gpu/drm/vino/video/haar/records.rs   | 985 +++++++++++++++++++
  drivers/gpu/drm/vino/video/haar/strip.rs     | 507 ++++++++++
  drivers/gpu/drm/vino/video/haar/transform.rs | 802 +++++++++++++++
  drivers/gpu/drm/vino/video_arm.rs            | 243 +++++
- 7 files changed, 3404 insertions(+), 4 deletions(-)
+ 7 files changed, 3397 insertions(+), 4 deletions(-)
  create mode 100644 drivers/gpu/drm/vino/color.rs
  create mode 100644 drivers/gpu/drm/vino/video.rs
  create mode 100644 drivers/gpu/drm/vino/video/haar/records.rs
@@ -53,23 +50,18 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 
 diff --git a/drivers/gpu/drm/vino/color.rs b/drivers/gpu/drm/vino/color.rs
 new file mode 100644
-index 000000000000..fcbb8754eede
+index 000000000000..050ddb12f617
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/color.rs
-@@ -0,0 +1,427 @@
+@@ -0,0 +1,420 @@
 +// SPDX-License-Identifier: GPL-2.0
 +//! Software colour management for the CRTC's `CTM` and `GAMMA_LUT` properties.
 +//!
-+//! Neither driver that uses this has colour hardware to program: vino sends already-encoded
-+//! pixels to a dock, and evdi hands framebuffer pixels to a userspace client. A compositor that
-+//! colour-corrects through the KMS properties -- GNOME's Night Light and KDE's Night Colour both
-+//! do, rather than rewriting the framebuffer -- therefore has nowhere to put the correction on
-+//! such an output unless the driver applies it while it still has the pixels. This module is that
-+//! application.
-+//!
-+//! NOTE: this file is shared verbatim between `drm/vino` and `drm/evdi`. They are separate
-+//! modules and cannot share a crate, so the copies are kept byte-identical and
-+//! `tools/color-selftest.sh` fails if they drift.
++//! There is no colour hardware to program: the dock is handed pixels that are already encoded.
++//! A compositor that colour-corrects through the KMS properties, as GNOME's Night Light and KDE's
++//! Night Colour both do rather than rewriting the framebuffer, therefore has nowhere to put the
++//! correction on such an output unless the driver applies it while it still has the pixels. This
++//! module is that application.
 +//!
 +//! Pipeline order follows DRM's: degamma, then CTM, then gamma. No degamma LUT is advertised, so
 +//! what runs here is CTM then gamma.
@@ -81,10 +73,9 @@ index 000000000000..fcbb8754eede
 +//!
 +//! # Why the representation is an enum
 +//!
-+//! This runs on every pixel of every changed region -- vino's `PixelSource::px` is the
-+//! third-hottest symbol in the kernel under fullscreen video (13.8% of the machine on a 4K clip),
-+//! and evdi's GRABPIX copies every damaged pixel of every frame -- so the per-pixel cost matters
-+//! more than generality. A CTM that only scales each channel, which is the shape *every*
++//! This runs on every pixel of every changed region, and `PixelSource::px` is the third-hottest
++//! symbol in the kernel under fullscreen video (13.8% of the machine on a 4K clip), so the
++//! per-pixel cost matters more than generality. A CTM that only scales each channel, which is the shape *every*
 +//! colour-temperature corrector produces, collapses into per-channel lookup tables exactly as a
 +//! gamma ramp does; [`ColorPipeline::Fused`] keeps that case at one table lookup per channel, the
 +//! same cost as before CTM existed. Only a matrix that genuinely mixes channels pays for
@@ -190,9 +181,8 @@ index 000000000000..fcbb8754eede
 +    /// Build the pipeline for a CRTC state's `CTM` and `GAMMA_LUT`, or [`None`] when neither is
 +    /// programmed or both are the identity.
 +    ///
-+    /// [`None`] is not merely an optimisation: it is what keeps vino's direct-scanout path and
-+    /// evdi's plain copy-to-userspace path available, so an uncorrected desktop pays nothing at
-+    /// all for this feature existing.
++    /// [`None`] is not merely an optimisation: it is what keeps the direct-scanout path
++    /// available, so an uncorrected desktop pays nothing at all for this feature existing.
 +    pub(crate) fn build(lut: Option<&[ColorLut]>, ctm: Option<&ColorCtm>) -> Option<Self> {
 +        let gamma = lut.map(read_lut);
 +        let matrix = ctm.map(|c| {

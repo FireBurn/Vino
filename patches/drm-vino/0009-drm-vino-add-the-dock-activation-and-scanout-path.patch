@@ -1,4 +1,4 @@
-From d4086bd7fbefec72cf0e75f7318da25b5cf85c6f Mon Sep 17 00:00:00 2001
+From d88c194ce49f45e72121be374ca668035bce9fb6 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:40:47 +0100
 Subject: [PATCH v3 9/13] drm/vino: add the dock activation and scanout path
@@ -43,10 +43,10 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  drivers/gpu/drm/vino/drm_sink/bracket.rs    |  369 ++++
  drivers/gpu/drm/vino/drm_sink/cp_session.rs |  414 ++++
  drivers/gpu/drm/vino/drm_sink/presence.rs   |  435 ++++
- drivers/gpu/drm/vino/drm_sink/scanout.rs    | 1959 +++++++++++++++++++
+ drivers/gpu/drm/vino/drm_sink/scanout.rs    | 1958 +++++++++++++++++++
  drivers/gpu/drm/vino/drm_sink/stream.rs     |  470 +++++
  drivers/gpu/drm/vino/drm_sink/timeline.rs   |  571 ++++++
- 8 files changed, 5425 insertions(+)
+ 8 files changed, 5424 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/drm_sink/activation.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink/bracket.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink/cp_session.rs
@@ -2529,10 +2529,10 @@ index 000000000000..6e58f5729223
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink/scanout.rs b/drivers/gpu/drm/vino/drm_sink/scanout.rs
 new file mode 100644
-index 000000000000..e5f6e6e7eb6e
+index 000000000000..2edd29cffaf6
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink/scanout.rs
-@@ -0,0 +1,1959 @@
+@@ -0,0 +1,1958 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! Turning a committed framebuffer into bytes on a video endpoint.
@@ -3152,9 +3152,8 @@ index 000000000000..e5f6e6e7eb6e
 +        };
 +        let (r, g, b) = self.unpack(u32::from_le_bytes(bytes));
 +        match &self.color {
-+            // The colour pipeline's tables are 8-bit (`color.rs` is shared verbatim with evdi and
-+            // its `GAMMA_LUT_SIZE` is 256), so a 10-bit surface is corrected at 8-bit precision and
-+            // scaled back. That loses up to two low bits of a corrected pixel -- but ignoring the
++            // The colour pipeline's tables are 8-bit, so a 10-bit surface is corrected at 8-bit
++            // precision and scaled back. That loses up to two low bits of a corrected pixel -- but ignoring the
 +            // correction instead would leave a compositor's night-colour shift silently unapplied
 +            // on exactly the outputs most likely to be colour-managed. Revisit with a 10-bit LUT if
 +            // banding is ever measured on a corrected HDR connector.
