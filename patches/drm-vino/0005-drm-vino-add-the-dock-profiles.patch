@@ -1,4 +1,4 @@
-From 14105ae739d85a084d7db864e889627628f41a41 Mon Sep 17 00:00:00 2001
+From a67b63b5ed8761d5f0e6edd5aa11de8726c9a506 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:54 +0100
 Subject: [PATCH] drm/vino: add the dock profiles
@@ -17,16 +17,16 @@ being invisible to it.
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- drivers/gpu/drm/vino/profile.rs | 1155 +++++++++++++++++++++++++++++++
- 1 file changed, 1155 insertions(+)
+ drivers/gpu/drm/vino/profile.rs | 1185 +++++++++++++++++++++++++++++++
+ 1 file changed, 1185 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/profile.rs
 
 diff --git a/drivers/gpu/drm/vino/profile.rs b/drivers/gpu/drm/vino/profile.rs
 new file mode 100644
-index 000000000000..e90330820e12
+index 000000000000..43b5d70e02c6
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/profile.rs
-@@ -0,0 +1,1155 @@
+@@ -0,0 +1,1185 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! What distinguishes one DisplayLink dock from another.
@@ -367,6 +367,17 @@ index 000000000000..e90330820e12
 +    /// Whether a per-connector HDCP record selects its connector as a one-hot bit at byte `22 +
 +    /// connector`, rather than as a one-based connector number at byte 23.
 +    pub(crate) per_connector_onehot: bool,
++    /// How long to wait for a connector's `AKE_Send_Rrx` before reading it as an empty socket.
++    ///
++    /// The push is how a connector says it has a sink at all, so this one bound decides both how
++    /// long a populated connector may take to answer and how long an empty one is waited on. It
++    /// belongs to the dock because it is a property of the receiver behind the connector and of
++    /// how busy the dock is when asked. Set below what the dock needs, a populated connector
++    /// reads as empty and loses the rest of its burst -- including the SKE that hands the dock
++    /// the key for that connector's content stream, without which the sealed decoder
++    /// configuration cannot be read and the dock renders every strip as noise. Set high, it costs
++    /// one dead wait per genuinely empty connector.
++    pub(crate) perhead_rrx_wait_ms: i64,
 +    /// How this dock acknowledges each setup operation; see [`ReplyDiscipline`].
 +    pub(crate) reply_discipline: ReplyDiscipline,
 +    /// Where this dock wants its video-engine transition; see [`VideoCommitPoint`].
@@ -648,6 +659,10 @@ index 000000000000..e90330820e12
 +    protocol: Protocol {
 +        initial_vendor_state: 3,
 +        per_connector_onehot: false,
++        // A cold DL-3x00 takes 221 ms to answer the first per-connector AKE_No_Stored_km,
++        // against under two once it is warm, so the bound is sized above the cold figure with
++        // margin.
++        perhead_rrx_wait_ms: 500,
 +        reply_discipline: ReplyDiscipline::Drain,
 +        video_commit_point: VideoCommitPoint::AfterFinalize,
 +        dock_wide_modeset: false,
@@ -752,6 +767,7 @@ index 000000000000..e90330820e12
 +    protocol: Protocol {
 +        initial_vendor_state: 3,
 +        per_connector_onehot: false,
++        perhead_rrx_wait_ms: 30,
 +        reply_discipline: ReplyDiscipline::Drain,
 +        video_commit_point: VideoCommitPoint::AfterFinalize,
 +        dock_wide_modeset: false,
@@ -828,6 +844,7 @@ index 000000000000..e90330820e12
 +    protocol: Protocol {
 +        initial_vendor_state: 0,
 +        per_connector_onehot: true,
++        perhead_rrx_wait_ms: 30,
 +        reply_discipline: ReplyDiscipline::Lockstep,
 +        video_commit_point: VideoCommitPoint::BeforeConnectorRecords,
 +        dock_wide_modeset: true,
@@ -1036,6 +1053,19 @@ index 000000000000..e90330820e12
 +        assert!(PROFILE_RIDGE.quirks.edid_ready_reported);
 +        assert!(PROFILE_NAVARRO.quirks.edid_ready_reported);
 +        assert!(!PROFILE_NAVARRO.quirks.shared_edid_handler);
++    }
++
++    /// The rrx bound has to cover a cold receiver, and so is pinned per dock.
++    ///
++    /// A connector that does not answer inside it is taken for an empty socket and loses the rest
++    /// of its authentication, which costs that connector its content-stream key. A cold DL-3x00
++    /// takes 221 ms to answer.
++    #[test]
++    fn the_rrx_bound_covers_a_cold_receiver_on_the_dock_that_needs_it() {
++        assert!(PROFILE_ELLA.protocol.perhead_rrx_wait_ms >= 221);
++        assert_eq!(PROFILE_ELLA.protocol.perhead_rrx_wait_ms, 500);
++        assert_eq!(PROFILE_RIDGE.protocol.perhead_rrx_wait_ms, 30);
++        assert_eq!(PROFILE_NAVARRO.protocol.perhead_rrx_wait_ms, 30);
 +    }
 +
 +    /// Status queries follow the dock, because on a shared pipe they cost a frame.

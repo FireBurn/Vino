@@ -65,4 +65,4 @@ Mike Lothian (13):
   drm/vino: allow the driver to be built
   Documentation/gpu: document the Vino driver
 
- 43 file(s) changed, 24027 insertion(s)(+), 4 deletion(s)(-)
+ 43 file(s) changed, 24057 insertion(s)(+), 4 deletion(s)(-)

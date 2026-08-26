@@ -1,4 +1,4 @@
-From 742dc59eb921cb3322349fa7270942cd8a480eee Mon Sep 17 00:00:00 2001
+From 38ec209f2ba690b03ba6a5f22e35505f902c13f3 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:40:37 +0100
 Subject: [PATCH] drm/vino: add the KMS device and the atomic path

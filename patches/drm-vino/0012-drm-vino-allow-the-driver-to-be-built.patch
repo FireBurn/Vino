@@ -1,4 +1,4 @@
-From 04971e2ac6a7069eb5d35011a483d9aec2ea4ce0 Mon Sep 17 00:00:00 2001
+From 761552b5a1bca772aca394566771a4dcb8c5414e Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:11 +0100
 Subject: [PATCH] drm/vino: allow the driver to be built

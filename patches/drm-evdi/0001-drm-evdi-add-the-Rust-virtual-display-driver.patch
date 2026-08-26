@@ -1,4 +1,4 @@
-From 14ffe8b3a0c1096ecc96a429ac6dac26b44a3aec Mon Sep 17 00:00:00 2001
+From 3df784bf127a0c7b6bb07f33ccf79ef3122a9f88 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:14 +0100
 Subject: [PATCH] drm/evdi: add the Rust virtual display driver

@@ -1,4 +1,4 @@
-From e4440d4061ce800e0f042e21e4fc3a0bba6fc7de Mon Sep 17 00:00:00 2001
+From c445c6da7e790900d0e85bdc20ed0a499d742668 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:33:12 +0100
 Subject: [PATCH] drm/vino: add control-session bring-up
@@ -1000,7 +1000,7 @@ index 000000000000..b86380d7327c
 +}
 diff --git a/drivers/gpu/drm/vino/session/setup.rs b/drivers/gpu/drm/vino/session/setup.rs
 new file mode 100644
-index 000000000000..f4a8ce85081a
+index 000000000000..b278ebcf4b4e
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/session/setup.rs
 @@ -0,0 +1,1390 @@
@@ -1571,15 +1571,15 @@ index 000000000000..f4a8ce85081a
 +                    // whatever has already arrived, so a connector whose receiver answers a little
 +                    // late reads as a connector with no sink and loses the whole rest of its burst
 +                    // -- including the key exchange that gives the dock a key for its content
-+                    // stream. Navarro has always waited for this message by name; the wait belongs
-+                    // to the message, not to the platform.
++                    // stream. How long a receiver may take to answer is a property of the dock,
++                    // so the bound comes from its profile.
 +                    let dh = Self::wait_per_connector_push(
 +                        link,
 +                        ep84_q.as_mut(),
 +                        &mut resp,
 +                        session,
 +                        ake::id::AKE_SEND_RRX,
-+                        Delta::from_millis(30),
++                        Delta::from_millis(profile.protocol.perhead_rrx_wait_ms),
 +                    );
 +                    fresh_rrx = fresh_rrx.or(dh.per_connector_rrx);
 +                    per_connector_repeater = per_connector_repeater.or(dh.per_connector_repeater);
