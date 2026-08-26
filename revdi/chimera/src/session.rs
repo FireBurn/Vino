@@ -37,6 +37,17 @@ const STREAM_OPEN: [u8; 64] = [
     0x05, 0x00, 0x0e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
+/// The last cursor a connector was given: its bitmap, and where it was put.
+#[derive(Clone)]
+struct CursorShot {
+    width: u16,
+    height: u16,
+    bgra: Vec<u8>,
+    x: u16,
+    y: u16,
+    visible: bool,
+}
+
 struct SessionKeys {
     control_key: kernel::crypto::Secret<16>,
     control_nonce: [u8; 8],
@@ -76,6 +87,13 @@ pub struct ControlSession {
     frame_seq: [u32; MAX_CONNECTORS],
     /// Per-head content shadow and retransmit ledger; see [`crate::scanout`].
     scanout: [crate::scanout::HeadScanout; MAX_CONNECTORS],
+    /// The cursor each connector was last given, so a mode set can put it back.
+    ///
+    /// Whatever leaves the dock's framebuffer undefined leaves its cursor bitmap undefined with
+    /// it. A compositor does not resend a cursor whose shape has not changed, so a connector whose
+    /// mode was programmed after the pointer was uploaded keeps no pointer at all -- and having
+    /// taken the cursor out of band, nothing draws one into the frame either.
+    cursor_shot: [Option<CursorShot>; MAX_CONNECTORS],
 }
 
 impl ControlSession {
@@ -128,6 +146,7 @@ impl ControlSession {
             video_seal_seq: [0; MAX_CONNECTORS],
             frame_seq: [0; MAX_CONNECTORS],
             scanout: core::array::from_fn(|_| crate::scanout::HeadScanout::new(profile)),
+            cursor_shot: core::array::from_fn(|_| None),
         })
     }
 
@@ -497,8 +516,11 @@ impl ControlSession {
         self.frame_seq[head_index] = carrier_seq.wrapping_add(1);
         self.mode_active[head_index] = true;
         // The dock now holds the black training carrier, not a desktop, so the next presented frame
-        // must be a full keyframe whatever the compositor changed.
+        // must be a full keyframe whatever the compositor changed. The same programming left its
+        // cursor bitmap undefined, so the pointer is put back with it -- the two invalidations
+        // belong together, and separating them is how a connector ends up with no pointer at all.
         self.scanout[head_index].owe_keyframe();
+        self.rearm_cursor(head)?;
         Ok(true)
     }
 
@@ -566,7 +588,40 @@ impl ControlSession {
         self.send_control(0x1b, &create)?;
         let image = kvino::cursor_image(self.inner_counter, head, width, height, bgra)
             .map_err(build_error("cursor image"))?;
-        self.send_control(0x1c, &image).map(|_| ())
+        self.send_control(0x1c, &image)?;
+        if let Some(slot) = self.cursor_shot.get_mut(usize::from(head)) {
+            let (x, y, visible) = slot.as_ref().map_or((0, 0, true), |s| (s.x, s.y, s.visible));
+            *slot = Some(CursorShot {
+                width,
+                height,
+                bgra: bgra.to_vec(),
+                x,
+                y,
+                visible,
+            });
+        }
+        Ok(())
+    }
+
+    /// Put back the cursor a connector was last given.
+    ///
+    /// A mode set leaves the dock's cursor bitmap undefined along with its framebuffer, and the
+    /// compositor will not resend a shape that has not changed, so the pointer has to be replayed
+    /// from here or the connector simply has none.
+    fn rearm_cursor(&mut self, head: u8) -> Result<(), String> {
+        let Some(shot) = self
+            .cursor_shot
+            .get(usize::from(head))
+            .and_then(|slot| slot.clone())
+        else {
+            return Ok(());
+        };
+        self.set_cursor(head, u32::from(shot.width), u32::from(shot.height), &shot.bgra)?;
+        if shot.visible {
+            self.move_cursor(head, i32::from(shot.x), i32::from(shot.y))
+        } else {
+            self.hide_cursor(head)
+        }
     }
 
     /// Move a previously uploaded cursor.
@@ -577,7 +632,13 @@ impl ControlSession {
             .map_err(|_| "cursor y position exceeds the wire format")?;
         let message = kvino::cursor_move(self.inner_counter, head, x, y, true)
             .map_err(build_error("cursor move"))?;
-        self.send_control(0x1a, &message).map(|_| ())
+        self.send_control(0x1a, &message)?;
+        if let Some(Some(shot)) = self.cursor_shot.get_mut(usize::from(head)) {
+            shot.x = x;
+            shot.y = y;
+            shot.visible = true;
+        }
+        Ok(())
     }
 
     /// Hide a head's cursor by clearing the dock's visible flag.
@@ -587,7 +648,11 @@ impl ControlSession {
     pub fn hide_cursor(&mut self, head: u8) -> Result<(), String> {
         let message = kvino::cursor_move(self.inner_counter, head, 0, 0, false)
             .map_err(build_error("cursor hide"))?;
-        self.send_control(0x1a, &message).map(|_| ())
+        self.send_control(0x1a, &message)?;
+        if let Some(Some(shot)) = self.cursor_shot.get_mut(usize::from(head)) {
+            shot.visible = false;
+        }
+        Ok(())
     }
 
     /// Blank and close a head's active stream.
