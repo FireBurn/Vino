@@ -454,7 +454,7 @@ pub(super) fn inner_plaintext(ks: &[u8; 16], out_riv: &[u8; 8], wire: &[u8]) -> 
                 let Ok(plaintext) = open_in(ks, &riv, seq, &wire[16..]) else {
                     continue;
                 };
-                // The verified Dl3Cmac identifies a genuine frame. Inner offsets 6..7 must NOT be
+                // The verified Dl3Cmac identifies a genuine frame. Inner offsets 6..7 must not be
                 // tested as padding: Navarro stores connector selector bits there for the third
                 // and fourth per-connector HDCP bursts, and rejecting on them dropped those
                 // connectors' authentic pushes.

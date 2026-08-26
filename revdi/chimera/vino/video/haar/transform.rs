@@ -278,41 +278,40 @@ impl Depth {
     /// of the wire format, not an implementation limit: at the maximum category `esc` omits
     /// the unary 0-terminator, so a decoder reading with the wrong ceiling silently
     /// desynchronises. Both values are measured, each uniquely, by decoding a captured PQ ramp
-    /// under every candidate and keeping the one that stays monotonic
-    /// (`tools/codec/depth-probe.py`).
+    /// under every candidate and keeping the one that stays monotonic.
     #[inline]
-    /// Maximum escape category for a luma AC coefficient.
-    ///
-    /// Unlike [`Self::dc_cmax`] this does **not** scale with the sample depth. Raising it two
-    /// categories to match the DC ceiling was tried against the hardware and desynchronises the
-    /// dock: at the maximum category the escape omits its unary terminator, so a ceiling above the
-    /// dock's makes every coefficient below it carry a terminator the dock reads as an offset bit,
-    /// and the picture breaks into horizontal bands.
-    ///
-    /// Saturating at the eight-bit ceiling clips the largest coefficients of ten-bit content
-    /// instead, which is the conservative failure. Settling the real value needs a capture of the
-    /// vendor driving AC-heavy HDR content, which has never been taken.
-    pub(crate) fn ac_cmax(self) -> u32 {
-        match self {
-            Depth::Eight => AC_CMAX,
-            // A coefficient is four times the sample, so every ceiling the depth moves gains two
-            // categories. The code table stating this one is raised with it.
-            Depth::Ten => AC_CMAX + 2,
-        }
-    }
-
-    /// Maximum escape category for a chroma AC coefficient at this depth; see [`Self::ac_cmax`].
-    pub(crate) fn chroma_ac_cmax(self) -> u32 {
-        match self {
-            Depth::Eight => CHROMA_AC_CMAX,
-            Depth::Ten => CHROMA_AC_CMAX + 2,
-        }
-    }
-
     pub(crate) fn dc_cmax(self) -> u32 {
         match self {
             Depth::Eight => SOLID_DC_CMAX,
             Depth::Ten => SOLID_DC_CMAX + 2,
+        }
+    }
+
+    /// Maximum escape category for a luma AC coefficient at this depth.
+    ///
+    /// A coefficient is four times the sample, so every depth-sensitive ceiling gains two
+    /// categories at 10 bits, not just the DC one, and the code table the dock is handed states
+    /// the same rise. Coding to the eight-bit ceiling on a ten-bit link fails quietly, because an
+    /// AC escape saturates rather than desynchronising: the category still fixes the field width,
+    /// so the stream stays in step and only the largest coefficients come out wrong. Smooth
+    /// gradients are perfect and every sharp edge is reconstructed from a truncated magnitude.
+    #[inline]
+    pub(crate) fn ac_cmax(self) -> u32 {
+        match self {
+            Depth::Eight => AC_CMAX,
+            Depth::Ten => AC_CMAX + 2,
+        }
+    }
+
+    /// Maximum escape category for a chroma AC coefficient at this depth.
+    ///
+    /// One category above luma's at either depth, so a coefficient at luma's ceiling still carries
+    /// the unary 0-terminator on the chroma planes. See [`Self::ac_cmax`].
+    #[inline]
+    pub(crate) fn chroma_ac_cmax(self) -> u32 {
+        match self {
+            Depth::Eight => CHROMA_AC_CMAX,
+            Depth::Ten => CHROMA_AC_CMAX + 2,
         }
     }
 
@@ -395,7 +394,7 @@ impl Bits {
     /// The dock generations differ in where the payload sits and in which end of it comes
     /// first. Ridge and the DL7400 group it after the terminator, most significant bit first.
     /// A DL-3x00 decoder expects one payload bit immediately after each unary one, terminator
-    /// last, and reads that interleaved payload **least** significant bit first. Every
+    /// last, and reads that interleaved payload least significant bit first. Every
     /// spelling is the same length, so emitting the wrong one produces records of exactly the
     /// right size that decode to noise -- and a flat strip cannot tell them apart, because its
     /// payload is all zeroes.
@@ -549,13 +548,6 @@ impl Bits {
 mod tests {
     use super::*;
 
-    /// The escape codebook's ceiling is part of the wire format and follows the sample depth.
-    ///
-    /// Measured against a DL7400 driven by Windows in its 10-bit profile: a captured PQ ramp
-    /// decodes monotonically at ceiling 12 and at no other value, and the SDR half
-    /// of the same capture only at 10. Getting this wrong does not degrade the picture, it
-    /// desynchronises the dock's decoder -- at the maximum category `esc` omits the unary
-    /// 0-terminator, so the next value's first bit is read as an offset bit.
     /// The AC ceilings scale with the sample depth, exactly as the DC ceiling does.
     ///
     /// A ten-bit sample makes every coefficient four times larger, which is two categories. Held
@@ -583,6 +575,13 @@ mod tests {
         assert_eq!(Depth::Ten.chroma_ac_cmax(), Depth::Ten.ac_cmax() + 1);
     }
 
+    /// The escape codebook's ceiling is part of the wire format and follows the sample depth.
+    ///
+    /// Measured against a DL7400 driven by Windows in its 10-bit profile: a captured PQ ramp
+    /// decodes monotonically at ceiling 12 and at no other value, and the SDR half of the same
+    /// capture only at 10. Getting this wrong does not degrade the picture, it desynchronises the
+    /// dock's decoder -- at the maximum category `esc` omits the unary 0-terminator, so the next
+    /// value's first bit is read as an offset bit.
     #[test]
     fn haar_depth_selects_the_dc_codebook() {
         use Depth;

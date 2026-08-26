@@ -106,7 +106,7 @@ pub(crate) fn grabpix(
 
     let data: &EvdiDrmData = dev;
     // No frame has been flipped in yet (or the pipe is down, e.g. DPMS off): report zero rects.
-    // NOT -EAGAIN -- libevdi's `drm_ioctl` retries EAGAIN in a tight loop, which would busy-spin
+    // Not -EAGAIN -- libevdi's `drm_ioctl` retries EAGAIN in a tight loop, which would busy-spin
     // a core until the next flip.
     let Some(scanout) = data.prepared_scanout() else {
         arg.num_rects = 0;

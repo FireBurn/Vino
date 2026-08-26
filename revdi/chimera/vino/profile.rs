@@ -691,8 +691,8 @@ pub(crate) static PROFILE_ELLA: DockProfile = DockProfile {
         //
         // A bucket of 24 MB refilling at 8 MB/s reproduces that curve: 32 MB in a second against
         // the vendor's 34.4, 40 in two against 36.2, 64 in five against 42.8. Deliberately at the
-        // vendor's shoulder rather than under it, because what used to halt the endpoint was a
-        // frame ending on a full packet, not volume, and a ceiling below the vendor's own demand is
+        // vendor's shoulder rather than under it, because what halts the endpoint is a frame
+        // ending on a full packet, not volume, and a ceiling below the vendor's own demand is
         // a ceiling the desktop feels.
         stream_pacing: StreamPacing::new(8_000_000, 24_000_000),
         allocation: Allocation::Derived {

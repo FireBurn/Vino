@@ -1,4 +1,4 @@
-From 5458111fabaf97207d97eae2787570477907f949 Mon Sep 17 00:00:00 2001
+From 14ffe8b3a0c1096ecc96a429ac6dac26b44a3aec Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:14 +0100
 Subject: [PATCH] drm/evdi: add the Rust virtual display driver
@@ -54,12 +54,12 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  drivers/gpu/drm/evdi/color.rs   | 427 +++++++++++++++
  drivers/gpu/drm/evdi/evdi.rs    | 327 ++++++++++++
  drivers/gpu/drm/evdi/ioctl.rs   | 270 ++++++++++
- drivers/gpu/drm/evdi/kms.rs     | 884 ++++++++++++++++++++++++++++++++
+ drivers/gpu/drm/evdi/kms.rs     | 891 ++++++++++++++++++++++++++++++++
  drivers/gpu/drm/evdi/painter.rs | 217 ++++++++
  drivers/gpu/drm/evdi/uapi.rs    | 189 +++++++
  include/uapi/drm/evdi_drm.h     | 133 +++++
  rust/uapi/uapi_helper.h         |   1 +
- 13 files changed, 2488 insertions(+)
+ 13 files changed, 2495 insertions(+)
  create mode 100644 drivers/gpu/drm/evdi/Kconfig
  create mode 100644 drivers/gpu/drm/evdi/Makefile
  create mode 100644 drivers/gpu/drm/evdi/color.rs
@@ -1199,10 +1199,10 @@ index 000000000000..30a27705a3ec
 +}
 diff --git a/drivers/gpu/drm/evdi/kms.rs b/drivers/gpu/drm/evdi/kms.rs
 new file mode 100644
-index 000000000000..56c2390449f6
+index 000000000000..821d9550733c
 --- /dev/null
 +++ b/drivers/gpu/drm/evdi/kms.rs
-@@ -0,0 +1,884 @@
+@@ -0,0 +1,891 @@
 +// SPDX-License-Identifier: GPL-2.0
 +//
 +// The EVDI DRM/KMS device: registers a `struct drm_device` presenting one virtual
@@ -1248,6 +1248,13 @@ index 000000000000..56c2390449f6
 +};
 +
 +use crate::painter::PainterState;
++
++/// The only framebuffer layout this driver's scanout path accepts.
++///
++/// Advertised rather than left implicit: a plane naming no modifier carries no `IN_FORMATS`, so a
++/// compositor allocating with an explicit modifier has nothing to match the plane against and
++/// passes it over.
++static LINEAR_MODIFIER: [u64; 1] = [drm::fourcc::FORMAT_MOD_LINEAR];
 +
 +/// Cursor-plane format list. libevdi reports the format to the client, which expects ARGB.
 +static CURSOR_FORMATS: [u32; 1] = [drm::fourcc::ARGB8888];
@@ -1564,7 +1571,7 @@ index 000000000000..56c2390449f6
 +            dev,
 +            1,
 +            &PRIMARY_FORMATS,
-+            None,
++            Some(&LINEAR_MODIFIER[..]),
 +            plane::Type::Primary,
 +            None,
 +            false,
@@ -1584,7 +1591,7 @@ index 000000000000..56c2390449f6
 +            dev,
 +            1,
 +            &CURSOR_FORMATS,
-+            None,
++            Some(&LINEAR_MODIFIER[..]),
 +            plane::Type::Cursor,
 +            None,
 +            true,
