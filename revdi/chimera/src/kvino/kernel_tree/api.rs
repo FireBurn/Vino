@@ -842,9 +842,9 @@ pub fn set_mode_profile(
     let mode = kernel::drm::kms::modes::DisplayMode(raw);
     let mut timing =
         cp::timing_from_drm_mode(&mode, &dock.profile.protocol.allocation, dock.ten_bit)?;
-    // A ten-bit link on this hardware is an HDR one: the depth and the transfer function are the
-    // pair the dock's flags word carries, and stating one without the other drives a sink in PQ at
-    // eight bits or at ten bits with an SDR curve.
+    // The depth and the transfer function are separate fields, but this dock coupled them: driven
+    // at ten bits with an SDR curve it accepts the mode and never lights the sink, so the pair go
+    // out together.
     timing.st2084 = dock.ten_bit;
     Ok(cp::set_mode(counter, head, &timing)?.into_vec())
 }
@@ -902,7 +902,7 @@ pub fn video_arm_burst(
                     dock.profile.protocol.code_tables,
                     &header,
                     &random,
-                    false,
+                    dock.ten_bit,
                 )?
                 .into_vec();
                 output.extend_from_slice(&cp::seal_video_arm(
@@ -961,11 +961,15 @@ fn sealed_config(
     width: u16,
     height: u16,
 ) -> Result<Vec<u8>> {
+    // The decoder configuration states each plane's escape ceiling, and the codec codes against
+    // the ceiling the depth sets. A table left at eight bits while the encoder codes ten does not
+    // degrade the picture: the dock loses the bitstream on a DC escape and saturates every AC one,
+    // so flat areas survive and every edge in the frame comes back in primaries.
     let config = video_arm::build_config(
         dock.profile.protocol.code_tables,
         &stream_mode_header(dock, width, height),
         tail,
-        false,
+        dock.ten_bit,
     )?;
     let stream = dock.geometry().stream_id(head);
     let seq = take_blocks(seal_seq, config.len());
@@ -1288,6 +1292,32 @@ mod production_builders {
 
     fn ridge() -> DockProfile {
         DockProfile::for_family(Family::Ridge).expect("Ridge is a family vino drives")
+    }
+
+    /// Every part of the stream a connector opens with has to state the same depth.
+    ///
+    /// The decoder configuration states each plane's escape ceiling and the codec codes against the
+    /// ceiling the depth sets, so a configuration built at one depth and pixels coded at the other
+    /// do not merely degrade the picture: the dock loses the bitstream on a DC escape and saturates
+    /// every AC one. The two are threaded from one field for exactly that reason, and this fails if
+    /// a new call site is added that hardcodes the depth instead of reading it.
+    #[test]
+    fn the_stream_prologue_states_the_link_depth() {
+        let deep = DockProfile::for_family(Family::Navarro).expect("Navarro").ten_bit();
+        let shallow = DockProfile::for_family(Family::Navarro).expect("Navarro");
+        assert!(deep.is_ten_bit() && !shallow.is_ten_bit());
+        assert!(matches!(deep.geometry().depth(), video::haar::Depth::Ten));
+        assert!(matches!(shallow.geometry().depth(), video::haar::Depth::Eight));
+
+        let key = [0u8; 16];
+        let nonce = [0u8; 8];
+        let deep_burst = video_arm_burst(deep, 0, &key, &nonce, 2560, 1440).expect("deep burst");
+        let shallow_burst =
+            video_arm_burst(shallow, 0, &key, &nonce, 2560, 1440).expect("shallow burst");
+        assert_ne!(
+            deep_burst, shallow_burst,
+            "the burst that opens a stream must carry the link's depth"
+        );
     }
 
     #[test]
