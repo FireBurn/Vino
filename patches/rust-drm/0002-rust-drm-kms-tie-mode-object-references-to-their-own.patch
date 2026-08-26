@@ -1,7 +1,7 @@
 From aa77e302492c7bdf56a682c60418dd0e6d3a34ce Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:35:15 +0100
-Subject: [PATCH] rust: drm: kms: tie mode-object references to their owners
+Subject: [PATCH v3 2/23] rust: drm: kms: tie mode-object references to their owners
 
 The plane and encoder constructors accepted a caller-selected output
 lifetime longer than the unregistered KMS device borrow.

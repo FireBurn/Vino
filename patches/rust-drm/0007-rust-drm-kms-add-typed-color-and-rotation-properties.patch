@@ -1,7 +1,7 @@
 From c5eb805ed99adeef1711527aa8cfeb5f3534ac7d Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 13:23:01 +0100
-Subject: [PATCH] rust: drm: kms: add typed color and rotation properties
+Subject: [PATCH v3 7/23] rust: drm: kms: add typed color and rotation properties
 
 Add typed KMS property support for CRTC gamma lookup tables and
 plane rotation.

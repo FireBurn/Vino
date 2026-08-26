@@ -1,7 +1,7 @@
 From 4ee0430650615b222d1f85a4b633ee4bf2ee32f5 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 19:24:16 +0100
-Subject: [PATCH] rust: drm: kms: expose checked plane geometry
+Subject: [PATCH v3 11/23] rust: drm: kms: expose checked plane geometry
 
 Expose the requested source rectangle and the visibility and clipped
 rectangles produced by drm_atomic_helper_check_plane_state().

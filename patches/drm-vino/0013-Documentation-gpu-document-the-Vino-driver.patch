@@ -1,7 +1,7 @@
 From 88d75e285c9c5e295494b2d6cdb6de3b0d5dfab3 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:13 +0100
-Subject: [PATCH] Documentation/gpu: document the Vino driver
+Subject: [PATCH v3 13/13] Documentation/gpu: document the Vino driver
 
 Describe how a dock is identified and placed by family rather than by
 product ID, what the driver implements in-kernel in place of EVDI and

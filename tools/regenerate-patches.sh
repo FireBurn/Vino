@@ -74,9 +74,11 @@ title() {
     esac
 }
 
-# Reroll count. A series that has been posted before keeps counting; one that is
-# new in this round is a v1 and carries no version tag, whatever round of the
-# overall effort it happens to arrive in.
+# Reroll count, per series rather than per round. A series that has been posted
+# before keeps counting; one going out for the first time is a v1 and carries no
+# version tag, whatever round of the wider effort it happens to arrive in. Two of
+# these are prerequisites nobody has seen yet, and labelling them v3 would tell a
+# reviewer to go looking for two revisions that do not exist.
 reroll() {
     case "$1" in
     rust-crypto|rust-usb|rust-drm|drm-vino) printf '3' ;;
@@ -273,10 +275,11 @@ facility that has C callers today and no Rust binding
   io: offset copy helpers that check the bounds they are given
   error: expose EPROTO
 
-This is a new series rather than a reroll: none of these nine has been posted
-before. A runtime platform-device creator and a root-device attribute group went
-out inside the rust: drm v2 series, where they did not belong, and they are not
-here either, because the consumer that needed them is not part of this posting
+None of these nine has been posted before, so this goes out unversioned even
+though the drivers it feeds are on their third round. A runtime platform-device
+creator and a root-device attribute group went out inside the rust: drm v2
+series, where they did not belong, and they are not here either, because the
+consumer that needed them is not part of this posting
 
 It is small on purpose. Every patch has a caller in the driver at the end of the
 chain, and nothing is here on the argument that it might be useful to somebody
@@ -421,7 +424,8 @@ not a duplicate of this: that is the pull direction, and upstream still has no
 binding for the push one
 
 The consumer is the DisplayLink driver at the end of the chain, which writes
-dock firmware over DFU. It is a new series and has not been posted before
+dock firmware over DFU. This has not been posted before, so it goes out
+unversioned even though that driver is on its third round
 BLURB
         ;;
     drm-vino) cat <<'BLURB'
@@ -555,13 +559,22 @@ for group in "${series_order[@]}" "${carried_order[@]}"; do
     counts[$group]="$(printf '%s\n' $shas | wc -l)"
 done
 
+# format-patch is handed one commit at a time, because the commits of a series are
+# not contiguous in the branch, so it cannot number them itself. Stamp the prefix
+# afterwards: without it every patch goes out as a bare [PATCH] under a numbered
+# cover letter, which tells a reviewer nothing about where in the series it sits.
 emit_patches() {
-    local dir="$1" shas="$2" sha n=0
+    local dir="$1" shas="$2" prefix="$3" total="$4" sha n=0 f
     mkdir -p "$dir"
     for sha in $shas; do
         n=$((n + 1))
         git -C "$kernel_tree" format-patch --no-signature --quiet \
             --start-number "$n" --output-directory "$dir" -1 "$sha" >/dev/null
+        f="$(find "$dir" -maxdepth 1 -name "$(printf '%04d' "$n")-*.patch")"
+        [ -n "$f" ] || { echo "error: no patch emitted for $sha" >&2; exit 1; }
+        sed -i "0,/^Subject: \\[PATCH\\] /s//Subject: [$prefix $n\\/$total] /" "$f"
+        grep -q "^Subject: \\[$prefix $n/$total\\] " "$f" ||
+            { echo "error: could not stamp the subject of $f" >&2; exit 1; }
     done
     ls "$dir" | grep -E '^[0-9]{4}-' | LC_ALL=C sort >"$dir/series"
 }
@@ -585,10 +598,10 @@ for group in "${series_order[@]}"; do
     shas="${members[$group]}"
     count="${counts[$group]}"
     dir="$output/$group"
-    emit_patches "$dir" "$shas"
+    ver="$(reroll "$group")"
+    emit_patches "$dir" "$shas" "PATCH${ver:+ v$ver}" "$count"
     exported=$((exported + count))
 
-    ver="$(reroll "$group")"
     prev="$(previous "$group")"
     subject_tag="PATCH${ver:+ v$ver}"
 
@@ -634,7 +647,7 @@ for group in "${carried_order[@]}"; do
     shas="${members[$group]}"
     count="${counts[$group]}"
     dir="$output/not-posted/$group"
-    emit_patches "$dir" "$shas"
+    emit_patches "$dir" "$shas" "PATCH" "$count"
     exported=$((exported + count))
     {
         printf 'From: Mike Lothian <%s>\n' "$author_email"

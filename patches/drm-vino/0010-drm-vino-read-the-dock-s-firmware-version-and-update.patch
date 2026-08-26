@@ -1,7 +1,7 @@
 From bf3d27df3eaefc4ec24d6f0a6164f6f0d946a410 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:09 +0100
-Subject: [PATCH] drm/vino: read the dock's firmware version, and update it
+Subject: [PATCH v3 10/13] drm/vino: read the dock's firmware version, and update it
  over DFU
 
 A DisplayLink dock does not advance bcdDevice when its firmware changes, so

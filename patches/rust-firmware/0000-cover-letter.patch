@@ -17,7 +17,8 @@ not a duplicate of this: that is the pull direction, and upstream still has no
 binding for the push one
 
 The consumer is the DisplayLink driver at the end of the chain, which writes
-dock firmware over DFU. It is a new series and has not been posted before
+dock firmware over DFU. This has not been posted before, so it goes out
+unversioned even though that driver is on its third round
 
 The rest of the posting, which is one series per subsystem:
 

@@ -1,7 +1,7 @@
 From 7978288124952bbf958c3f7c17d61e1a7cd42268 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:54 +0100
-Subject: [PATCH] drm/vino: add the dock profiles
+Subject: [PATCH v3 5/13] drm/vino: add the dock profiles
 
 Three DisplayLink generations are driven here -- Ella (DL-3x00), Ridge
 (DL-6xxx) and Navarro (DL-7400) -- and they differ in connector count,

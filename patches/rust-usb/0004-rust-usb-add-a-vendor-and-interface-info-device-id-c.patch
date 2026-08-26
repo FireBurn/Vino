@@ -1,7 +1,7 @@
 From ab222a913c273f7f0f8d1326ece87af869d81c23 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sun, 9 Aug 2026 19:17:41 +0100
-Subject: [PATCH] rust: usb: add a vendor-and-interface-info device id
+Subject: [PATCH v3 4/5] rust: usb: add a vendor-and-interface-info device id
  constructor
 
 `USB_VENDOR_AND_INTERFACE_INFO` is the C macro a driver uses to bind to

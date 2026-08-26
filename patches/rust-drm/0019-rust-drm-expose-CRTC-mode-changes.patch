@@ -1,7 +1,7 @@
 From bc3bc6ca14fed9defa4bd35718cd230100594e21 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 21:38:46 +0100
-Subject: [PATCH] rust: drm: expose CRTC mode changes
+Subject: [PATCH v3 19/23] rust: drm: expose CRTC mode changes
 
 Allow Rust DRM drivers to distinguish a modeset or enable transition
 from an ordinary atomic page flip. This avoids repeating mode-specific

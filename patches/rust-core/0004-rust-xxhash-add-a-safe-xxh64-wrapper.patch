@@ -1,7 +1,7 @@
 From 64cb240633d30b80c0ab6ee97359f81ac562321d Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 21:44:01 +0100
-Subject: [PATCH] rust: xxhash: add a safe xxh64 wrapper
+Subject: [PATCH 4/9] rust: xxhash: add a safe xxh64 wrapper
 
 Expose xxh64() through a slice-based Rust API for non-cryptographic
 hashing such as framebuffer damage detection.

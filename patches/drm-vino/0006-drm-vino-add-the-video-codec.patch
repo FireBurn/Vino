@@ -1,7 +1,7 @@
 From ae322f4169086a3624eddd5b9474d45c7218e600 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:33:09 +0100
-Subject: [PATCH] drm/vino: add the video codec
+Subject: [PATCH v3 6/13] drm/vino: add the video codec
 
 The dock decodes a proprietary multilevel Haar codec: 128x8 or 64x16
 strips, an 8x8 transform, per-plane significance trees and a unary VLC

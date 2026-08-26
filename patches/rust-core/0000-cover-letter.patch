@@ -14,10 +14,11 @@ facility that has C callers today and no Rust binding
   io: offset copy helpers that check the bounds they are given
   error: expose EPROTO
 
-This is a new series rather than a reroll: none of these nine has been posted
-before. A runtime platform-device creator and a root-device attribute group went
-out inside the rust: drm v2 series, where they did not belong, and they are not
-here either, because the consumer that needed them is not part of this posting
+None of these nine has been posted before, so this goes out unversioned even
+though the drivers it feeds are on their third round. A runtime platform-device
+creator and a root-device attribute group went out inside the rust: drm v2
+series, where they did not belong, and they are not here either, because the
+consumer that needed them is not part of this posting
 
 It is small on purpose. Every patch has a caller in the driver at the end of the
 chain, and nothing is here on the argument that it might be useful to somebody

@@ -1,7 +1,7 @@
 From 1c8b5877bb352d4eced19d37220bc33f0af8ec17 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 17 Aug 2026 17:47:49 +0100
-Subject: [PATCH] rust: usb: let a driver keep its interface usable while
+Subject: [PATCH v3 5/5] rust: usb: let a driver keep its interface usable while
  unbinding
 
 The USB core kills every outstanding URB and disables an interface's

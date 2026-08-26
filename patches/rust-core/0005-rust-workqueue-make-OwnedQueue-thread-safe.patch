@@ -1,7 +1,7 @@
 From d59a90d4e1121c7c08619d5e2b17907352c0eb7d Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 22:04:19 +0100
-Subject: [PATCH] rust: workqueue: make OwnedQueue thread-safe
+Subject: [PATCH 5/9] rust: workqueue: make OwnedQueue thread-safe
 
 OwnedQueue only owns a pointer to Queue, whose operations are already
 Send and Sync. Propagate those guarantees so drivers can keep an

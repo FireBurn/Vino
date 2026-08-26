@@ -1,7 +1,7 @@
 From 4bdc5da7193ab2058a1ff278426effe23c80be65 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 23:40:48 +0100
-Subject: [PATCH] rust: usb: expose device descriptor fields and queue
+Subject: [PATCH v3 3/5] rust: usb: expose device descriptor fields and queue
  readiness
 
 A driver that identifies hardware before it decides to drive it needs the

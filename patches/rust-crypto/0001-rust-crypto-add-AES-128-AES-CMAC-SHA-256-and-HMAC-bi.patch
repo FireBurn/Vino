@@ -1,7 +1,7 @@
 From c8a44968d623e7b0a3609b493f986dd27d6344ed Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 3 Jun 2026 22:04:46 +0100
-Subject: [PATCH] rust: crypto: add AES-128, AES-CMAC, SHA-256, and HMAC
+Subject: [PATCH v3 1/2] rust: crypto: add AES-128, AES-CMAC, SHA-256, and HMAC
  bindings
 
 Expose the synchronous lib/crypto AES-128, AES-CMAC, SHA-256, and

@@ -1,7 +1,7 @@
 From 1369ae03e24b1d45c81f7b98d0ce3d54e5d98668 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:49 +0100
-Subject: [PATCH] drm/vino: add the encrypted control plane
+Subject: [PATCH v3 4/13] drm/vino: add the encrypted control plane
 
 Once the AKE completes, the dock takes only sealed messages: AES-CTR under
 one nonce, authenticated by a CMAC under another, in host-driven lockstep

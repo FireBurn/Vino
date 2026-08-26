@@ -1,7 +1,7 @@
 From 1d293238039c8fff4d90ee45b00bf3eccf0146f7 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 21:52:01 +0100
-Subject: [PATCH] rust: drm: kms: plane: add FB_DAMAGE_CLIPS property support
+Subject: [PATCH v3 13/23] rust: drm: kms: plane: add FB_DAMAGE_CLIPS property support
 
 Userspace can only hand a driver the rectangles that actually changed
 between two framebuffers if the plane advertises the FB_DAMAGE_CLIPS

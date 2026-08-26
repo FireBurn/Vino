@@ -1,7 +1,7 @@
 From 27570a56e8828bc44af34fb01c991895cc5b8adb Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 22:52:46 +0100
-Subject: [PATCH] rust: drm: kms: add synthesized CVT connector modes
+Subject: [PATCH v3 20/23] rust: drm: kms: add synthesized CVT connector modes
 
 Expose a lock-scoped helper for adding a driver-synthesized CVT timing
 to a connector probe result. This lets virtual and transport-backed

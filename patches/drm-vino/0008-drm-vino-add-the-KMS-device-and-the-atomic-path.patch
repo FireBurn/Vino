@@ -1,7 +1,7 @@
 From 71725fbac2dded7ac24c48736f9f91cbb14bbb0b Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:40:37 +0100
-Subject: [PATCH] drm/vino: add the KMS device and the atomic path
+Subject: [PATCH v3 8/13] drm/vino: add the KMS device and the atomic path
 
 Add the KMS half of the sink: the DRM driver and its GEM and file
 types, the CRTCs, planes and connectors the compositor drives over a

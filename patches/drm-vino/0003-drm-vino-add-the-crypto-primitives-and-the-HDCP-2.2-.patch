@@ -1,7 +1,7 @@
 From 73e08adc29c95a24976b2dbfe3af2f5b79e071d4 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:36 +0100
-Subject: [PATCH] drm/vino: add the crypto primitives and the HDCP 2.2 AKE
+Subject: [PATCH v3 3/13] drm/vino: add the crypto primitives and the HDCP 2.2 AKE
 
 A DL3 dock authenticates as an HDCP 2.2 receiver before it will accept any
 configuration, and every later control message is sealed with keys the
