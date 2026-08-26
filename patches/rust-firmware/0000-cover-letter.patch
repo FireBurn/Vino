@@ -22,12 +22,17 @@ unversioned even though that driver is on its third round
 
 The rest of the posting, which is one series per subsystem:
 
-  rust-core, 9 patches, to rust-for-linux and linux-kernel, not sent yet
-  rust-crypto, 2 patches, to linux-crypto and rust-for-linux, not sent yet
-  rust-usb, 5 patches, to linux-usb and rust-for-linux, not sent yet
-  rust-drm, 23 patches, to dri-devel and rust-for-linux, not sent yet
+  rust-core, 9 patches, rust-for-linux and linux-kernel
+  https://lore.kernel.org/r/20260826162851.2497-1-mike@fireburn.co.uk
+  rust-crypto, 2 patches, linux-crypto and rust-for-linux
+  https://lore.kernel.org/r/20260826163004.3365-1-mike@fireburn.co.uk
+  rust-usb, 5 patches, linux-usb and rust-for-linux
+  https://lore.kernel.org/r/20260826163101.4168-1-mike@fireburn.co.uk
+  rust-drm, 23 patches, dri-devel and rust-for-linux
+  https://lore.kernel.org/r/20260826163359.4998-1-mike@fireburn.co.uk
   rust-firmware, 1 patch, this one
-  drm-vino, 13 patches, to dri-devel, not sent yet
+  drm-vino, 13 patches, dri-devel
+  https://lore.kernel.org/r/20260826163913.7052-1-mike@fireburn.co.uk
 
 Vino is the user for all of them. The abstractions themselves are generic and
 carry no knowledge of DisplayLink

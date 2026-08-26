@@ -32,6 +32,11 @@ Options:
   --dry-run         run git send-email --dry-run
   --send            actually send; deliberately never implied
   --no-maintainers  do not use scripts/get_maintainer.pl as --cc-cmd
+  --smtp-server S   override sendemail.smtpserver for this send only
+
+The repository sets sendemail.smtpserver to a nonexistent path on purpose, so
+that nothing here can mail anybody by accident. --smtp-server is how you say
+you mean it; the guard stays in the config either way.
 EOF
 }
 
@@ -39,6 +44,7 @@ workspace="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 kernel_tree="${KERNEL_TREE:-$workspace/linux}"
 mode=prepare
 use_maintainers=1
+smtp_server=""
 series=""
 to_args=()
 cc_args=()
@@ -50,6 +56,7 @@ while [ "$#" -gt 0 ]; do
         --dry-run) mode=dry-run; shift ;;
         --send) mode=send; shift ;;
         --no-maintainers) use_maintainers=0; shift ;;
+        --smtp-server) smtp_server="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         -*) echo "error: unknown option '$1'" >&2; usage >&2; exit 2 ;;
         *)
@@ -106,10 +113,23 @@ if [ "$use_maintainers" -eq 1 ]; then
 fi
 [ "$mode" = dry-run ] && send_args+=(--dry-run)
 
+git_args=()
+if [ -n "$smtp_server" ]; then
+    git_args+=(-c "sendemail.smtpserver=$smtp_server")
+elif [ "$mode" = send ]; then
+    guard="$(git -C "$kernel_tree" config --local --get sendemail.smtpserver || true)"
+    case "$guard" in
+        /nonexistent/*)
+            echo "error: sending is disabled in this repository ($guard)" >&2
+            echo "       pass --smtp-server to override it for this send" >&2
+            exit 1 ;;
+    esac
+fi
+
 # Default threading is what is wanted here: the cover letter is the thread root
 # and the patches reply to it. What is deliberately absent is any --in-reply-to
 # pointing at v2.
-git -C "$kernel_tree" send-email --thread --no-chain-reply-to \
+git -C "$kernel_tree" "${git_args[@]}" send-email --thread --no-chain-reply-to \
     "${send_args[@]}" "${mail_files[@]}"
 
 if [ "$mode" = send ]; then
