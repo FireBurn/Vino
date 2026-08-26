@@ -3,24 +3,37 @@
 Status was rechecked on 2026-07-28 against the public patch threads and the
 available remote branch tips. Only v2 has been posted, so the next posting is v3.
 
-⭐ **v3 is five subsystem series, and the branch is ordered to match** (2026-08-08). They were
-interleaved across twenty runs before, so none could be posted on its own; the reorder applied all
-109 patches with zero conflicts and left the tree byte-identical. `tools/regenerate-patches.sh`
-exports them to `patches/kernel/groups/*.series`:
+⭐ **v3 is nine subsystem series, and the branch is ordered to match.** They were interleaved
+across twenty runs before, so none could be posted on its own; the reorder left the tree
+byte-identical. `tools/regenerate-patches.sh` exports them to `patches/<group>/`, each numbered from
+0001 with its own cover letter:
 
 | group | patches | list |
 |---|---|---|
-| `rust-core` | 34 | rust-for-linux |
+| `sched-fair` | 1 | lkml |
+| `rust-core` | 12 | rust-for-linux |
 | `rust-crypto` | 2 | linux-crypto + rust-for-linux |
-| `rust-usb` | 6 | linux-usb + rust-for-linux |
-| `rust-drm` | 61 | dri-devel |
-| `vino` | 6 | dri-devel |
+| `rust-usb` | 5 | linux-usb + rust-for-linux |
+| `rust-drm` | 25 | dri-devel |
+| `rust-firmware` | 1 | linux-kernel + rust-for-linux |
+| `drm-tyr` | 1 | dri-devel |
+| `drm-vino` | 13 | dri-devel |
+| `drm-evdi` | 1 | dri-devel |
 
-⛔ **The driver was 33 patches of development history and is now 6.** That history carried a revert
-pair, a module parameter added and later deleted, selftest corrections and fixes to patches earlier
-in the same series. The six introduce the driver in the order it is understood -- control protocol,
-codec, KMS engine, USB driver, docs -- plus the one KMS binding it needs, which moved into the
-`rust-drm` group where it belongs.
+⛔ **The driver was 33 patches of development history and is now 13 plus its documentation.** That
+history carried a revert pair, a module parameter added and later deleted, selftest corrections and
+fixes to patches earlier in the same series. What is exported introduces the driver in the order it
+is understood -- wire framing, USB transport, crypto and HDCP, control plane, dock profiles, codec,
+bring-up, KMS, activation and scanout, firmware, the USB frontend, the build, the docs -- plus the
+KMS bindings it needs, which live in the `rust-drm` group where they belong.
+
+⭐ **A fix to a commit that is not upstream yet belongs *in* that commit** (2026-08-26). The sample-
+depth work landed as six follow-ups on top of the series -- reporting the depth, publishing the
+plane modifier, driving the link from `max bpc`, scaling the entropy coder's ceilings, keying the
+strip cache, pricing the shared budget -- and every one of them was a fix to a commit the same
+series introduces. They are folded into those commits: each file's change goes to the commit that
+added the file, so a reviewer sees the driver as it is meant to be read rather than the order it
+was debugged in. The KMS binding they need moved ahead of the driver, into `rust-drm`.
 
 ## Current base
 

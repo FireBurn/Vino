@@ -636,24 +636,32 @@ In dependency order. Only the DL-7000 generation is a candidate — DisplayLink 
 DL-7000 on Windows 11 23H2+, and the D6000's own head reports `HDR supported = False` (measured,
 `captures/navarro-wincap-20260805/out/NOTES.md`).
 
-1. ✅ **Depth-aware entropy coding.** `SOLID_DC_CMAX` becomes a function of the sample depth: 10 at
-   8-bit, 12 at 10-bit (§0.2). The AC ceilings stay at their 8-bit values until something measures
-   them (§0.5), which is safe because `esc` saturates.
+1. ✅ **Depth-aware entropy coding.** *Every* escape ceiling is a function of the sample depth, not
+   just the DC one (§0.2a, §0.5): `Depth::dc_cmax` 10 → 12, `Depth::ac_cmax` 9 → 11 and
+   `Depth::chroma_ac_cmax` 10 → 12, because a coefficient is four times the sample. ⛔ The earlier
+   advice to hold the AC ceilings at their 8-bit values is retracted — it does not desync, it
+   speckles every sharp edge.
 2. ✅ **A 10-bit pixel path.** `PixelSource` unpacks `XRGB2101010` and the colour transform takes
-   10-bit channels. Nothing else in the codec moves.
-3. **Advertise it.** `XRGB2101010` on the primary plane, `max bpc`, `Colorspace` and
-   `HDR_OUTPUT_METADATA` on the connector — on Navarro connectors only.
-4. ⚠ **Name the depth in the set-mode.** off23's 4-bytes-per-pixel index (1 or 3, §0.4) and the
-   `off48` row count that follows from it. **This is the one field a capture cannot settle**, so it
-   wants a runtime knob and two hardware runs, in the manner of `blank_marker`.
-5. **Drive the profile change.** A depth change re-issues the mode (§0.4); the dock recreates the
-   device around it.
+   10-bit channels. Nothing else in the codec moves. An 8-bit surface driven over a 10-bit link is
+   widened after decoding by bit replication, so the encoder only ever sees the link's depth.
+3. ✅ **Advertise it.** `XRGB2101010` on the primary plane, `max bpc`, `Colorspace` and
+   `HDR_OUTPUT_METADATA` on the connector — on HDR-capable connectors only. The link's depth comes
+   from `max bpc` *together with* the PQ transfer function, never from the framebuffer's format
+   alone: a compositor drives a 10-bit link from an 8-bit surface as a matter of course.
+4. ✅ **Name the depth in the set-mode.** off23's 4-bytes-per-pixel index (1 or 3, §0.4) and the
+   `off48` row count that follows from it, taken from the timing the connector was last programmed
+   with so that the codec and the dock cannot disagree between mode sets.
+5. ✅ **Drive the profile change.** A depth change re-issues the mode (§0.4); the dock recreates the
+   device around it. ⚠ The dock's bandwidth is shared and a 10-bit pixel costs a third more, so the
+   budget is priced at the deepest connector in use and the *depth* gives way when a pair does not
+   fit — a compositor handed `EINVAL` disables the output instead of asking for a shallower link.
 
 Open experiments worth running, in value order:
 
 1. **A brighter HDR sink** (a UHD HDR TV at ≥600 cd/m², or anything whose declared peak is well
-   above 302). It is the only thing that settles the 10-bit AC ceilings, because Windows tone-maps
-   to the declared peak and that is what flattened the contrast in `cap9` (§0.5).
+   above 302). The AC ceilings are settled on vino's own wire (§0.5); what a brighter sink would add
+   is a *vendor* capture that reaches them, because Windows tone-maps to the declared peak and that
+   is what flattened the contrast in `cap9`.
 2. The dock's `id=0x78 sub=0x30` capability push, on Linux with keys — does the dock say it can do
    10-bit, and does it say it per connector?
 3. `cap13`'s `ep 0x09`: 32 transfers, 30,720 bytes, present **only** in the capture where two

@@ -29,6 +29,46 @@ outlive that handle. The C ABI remains available for existing managers.
 
 ## Chimera
 
+⭐ **Chimera drives both DL7400 connectors at 2560x1440p120 in 30 bpp** (2026-08-26). What stood
+between a correct wire and a lit pair was orchestration, not the codec -- every strip of a captured
+frame decodes byte-correct at the depth the stream declares, 3600 of 3600. Four things were wrong,
+and each is the kind that the dock answers by staying silent rather than by reporting anything:
+
+* **The first picture after a mode set reused the carrier's ring slot.** The trailer's phase,
+  `seq % dock_buffers`, is how the dock steps between its buffers, so the picture landed in the
+  buffer the dock was presenting and the transfer never completed. The frame that opens a stream
+  takes sequence zero without being counted, which is where the drift came from. ⚠ The sequence is
+  advanced *behind* each submission now: one spent on a frame that never reached the dock leaves
+  the ring a slot ahead of what was sent.
+* **The decoder configuration was built at eight bits unconditionally**, while the feeder and codec
+  took the link's depth. A ten-bit connector then coded coefficients two categories larger than the
+  dock had been told to expect: flat areas survive, every edge comes back in primaries. ⭐ The dock
+  also **couples depth and transfer function** -- driven at ten bits with an SDR curve it accepts
+  the mode and never brings the sink up, so the two are stated together.
+* **A dock that wants its video engine committed after finalisation never got it at all**, so its
+  pipes were never started. Found by reading the profile, not on hardware.
+* **The plane path programmed a mode the dock had declined.** The event path honoured a decline
+  beside a lit connector; the plane path recorded the mode anyway, so frames went out against a
+  timing the dock never received.
+
+⭐ **Diff chimera against vino, not against the wire.** Both compile the same `cp.rs`, `video.rs`
+and `profile.rs`, so where chimera behaves differently the difference is in the orchestration around
+them, and that is a much smaller thing to read than a capture.
+
+⚠ **Presence needs the EDID handler engaged first.** A probe taken before engagement answers about
+the dock, not about what is plugged into it.
+
+The connector selector is now checked against the vendor's own bytes on all three families -- the
+DL-3x00's downstream burst is sent in the clear, so its plaintext is kept as a fixture and every
+per-connector record in it names its connector the way this driver does, in the order the vendor
+sent them. ⚠ The `strm2` marker has no instance in either fixture and remains unverified.
+
+⚠ **A whole surface is framed in the generic interlaced order**, not the vendor's measured producer
+order: that permutation describes the order the driver's own full-surface path produces strips in,
+and the strips reaching the framing function do not arrive in it. Applying it names bands that were
+never assembled and the dock lights nothing. Reproducing it needs the producing side to match first.
+
+
 Chimera uses the safe Revdi client and compiles the literal Vino protocol and
 codec modules in userspace. The kernel-shim crate supplies userspace
 implementations of the same typed secret, HDCP, and RSA-OAEP interfaces. A
@@ -83,6 +123,13 @@ enabled. CONNECT now replays the current mode, so restarting the service works.
 
 The module advertises a real cursor plane, so the compositor keeps the pointer out of the primary
 framebuffer and every pointer movement no longer dirties the desktop.
+
+⛔ **Open (2026-08-26): chimera receives no cursor event at all.** Not a shape, not a movement, so
+there is no hardware pointer on the dock -- and because the pointer was taken out of band, nothing
+draws a software one into the frame either. Publishing the plane's format modifier was tried and is
+not the cause. The next thing to look at is the module's advertised `max_cursor: (64, 64)`, which a
+compositor with a larger pointer cannot satisfy and would answer by compositing into the primary
+plane instead; that is untested.
 
 Cursor reporting is opt-in through `DRM_IOCTL_EVDI_ENABLE_CURSOR_EVENTS`; a client that has not asked
 for it composites the pointer itself and must not also receive it out of band. Once enabled, a shape
@@ -155,7 +202,7 @@ what is *structurally* different rather than what someone forgot to copy.
 | Cursor, damage/retransmit | yes | yes |
 | Software gamma/CTM | `vino/color.rs` | `evdi/color.rs`, byte-identical |
 | Firmware read and DFU update | yes | no, and deliberately: one thing should be able to flash a dock |
-| HDR / 10-bit scanout | yes | codec yes, plumbing no -- chimera's frame feeder is 8-bit packed RGB |
+| HDR / 10-bit scanout | yes | yes -- the feeder, the codec and the decoder configuration all take the link's depth |
 | Stream opening per family | yes | yes: ARM burst, DL7400 prologue, or the shared-pipe ring + configuration |
 | Dock-wide mode transaction | yes | **no** -- it declines rather than reset the dock |
 

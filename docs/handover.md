@@ -1,5 +1,32 @@
 # Handover
 
+## 2026-08-26 -- the v3 series is folded, and chimera drives a DL7400 pair at 30 bpp
+
+The sample-depth work is no longer six commits sitting on top of the series. Each of them was a fix
+to a commit the same series introduces, so each one's changes went into the commit that added the
+file it touches: the codec commit carries the escape ceilings, the KMS commit carries `max bpc`, the
+budget pricing and the plane's format modifier, the activation commit carries the widening and the
+strip cache's depth key. ⭐ The rule that produced it -- **a fix to a commit that is not upstream yet
+belongs in that commit** -- is what keeps a reviewer reading the driver as it is meant to be, rather
+than in the order it was debugged. `drm-vino` is 13 patches now instead of 19, `rust-drm` keeps the
+`max bpc` accessor and moved it ahead of the driver that uses it.
+
+Folded in the same pass, because they were part of the same code and not part of any commit's story:
+the AC-ceiling doc comment that still said the ceilings do *not* scale, a `dc_cmax` that had lost its
+doc comment to an attribute, an orphaned doc paragraph describing a function that no longer exists,
+and the marker glyphs, bold and out-of-tree paths that upstream reads as somebody's notes. See the
+style rules in `CLAUDE.md`.
+
+`Documentation/gpu/vino.rst` was two families and one depth behind the driver. It now names all
+three generations, the ten-bit link and how it is decided, the firmware update paths including the
+sysfs upload interface, and every module parameter; its mode-validation section no longer claims a
+fixed list of accepted timings, which stopped being true when the control words started being
+derived.
+
+⭐ **Chimera drives both DL7400 connectors at 2560x1440p120 in 30 bpp.** Four orchestration bugs, no
+codec bug -- see [`revdi-chimera.md`](revdi-chimera.md). ⛔ Still open there: the client receives no
+cursor event at all, so there is no pointer of either kind.
+
 ## 2026-08-25 -- 30 bpp drives both DL7400 panels; every escape ceiling is stated by a code table
 
 Both DL7400 panels are confirmed by eye at 2560x1440p120 in PQ at 30 bpp, reported as `10 Bit` by
