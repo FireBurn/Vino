@@ -1,4 +1,4 @@
-From 3290fe89ff6e4193f2bac8800eba28e1221af665 Mon Sep 17 00:00:00 2001
+From 5815f9aff181b8c4714500d37cd93dde4da09d41 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 23:39:55 +0100
 Subject: [PATCH] rust: usb: add revocable typed interface I/O

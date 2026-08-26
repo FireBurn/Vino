@@ -1,23 +1,35 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-2.0
 #
-# Prepare and, only with an explicit mode, dry-run or send one review group.
+# Send one exported series. Prepares by default; --dry-run and --send are the
+# only ways anything leaves the machine.
+#
+# The series are sent in apply order, and each cover letter links the ones
+# already sent. So the loop is:
+#
+#   tools/send-series.sh rust-core --send ...
+#   record the Message-Id in tools/v3-message-ids.txt
+#   tools/regenerate-patches.sh
+#   tools/send-series.sh rust-crypto --send ...
+#
+# There is deliberately no In-Reply-To to the v2 threads.
+# Documentation/process/submitting-patches.rst says not to attach a new revision
+# of a multi-patch series to the old thread; the cover letters carry a lore link
+# to v2 instead.
 
 set -euo pipefail
 
 usage() {
     cat <<'EOF'
-usage: tools/send-series.sh GROUP [options]
+usage: tools/send-series.sh SERIES [options]
 
-Groups: interrupt-prerequisites, kms-lyude, drm-crypto-platform, usb,
-        rust-runtime-drm, evdi, vino
+Series, in send order:
+  rust-core, rust-crypto, rust-usb, rust-drm, rust-firmware, drm-vino
 
 Options:
-  --version N       reroll number (default: 3)
-  --output DIR      prepared mail directory (default: outgoing/GROUP-vN)
   --to ADDRESS      primary recipient; repeatable
   --cc ADDRESS      explicit Cc; repeatable
-  --dry-run         run git send-email --dry-run after preparing
+  --dry-run         run git send-email --dry-run
   --send            actually send; deliberately never implied
   --no-maintainers  do not use scripts/get_maintainer.pl as --cc-cmd
 EOF
@@ -25,18 +37,14 @@ EOF
 
 workspace="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 kernel_tree="${KERNEL_TREE:-$workspace/linux}"
-version=3
 mode=prepare
 use_maintainers=1
-output=""
-group=""
+series=""
 to_args=()
 cc_args=()
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --version) version="$2"; shift 2 ;;
-        --output) output="$2"; shift 2 ;;
         --to) to_args+=(--to "$2"); shift 2 ;;
         --cc) cc_args+=(--cc "$2"); shift 2 ;;
         --dry-run) mode=dry-run; shift ;;
@@ -45,70 +53,50 @@ while [ "$#" -gt 0 ]; do
         -h|--help) usage; exit 0 ;;
         -*) echo "error: unknown option '$1'" >&2; usage >&2; exit 2 ;;
         *)
-            if [ -n "$group" ]; then
-                echo "error: only one review group may be selected" >&2
-                exit 2
-            fi
-            group="$1"
-            shift
-            ;;
+            [ -z "$series" ] || { echo "error: only one series may be selected" >&2; exit 2; }
+            series="$1"; shift ;;
     esac
 done
 
-case "$group" in
-    interrupt-prerequisites|kms-lyude|drm-crypto-platform|usb|rust-runtime-drm|evdi|vino) ;;
-    "") echo "error: a review group is required" >&2; usage >&2; exit 2 ;;
-    *) echo "error: unknown review group '$group'" >&2; exit 2 ;;
-esac
-case "$version" in
-    ''|*[!0-9]*) echo "error: --version must be a positive integer" >&2; exit 2 ;;
-    0) echo "error: --version must be a positive integer" >&2; exit 2 ;;
+case "$series" in
+    rust-core|rust-crypto|rust-usb|rust-drm|rust-firmware|drm-vino) ;;
+    "") echo "error: a series is required" >&2; usage >&2; exit 2 ;;
+    *) echo "error: unknown series '$series'" >&2; usage >&2; exit 2 ;;
 esac
 
-series="$workspace/patches/kernel/groups/$group.series"
-if [ ! -s "$series" ]; then
-    echo "error: missing $series; run tools/regenerate-patches.sh first" >&2
+dir="$workspace/patches/$series"
+cover="$dir/0000-cover-letter.patch"
+[ -s "$cover" ] || {
+    echo "error: no cover letter in $dir; run tools/regenerate-patches.sh first" >&2
     exit 2
-fi
-
-commits=()
-while IFS= read -r patch; do
-    commit="$(sed -n '1s/^From \([^ ]*\) .*$/\1/p' "$workspace/patches/kernel/$patch")"
-    commits+=("$commit")
-done <"$series"
-first="${commits[0]}"
-last="${commits[${#commits[@]}-1]}"
-if [ "$(git -C "$kernel_tree" rev-list --count "$first^..$last")" -ne "${#commits[@]}" ]; then
-    echo "error: '$group' is not a contiguous commit range" >&2
+}
+if grep -q '\*\*\* BLURB HERE \*\*\*' "$cover"; then
+    echo "error: $cover still has its placeholder" >&2
     exit 1
 fi
 
-output="${output:-$workspace/outgoing/$group-v$version}"
+mapfile -t mail_files < <(
+    printf '%s\n' "$cover"
+    find "$dir" -maxdepth 1 -type f -name '[0-9][0-9][0-9][0-9]-*.patch' \
+        ! -name '0000-cover-letter.patch' | LC_ALL=C sort
+)
+
+# Anything sent to a list has to be ASCII-clean and free of the notes-to-self
+# shorthand the working docs use.
+if grep -qP '[^\x00-\x7F]' "$cover"; then
+    echo "error: $cover has non-ASCII in it" >&2
+    exit 1
+fi
+
 if [ "$mode" = prepare ]; then
-    mkdir -p "$output"
-    find "$output" -maxdepth 1 -type f -name '*.patch' -delete
-    git -C "$kernel_tree" format-patch \
-        --no-signature \
-        --numbered \
-        --cover-letter \
-        --reroll-count="$version" \
-        --output-directory "$output" \
-        "$first^..$last" >/dev/null
-    echo "prepared ${#commits[@]} patches and cover letter in $output"
-    echo "edit and review $output/v${version}-0000-cover-letter.patch before sending"
+    printf 'series %s: %d message(s)\n' "$series" "${#mail_files[@]}"
+    printf '  %s\n' "${mail_files[@]}"
+    printf '\nread the cover letter, then re-run with --dry-run or --send\n'
     exit 0
 fi
+
 if [ "${#to_args[@]}" -eq 0 ]; then
     echo "error: --to is required for --$mode" >&2
-    exit 2
-fi
-cover="$output/v${version}-0000-cover-letter.patch"
-if [ ! -f "$cover" ]; then
-    echo "error: no prepared series in $output; run the command without --$mode first" >&2
-    exit 2
-fi
-if rg -q '\*\*\* (SUBJECT|BLURB) HERE \*\*\*' "$cover"; then
-    echo "error: edit the generated cover-letter placeholders before --$mode" >&2
     exit 2
 fi
 
@@ -116,9 +104,20 @@ send_args=("${to_args[@]}" "${cc_args[@]}")
 if [ "$use_maintainers" -eq 1 ]; then
     send_args+=(--cc-cmd "$kernel_tree/scripts/get_maintainer.pl --norolestats")
 fi
-if [ "$mode" = dry-run ]; then
-    send_args+=(--dry-run)
-fi
+[ "$mode" = dry-run ] && send_args+=(--dry-run)
 
-mapfile -t mail_files < <(find "$output" -maxdepth 1 -type f -name '*.patch' | LC_ALL=C sort)
-git -C "$kernel_tree" send-email "${send_args[@]}" "${mail_files[@]}"
+# Default threading is what is wanted here: the cover letter is the thread root
+# and the patches reply to it. What is deliberately absent is any --in-reply-to
+# pointing at v2.
+git -C "$kernel_tree" send-email --thread --no-chain-reply-to \
+    "${send_args[@]}" "${mail_files[@]}"
+
+if [ "$mode" = send ]; then
+    cat <<EOF
+
+Sent. Now put the cover letter's Message-Id into
+  $workspace/tools/v3-message-ids.txt
+on the "$series" line, re-run tools/regenerate-patches.sh, and the next series'
+cover letter will link this one.
+EOF
+fi

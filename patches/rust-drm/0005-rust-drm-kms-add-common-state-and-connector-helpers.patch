@@ -1,4 +1,4 @@
-From 42aeb8212355492bc17d0646281ac62e97486615 Mon Sep 17 00:00:00 2001
+From d0af8f45bee7bbfff790bde264ea06e2caa08a8c Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:45:48 +0100
 Subject: [PATCH] rust: drm: kms: add common state and connector helpers

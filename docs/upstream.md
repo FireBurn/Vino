@@ -1,5 +1,81 @@
 # Upstream status and review disposition
 
+## v3, as cut on 2026-08-26
+
+**Six series are posted, and two of our own commits are deliberately not.**
+The branch is `vino-v3` in `linux/`, 116 commits on
+`integration/base-20260809`, of which 55 are ours.
+
+| group | patches | version | list |
+|---|---:|---|---|
+| `rust-core` | 9 | new | rust-for-linux + lkml |
+| `rust-crypto` | 2 | v3 | linux-crypto + rust-for-linux |
+| `rust-usb` | 5 | v3 | linux-usb + rust-for-linux |
+| `rust-drm` | 23 | v3 | dri-devel + rust-for-linux |
+| `rust-firmware` | 1 | new | lkml + rust-for-linux |
+| `drm-vino` | 13 | v3 | dri-devel |
+
+Not posted, exported to `patches/not-posted/`: `sched-fair` (1) and `drm-tyr`
+(1). Both are build fixes the reference tree needs; neither enables any part of
+Vino.
+
+**What was dropped from the posting, and why.** Everything that does not enable
+Vino came out, which is a sharper rule than "everything that compiles":
+
+- **`drm-evdi`.** A second consumer is worth having, but it is a separate
+  argument with its own UAPI-documentation work, and carrying it doubles the
+  review surface of the whole chain.
+- **`rust-core`: runtime platform-device creation, root-device attribute
+  groups, the kernel-FPU section guard.** `git grep` over `drivers/gpu/drm/vino`
+  finds no caller for any of the three: the first two were EVDI's, and the FPU
+  guard's consumer (an AVX2 transform) was measured at parity-or-slower and
+  removed. Rust-for-Linux does not take an abstraction with no in-tree user, and
+  it would have been right not to.
+- **`rust-drm`: typed RAII event channels, private ioctl compat translations.**
+  Both EVDI's. Vino declares `declare_drm_ioctls! {}` and delivers vblank events
+  through KMS.
+- **`rust-usb`: the topology walk and the device-removal notifier.** Also
+  EVDI's, and never reviewed by anyone. They were half of one commit whose
+  other half (the device descriptor accessors and `can_send_n`) Vino does use,
+  so that commit was split and retitled `rust: usb: expose device descriptor
+  fields and queue readiness`.
+
+**Threading.** No series is sent `In-Reply-To` its v2.
+`Documentation/process/submitting-patches.rst` says not to attach a new revision
+of a multi-patch series to the old thread, because multiple versions become an
+unmanageable forest of references. Each cover letter carries a `v2:` lore link
+instead.
+
+**Cross-links.** The cover letters name the whole posting and link the series
+already sent, so they must be generated one at a time: send, record the
+Message-Id in `tools/v3-message-ids.txt`, re-run
+`tools/regenerate-patches.sh`, send the next. `tools/send-series.sh` prints that
+reminder after every `--send`.
+
+**No RFC prefix.** v1 and v2 went out as `RFC PATCH`. v3 does not: the driver
+works on three generations of hardware, and the remaining question is review,
+not whether the approach is viable.
+
+**Fixed while cutting v3:**
+
+- `rust/kernel/crypto.rs` and `rust/kernel/drm/kms/framebuffer.rs` each had an
+  import that is unused when the feature it serves is configured off. Both are
+  now `#[cfg]`-gated; the tree builds warning-clean with the features on and
+  with them off.
+- Vino's Kconfig help named two docks when three are supported.
+- Two commit messages wrapped past 75 columns.
+
+`checkpatch --strict` is clean across all six series apart from Rust 100-column
+notes on 13 string literals and trailing comments, which rustfmt does not
+reflow, and the usual `MAINTAINERS needs updating?` for new files.
+
+---
+
+## Everything below is the history that led to the cut above
+
+Superseded where it disagrees. The nine-series table, in particular, is what v3
+looked like before the "does it enable Vino" rule was applied.
+
 Status was rechecked on 2026-07-28 against the public patch threads and the
 available remote branch tips. Only v2 has been posted, so the next posting is v3.
 

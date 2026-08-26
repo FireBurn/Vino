@@ -1,29 +1,88 @@
 From: Mike Lothian <mike@fireburn.co.uk>
 Subject: [PATCH 0/1] rust: firmware: the firmware upload abstraction
 
-Depends on: rust-core
-Base:       integration/base-20260809
-
 request_firmware() covers "pull an image from /lib/firmware".
 firmware_upload_register() covers the other half: userspace hands the driver an
 image to write. It publishes /sys/class/firmware/<name>/ with the loading and
 data handshake plus status, error, remaining_size and cancel, and is what a
 driver uses when an image has to be written on demand rather than only when a
-newer one appears.
+newer one happens to be on disk
 
 This adds an Upload trait mirroring struct fw_upload_ops, a Registration that
 unregisters on drop, and an Error enum whose values are the fw_upload_err codes
-userspace already reads back out of the error attribute.
+userspace already reads back out of the error attribute
 
-The consumer is the DisplayLink driver, which writes dock firmware over DFU.
+rust: firmware: add request_into_buf() reached drm-rust-next this cycle and is
+not a duplicate of this: that is the pull direction, and upstream still has no
+binding for the push one
+
+The consumer is the DisplayLink driver at the end of the chain, which writes
+dock firmware over DFU. It is a new series and has not been posted before
+
+The rest of the posting, which is one series per subsystem:
+
+  rust-core, 9 patches, to rust-for-linux and linux-kernel, not sent yet
+  rust-crypto, 2 patches, to linux-crypto and rust-for-linux, not sent yet
+  rust-usb, 5 patches, to linux-usb and rust-for-linux, not sent yet
+  rust-drm, 23 patches, to dri-devel and rust-for-linux, not sent yet
+  rust-firmware, 1 patch, this one
+  drm-vino, 13 patches, to dri-devel, not sent yet
+
+Vino is the user for every one of them. The abstractions are generic and carry
+no knowledge of DisplayLink, but none of them are here speculatively: each one
+exists because the driver could not be written in safe Rust without it
+
+The whole thing is one branch, base and prerequisites included, which is the
+quickest way to read it:
+
+  git clone -b vino-v3 https://github.com/FireBurn/linux
+  cd linux
+  make LLVM=1 rustavailable
+  make LLVM=1 -j$(nproc)
+  make LLVM=1 -j$(nproc) modules
+
+CONFIG_RUST=y and CONFIG_DRM_VINO=m are the two that matter, and DRM_VINO
+selects the rest of what it needs. Check CONFIG_DRM_VINO survived olddefconfig
+before believing a clean build: if the Rust toolchain is not available the
+symbol quietly disappears and everything still exits 0
+
+On top of what is posted, that branch carries two build fixes and nothing else:
+one scheduler call site that stops compiling under the locking-guard series, and
+the Kms associated type Tyr needs once the KMS registration trait requires one.
+Neither enables any part of Vino, so neither is sent with it
+
+That branch is the exact tree these patches were generated from, at
+4c9ba407018e, which is the drm-rust-next tip of 2026-08-06. drm-next has moved
+on since; this deliberately follows drm-rust-next instead, because the KMS layer
+underneath this work lives only there and that tree picks up drm-next on its own
+schedule
+
+Other people's unmerged work the branch carries, which is a dependency to base
+on rather than anything being posted here:
+
+  Lyude Paul, Rust bindings for KMS + RVKMS, 43 commits
+  https://lore.kernel.org/r/20250305230406.567126-1-lyude@redhat.com
+
+  Colin Braun, rust: usb: add usb request block abstractions, 3 commits
+  https://lore.kernel.org/r/20260712-urb-abstraction-v1-v1-0-9fa011634ead@gmail.com
+
+  Boqun Feng's counted interrupt disabling series, which SpinLockIrq needs,
+  9 commits. One patch of it is already in tip locking/core as e901c1510e24
+
+  Alice Ryhl's owned workqueue series, 3 commits, and Onur Ozkan's cancel_sync
+
+Every one of those keeps its author, its message and its tags, and none of them
+carries a trailer of mine
 
 These patches were written with the assistance of Claude (Anthropic), used
 through Claude Code as an interactive coding assistant, across the design, the
 implementation and the tests. Every patch it contributed to carries an
 Assisted-by trailer. The Signed-off-by is mine: I have reviewed and tested what
-is here and I stand behind it.
+is here and I stand behind it
 
 Mike Lothian (1):
   rust: firmware: add the firmware upload abstraction
 
- 1 file(s) changed, 237 insertion(s)(+), 0 deletion(s)(-)
+ 1 file changed, 237 insertions(+), 0 deletions(-)
+
+base-commit: 4c9ba407018e8deb06dbc643112bac8f40404f95

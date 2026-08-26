@@ -1,0 +1,19 @@
+# Message-ids of the v3 postings, one per line, "group message-id".
+#
+# The series cross-reference each other, and a lore link only exists once a
+# series has actually been sent. So the loop is: send one series, paste its
+# message-id here, re-run tools/regenerate-patches.sh, send the next. A series
+# with no id yet is named in the cover letters without a link.
+#
+# Send order is the apply order:
+#   rust-core, rust-crypto, rust-usb, rust-drm, rust-firmware, drm-vino
+#
+# Example:
+#   rust-core 20260901120000.1234-1-mike@fireburn.co.uk
+
+rust-core
+rust-crypto
+rust-usb
+rust-drm
+rust-firmware
+drm-vino

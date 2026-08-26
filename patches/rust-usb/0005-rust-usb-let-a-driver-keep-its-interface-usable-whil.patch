@@ -1,4 +1,4 @@
-From eb6ea993cc279bd54cbb8bc1d8ad2cda0ae72613 Mon Sep 17 00:00:00 2001
+From 1c8b5877bb352d4eced19d37220bc33f0af8ec17 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 17 Aug 2026 17:47:49 +0100
 Subject: [PATCH] rust: usb: let a driver keep its interface usable while
@@ -24,7 +24,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  1 file changed, 14 insertions(+)
 
 diff --git a/rust/kernel/usb.rs b/rust/kernel/usb.rs
-index 1f1d19621631..ddd144fe480e 100644
+index b2a0fb104ddf..1d8f5bc8a545 100644
 --- a/rust/kernel/usb.rs
 +++ b/rust/kernel/usb.rs
 @@ -107,6 +107,7 @@ unsafe fn register(

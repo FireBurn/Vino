@@ -1,4 +1,4 @@
-From 32606faff6958ea8b9ef4cd21e08f131caa8fe39 Mon Sep 17 00:00:00 2001
+From cbe74d3d59dc64d36e44145a6eb795606285b31d Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 18 Jun 2026 14:59:24 +0100
 Subject: [PATCH] rust: crypto: add synchronous RSA akcipher support
@@ -25,9 +25,9 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  rust/bindings/bindings_helper.h |   1 +
  rust/helpers/crypto.c           |  27 +++
  rust/kernel/Kconfig.test        |  14 ++
- rust/kernel/crypto.rs           |  64 ++++++-
+ rust/kernel/crypto.rs           |  72 +++++++-
  rust/kernel/crypto/akcipher.rs  | 298 ++++++++++++++++++++++++++++++++
- 7 files changed, 428 insertions(+), 5 deletions(-)
+ 7 files changed, 435 insertions(+), 6 deletions(-)
  create mode 100644 rust/kernel/crypto/akcipher.rs
 
 diff --git a/crypto/Kconfig b/crypto/Kconfig
@@ -176,10 +176,10 @@ index e6a5c7a795f0..32e1a0c17d08 100644
 +
  endif
 diff --git a/rust/kernel/crypto.rs b/rust/kernel/crypto.rs
-index 5f7c301b2bb8..224c09cd3193 100644
+index 5f7c301b2bb8..0cf38541c8d1 100644
 --- a/rust/kernel/crypto.rs
 +++ b/rust/kernel/crypto.rs
-@@ -9,18 +9,69 @@
+@@ -9,18 +9,75 @@
  //! synchronously in the calling context with no allocation; the hashes and the
  //! MAC are infallible.
  //!
@@ -192,13 +192,20 @@ index 5f7c301b2bb8..224c09cd3193 100644
  //! [`include/crypto/aes-cbc-macs.h`](srctree/include/crypto/aes-cbc-macs.h),
  //! [`include/crypto/sha2.h`](srctree/include/crypto/sha2.h).
  
+-use crate::{bindings, error::to_result, prelude::*};
 +use core::ops::{Deref, DerefMut};
 +
- use crate::{bindings, error::to_result, prelude::*};
- 
++use crate::bindings;
++#[cfg(any(
++    CONFIG_RUST_CRYPTO_AKCIPHER,
++    CONFIG_RUST_CRYPTO_LIB_AES,
++    CONFIG_RUST_CRYPTO_LIB_SHA256
++))]
++use crate::{error::to_result, prelude::*};
++
 +#[cfg(CONFIG_RUST_CRYPTO_AKCIPHER)]
 +pub mod akcipher;
-+
+ 
  /// Size of a SHA-256 / HMAC-SHA256 digest, in bytes.
  pub const SHA256_DIGEST_SIZE: usize = 32;
  /// AES-128 block and key size, in bytes.
@@ -250,7 +257,7 @@ index 5f7c301b2bb8..224c09cd3193 100644
  pub fn sha256(data: &[u8]) -> [u8; SHA256_DIGEST_SIZE] {
      let mut out = [0u8; SHA256_DIGEST_SIZE];
      // SAFETY: `data` is valid for `data.len()` reads and `out` is a valid
-@@ -30,6 +81,7 @@
+@@ -30,6 +87,7 @@
  }
  
  /// Returns `HMAC-SHA256(key, data)`.
@@ -258,7 +265,7 @@ index 5f7c301b2bb8..224c09cd3193 100644
  pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; SHA256_DIGEST_SIZE] {
      let mut out = [0u8; SHA256_DIGEST_SIZE];
      // SAFETY: `key` and `data` are valid for their respective lengths and `out`
-@@ -51,6 +103,7 @@
+@@ -51,6 +109,7 @@
  /// prepared and wiped internally; the call is infallible.
  ///
  /// [`include/crypto/aes-cbc-macs.h`]: srctree/include/crypto/aes-cbc-macs.h
@@ -266,7 +273,7 @@ index 5f7c301b2bb8..224c09cd3193 100644
  pub fn aes_cmac(key: &[u8; AES128_BLOCK_SIZE], data: &[u8]) -> [u8; AES128_BLOCK_SIZE] {
      let mut out = [0u8; AES128_BLOCK_SIZE];
      // SAFETY: `key` is a valid 16-byte key, `data` is valid for `data.len()`
-@@ -77,8 +130,10 @@
+@@ -77,8 +136,10 @@
  /// let _ct = cipher.encrypt_block(&[0u8; 16]);
  /// # Ok::<(), Error>(())
  /// ```
@@ -277,7 +284,7 @@ index 5f7c301b2bb8..224c09cd3193 100644
  impl Aes128 {
      /// Expands an AES-128 key from 16 raw key bytes.
      pub fn new(key: &[u8; AES128_BLOCK_SIZE]) -> Result<Self> {
-@@ -105,11 +160,10 @@ impl Aes128 {
+@@ -105,11 +166,10 @@ impl Aes128 {
      }
  }
  

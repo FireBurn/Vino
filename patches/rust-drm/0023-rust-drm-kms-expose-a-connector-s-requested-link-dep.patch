@@ -1,0 +1,65 @@
+From cc0a0ab14b4ca8d5aec9a1297fc602abb31f361a Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Mon, 24 Aug 2026 18:51:55 +0100
+Subject: [PATCH] rust: drm: kms: expose a connector's requested link depth
+
+`max bpc` is how userspace asks for the number of bits the link
+carries, and it is deliberately independent of the framebuffer's
+format: scanning out an eight-bit surface over a ten-bit link is the
+ordinary case. A driver could attach the property but had no way to
+read back what was asked for, so the request could only be ignored.
+
+Add the accessor, and make the linear format modifier nameable outside
+the crate so a driver that accepts only linear scanout can say so in
+its plane's modifier list rather than leaving userspace to infer it.
+
+Assisted-by: Claude:claude-opus-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/kernel/drm/fourcc.rs        |  5 ++++-
+ rust/kernel/drm/kms/connector.rs | 16 ++++++++++++++++
+ 2 files changed, 20 insertions(+), 1 deletion(-)
+
+diff --git a/rust/kernel/drm/fourcc.rs b/rust/kernel/drm/fourcc.rs
+index 010823c4c86c..3a68af66f236 100644
+--- a/rust/kernel/drm/fourcc.rs
++++ b/rust/kernel/drm/fourcc.rs
+@@ -13,7 +13,10 @@ const fn fourcc_code(a: u8, b: u8, c: u8, d: u8) -> u32 {
+ // function-like macros in bindgen yet.
+ pub(crate) const FORMAT_MOD_INVALID: u64 = 0xffffffffffffff;
+ /// Linear framebuffer layout (`DRM_FORMAT_MOD_LINEAR`).
+-pub(crate) const FORMAT_MOD_LINEAR: u64 = 0;
++///
++/// A driver that accepts only linear scanout has to say so through the plane's format-modifier
++/// list, or userspace sees no `IN_FORMATS` property and has to guess what the plane will take.
++pub const FORMAT_MOD_LINEAR: u64 = 0;
+ 
+ /// 32 bpp RGB with unused alpha.
+ pub const XRGB8888: u32 = fourcc_code(b'X', b'R', b'2', b'4');
+diff --git a/rust/kernel/drm/kms/connector.rs b/rust/kernel/drm/kms/connector.rs
+index 231857cc1f20..633f4f76a610 100644
+--- a/rust/kernel/drm/kms/connector.rs
++++ b/rust/kernel/drm/kms/connector.rs
+@@ -935,6 +935,22 @@ fn colorspace(&self) -> u32 {
+         self.as_raw().colorspace
+     }
+ 
++    /// The bits per colour channel userspace has asked the link to carry, through the `max bpc`
++    /// property.
++    ///
++    /// This is a property of the *link*, not of the framebuffer: userspace routinely scans out an
++    /// eight-bit surface over a ten-bit link, and a driver that derives its output depth from the
++    /// framebuffer format alone silently ignores what was asked for.
++    ///
++    /// Meaningful only on a connector that
++    /// [`UnregisteredConnector::attach_max_bpc_property`] was called for; everything else leaves
++    /// it at zero.
++    fn max_requested_bpc(&self) -> u32 {
++        // `max_requested_bpc` is an `unsigned int` clamped by DRM to the range the driver gave
++        // `drm_connector_attach_max_bpc_property()`, so it needs no validation here.
++        self.as_raw().max_requested_bpc as u32
++    }
++
+     /// The electro-optical transfer function from the `HDR_OUTPUT_METADATA` blob, or [`None`] if
+     /// userspace has not set one.
+     ///

@@ -1,37 +1,118 @@
 From: Mike Lothian <mike@fireburn.co.uk>
-Subject: [PATCH 0/5] rust: usb: host-side abstractions for a bulk-endpoint driver
-
-Depends on: rust-core
-Base:       integration/base-20260809
+Subject: [PATCH v3 0/5] rust: usb: host-side abstractions for a bulk-endpoint driver
 
 Host-side USB abstractions for a driver whose device is a bulk-endpoint pipe
-rather than a class device.
+rather than a class device
 
-  - Revocable typed interface I/O, so an interface cannot be used after the
-    core has taken it back.
-  - Reusable URBs and persistent bulk queues, which is what keeps a video
-    stream in flight without allocating per transfer.
-  - Topology lookup and removal notification.
-  - A device id constructor matching on vendor together with interface class,
+  Revocable typed interface I/O, so an interface cannot be used after the core
+    has taken it back
+  Reusable URBs and persistent bulk queues, which is what keeps a video stream
+    in flight without allocating per transfer
+  The device descriptor fields a driver needs to identify hardware before it
+    decides to drive it, and a queue-readiness check
+  A device id constructor matching on vendor together with interface class,
     subclass and protocol, for a composite device whose function is not
-    identified by the product id alone.
-  - Letting a driver keep its interface usable while unbinding, so teardown can
-    still talk to the device it is releasing.
+    identified by the product id alone
+  Letting a driver keep its interface usable while unbinding, so teardown can
+    still talk to the device it is releasing
 
-These build on the USB abstractions already merged; the consumer is the
-DisplayLink driver in a later series.
+Changes since v2, which is where the real review happened:
+
+  v2 10/11, "keep usb::Device private and gate ...", is dropped entirely.
+    Oliver Neukum was right that it was conceptually wrong: USB does device
+    level operations, and hiding that behind an interface is a layering
+    violation. Device stays public
+  as_bound() is gone from both the binding and the driver. Danilo Krummrich's
+    point stands: needing an unsafe as_bound() means the design or the
+    infrastructure is wrong, not that the escape hatch is needed
+  reset_configuration() is gone, and set_interface() now exists in two
+    correctly scoped forms, one on Interface<Bound> taking an altsetting and
+    one on Device taking interface plus altsetting
+  What replaces the concealment is lifecycle gating: an adapter-owned,
+    revocable I/O window that is valid across probe, suspend, reset, resume and
+    disconnect and invalid outside them. That is the interval in which I/O is
+    legal, which is narrower than "the interface is bound"
+  There is no private URB implementation. Colin Braun's URB RFC is carried
+    unchanged as the foundation and this builds on it
+  A topology walk and a device-removal notifier were written after v2 and are
+    not here. They existed for a second consumer that is not part of this
+    posting, so nothing in what is sent would call them
+
+Alan Stern's lifecycle point is what makes device access from an interface
+sound, and is worth restating because the whole shape depends on it: an
+unconfigured device has no interfaces, so an interface that exists implies a
+configured device
+
+v2: https://lore.kernel.org/r/20260703030020.2694-1-mike@fireburn.co.uk
+
+The rest of the posting, which is one series per subsystem:
+
+  rust-core, 9 patches, to rust-for-linux and linux-kernel, not sent yet
+  rust-crypto, 2 patches, to linux-crypto and rust-for-linux, not sent yet
+  rust-usb, 5 patches, this one
+  rust-drm, 23 patches, to dri-devel and rust-for-linux, not sent yet
+  rust-firmware, 1 patch, to linux-kernel and rust-for-linux, not sent yet
+  drm-vino, 13 patches, to dri-devel, not sent yet
+
+Vino is the user for every one of them. The abstractions are generic and carry
+no knowledge of DisplayLink, but none of them are here speculatively: each one
+exists because the driver could not be written in safe Rust without it
+
+The whole thing is one branch, base and prerequisites included, which is the
+quickest way to read it:
+
+  git clone -b vino-v3 https://github.com/FireBurn/linux
+  cd linux
+  make LLVM=1 rustavailable
+  make LLVM=1 -j$(nproc)
+  make LLVM=1 -j$(nproc) modules
+
+CONFIG_RUST=y and CONFIG_DRM_VINO=m are the two that matter, and DRM_VINO
+selects the rest of what it needs. Check CONFIG_DRM_VINO survived olddefconfig
+before believing a clean build: if the Rust toolchain is not available the
+symbol quietly disappears and everything still exits 0
+
+On top of what is posted, that branch carries two build fixes and nothing else:
+one scheduler call site that stops compiling under the locking-guard series, and
+the Kms associated type Tyr needs once the KMS registration trait requires one.
+Neither enables any part of Vino, so neither is sent with it
+
+That branch is the exact tree these patches were generated from, at
+4c9ba407018e, which is the drm-rust-next tip of 2026-08-06. drm-next has moved
+on since; this deliberately follows drm-rust-next instead, because the KMS layer
+underneath this work lives only there and that tree picks up drm-next on its own
+schedule
+
+Other people's unmerged work the branch carries, which is a dependency to base
+on rather than anything being posted here:
+
+  Lyude Paul, Rust bindings for KMS + RVKMS, 43 commits
+  https://lore.kernel.org/r/20250305230406.567126-1-lyude@redhat.com
+
+  Colin Braun, rust: usb: add usb request block abstractions, 3 commits
+  https://lore.kernel.org/r/20260712-urb-abstraction-v1-v1-0-9fa011634ead@gmail.com
+
+  Boqun Feng's counted interrupt disabling series, which SpinLockIrq needs,
+  9 commits. One patch of it is already in tip locking/core as e901c1510e24
+
+  Alice Ryhl's owned workqueue series, 3 commits, and Onur Ozkan's cancel_sync
+
+Every one of those keeps its author, its message and its tags, and none of them
+carries a trailer of mine
 
 These patches were written with the assistance of Claude (Anthropic), used
 through Claude Code as an interactive coding assistant, across the design, the
 implementation and the tests. Every patch it contributed to carries an
 Assisted-by trailer. The Signed-off-by is mine: I have reviewed and tested what
-is here and I stand behind it.
+is here and I stand behind it
 
 Mike Lothian (5):
   rust: usb: add revocable typed interface I/O
   rust: usb: add reusable URBs and persistent bulk queues
-  rust: usb: add topology lookup and removal notification
+  rust: usb: expose device descriptor fields and queue readiness
   rust: usb: add a vendor-and-interface-info device id constructor
   rust: usb: let a driver keep its interface usable while unbinding
 
- 3 file(s) changed, 1697 insertion(s)(+), 26 deletion(s)(-)
+ 3 files changed, 1553 insertions(+), 26 deletions(-)
+
+base-commit: 4c9ba407018e8deb06dbc643112bac8f40404f95

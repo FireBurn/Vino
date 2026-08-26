@@ -1,38 +1,103 @@
 From: Mike Lothian <mike@fireburn.co.uk>
-Subject: [PATCH 0/12] rust: core abstractions for a USB display driver
+Subject: [PATCH 0/9] rust: core abstractions for a USB display driver
 
-Depends on: none
-Base:       integration/base-20260809
+Core Rust abstractions a USB display driver needs. They are separated from the
+driver because none of them are display specific: each one covers a kernel
+facility that has C callers today and no Rust binding
 
-Core Rust abstractions needed by a USB display driver written in safe Rust.
-They are separated from the driver because none of them are display-specific:
-each covers a kernel facility that has C callers today and no Rust binding.
+  sync: single-shot and timed completions
+  hrtimer: restart an ArcHrTimerHandle, and read the interrupt state inside a
+    hard callback
+  random, xxhash, time: safe wrappers over get_random_bytes(), xxh64() and
+    ktime_get_real_seconds()
+  workqueue: make OwnedQueue thread safe
+  io: offset copy helpers that check the bounds they are given
+  error: expose EPROTO
 
-  - platform: create a platform device at runtime, for a driver that publishes
-    virtual devices rather than binding to firmware-described ones.
-  - sysfs: attribute groups on a root device.
-  - sync: single-shot and timed completions.
-  - hrtimer: restart an ArcHrTimerHandle, and see the interrupt state inside a
-    hard callback.
-  - random, xxhash, time: safe wrappers over get_random_bytes(), xxh64() and
-    ktime_get_real_seconds().
-  - workqueue: make OwnedQueue thread-safe.
-  - io: offset copy helpers that check the bounds they are given.
-  - error: expose EPROTO.
-  - fpu: an RAII guard for a kernel FPU section.
+This is a new series rather than a reroll: none of these nine has been posted
+before. A runtime platform-device creator and a root-device attribute group went
+out inside the rust: drm v2 series, where they did not belong, and they are not
+here either, because the consumer that needed them is not part of this posting
 
-Each is small and independently reviewable, and each has a user in the driver
-series that follows.
+It is small on purpose. Every patch has a caller in the driver at the end of the
+chain, and nothing is here on the argument that it might be useful to somebody
+later
+
+The rest of the posting, which is one series per subsystem:
+
+  rust-core, 9 patches, this one
+  rust-crypto, 2 patches, to linux-crypto and rust-for-linux, not sent yet
+  rust-usb, 5 patches, to linux-usb and rust-for-linux, not sent yet
+  rust-drm, 23 patches, to dri-devel and rust-for-linux, not sent yet
+  rust-firmware, 1 patch, to linux-kernel and rust-for-linux, not sent yet
+  drm-vino, 13 patches, to dri-devel, not sent yet
+
+Vino is the user for every one of them. The abstractions are generic and carry
+no knowledge of DisplayLink, but none of them are here speculatively: each one
+exists because the driver could not be written in safe Rust without it
+
+The whole thing is one branch, base and prerequisites included, which is the
+quickest way to read it:
+
+  git clone -b vino-v3 https://github.com/FireBurn/linux
+  cd linux
+  make LLVM=1 rustavailable
+  make LLVM=1 -j$(nproc)
+  make LLVM=1 -j$(nproc) modules
+
+CONFIG_RUST=y and CONFIG_DRM_VINO=m are the two that matter, and DRM_VINO
+selects the rest of what it needs. Check CONFIG_DRM_VINO survived olddefconfig
+before believing a clean build: if the Rust toolchain is not available the
+symbol quietly disappears and everything still exits 0
+
+On top of what is posted, that branch carries two build fixes and nothing else:
+one scheduler call site that stops compiling under the locking-guard series, and
+the Kms associated type Tyr needs once the KMS registration trait requires one.
+Neither enables any part of Vino, so neither is sent with it
+
+That branch is the exact tree these patches were generated from, at
+4c9ba407018e, which is the drm-rust-next tip of 2026-08-06. drm-next has moved
+on since; this deliberately follows drm-rust-next instead, because the KMS layer
+underneath this work lives only there and that tree picks up drm-next on its own
+schedule
+
+Other people's unmerged work the branch carries, which is a dependency to base
+on rather than anything being posted here:
+
+  Lyude Paul, Rust bindings for KMS + RVKMS, 43 commits
+  https://lore.kernel.org/r/20250305230406.567126-1-lyude@redhat.com
+
+  Colin Braun, rust: usb: add usb request block abstractions, 3 commits
+  https://lore.kernel.org/r/20260712-urb-abstraction-v1-v1-0-9fa011634ead@gmail.com
+
+  Boqun Feng's counted interrupt disabling series, which SpinLockIrq needs,
+  9 commits. One patch of it is already in tip locking/core as e901c1510e24
+
+  Alice Ryhl's owned workqueue series, 3 commits, and Onur Ozkan's cancel_sync
+
+Every one of those keeps its author, its message and its tags, and none of them
+carries a trailer of mine
+
+On the workqueue side, Danilo Krummrich's OwnedQueue, ScopedQueue and ScopedWork
+series supersedes some of what is carried here, and it is the better answer.
+Vino calls Work::cancel_sync() in seven places to make teardown wait for its own
+work items, and ScopedWork cancels on drop, which is that idiom done properly
+rather than by hand
+
+  https://lore.kernel.org/r/20260807165252.3849875-1-dakr@kernel.org
+
+It was still moving when this was cut, so this posting uses what is available
+today. When it lands the swap goes in as one commit that moves the prerequisites
+and migrates the call sites together, because splitting those two halves would
+leave the tree not building in between
 
 These patches were written with the assistance of Claude (Anthropic), used
 through Claude Code as an interactive coding assistant, across the design, the
 implementation and the tests. Every patch it contributed to carries an
 Assisted-by trailer. The Signed-off-by is mine: I have reviewed and tested what
-is here and I stand behind it.
+is here and I stand behind it
 
-Mike Lothian (12):
-  rust: platform: add runtime platform device creation
-  rust: sysfs: add root-device attribute groups
+Mike Lothian (9):
   rust: sync: completion: add single-shot and timed operations
   rust: hrtimer: add ArcHrTimerHandle::restart
   rust: random: add a safe get_random_bytes wrapper
@@ -41,7 +106,8 @@ Mike Lothian (12):
   rust: io: add checked offset copy helpers
   rust: hrtimer: expose interrupt state in hard callbacks
   rust: error: expose EPROTO
-  rust: fpu: add a safe kernel-FPU section guard
   rust: time: add ktime_get_real_seconds
 
- 15 file(s) changed, 806 insertion(s)(+), 2 deletion(s)(-)
+ 11 files changed, 243 insertions(+), 2 deletions(-)
+
+base-commit: 4c9ba407018e8deb06dbc643112bac8f40404f95

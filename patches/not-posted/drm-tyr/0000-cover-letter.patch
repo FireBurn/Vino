@@ -1,0 +1,9 @@
+From: Mike Lothian <mike@fireburn.co.uk>
+Subject: [NOT POSTED 0/1] drm/tyr: mark the Rust DRM driver as non-KMS
+
+The KMS registration trait gains a required Kms associated type. Tyr is a
+render-only driver, so it selects the non-KMS PhantomData implementation just as
+Nova does.
+
+Not posted with the Vino series: it enables no part of it. It is a build fix for
+the KMS series, and belongs with whichever tree takes that first.

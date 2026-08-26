@@ -1,54 +1,130 @@
 From: Mike Lothian <mike@fireburn.co.uk>
-Subject: [PATCH 0/25] rust: drm: KMS abstractions for a Rust display driver
-
-Depends on: rust-core
-Base:       integration/base-20260809
+Subject: [PATCH v3 0/23] rust: drm: KMS abstractions for a Rust display driver
 
 KMS abstractions for a Rust display driver, continuing Lyude Paul's KMS series
 rather than replacing it. The first patch adapts that work to the DRM APIs as
-they stand today; the rest add what a real driver turned out to need.
+they stand today, and the rest add what a real driver turned out to need
 
 Broadly they fall into four groups:
 
-  - Lifetime and ownership: mode-object references tied to their owners, owned
+  Lifetime and ownership: mode-object references tied to their owners, owned
     CRTC and vblank references, a safe constructor for owned registration data,
     pinning the owner while DRM files remain open, and rejecting cross-device
-    GEM handle creation.
-  - Properties a driver must read or publish: typed colour and rotation, plane
+    GEM handle creation
+  Properties a driver must read or publish: typed colour and rotation, plane
     blend mode, FB_DAMAGE_CLIPS, connector colorimetry and HDR metadata, and a
-    connector's requested link depth.
-  - Callbacks and state: connector detect() and mode_valid(), common state and
+    connector's requested link depth
+  Callbacks and state: connector detect() and mode_valid(), common state and
     connector helpers, checked plane geometry, walking the CRTCs an atomic
-    commit carries, and CRTC mode changes.
-  - Modes and framebuffers: an owned display mode constructor, mode flags and
-    CTA VIC matching, synthesized CVT connector modes, and validated shmem
-    scanout views.
+    commit carries, and CRTC mode changes
+  Modes and framebuffers: an owned display mode constructor, mode flags and CTA
+    VIC matching, synthesized CVT connector modes, and validated shmem scanout
+    views
 
-Also here: typed RAII event channels, private ioctl compat translations, and
-the HDCP 2.2 message identifiers, which are DRM UAPI rather than driver
-constants.
+Also here are the HDCP 2.2 message identifiers, which are DRM UAPI rather than
+driver constants
 
-The consumers are the two drivers in the series that follow, both of which
-contain no unsafe block and no direct bindings:: call.
+Changes since v2:
+
+  Lyude's 43 commits are carried in order and patch-identical to the imported
+    source, with her messages and tags untouched and no trailer of mine on any
+    of them. v2 mixed her work with adaptations of mine and obscured the
+    attribution, which was the fair complaint
+  Everything of mine on top is a separate commit, and it is either an
+    adaptation to a DRM API that has moved or a safety extension a driver
+    needed
+  The i2c adapter-provider patch is dropped. Igor Korotin's work is active and
+    its provider-lifetime question is not one to answer privately in a driver,
+    so the kernel driver registers no downstream I2C adapter this round
+  The typed event channels and the private ioctl compat translations are
+    dropped. Both existed for a second consumer that is not part of this
+    posting, so neither has a user in what is sent
+  The hardware-cursor support that was a separate v2 patch is folded into the
+    plane work it belongs to
+
+Two overlaps worth flagging rather than being told about. Alvin Sun's
+"Fix missing fops.owner in Rust DRM/misc abstractions" fixes the same bug as
+"rust: drm: pin the owner while DRM files remain open", from the other end,
+through ModuleMetadata rather than by threading an owning module through
+UnregisteredDevice::new(). Theirs is the better shape and mine should be dropped
+the moment it lands; it is still load-bearing today because upstream
+UnregisteredDevice::new() takes no module. And where an early patch here fixes a
+commit of Lyude's that is itself unmerged, that fix would be better folded into
+her next revision than carried separately, and I am happy to do it that way
+
+v2: https://lore.kernel.org/r/20260703030123.2814-1-mike@fireburn.co.uk
+
+The rest of the posting, which is one series per subsystem:
+
+  rust-core, 9 patches, to rust-for-linux and linux-kernel, not sent yet
+  rust-crypto, 2 patches, to linux-crypto and rust-for-linux, not sent yet
+  rust-usb, 5 patches, to linux-usb and rust-for-linux, not sent yet
+  rust-drm, 23 patches, this one
+  rust-firmware, 1 patch, to linux-kernel and rust-for-linux, not sent yet
+  drm-vino, 13 patches, to dri-devel, not sent yet
+
+Vino is the user for every one of them. The abstractions are generic and carry
+no knowledge of DisplayLink, but none of them are here speculatively: each one
+exists because the driver could not be written in safe Rust without it
+
+The whole thing is one branch, base and prerequisites included, which is the
+quickest way to read it:
+
+  git clone -b vino-v3 https://github.com/FireBurn/linux
+  cd linux
+  make LLVM=1 rustavailable
+  make LLVM=1 -j$(nproc)
+  make LLVM=1 -j$(nproc) modules
+
+CONFIG_RUST=y and CONFIG_DRM_VINO=m are the two that matter, and DRM_VINO
+selects the rest of what it needs. Check CONFIG_DRM_VINO survived olddefconfig
+before believing a clean build: if the Rust toolchain is not available the
+symbol quietly disappears and everything still exits 0
+
+On top of what is posted, that branch carries two build fixes and nothing else:
+one scheduler call site that stops compiling under the locking-guard series, and
+the Kms associated type Tyr needs once the KMS registration trait requires one.
+Neither enables any part of Vino, so neither is sent with it
+
+That branch is the exact tree these patches were generated from, at
+4c9ba407018e, which is the drm-rust-next tip of 2026-08-06. drm-next has moved
+on since; this deliberately follows drm-rust-next instead, because the KMS layer
+underneath this work lives only there and that tree picks up drm-next on its own
+schedule
+
+Other people's unmerged work the branch carries, which is a dependency to base
+on rather than anything being posted here:
+
+  Lyude Paul, Rust bindings for KMS + RVKMS, 43 commits
+  https://lore.kernel.org/r/20250305230406.567126-1-lyude@redhat.com
+
+  Colin Braun, rust: usb: add usb request block abstractions, 3 commits
+  https://lore.kernel.org/r/20260712-urb-abstraction-v1-v1-0-9fa011634ead@gmail.com
+
+  Boqun Feng's counted interrupt disabling series, which SpinLockIrq needs,
+  9 commits. One patch of it is already in tip locking/core as e901c1510e24
+
+  Alice Ryhl's owned workqueue series, 3 commits, and Onur Ozkan's cancel_sync
+
+Every one of those keeps its author, its message and its tags, and none of them
+carries a trailer of mine
 
 These patches were written with the assistance of Claude (Anthropic), used
 through Claude Code as an interactive coding assistant, across the design, the
 implementation and the tests. Every patch it contributed to carries an
 Assisted-by trailer. The Signed-off-by is mine: I have reviewed and tested what
-is here and I stand behind it.
+is here and I stand behind it
 
-Mike Lothian (25):
+Mike Lothian (23):
   rust: drm: kms: adapt Lyude's KMS series to current DRM APIs
   rust: drm: kms: tie mode-object references to their owners
   rust: drm: kms: constrain connector encoder attachment
   rust: drm: reject cross-device GEM handle creation
   rust: drm: kms: add common state and connector helpers
-  rust: drm: add typed RAII event channels
   rust: drm: expose HDCP 2.2 message identifiers
   rust: drm: kms: add typed color and rotation properties
   rust: drm: kms: add connector detect() and mode_valid() hooks
   rust: drm: kms: add plane damage-clip accessors
-  rust: drm: add private ioctl compat translations
   rust: drm: framebuffer: add validated shmem scanout views
   rust: drm: kms: expose checked plane geometry
   rust: drm: kms: add owned CRTC and vblank references
@@ -64,4 +140,6 @@ Mike Lothian (25):
   rust: drm: kms: walk the CRTCs an atomic commit carries
   rust: drm: kms: expose a connector's requested link depth
 
- 24 file(s) changed, 2696 insertion(s)(+), 104 deletion(s)(-)
+ 22 files changed, 2062 insertions(+), 99 deletions(-)
+
+base-commit: 4c9ba407018e8deb06dbc643112bac8f40404f95

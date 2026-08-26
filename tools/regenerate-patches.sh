@@ -4,19 +4,32 @@
 # Export the kernel work as independently postable series, one directory each.
 #
 # Each series is numbered from 0001 and carries its own cover letter, so it can be
-# sent on its own to the subsystem that owns it. A single 126-patch posting is not
+# sent on its own to the subsystem that owns it. A single 122-patch posting is not
 # reviewable by anyone, and most of those commits belong to other people anyway:
 # only commits authored here are exported. Everything else in the branch is a
 # dependency to base on, not a patch to post.
+#
+# Two of our own groups are exported to patches/not-posted/ instead. They are
+# build fixes the reference tree needs and nothing else: they enable no part of
+# Vino, so they are not sent alongside it.
+#
+# The cover letters cross-reference each other by lore link, and a link only
+# exists once a series has been sent. tools/v3-message-ids.txt carries the ids;
+# fill one in after sending and re-run this before preparing the next series.
 
 set -euo pipefail
 
 workspace="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 kernel_tree="${KERNEL_TREE:-$workspace/linux}"
 kernel_base="${KERNEL_BASE:-integration/base-20260809}"
-kernel_head="${KERNEL_HEAD:-vino}"
+kernel_head="${KERNEL_HEAD:-vino-v3}"
 author_email="${AUTHOR_EMAIL:-mike@fireburn.co.uk}"
+msgid_file="${MSGID_FILE:-$workspace/tools/v3-message-ids.txt}"
 output="$workspace/patches"
+
+# The branch people are asked to clone, and where.
+tree_url="https://github.com/FireBurn/linux"
+tree_branch="vino-v3"
 
 git -C "$kernel_tree" rev-parse --git-dir >/dev/null 2>&1 ||
     { echo "error: not a git tree: $kernel_tree" >&2; exit 2; }
@@ -25,10 +38,14 @@ for ref in "$kernel_base" "$kernel_head"; do
         { echo "error: missing ref '$ref'" >&2; exit 2; }
 done
 
-# Series order is apply order: a later one may depend on an earlier one, never the
-# reverse. Membership is decided from the subject alone so that adding a commit
-# needs no edit here.
-series_order=(sched-fair rust-core rust-crypto rust-usb rust-drm rust-firmware drm-tyr drm-vino drm-evdi)
+base_sha="$(git -C "$kernel_tree" rev-parse "$kernel_base")"
+base_short="${base_sha:0:12}"
+
+# Series order is apply order, and also send order: a later one may depend on an
+# earlier one, never the reverse. Membership is decided from the subject alone so
+# that adding a commit needs no edit here.
+series_order=(rust-core rust-crypto rust-usb rust-drm rust-firmware drm-vino)
+carried_order=(sched-fair drm-tyr)
 
 classify() {
     case "$1" in
@@ -40,7 +57,6 @@ classify() {
     "rust: "*)                          printf 'rust-core' ;;
     "drm/tyr: "*)                       printf 'drm-tyr' ;;
     "drm/vino: "*|"Documentation/gpu: "*) printf 'drm-vino' ;;
-    "drm/evdi: "*)                      printf 'drm-evdi' ;;
     *)                                  printf '' ;;
     esac
 }
@@ -55,7 +71,40 @@ title() {
     rust-firmware) printf 'rust: firmware: the firmware upload abstraction' ;;
     drm-tyr)       printf 'drm/tyr: mark the Rust DRM driver as non-KMS' ;;
     drm-vino)      printf 'drm/vino: a Rust driver for DisplayLink DL3 docks' ;;
-    drm-evdi)      printf 'drm/evdi: a Rust virtual display driver' ;;
+    esac
+}
+
+# Reroll count. A series that has been posted before keeps counting; one that is
+# new in this round is a v1 and carries no version tag, whatever round of the
+# overall effort it happens to arrive in.
+reroll() {
+    case "$1" in
+    rust-crypto|rust-usb|rust-drm|drm-vino) printf '3' ;;
+    *)                                      printf '' ;;
+    esac
+}
+
+# The v2 posting this series continues, if there was one. Documentation says not
+# to In-Reply-To an older revision of a multi-patch series, so this goes in the
+# cover text as a link and nowhere else.
+previous() {
+    case "$1" in
+    rust-crypto) printf '20260703030056.2763-1-mike@fireburn.co.uk' ;;
+    rust-usb)    printf '20260703030020.2694-1-mike@fireburn.co.uk' ;;
+    rust-drm)    printf '20260703030123.2814-1-mike@fireburn.co.uk' ;;
+    drm-vino)    printf '20260703030217.2886-1-mike@fireburn.co.uk' ;;
+    *)           printf '' ;;
+    esac
+}
+
+lists() {
+    case "$1" in
+    rust-core)     printf 'rust-for-linux and linux-kernel' ;;
+    rust-crypto)   printf 'linux-crypto and rust-for-linux' ;;
+    rust-usb)      printf 'linux-usb and rust-for-linux' ;;
+    rust-drm)      printf 'dri-devel and rust-for-linux' ;;
+    rust-firmware) printf 'linux-kernel and rust-for-linux' ;;
+    drm-vino)      printf 'dri-devel' ;;
     esac
 }
 
@@ -63,9 +112,120 @@ depends() {
     case "$1" in
     rust-crypto|rust-usb|rust-drm|rust-firmware) printf 'rust-core' ;;
     drm-vino)  printf 'rust-core, rust-crypto, rust-usb, rust-drm, rust-firmware' ;;
-    drm-evdi)  printf 'rust-core, rust-drm' ;;
     *)         printf 'none' ;;
     esac
+}
+
+msgid_of() {
+    [ -r "$msgid_file" ] || return 0
+    awk -v g="$1" '$1 == g && NF >= 2 { print $2; exit }' "$msgid_file"
+}
+
+# The rest of the posting, named from this series' point of view. Sent siblings
+# get a lore link; unsent ones get named and placed in the order.
+plural() { [ "$1" -eq 1 ] && printf 'patch' || printf 'patches'; }
+
+siblings() {
+    local self="$1" group id count
+    printf 'The rest of the posting, which is one series per subsystem:\n\n'
+    for group in "${series_order[@]}"; do
+        count="${counts[$group]}"
+        if [ "$group" = "$self" ]; then
+            printf '  %s, %d %s, this one\n' "$group" "$count" "$(plural "$count")"
+            continue
+        fi
+        id="$(msgid_of "$group")"
+        if [ -n "$id" ]; then
+            printf '  %s, %d %s, %s\n' "$group" "$count" "$(plural "$count")" "$(lists "$group")"
+            printf '  https://lore.kernel.org/r/%s\n' "$id"
+        else
+            printf '  %s, %d %s, to %s, not sent yet\n' \
+                "$group" "$count" "$(plural "$count")" "$(lists "$group")"
+        fi
+    done
+    printf '\n'
+    cat <<'SIBTAIL'
+Vino is the user for every one of them. The abstractions are generic and carry
+no knowledge of DisplayLink, but none of them are here speculatively: each one
+exists because the driver could not be written in safe Rust without it
+SIBTAIL
+}
+
+tree_block() {
+    cat <<TREE
+The whole thing is one branch, base and prerequisites included, which is the
+quickest way to read it:
+
+  git clone -b $tree_branch $tree_url
+  cd linux
+  make LLVM=1 rustavailable
+  make LLVM=1 -j\$(nproc)
+  make LLVM=1 -j\$(nproc) modules
+
+CONFIG_RUST=y and CONFIG_DRM_VINO=m are the two that matter, and DRM_VINO
+selects the rest of what it needs. Check CONFIG_DRM_VINO survived olddefconfig
+before believing a clean build: if the Rust toolchain is not available the
+symbol quietly disappears and everything still exits 0
+
+On top of what is posted, that branch carries two build fixes and nothing else:
+one scheduler call site that stops compiling under the locking-guard series, and
+the Kms associated type Tyr needs once the KMS registration trait requires one.
+Neither enables any part of Vino, so neither is sent with it
+
+That branch is the exact tree these patches were generated from, at
+$base_short, which is the drm-rust-next tip of 2026-08-06. drm-next has moved
+on since; this deliberately follows drm-rust-next instead, because the KMS layer
+underneath this work lives only there and that tree picks up drm-next on its own
+schedule
+TREE
+}
+
+prereq_block() {
+    cat <<'PREREQ'
+Other people's unmerged work the branch carries, which is a dependency to base
+on rather than anything being posted here:
+
+  Lyude Paul, Rust bindings for KMS + RVKMS, 43 commits
+  https://lore.kernel.org/r/20250305230406.567126-1-lyude@redhat.com
+
+  Colin Braun, rust: usb: add usb request block abstractions, 3 commits
+  https://lore.kernel.org/r/20260712-urb-abstraction-v1-v1-0-9fa011634ead@gmail.com
+
+  Boqun Feng's counted interrupt disabling series, which SpinLockIrq needs,
+  9 commits. One patch of it is already in tip locking/core as e901c1510e24
+
+  Alice Ryhl's owned workqueue series, 3 commits, and Onur Ozkan's cancel_sync
+
+Every one of those keeps its author, its message and its tags, and none of them
+carries a trailer of mine
+PREREQ
+}
+
+danilo_block() {
+    cat <<'DANILO'
+On the workqueue side, Danilo Krummrich's OwnedQueue, ScopedQueue and ScopedWork
+series supersedes some of what is carried here, and it is the better answer.
+Vino calls Work::cancel_sync() in seven places to make teardown wait for its own
+work items, and ScopedWork cancels on drop, which is that idiom done properly
+rather than by hand
+
+  https://lore.kernel.org/r/20260807165252.3849875-1-dakr@kernel.org
+
+It was still moving when this was cut, so this posting uses what is available
+today. When it lands the swap goes in as one commit that moves the prerequisites
+and migrates the call sites together, because splitting those two halves would
+leave the tree not building in between
+DANILO
+}
+
+disclosure_block() {
+    cat <<'DISCLOSURE'
+These patches were written with the assistance of Claude (Anthropic), used
+through Claude Code as an interactive coding assistant, across the design, the
+implementation and the tests. Every patch it contributed to carries an
+Assisted-by trailer. The Signed-off-by is mine: I have reviewed and tested what
+is here and I stand behind it
+DISCLOSURE
 }
 
 # Cover-letter text. A series with nothing here gets the placeholder, so an
@@ -86,92 +246,162 @@ raw_spin_unlock_irqrestore(). No behavioural change: the lock is held over the
 same span through both return paths, and do_sched_cfs_period_timer() still gets
 the same flags value.
 
-Sent separately because it belongs to the scheduler rather than to the driver
-work that found it, and because it is a build fix for a series already in
-flight.
+Not posted with the Vino series: it enables no part of it. It belongs to the
+scheduler, and it is a build fix for a series already in flight.
+BLURB
+        ;;
+    drm-tyr) cat <<'BLURB'
+The KMS registration trait gains a required Kms associated type. Tyr is a
+render-only driver, so it selects the non-KMS PhantomData implementation just as
+Nova does.
+
+Not posted with the Vino series: it enables no part of it. It is a build fix for
+the KMS series, and belongs with whichever tree takes that first.
 BLURB
         ;;
     rust-core) cat <<'BLURB'
-Core Rust abstractions needed by a USB display driver written in safe Rust.
-They are separated from the driver because none of them are display-specific:
-each covers a kernel facility that has C callers today and no Rust binding.
+Core Rust abstractions a USB display driver needs. They are separated from the
+driver because none of them are display specific: each one covers a kernel
+facility that has C callers today and no Rust binding
 
-  - platform: create a platform device at runtime, for a driver that publishes
-    virtual devices rather than binding to firmware-described ones.
-  - sysfs: attribute groups on a root device.
-  - sync: single-shot and timed completions.
-  - hrtimer: restart an ArcHrTimerHandle, and see the interrupt state inside a
-    hard callback.
-  - random, xxhash, time: safe wrappers over get_random_bytes(), xxh64() and
-    ktime_get_real_seconds().
-  - workqueue: make OwnedQueue thread-safe.
-  - io: offset copy helpers that check the bounds they are given.
-  - error: expose EPROTO.
-  - fpu: an RAII guard for a kernel FPU section.
+  sync: single-shot and timed completions
+  hrtimer: restart an ArcHrTimerHandle, and read the interrupt state inside a
+    hard callback
+  random, xxhash, time: safe wrappers over get_random_bytes(), xxh64() and
+    ktime_get_real_seconds()
+  workqueue: make OwnedQueue thread safe
+  io: offset copy helpers that check the bounds they are given
+  error: expose EPROTO
 
-Each is small and independently reviewable, and each has a user in the driver
-series that follows.
+This is a new series rather than a reroll: none of these nine has been posted
+before. A runtime platform-device creator and a root-device attribute group went
+out inside the rust: drm v2 series, where they did not belong, and they are not
+here either, because the consumer that needed them is not part of this posting
+
+It is small on purpose. Every patch has a caller in the driver at the end of the
+chain, and nothing is here on the argument that it might be useful to somebody
+later
 BLURB
         ;;
     rust-crypto) cat <<'BLURB'
 Synchronous crypto bindings for a driver that has to authenticate a device
-before it can drive it.
+before it is allowed to drive it
 
 The first patch covers AES-128, AES-CMAC, SHA-256 and HMAC over the existing
 synchronous crypto API. The second adds RSA through akcipher, which HDCP 2.2
-needs to verify a device certificate and wrap a session key.
+needs to verify a device certificate and wrap a session key
 
-The consumer is the DisplayLink driver in a later series, whose control plane
-is sealed with AES-CTR and keyed by an HDCP 2.2 exchange. The bindings
-themselves are generic and carry no knowledge of that protocol.
+Changes since v2:
+
+  The hand-rolled AES-CMAC is gone, along with its own dbl() subkey
+    derivation. It delegates to the in-tree aes_cmac library through
+    include/crypto/aes-cbc-macs.h, which is what Eric Biggers asked for
+  There is no private RSA primitive either. Modexp goes through
+    crypto_alloc_akcipher("rsa"), and OAEP padding and the HDCP key material
+    are held in a memory-wiping secret type
+  The three patches are two: the CMAC fix belonged in the commit that
+    introduced the CMAC, not after it
+
+Nothing here knows what HDCP is. The consumer is the DisplayLink driver at the
+end of the chain, whose control plane is sealed with AES-CTR and keyed by an
+HDCP 2.2 exchange
 BLURB
         ;;
     rust-usb) cat <<'BLURB'
 Host-side USB abstractions for a driver whose device is a bulk-endpoint pipe
-rather than a class device.
+rather than a class device
 
-  - Revocable typed interface I/O, so an interface cannot be used after the
-    core has taken it back.
-  - Reusable URBs and persistent bulk queues, which is what keeps a video
-    stream in flight without allocating per transfer.
-  - Topology lookup and removal notification.
-  - A device id constructor matching on vendor together with interface class,
+  Revocable typed interface I/O, so an interface cannot be used after the core
+    has taken it back
+  Reusable URBs and persistent bulk queues, which is what keeps a video stream
+    in flight without allocating per transfer
+  The device descriptor fields a driver needs to identify hardware before it
+    decides to drive it, and a queue-readiness check
+  A device id constructor matching on vendor together with interface class,
     subclass and protocol, for a composite device whose function is not
-    identified by the product id alone.
-  - Letting a driver keep its interface usable while unbinding, so teardown can
-    still talk to the device it is releasing.
+    identified by the product id alone
+  Letting a driver keep its interface usable while unbinding, so teardown can
+    still talk to the device it is releasing
 
-These build on the USB abstractions already merged; the consumer is the
-DisplayLink driver in a later series.
+Changes since v2, which is where the real review happened:
+
+  v2 10/11, "keep usb::Device private and gate ...", is dropped entirely.
+    Oliver Neukum was right that it was conceptually wrong: USB does device
+    level operations, and hiding that behind an interface is a layering
+    violation. Device stays public
+  as_bound() is gone from both the binding and the driver. Danilo Krummrich's
+    point stands: needing an unsafe as_bound() means the design or the
+    infrastructure is wrong, not that the escape hatch is needed
+  reset_configuration() is gone, and set_interface() now exists in two
+    correctly scoped forms, one on Interface<Bound> taking an altsetting and
+    one on Device taking interface plus altsetting
+  What replaces the concealment is lifecycle gating: an adapter-owned,
+    revocable I/O window that is valid across probe, suspend, reset, resume and
+    disconnect and invalid outside them. That is the interval in which I/O is
+    legal, which is narrower than "the interface is bound"
+  There is no private URB implementation. Colin Braun's URB RFC is carried
+    unchanged as the foundation and this builds on it
+  A topology walk and a device-removal notifier were written after v2 and are
+    not here. They existed for a second consumer that is not part of this
+    posting, so nothing in what is sent would call them
+
+Alan Stern's lifecycle point is what makes device access from an interface
+sound, and is worth restating because the whole shape depends on it: an
+unconfigured device has no interfaces, so an interface that exists implies a
+configured device
 BLURB
         ;;
     rust-drm) cat <<'BLURB'
 KMS abstractions for a Rust display driver, continuing Lyude Paul's KMS series
 rather than replacing it. The first patch adapts that work to the DRM APIs as
-they stand today; the rest add what a real driver turned out to need.
+they stand today, and the rest add what a real driver turned out to need
 
 Broadly they fall into four groups:
 
-  - Lifetime and ownership: mode-object references tied to their owners, owned
+  Lifetime and ownership: mode-object references tied to their owners, owned
     CRTC and vblank references, a safe constructor for owned registration data,
     pinning the owner while DRM files remain open, and rejecting cross-device
-    GEM handle creation.
-  - Properties a driver must read or publish: typed colour and rotation, plane
+    GEM handle creation
+  Properties a driver must read or publish: typed colour and rotation, plane
     blend mode, FB_DAMAGE_CLIPS, connector colorimetry and HDR metadata, and a
-    connector's requested link depth.
-  - Callbacks and state: connector detect() and mode_valid(), common state and
+    connector's requested link depth
+  Callbacks and state: connector detect() and mode_valid(), common state and
     connector helpers, checked plane geometry, walking the CRTCs an atomic
-    commit carries, and CRTC mode changes.
-  - Modes and framebuffers: an owned display mode constructor, mode flags and
-    CTA VIC matching, synthesized CVT connector modes, and validated shmem
-    scanout views.
+    commit carries, and CRTC mode changes
+  Modes and framebuffers: an owned display mode constructor, mode flags and CTA
+    VIC matching, synthesized CVT connector modes, and validated shmem scanout
+    views
 
-Also here: typed RAII event channels, private ioctl compat translations, and
-the HDCP 2.2 message identifiers, which are DRM UAPI rather than driver
-constants.
+Also here are the HDCP 2.2 message identifiers, which are DRM UAPI rather than
+driver constants
 
-The consumers are the two drivers in the series that follow, both of which
-contain no unsafe block and no direct bindings:: call.
+Changes since v2:
+
+  Lyude's 43 commits are carried in order and patch-identical to the imported
+    source, with her messages and tags untouched and no trailer of mine on any
+    of them. v2 mixed her work with adaptations of mine and obscured the
+    attribution, which was the fair complaint
+  Everything of mine on top is a separate commit, and it is either an
+    adaptation to a DRM API that has moved or a safety extension a driver
+    needed
+  The i2c adapter-provider patch is dropped. Igor Korotin's work is active and
+    its provider-lifetime question is not one to answer privately in a driver,
+    so the kernel driver registers no downstream I2C adapter this round
+  The typed event channels and the private ioctl compat translations are
+    dropped. Both existed for a second consumer that is not part of this
+    posting, so neither has a user in what is sent
+  The hardware-cursor support that was a separate v2 patch is folded into the
+    plane work it belongs to
+
+Two overlaps worth flagging rather than being told about. Alvin Sun's
+"Fix missing fops.owner in Rust DRM/misc abstractions" fixes the same bug as
+"rust: drm: pin the owner while DRM files remain open", from the other end,
+through ModuleMetadata rather than by threading an owning module through
+UnregisteredDevice::new(). Theirs is the better shape and mine should be dropped
+the moment it lands; it is still load-bearing today because upstream
+UnregisteredDevice::new() takes no module. And where an early patch here fixes a
+commit of Lyude's that is itself unmerged, that fix would be better folded into
+her next revision than carried separately, and I am happy to do it that way
 BLURB
         ;;
     rust-firmware) cat <<'BLURB'
@@ -180,81 +410,122 @@ firmware_upload_register() covers the other half: userspace hands the driver an
 image to write. It publishes /sys/class/firmware/<name>/ with the loading and
 data handshake plus status, error, remaining_size and cancel, and is what a
 driver uses when an image has to be written on demand rather than only when a
-newer one appears.
+newer one happens to be on disk
 
 This adds an Upload trait mirroring struct fw_upload_ops, a Registration that
 unregisters on drop, and an Error enum whose values are the fw_upload_err codes
-userspace already reads back out of the error attribute.
+userspace already reads back out of the error attribute
 
-The consumer is the DisplayLink driver, which writes dock firmware over DFU.
-BLURB
-        ;;
-    drm-tyr) cat <<'BLURB'
-The KMS registration trait gains a required Kms associated type. Tyr is a
-render-only driver, so it selects the non-KMS PhantomData implementation just as
-Nova does.
+rust: firmware: add request_into_buf() reached drm-rust-next this cycle and is
+not a duplicate of this: that is the pull direction, and upstream still has no
+binding for the push one
 
-A build fix for the KMS series rather than a change to Tyr's behaviour, sent on
-its own so it can go through whichever tree takes it first.
-BLURB
-        ;;
-    drm-evdi) cat <<'BLURB'
-A Rust implementation of EVDI that preserves the established libevdi and
-DisplayLinkManager display ABI, so existing userspace keeps working unchanged.
-The ABI is installed as a normal DRM UAPI header with generated Rust bindings,
-and its pointer-bearing ioctls are translated for 32-bit clients.
-
-Cards are created through the established platform sysfs interface and expose
-the expected DRM ioctls and events. The driver uses owned DRM, KMS, event,
-framebuffer and sysfs abstractions throughout: it contains no unsafe block, no
-direct bindings:: call and no reconstructed object lifetime.
-
-Scanout uses a bounded four-entry pool with owned shmem mappings, so compositor
-swapchain buffers are mapped before the client is notified and reused for later
-flips and GRABPIX calls. The bandwidth limits userspace supplies are enforced as
-given, without a driver-invented multiplier.
+The consumer is the DisplayLink driver at the end of the chain, which writes
+dock firmware over DFU. It is a new series and has not been posted before
 BLURB
         ;;
     drm-vino) cat <<'BLURB'
 Vino is a DRM/KMS driver for DisplayLink DL3 docks. These devices carry no
 standard display protocol: the host encodes each frame with a vendor codec and
 ships it over bulk USB, inside a control plane sealed with AES-CTR and keyed by
-an HDCP 2.2 authentication exchange. Until now the only way to drive one on Linux
-was an out-of-tree kernel module paired with a closed-source userspace daemon.
-Everything here is reverse-engineered from the wire and from the vendor
-binaries; there is no vendor documentation for any of it.
+an HDCP 2.2 authentication exchange. Until now the only way to drive one on
+Linux was an out-of-tree kernel module paired with a closed source userspace
+daemon
+
+The headline change since v2 is not a refactor. v1 and v2 never lit a panel.
+This one does, on three generations of dock, driving a real desktop, from a cold
+boot with nothing of the vendor's loaded
 
 Three generations are supported, and they differ in more than identifiers:
 
-  - DL-3x00 (Ella), which shares one pipe between control and video, states its
-    decoder tables in a narrow form, and must never be blanked by painting black.
-  - DL-6xxx (Ridge), including the Dell D6000, which serves both connectors from
-    a single EDID handler.
-  - DL-7400 (Navarro), four connectors over two video endpoints, 10 Gbps.
+  DL-3x00 (Ella), which shares one pipe between control and video, states its
+    decoder tables in a narrow form, and must never be blanked by painting
+    black, because its shared pipe halts and the session dies with the panel
+    still lit
+  DL-6xxx (Ridge), including the Dell D6000, which serves both connectors from
+    a single EDID handler, so a fetch on an empty connector returns the other
+    one's monitor
+  DL-7400 (Navarro), four connectors over two video endpoints, 10 Gbps
 
 The differences are data. A dock is placed by family into a DockProfile carrying
 its endpoints, codec geometry, allocation rules and quirks, and there is one code
-path through the driver for all three -- no per-device branches, no module
-parameters selecting behaviour.
-
-The driver reads the dock's running firmware version and can update it over DFU
-through the firmware upload API, which is how a dock too old to enumerate its
-connectors is brought forward.
+path through the driver for all three. No per-device branches, and no module
+parameter selects a profile or a code path
 
 On DL-7400 the driver drives 30 bpp in PQ: 2560x1440p120 on two connectors, with
 the sink reporting 10 bit. Depth is not a flag on the wire but a set of
-agreements -- the DMA format, the colour-depth word, the framebuffer allocation,
+agreements, the DMA format, the colour-depth word, the framebuffer allocation,
 and the entropy coder's escape ceilings, each of which is stated to the dock by
 its own decoder code table. Getting one of them wrong is not a clean failure: a
 DC ceiling the dock was not told about desynchronises the bitstream mid-record,
 and an AC one stays in step while reconstructing every sharp edge from a
-truncated magnitude.
+truncated magnitude
 
-Tested on all three generations with monitors attached, driving a desktop.
+Firmware. A dock carries its running version in a vendor descriptor rather than
+in bcdDevice, which does not move across an update, so the driver reads that,
+compares it against the packaged image and writes a newer one over DFU. This is
+how a dock too old to enumerate its connectors is brought forward. With nothing
+installed the dock stays on whatever it shipped with, probe says so and carries
+on, so the update path is opt-in by putting the file there
+
+The images are DisplayLink's own, out of their Linux driver bundle, which
+installs them to /opt/displaylink. Copy the ones you want into /lib/firmware/vino
+under the names they already have:
+
+  ella-dock-release.spkg      DL-3x00
+  ridge-dock-release.spkg     DL-6xxx, the D6000
+  navarro-dock-release.spkg   DL-7400
+
+From the 6.8.1 bundle those carry 12.2.15, 12.2.25 and 12.2.26, and that is what
+the three docks here are running. Each was written by this driver, from 11.4.47,
+11.5.28 and 11.5.29 respectively, so the DFU path is exercised rather than only
+read. A manual write is also there through /sys/class/firmware/vino-<dock>/,
+which is the direction the firmware upload API is designed around
+
+Tested on:
+
+  HP 3005pr port replicator, DL-3900, two connectors at 1920x1080p60
+  Dell Universal Dock D6000, 17e9:6006, two connectors at 2560x1440p120
+  WAVLINK DL7400 quad dock, 17e9:7000, four connectors, two of them driven at
+    2560x1440p120 in 30 bpp PQ
+
+All three bind concurrently on the same host, with monitors attached, driving a
+KDE desktop. 97 KUnit tests across 19 suites run at module load under
+CONFIG_DRM_VINO_KUNIT_TEST
+
+Changes since v2:
+
+  It works, which v2 did not. The gate was one byte: the EDID engage message
+    carries its connector selector in two places and the second was being filled
+    with the message's random tail, so the dock acked it and then never enabled
+    the downstream sink
+  No raw C KMS anywhere. The driver is built on the safe KMS mode-object layer,
+    which is what Danilo Krummrich asked for on v1, and git grep bindings::drm_
+    over the driver returns nothing
+  No unsafe block and no direct bindings:: call in the driver at all
+  Three generations rather than one, and the second and third arrived without
+    adding a branch, which is the test of whether the profile split was real
+  The development history is folded away. This was 33 commits carrying a revert
+    pair, a module parameter added and later deleted, and fixes to patches
+    earlier in the same series. It is now 13 that introduce the driver in the
+    order it is understood, and a fix to a commit this series adds is folded
+    into that commit
+  select DRM_GEM_SHMEM_HELPER is gone, since RUST_DRM_GEM_SHMEM_HELPER pulls it
+    in, which Julian Braha pointed out
+  The related series are linked and Vino is named as the user for all of them,
+    which Miguel Ojeda asked for
+
+One thing to object to before anyone has to. There is a trace_crypto module
+parameter, default off, which discloses one session's keys so a USB capture can
+be decrypted. It exists because that is the only way anyone with a DisplayLink
+dock nobody here owns can produce a capture that says anything, and this whole
+driver is built out of such captures. I would rather argue for keeping it than
+have it found
 
 The protocol was reverse engineered from captured wire traffic and from the
-vendor binaries; the assistance noted below covers that work as well as the
-implementation, and every constant here came from a measurement.
+vendor binaries. There is no vendor documentation for any of it, every constant
+here came from a measurement, and the assistance noted below covers that work as
+well as the implementation
 BLURB
         ;;
     *) printf '*** BLURB HERE ***\n' ;;
@@ -262,7 +533,7 @@ BLURB
 }
 
 rm -rf -- "$output"
-mkdir -p "$output"
+mkdir -p "$output" "$output/not-posted"
 
 declare -A members
 while IFS='|' read -r sha subject; do
@@ -276,62 +547,101 @@ while IFS='|' read -r sha subject; do
 done < <(git -C "$kernel_tree" log --reverse --format='%H|%s' \
              --author="$author_email" "$kernel_base..$kernel_head")
 
-exported=0
-for group in "${series_order[@]}"; do
+# Counts first: the cover letters name each other's sizes.
+declare -A counts
+for group in "${series_order[@]}" "${carried_order[@]}"; do
     shas="${members[$group]:-}"
     [ -n "$shas" ] || { echo "error: series '$group' is empty" >&2; exit 1; }
-    dir="$output/$group"
+    counts[$group]="$(printf '%s\n' $shas | wc -l)"
+done
+
+emit_patches() {
+    local dir="$1" shas="$2" sha n=0
     mkdir -p "$dir"
-    n=0
     for sha in $shas; do
         n=$((n + 1))
         git -C "$kernel_tree" format-patch --no-signature --quiet \
             --start-number "$n" --output-directory "$dir" -1 "$sha" >/dev/null
     done
-    count=$n
+    ls "$dir" | grep -E '^[0-9]{4}-' | LC_ALL=C sort >"$dir/series"
+}
+
+diffstat_of() {
+    local sha
+    for sha in $1; do
+        git -C "$kernel_tree" show --numstat --format= "$sha"
+    done | awk '
+        $3 != "" { add[$3] += $1; del[$3] += $2 }
+        END {
+            n = 0; a = 0; d = 0
+            for (f in add) { n++; a += add[f]; d += del[f] }
+            printf " %d file%s changed, %d insertion%s(+), %d deletion%s(-)\n",
+                   n, n == 1 ? "" : "s", a, a == 1 ? "" : "s", d, d == 1 ? "" : "s"
+        }'
+}
+
+exported=0
+for group in "${series_order[@]}"; do
+    shas="${members[$group]}"
+    count="${counts[$group]}"
+    dir="$output/$group"
+    emit_patches "$dir" "$shas"
     exported=$((exported + count))
+
+    ver="$(reroll "$group")"
+    prev="$(previous "$group")"
+    subject_tag="PATCH${ver:+ v$ver}"
 
     # A cover letter git cannot generate itself: the commits are not contiguous in
     # the branch, so there is no range to hand format-patch.
     {
         printf 'From: Mike Lothian <%s>\n' "$author_email"
-        printf 'Subject: [PATCH 0/%d] %s\n\n' "$count" "$(title "$group")"
-        printf 'Depends on: %s\n' "$(depends "$group")"
-        printf 'Base:       %s\n\n' "$kernel_base"
+        printf 'Subject: [%s 0/%d] %s\n\n' "$subject_tag" "$count" "$(title "$group")"
         blurb "$group"
         printf '\n'
+        if [ -n "$prev" ]; then
+            printf 'v2: https://lore.kernel.org/r/%s\n\n' "$prev"
+        fi
+        siblings "$group"
+        printf '\n'
+        tree_block
+        printf '\n'
+        prereq_block
+        printf '\n'
+        case "$group" in
+        rust-core|drm-vino) danilo_block; printf '\n' ;;
+        esac
         # Documentation/process/generated-content.rst asks for the disclosure in the
         # cover letter, not only in the per-patch trailer.
         if grep -lq '^Assisted-by:' "$dir"/[0-9][0-9][0-9][0-9]-*.patch 2>/dev/null; then
-            cat <<'DISCLOSURE'
-These patches were written with the assistance of Claude (Anthropic), used
-through Claude Code as an interactive coding assistant, across the design, the
-implementation and the tests. Every patch it contributed to carries an
-Assisted-by trailer. The Signed-off-by is mine: I have reviewed and tested what
-is here and I stand behind it.
-
-DISCLOSURE
+            disclosure_block
+            printf '\n'
         fi
         printf 'Mike Lothian (%d):\n' "$count"
         for sha in $shas; do
             git -C "$kernel_tree" show -s --format='  %s' "$sha"
         done
         printf '\n'
-        # Aggregate the diffstat over the set: the commits are not contiguous, so a
-        # range diff would sweep in everything between them.
-        for sha in $shas; do
-            git -C "$kernel_tree" show --numstat --format= "$sha"
-        done | awk '
-            $3 != "" { add[$3] += $1; del[$3] += $2 }
-            END {
-                n = 0; a = 0; d = 0
-                for (f in add) { n++; a += add[f]; d += del[f] }
-                printf " %d file(s) changed, %d insertion(s)(+), %d deletion(s)(-)\n", n, a, d
-            }'
+        diffstat_of "$shas"
+        printf '\nbase-commit: %s\n' "$base_sha"
     } >"$dir/0000-cover-letter.patch"
 
-    ls "$dir" | grep -E '^[0-9]{4}-' | LC_ALL=C sort >"$dir/series"
-    printf '%-14s %2d patch(es)   depends: %s\n' "$group" "$count" "$(depends "$group")"
+    printf '%-14s %2d %-7s %-8s depends: %s\n' \
+        "$group" "$count" "$(plural "$count")" "${ver:+v$ver}" "$(depends "$group")"
+done
+
+for group in "${carried_order[@]}"; do
+    shas="${members[$group]}"
+    count="${counts[$group]}"
+    dir="$output/not-posted/$group"
+    emit_patches "$dir" "$shas"
+    exported=$((exported + count))
+    {
+        printf 'From: Mike Lothian <%s>\n' "$author_email"
+        printf 'Subject: [NOT POSTED 0/%d] %s\n\n' "$count" "$(title "$group")"
+        blurb "$group"
+    } >"$dir/0000-cover-letter.patch"
+    printf '%-14s %2d %-7s %-8s not posted\n' "$group" "$count" "$(plural "$count")" ""
 done
 
 # Every commit of ours must land in exactly one series.
@@ -343,19 +653,32 @@ fi
 
 {
     printf '# Kernel patch export\n\n'
-    printf 'Generated by `tools/regenerate-patches.sh`. Each directory is an independent\n'
-    printf 'series, numbered from 0001 with its own cover letter, and is posted on its own\n'
-    printf 'to the subsystem that owns it.\n\n'
+    printf 'Generated by `tools/regenerate-patches.sh` from `%s`. Each directory is\n' "$kernel_head"
+    printf 'an independent series, numbered from 0001 with its own cover letter, and is\n'
+    printf 'posted on its own to the subsystem that owns it.\n\n'
     printf 'Only commits authored by %s are exported. The branch also carries other\n' "$author_email"
     printf "people's in-flight work -- Lyude Paul's KMS series, Boqun Feng's SpinLockIrq\n"
     printf 'series and others -- which are dependencies to base on, never patches to post.\n\n'
-    printf '| series | patches | depends on |\n|---|---|---|\n'
+    printf '| series | patches | version | list | depends on |\n|---|---|---|---|---|\n'
     for group in "${series_order[@]}"; do
-        c="$(ls "$output/$group" | grep -cE '^[0-9]{4}-.*\.patch$')"
-        c=$((c - 1))
-        printf '| `%s` | %d | %s |\n' "$group" "$c" "$(depends "$group")"
+        ver="$(reroll "$group")"
+        printf '| `%s` | %d | %s | %s | %s |\n' \
+            "$group" "${counts[$group]}" "${ver:+v$ver}" "$(lists "$group")" "$(depends "$group")"
     done
-    printf '\nApply order is the table order. Base: `%s`.\n' "$kernel_base"
+    printf '\nApply order is the table order, and it is also send order: each cover letter\n'
+    printf 'links the ones already sent, so fill in `tools/v3-message-ids.txt` after each\n'
+    printf 'posting and re-run this before preparing the next.\n\n'
+    printf '## Not posted\n\n'
+    printf 'Under `not-posted/`. Both are build fixes the reference tree needs and neither\n'
+    printf 'enables any part of Vino, so neither is sent alongside it.\n\n'
+    for group in "${carried_order[@]}"; do
+        printf '| `%s` | %d |\n' "$group" "${counts[$group]}"
+    done
+    printf '\nBase: `%s` (`%s`).\n' "$kernel_base" "$base_short"
 } >"$output/README.md"
 
-printf '\n%d patches across %d series\n' "$exported" "${#series_order[@]}"
+printf '\n%d patches: %d across %d posted series, %d carried and not posted\n' \
+    "$exported" \
+    "$(( exported - counts[sched-fair] - counts[drm-tyr] ))" \
+    "${#series_order[@]}" \
+    "$(( counts[sched-fair] + counts[drm-tyr] ))"

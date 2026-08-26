@@ -1,28 +1,95 @@
 From: Mike Lothian <mike@fireburn.co.uk>
-Subject: [PATCH 0/2] rust: crypto: AES, CMAC, SHA-256, HMAC and RSA bindings
-
-Depends on: rust-core
-Base:       integration/base-20260809
+Subject: [PATCH v3 0/2] rust: crypto: AES, CMAC, SHA-256, HMAC and RSA bindings
 
 Synchronous crypto bindings for a driver that has to authenticate a device
-before it can drive it.
+before it is allowed to drive it
 
 The first patch covers AES-128, AES-CMAC, SHA-256 and HMAC over the existing
 synchronous crypto API. The second adds RSA through akcipher, which HDCP 2.2
-needs to verify a device certificate and wrap a session key.
+needs to verify a device certificate and wrap a session key
 
-The consumer is the DisplayLink driver in a later series, whose control plane
-is sealed with AES-CTR and keyed by an HDCP 2.2 exchange. The bindings
-themselves are generic and carry no knowledge of that protocol.
+Changes since v2:
+
+  The hand-rolled AES-CMAC is gone, along with its own dbl() subkey
+    derivation. It delegates to the in-tree aes_cmac library through
+    include/crypto/aes-cbc-macs.h, which is what Eric Biggers asked for
+  There is no private RSA primitive either. Modexp goes through
+    crypto_alloc_akcipher("rsa"), and OAEP padding and the HDCP key material
+    are held in a memory-wiping secret type
+  The three patches are two: the CMAC fix belonged in the commit that
+    introduced the CMAC, not after it
+
+Nothing here knows what HDCP is. The consumer is the DisplayLink driver at the
+end of the chain, whose control plane is sealed with AES-CTR and keyed by an
+HDCP 2.2 exchange
+
+v2: https://lore.kernel.org/r/20260703030056.2763-1-mike@fireburn.co.uk
+
+The rest of the posting, which is one series per subsystem:
+
+  rust-core, 9 patches, to rust-for-linux and linux-kernel, not sent yet
+  rust-crypto, 2 patches, this one
+  rust-usb, 5 patches, to linux-usb and rust-for-linux, not sent yet
+  rust-drm, 23 patches, to dri-devel and rust-for-linux, not sent yet
+  rust-firmware, 1 patch, to linux-kernel and rust-for-linux, not sent yet
+  drm-vino, 13 patches, to dri-devel, not sent yet
+
+Vino is the user for every one of them. The abstractions are generic and carry
+no knowledge of DisplayLink, but none of them are here speculatively: each one
+exists because the driver could not be written in safe Rust without it
+
+The whole thing is one branch, base and prerequisites included, which is the
+quickest way to read it:
+
+  git clone -b vino-v3 https://github.com/FireBurn/linux
+  cd linux
+  make LLVM=1 rustavailable
+  make LLVM=1 -j$(nproc)
+  make LLVM=1 -j$(nproc) modules
+
+CONFIG_RUST=y and CONFIG_DRM_VINO=m are the two that matter, and DRM_VINO
+selects the rest of what it needs. Check CONFIG_DRM_VINO survived olddefconfig
+before believing a clean build: if the Rust toolchain is not available the
+symbol quietly disappears and everything still exits 0
+
+On top of what is posted, that branch carries two build fixes and nothing else:
+one scheduler call site that stops compiling under the locking-guard series, and
+the Kms associated type Tyr needs once the KMS registration trait requires one.
+Neither enables any part of Vino, so neither is sent with it
+
+That branch is the exact tree these patches were generated from, at
+4c9ba407018e, which is the drm-rust-next tip of 2026-08-06. drm-next has moved
+on since; this deliberately follows drm-rust-next instead, because the KMS layer
+underneath this work lives only there and that tree picks up drm-next on its own
+schedule
+
+Other people's unmerged work the branch carries, which is a dependency to base
+on rather than anything being posted here:
+
+  Lyude Paul, Rust bindings for KMS + RVKMS, 43 commits
+  https://lore.kernel.org/r/20250305230406.567126-1-lyude@redhat.com
+
+  Colin Braun, rust: usb: add usb request block abstractions, 3 commits
+  https://lore.kernel.org/r/20260712-urb-abstraction-v1-v1-0-9fa011634ead@gmail.com
+
+  Boqun Feng's counted interrupt disabling series, which SpinLockIrq needs,
+  9 commits. One patch of it is already in tip locking/core as e901c1510e24
+
+  Alice Ryhl's owned workqueue series, 3 commits, and Onur Ozkan's cancel_sync
+
+Every one of those keeps its author, its message and its tags, and none of them
+carries a trailer of mine
 
 These patches were written with the assistance of Claude (Anthropic), used
 through Claude Code as an interactive coding assistant, across the design, the
 implementation and the tests. Every patch it contributed to carries an
 Assisted-by trailer. The Signed-off-by is mine: I have reviewed and tested what
-is here and I stand behind it.
+is here and I stand behind it
 
 Mike Lothian (2):
   rust: crypto: add AES-128, AES-CMAC, SHA-256, and HMAC bindings
   rust: crypto: add synchronous RSA akcipher support
 
- 9 file(s) changed, 585 insertion(s)(+), 5 deletion(s)(-)
+ 9 files changed, 592 insertions(+), 6 deletions(-)
+
+base-commit: 4c9ba407018e8deb06dbc643112bac8f40404f95

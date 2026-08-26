@@ -1,4 +1,4 @@
-From 761552b5a1bca772aca394566771a4dcb8c5414e Mon Sep 17 00:00:00 2001
+From 406ca8c571770339878714c8f556310345e71b98 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:11 +0100
 Subject: [PATCH] drm/vino: allow the driver to be built
@@ -9,12 +9,12 @@ preceding commits become a module.
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- MAINTAINERS                   |  6 ++++++
+ MAINTAINERS                   |  6 +++++
  drivers/gpu/drm/Kconfig       |  1 +
  drivers/gpu/drm/Makefile      |  1 +
- drivers/gpu/drm/vino/Kconfig  | 40 +++++++++++++++++++++++++++++++++++
+ drivers/gpu/drm/vino/Kconfig  | 42 +++++++++++++++++++++++++++++++++++
  drivers/gpu/drm/vino/Makefile |  2 ++
- 5 files changed, 50 insertions(+)
+ 5 files changed, 52 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/Kconfig
  create mode 100644 drivers/gpu/drm/vino/Makefile
 
@@ -61,10 +61,10 @@ index e635fcffd379..29ab96f6e8de 100644
  obj-$(CONFIG_DRM_EXYNOS) +=exynos/
 diff --git a/drivers/gpu/drm/vino/Kconfig b/drivers/gpu/drm/vino/Kconfig
 new file mode 100644
-index 000000000000..7251a0941383
+index 000000000000..fcc761b4654b
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/Kconfig
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,42 @@
 +# SPDX-License-Identifier: GPL-2.0
 +config DRM_VINO
 +	tristate "DisplayLink DL3 (Vino) open driver"
@@ -84,9 +84,11 @@ index 000000000000..7251a0941383
 +	select RUST_FW_LOADER_ABSTRACTIONS
 +	select FW_UPLOAD
 +	help
-+	  Open in-kernel Rust driver for DisplayLink DL3 docks: the Dell
-+	  Universal Dock D6000 (USB ID 17e9:6006, DL-6xxx silicon) and the
-+	  DL-7400 quad-display docks (USB ID 17e9:7000, DL-7000 silicon).
++	  Open in-kernel Rust driver for DisplayLink DL3 docks: the DL-3x00
++	  port replicators, the Dell Universal Dock D6000 and other DL-6xxx
++	  docks, and the DL-7400 quad-display docks. A dock is matched on its
++	  USB function rather than on a product id, and identified from the
++	  vendor descriptor it carries.
 +
 +	  It binds the dock over USB, runs the HDCP 2.2 control plane, mode-set
 +	  and the Vino codec, and registers a DRM/KMS sink that scans out to the

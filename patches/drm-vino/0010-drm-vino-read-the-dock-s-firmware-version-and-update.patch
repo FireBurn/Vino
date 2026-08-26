@@ -1,4 +1,4 @@
-From 57cab97798e2a8e1a6f3aab052dd245a3ae3996c Mon Sep 17 00:00:00 2001
+From bf3d27df3eaefc4ec24d6f0a6164f6f0d946a410 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:09 +0100
 Subject: [PATCH] drm/vino: read the dock's firmware version, and update it

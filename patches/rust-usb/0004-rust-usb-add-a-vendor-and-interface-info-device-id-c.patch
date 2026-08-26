@@ -1,4 +1,4 @@
-From eb43db83962ab3551559f0bc266854def91268c5 Mon Sep 17 00:00:00 2001
+From ab222a913c273f7f0f8d1326ece87af869d81c23 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sun, 9 Aug 2026 19:17:41 +0100
 Subject: [PATCH] rust: usb: add a vendor-and-interface-info device id
@@ -22,7 +22,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  1 file changed, 23 insertions(+)
 
 diff --git a/rust/kernel/usb.rs b/rust/kernel/usb.rs
-index 5b2dc97e1a75..1f1d19621631 100644
+index 782bae53584d..b2a0fb104ddf 100644
 --- a/rust/kernel/usb.rs
 +++ b/rust/kernel/usb.rs
 @@ -307,6 +307,29 @@ pub const fn from_interface_info(class: u8, subclass: u8, protocol: u8) -> Self

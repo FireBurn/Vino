@@ -1,4 +1,4 @@
-From 2b2d6183c88ef2638f4822d5785f233f3c87cc35 Mon Sep 17 00:00:00 2001
+From c8a44968d623e7b0a3609b493f986dd27d6344ed Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 3 Jun 2026 22:04:46 +0100
 Subject: [PATCH] rust: crypto: add AES-128, AES-CMAC, SHA-256, and HMAC
@@ -215,7 +215,7 @@ index 000000000000..5f7c301b2bb8
 +    }
 +}
 diff --git a/rust/kernel/lib.rs b/rust/kernel/lib.rs
-index c6c668ef668c..f961f3068e2f 100644
+index d7ced2a4c11f..3c45e4730646 100644
 --- a/rust/kernel/lib.rs
 +++ b/rust/kernel/lib.rs
 @@ -62,6 +62,7 @@

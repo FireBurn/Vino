@@ -1,4 +1,4 @@
-From 31cd4c254c6e37152eb7b4e1c91fb29dc4e12e7a Mon Sep 17 00:00:00 2001
+From 50a68340e63a69a32394d3217a667c7c71d33df0 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:39:04 +0100
 Subject: [PATCH] rust: drm: reject cross-device GEM handle creation

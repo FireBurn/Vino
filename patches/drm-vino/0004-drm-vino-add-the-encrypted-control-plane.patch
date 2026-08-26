@@ -1,4 +1,4 @@
-From 0a584fa27498a2373018f593eec64d6b43371108 Mon Sep 17 00:00:00 2001
+From 1369ae03e24b1d45c81f7b98d0ce3d54e5d98668 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:49 +0100
 Subject: [PATCH] drm/vino: add the encrypted control plane
