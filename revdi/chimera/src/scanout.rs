@@ -193,12 +193,7 @@ impl HeadScanout {
             }
         }
         Ok(Some(Frame {
-            records: kvino::frame_records(
-                self.dock,
-                &strips,
-                head,
-                matches!(plan, Plan::Keyframe),
-            )?,
+            records: kvino::frame_records(self.dock, &strips, head)?,
             presentations,
         }))
     }

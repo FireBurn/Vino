@@ -717,18 +717,14 @@ pub fn encode_strip(
 
 /// `video::haar::frame_records` -- frame encoded strip bodies into video records.
 ///
-/// A whole surface on a dock that selects its connectors by shift is framed in the vendor's own
-/// producer order, which splits particular bands at particular columns rather than carrying each
-/// whole. The generic interlaced order describes the same strips and the dock accepts it, but it
-/// hands the producer boundaries a band it did not expect and the strips at those columns are
-/// decoded against the wrong ones. Damage subsets have no such order -- the measured permutation
-/// describes exactly the full surface -- so they keep the generic one.
-pub fn frame_records(
-    dock: DockProfile,
-    strips: &[Vec<u8>],
-    head: u8,
-    full: bool,
-) -> Result<Vec<Vec<u8>>> {
+/// The generic interlaced order, on every dock and for every frame.
+///
+/// The driver has a second order for a whole surface on a dock that selects its connectors by
+/// shift -- the vendor's measured producer permutation, which splits particular bands at particular
+/// columns. Using it here blanks the dock: it describes the strips in the order the driver's own
+/// full-surface path produces them, and the strips reaching this function do not arrive in that
+/// order. Reproducing it needs the producing side to match first.
+pub fn frame_records(dock: DockProfile, strips: &[Vec<u8>], head: u8) -> Result<Vec<Vec<u8>>> {
     let owned: Vec<KVec<u8>> = strips
         .iter()
         .map(|s| {
@@ -737,13 +733,11 @@ pub fn frame_records(
             Ok(k)
         })
         .collect::<Result<Vec<_>>>()?;
-    let geometry = dock.geometry();
-    let records = if full && geometry.connector_selector_shift != 0 {
-        video::haar::frame_records_navarro_ordinary(geometry, &owned, head)?
-    } else {
-        video::haar::frame_records(geometry, &owned, head)?
-    };
-    Ok(frames_out(records))
+    Ok(frames_out(video::haar::frame_records(
+        dock.geometry(),
+        &owned,
+        head,
+    )?))
 }
 
 /// The records that close a frame, in this dock's format.
