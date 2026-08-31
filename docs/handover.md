@@ -130,6 +130,38 @@ in effect; nothing was lost.
 stacked `#[pin]` attributes; v7.3-rc1's rejects them with "attribute specified more than once".
 Removed -- nothing referenced the missing fields.
 
+## Third-party series we carry -- checked 2026-09-01
+
+Answering "has anything we carry been updated or superseded". Checked against the new base by
+content, and against the authors' own trees and the list.
+
+| Series | Ours | Newest found | Verdict |
+|--------|------|--------------|---------|
+| Lyude Paul, Rust KMS (37) | authored 2025-06-19 .. 2025-10-29 | `lyudess/linux` `rvkms-slim`, 2025-11-13 | **not superseded** |
+| Colin Braun, USB (3) | 2026-07-12 (v1) | v1 is still the only posting | **latest**, but has open review |
+| Alice Ryhl, workqueue (3) | 2026-03-12 | not upstream | still needed |
+| Onur Ozkan, `cancel_sync` (1) | 2026-06-17 | not upstream | still needed |
+| Andreas Hindborg, `expires-v2` | not carried | not in the base | still in flight |
+
+- ⭐ **Lyude**: `rvkms-slim` contains all 37 of our subjects, so nothing was dropped or renamed under
+  us. Its extra 52 commits are RVKMS itself, gem-shmem work, unrelated `kernel::fmt` cleanups, and
+  the preempt/irq stack that is now upstream anyway. The KMS files do differ, but the divergence
+  runs **our** way: ~1250 lines only-in-ours against ~66 only-in-hers, and hers are mostly doc
+  rewording. We have extended her bindings substantially (`ColorLut`, `ColorCtm`, `CrtcRef`,
+  `enable_gamma`, `enable_color_mgmt`, the LUT accessors) -- 7 commits on `crtc.rs` alone. Adopting
+  `rvkms-slim` would mean re-applying all of that for one lifetime-bound change on `Crtc::new`.
+  ⛔ Not worth doing, and definitely not before a hardware test.
+  ⚠ Two commits we ship are still titled `WIP:` (`WIP: Add very basic bindings for modes`,
+  `WIP: drm/modes: Fix arg types in drm_set_preferred_mode`). They are `WIP:` in her tree too, but
+  shipping a patch called WIP in a posting invites the obvious objection -- retitle or get her to.
+- ⚠ **Colin Braun**: the 2026-07-12 v1 is still the only posting, seven weeks on, and Danilo
+  Krummrich, Daniel Almeida and Oliver Neukum all replied to it on 13-14 July. We carry the latest
+  revision, but it is a revision with unanswered review feedback, and rust-usb depends on it. If he
+  respins, our USB series moves under us.
+- **Andreas's `expires-v2`**: not in the base -- `expires_unchecked` is absent from both. Our two
+  hrtimer patches are the only divergence in `rust/kernel/time/hrtimer.rs` (29 lines), so nothing
+  clashes yet and the question in the correction draft is still the right one to ask.
+
 ## v4 patches -- respun 2026-08-31
 
 ⚠ `outgoing/` is in `.gitignore`, so `outgoing/v3/` was **never tracked** and its deletion is not
