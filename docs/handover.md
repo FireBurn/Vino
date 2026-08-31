@@ -1,682 +1,322 @@
 # Handover
 
-## 2026-08-26 -- the v3 series is folded, and chimera drives a DL7400 pair at 30 bpp
-
-The sample-depth work is no longer six commits sitting on top of the series. Each of them was a fix
-to a commit the same series introduces, so each one's changes went into the commit that added the
-file it touches: the codec commit carries the escape ceilings, the KMS commit carries `max bpc`, the
-budget pricing and the plane's format modifier, the activation commit carries the widening and the
-strip cache's depth key. ⭐ The rule that produced it -- **a fix to a commit that is not upstream yet
-belongs in that commit** -- is what keeps a reviewer reading the driver as it is meant to be, rather
-than in the order it was debugged. `drm-vino` is 13 patches now instead of 19, `rust-drm` keeps the
-`max bpc` accessor and moved it ahead of the driver that uses it.
-
-Folded in the same pass, because they were part of the same code and not part of any commit's story:
-the AC-ceiling doc comment that still said the ceilings do *not* scale, a `dc_cmax` that had lost its
-doc comment to an attribute, an orphaned doc paragraph describing a function that no longer exists,
-and the marker glyphs, bold and out-of-tree paths that upstream reads as somebody's notes. See the
-style rules in `CLAUDE.md`.
-
-`Documentation/gpu/vino.rst` was two families and one depth behind the driver. It now names all
-three generations, the ten-bit link and how it is decided, the firmware update paths including the
-sysfs upload interface, and every module parameter; its mode-validation section no longer claims a
-fixed list of accepted timings, which stopped being true when the control words started being
-derived.
-
-⭐ **Chimera drives both DL7400 connectors at 2560x1440p120 in 30 bpp.** Four orchestration bugs, no
-codec bug -- see [`revdi-chimera.md`](revdi-chimera.md). ⛔ Still open there: the client receives no
-cursor event at all, so there is no pointer of either kind.
-
-## 2026-08-25 -- 30 bpp drives both DL7400 panels; every escape ceiling is stated by a code table
-
-Both DL7400 panels are confirmed by eye at 2560x1440p120 in PQ at 30 bpp, reported as `10 Bit` by
-the monitors. What stood between the wire being right and the picture being right was the decoder
-code tables.
-
-`CODE_TABLES` are not opaque constants: each is the series `2^n * (2^(n+1) - 1)` truncated at a
-category, and a table *is* one plane's escape codebook with `naturals = cmax - 1`. A coefficient is
-four times the sample, so **every** depth-sensitive ceiling gains two categories at 30 bpp -- luma
-AC nine to eleven, chroma AC and DC ten to twelve -- and each has to be raised in its own table as
-well as in the encoder. The mapping is table 0 luma AC, table 1 chroma AC, table 2 DC; the last two
-are indistinguishable at 24 bpp because they share a ceiling there. Mechanism, evidence and the
-two very different failure shapes are in [`hdr.md`](hdr.md) §0.2a.
-
-⛔ **Do not use the repository decoder to check this.** It takes `cmax` from `Depth`, not from the
-tables in the stream, so vino's own 30 bpp wire decodes perfectly against a screenshot while the
-dock cannot decode it at all. Round-tripping proves nothing; only vendor bytes or a panel do.
-
-Three other things settled on hardware the same day:
-
-* **1440p165 is a 24 bpp mode on this dock.** Two connectors at that refresh sit exactly on the
-  pixel budget, and 30 bpp is priced against three quarters of it. Raising the budget to the rated
-  four-connector 4K60 load admits the pair and both sinks power off with nothing logged.
-* **A warm plug can be answered from the dock's own bridge descriptor** -- `NVT` / `0x079c`, a
-  1920x1080 panel, valid magic and checksum. It is now refused on identity. Gating on the presence
-  reply's readiness bit is necessary but not sufficient, and that bit is a different property from
-  `shared_edid_handler`; see [`navarro.md`](navarro.md) §4a.
-* **A bring-up can report complete success and leave the panels dark**, cleared by a second mode
-  set. Unexplained, and the open item most worth taking next.
-
-⚠ `modprobe vino debug=1` fills the kernel ring buffer in about four minutes -- 40,000 lines, 4 MB
--- and `dmesg` then shows only the last couple of minutes. Read `journalctl -k -o short-monotonic`
-instead, and check `dmesg | head -1` before believing that an event is absent.
-
-
-## 2026-08-22 -- Ridge lights the panel; the EDID it was reading described the dock
-
-A like-for-like DLM reference for this dock now exists: `captures/ridge-dlm-ref-20260822`, 841 s,
-1362 control records decrypted, video endpoint included, current firmware, MSI MAG 27CQ6F on socket
-2. vino's matching session is `captures/ridge-vino-ref-20260822`. Full write-up in
-[`ridge.md`](ridge.md); the cross-generation table it belongs to is
-[`protocol/generations.md`](protocol/generations.md).
-
-⛔ **Two things this document previously asserted are wrong and are now corrected.**
-
-* "There is currently no obtainable like-for-like DLM reference for this dock; the only DLM corpus
-  is `captures/max-cold-20260721-235609`, on older firmware." Both halves are false. The archive
-  holds dozens of D6000 DLM captures, every recorded `pid=6006` is `bcdDevice=3159`, and no `.spkg`
-  for this family ships in `/opt/displaylink`, so nothing has ever flashed it. **The firmware has
-  not moved.** DLM run by hand drives this dock; the run that failed had simply hit the wedge.
-* "This dock no longer sends its DISPLAY-CAP push ... 596 frames and not one `id=0x78`." It sends
-  three per session, `id=0x78 sub=0x30`, 160 B, byte-identical to each other. They are **dock-wide**,
-  not per-head, and carry no presence information -- presence is `0x44/0x20` alone.
-
-### ⭐⭐ The cause: one EDID handler, shared between the heads
-
-A `0x15/0x21` fetch does not read the monitor named at offset 22. It reads whichever head the dock's
-handler is engaged for, and engaging it for one head disengages it for the other. The presence reply
-says which answer is coming: **offset 26 bit 7** is set once the downstream DDC read has completed.
-
-| socket | inner 22..26 | off26 | the next fetch returns |
-|---|---|---|---|
-| empty | `05 01 20 00` | `00` | the other head's monitor, or nothing |
-| occupied, not engaged | `05 11 27 00` | `00` | the dock's own 1920x1080 block |
-| occupied, engaged | `05 11 27 00` | `80` | the monitor |
-
-Four cases, two independent captures, agreeing every time. `cp::probe_reply_status` already decoded
-both fields; nothing acted on `ready`.
-
-That one fact produced both symptoms. Cold boot took the dock's 256-byte NOVATEK 1920x1080
-descriptor and drove the panel at a timing it never advertised. At runtime the keepalive spent a
-blind re-engage on the empty socket, which stole the handler and returned the *other* socket's
-monitor -- so a single MSI panel ping-ponged between sockets, tearing its connector down each time.
-
-⚠ **Why it was intermittent:** on a warm rebind the handler is still engaged from the previous
-session, so the first fetch returns the real EDID and everything looks correct. **Only a cold dock
-reproduces it.** Several earlier measurements were taken after a rebind and proved nothing.
-
-### Landed, HW-verified
-
-`DockProfile::shared_edid_handler` (Ridge `true`, Navarro and Ella `false`, so both are inert).
-
-* EDID acceptance gated on the readiness bit in `session.rs`. On hardware:
-  `socket 2 discarding an EDID offered before the downstream read completed` followed by
-  `cached socket 2 EDID (384 bytes)`.
-* No blind re-engage of a socket the probe reports absent. Zero
-  `monitor connected after sink re-engagement` across a full session, where there were six.
-* Ridge now runs **2560x1440** on the real MSI EDID; Ella is unchanged at 1920x1080 with its second
-  connector correctly disconnected. Module `d71fb371803f4228...`.
-* `frame_period_ms` 5 -> 8 for Ridge, matching the vendor's measured floor. ⚠ This fixed nothing;
-  it is kept only because undercutting the vendor by three times was never justified.
-
-### ✅ SOLVED: the video endpoint stopped accepting because a frame was split in two
-
-`never end a frame on a full packet` sends a frame whose length `N` is a multiple of the 1024-byte
-packet as `N - 16` then `16`. `N - 16` is 1008 modulo 1024, so the *first* transfer ends short too:
-the dock sees the frame end sixteen bytes early and a stray sixteen-byte frame behind it. The split
-cannot do what it is named for -- a multiple of the packet size cannot be divided into two transfers
-where only the last is short; that needs a zero-length packet.
-
-Three captures, the failure cascade beginning 49.0 / 46.8 / 50.7 ms after the first such transfer,
-one of them containing exactly one transfer and one cascade. DLM emits none. vino's own known-good
-July capture predates the change.
-
-Now `DockProfile::split_full_packet_frame` -- `true` for DL-3x00 where it was measured, `false`
-elsewhere. ✅ HW-verified: the reproducer no longer reproduces, and the wire shows 0 sixteen-byte
-transfers and 0 failing completions over 2865 frames.
-
-⭐⭐ **Method, and it cost five wrong fixes:** the report said "this used to work". That makes it a
-regression, and a regression is found by diffing against the last good version of *this* driver, not
-by decoding the vendor harder. Throughput, ring slots, frame rate, the record `sub` bit and a
-coverage floor were each a real measured difference from DLM, each tested on hardware, and none was
-the change that broke the dock. Full table in [`ridge.md`](ridge.md).
-
-Single current handover. Last updated **2026-08-17**, rewritten from scratch. Everything here is
-either still true, still open, or a trap worth not repeating. Anything an earlier handover said and
-this one does not is done, superseded or retracted; the previous version is in git history.
-
----
-
-## START HERE
-
-**All three dock generations now run under one `vino`, at the same time, without interfering.**
-That was the open question and the answer is clean. What remains are three independent bugs, one
-per area, none of them caused by the others.
-
-⭐⭐ **The DL7400 paints a desktop again** (user-confirmed 2026-08-17, 2560x1440). That was the
-worst of the three and it is closed; what is left is the EPIPE's *cause* on Ella, and hardware runs
-for two fixes that have not been exercised.
-
-| dock | USB | state |
-|---|---|---|
-| **Ella** HP 3005pr, DL-3900 | `17e9:430a` | Lights both panels and drives the desktop. Dies under sustained load, and now recovers by itself -- see [The EPIPE](#3-the-epipe----ellas-open-bug). |
-| **Navarro** DL-7400 | `17e9:7000` | ✅ **Drives a 2560x1440 desktop.** See [The EP08 wall](#1-the-ep08-wall----solved-2026-08-17-hw-verified). |
-| **Ridge** D6000, DL-6xxx | `17e9:6006` | Holds a control session and a keepalive. Not exercised with a monitor recently. ⚠ It shares the carrier loop the EP08 fix touched. |
-
-Concurrency evidence, so nobody re-opens it: all three bind as separate cards with distinct DRM
-minors; the D6000 was hot-plugged into a live two-panel Ella session and came up clean without
-disturbing it; Navarro failed on its first attempt, before the D6000 was plugged in at all, and
-reproduces with vino unbound entirely; Ella's EPIPE struck while Navarro was physically unplugged.
-The only driver-global mutable state is `static ENCODE_WQ` in `drm_sink/scanout.rs`, one encode
-workqueue shared by every dock -- a fairness question under simultaneous scanout, not a correctness
-one.
-
----
-
-## Open work, in priority order
-
-### 1. The EP08 wall -- ✅ SOLVED 2026-08-17, HW-verified
-
-`be8d71890581`. The DL7400 paints a desktop at 2560x1440: user-confirmed, with the wire showing
-full 3,936,656-byte keyframes accepted where none had ever been.
-
-⭐ **A ring slot was spent on a frame the dock never saw.** The carrier loop counted ring slots
-above the send, and its deferral path -- taken when the endpoint cannot yet accept a whole frame --
-`continue`s to the top without sending. Each deferred pass therefore advanced the frame counter.
-Since the ring phase is that counter modulo the ring depth, a step equal to the depth leaves the
-phase unchanged, so from the fifth frame on **every frame told a three-buffer dock it was filling
-slot 0** -- the buffer it was scanning out. The dock stopped taking bytes. The fix counts the slot
-once the presentation has gone out, beside the frame count that already worked that way.
-
-Introduced by `f72590773852`, which replaced `repeat` (incremented after a successful send) with
-`named` (incremented before it).
-
-⚠ **Why this resisted every byte comparison.** No single frame is malformed. Record grammar,
-trailer, decoder configuration and the whole control plane compare *identical* against a working
-revision -- only the sequence across frames is wrong. And it is timing-sensitive: whether the
-deferral fires depends on how fast the dock drains, so adding log lines around the counter was by
-itself enough to make a failing build pass. ⛔ Do not conclude anything from a single passing run,
-and do not conclude "the bytes are the same" means "the stream is the same".
-
-⭐⭐ **The method is the reusable part, and it is cheap.** The failure is machine-detectable, so it
-needs no eyes and no judgement:
-
-```
-load with debug=1, wait 40 s, then read dmesg:
-  "strip map 3600 strip(s)"        the 2560x1440 frame was attempted
-  "pipeline submit at off=... failed"   the dock refused it
-```
-
-That drove a `git bisect run` over 35 commits unattended (~2 min per step), then a within-commit
-split by reverting file groups, then this. ⚠ Unplug the other dock first: swapping the module means
-unloading it, which takes every dock down.
-
-⭐ **The decisive instrument was the ring sequence itself**, read off the frame trailer of each
-EP08 frame group -- `slot` at offset 19, `ring` at 22, `frame_no` at 25. Good cycles
-`0,2,4,0,2,4` with `frame_no` stepping by one; broken sticks at slot 0. Reference captures:
-`~/vinocap/nav-good.pcapng`, `nav-bad.pcapng`, `nav-fixed.pcapng` (not committed).
-
-### 2. `off48` is wrong on every mode set -- ✅ FIXED, needs a hardware run
-
-`88e0ab5de5e6`. The DL-3x00 allocation is now derived rather than looked up, so every resolution
-gets the row count the vendor sends instead of a family default. The values are unchanged at
-1920x1080, the one resolution the old table covered, so a mode sweep is what tests this.
-
-⭐ The vendor's own serializer settles the general rule, and it agrees with the closed form:
-`rows = allocation_bytes / (render_stride * bytes_per_pixel)`. A DL-3x00 partitions **48 MiB** per
-head, and `48 MiB / 3` is the `2^24` in the formula below. The depth belongs in the division, so
-`timing_from_drm_mode` now takes it as an argument rather than having the caller patch it on
-afterwards -- a 30 bpp head is told three quarters of the rows a 24 bpp one is.
-
-⚠ **Navarro does not fit this and keeps its measured table.** Its two captured values imply
-allocations of 202.5 MiB at 2560 wide and 58.5 MiB at 640, which is not one constant; Ridge keeps
-its device-level override. Do not unify the three.
-
-`off48` depends on **hactive alone** -- unchanged by vactive (1280x1024, 1280x960 and 1280x720 all
-give 11915), by refresh (1280x1024 at both 60.02 and 75.02 gives 11915), and by sink (identical in
-both sweep captures). Closed form, exact for all six measured widths:
-
-```
-off48 = 16777216 // (round_up_128(hactive) + 128)
-```
-
-| hactive | padded | off48 |
-|---|---|---|
-| 2560 | 2560 | 6241 |
-| 1920 | 1920 | 8192 |
-| 1280 | 1280 | 11915 |
-| 1024 | 1024 | 14563 |
-| 800 | **896** | 16384 |
-| 640 | 640 | 21845 |
-
-The padding is what gives the shape away -- 800 is the only width that is not a multiple of 128 and
-it behaves as 896. So it is `2^24` over a padded line width, a fixed-point step per pixel. The
-driver's name for the field ("measured row count") is wrong and should change with the value.
-
-### 3. The EPIPE -- Ella's open bug
-
-Reproduced three times in twenty minutes on 2026-08-17 (t=5200, 6539, 7310), always under
-sustained repaint, never on a settled desktop. The session dies with:
-
-```
-dock has answered nothing for 90141 ms; abandoning the session
-   -- or --
-shared video/control pipe failed (EPIPE); abandoning the session
-```
-
-⛔⛔ **vino's own recovery is what leaves it dead** -- ✅ **root-caused, fixed and HW-VERIFIED**
-(`53b8fa4cd159`). It used to reset the dock and then never re-run bring-up; the card sat there with
-connectors still reporting `connected`, KWin still flipping into a dock that was not listening, and
-only a manual driver rebind brought it back. Measured on 2026-08-17, the whole cycle now runs
-unattended in about six seconds:
-
-```
-shared video/control pipe failed (EPIPE); abandoning the session
-resetting the dock to recover the control session
-reset complete; rebinding for a fresh session
-DL-3x00 dock (Ella, DL-3900)   [re-probe]  ...  socket 1 monitor connected
-```
-
-⭐ **A reset does not re-probe when the driver supplies `pre_reset` and `post_reset`.** Supplying
-the pair is how a driver tells the USB core it can carry its state across a reset, and the core
-then leaves it bound and just calls them. The Rust `usb::Driver` adapter installs both callbacks
-for *every* driver, and their default body returns success -- so vino was claiming a session
-survived the reset that destroys it. `usb_reset_device()` rebinds an interface whose `post_reset`
-returns non-zero (`drivers/usb/core/hub.c`, and `hid_post_reset` is the in-tree precedent), which
-is the manual rebind, done by the driver at the moment it knows one is needed.
-
-⚠ **This is the "never comes back" half only.** What causes the EPIPE in the first place is still
-open, and the cross-head budget below is still the lead.
-
-⭐⭐ **Half the bytes were going to a socket with no monitor on it, and that is what EPIPE'd.**
-Measured 2026-08-17: Ella offers both connectors, and DP-9 reports `connected` with **zero** bytes
-of EDID where DP-8 carries 256. The compositor enables and paints the empty one, and the session
-that died did so on `head=1` -- the phantom -- pushing a frame onto the pipe the control plane
-shares. `0948e647efd0` stops painting a head with no EDID; the connector is still offered, because
-hiding it was measured to stop the panel lighting at all (`a3a153182547`).
-
-✅ **The phantom is gone, HW-verified 2026-08-17** (`af03f95fb956`). KWin now sees exactly the
-sockets with a monitor in them: `DP-6` connected with 256 B of EDID, `DP-7` disconnected.
-
-⭐ It took three attempts because the empty connector was **load-bearing**, not slack. This dock
-activates as one transaction over every connector it has, and the transaction is assembled from
-what the compositor enabled -- so hiding the empty socket left one timing where two are needed, the
-dock fell to the per-head path, and the panel did not light (`a3a153182547`).
-
-⭐⭐ **A synthesised head needs a mode generation, not just a timing.** The second attempt gave it
-a timing alone. A head whose requested mode is zero is a head the activation waits on and never
-gets:
-
-```
-KMS batch -- dual timings 2, requested [<gen> 0 0 0], active [0 0 0 0]
-atomic multihead KMS batch deferred
-```
-
-It deferred again several times a second for as long as the dock was up, and that retry churn on
-the shared pipe ended in EPIPE, a reset, and **both** connectors going away -- including the one
-with a monitor. Publishing `timing_key()` beside the timing fixes both halves: the activation
-accepts the head, and the head stops looking unasked-for, so the synthesis is once-only without a
-separate guard.
-
-**The vendor reference now exists** (`captures/ella-coldplug-load-20260817` and
-`captures/ella-twohead-load-20260817`, both from a cold plug, both with their own keys):
-
-| heads | DLM sustains |
-|---|---|
-| 1 | ~59 MB/s |
-| 2 | ~75 MB/s |
-
-⭐ **Two heads get 1.27x, not 2x.** On a dock where video and control share one bulk pipe, DLM holds
-the total near a ceiling and gives each head less rather than letting each draw what it would draw
-alone. vino has no cross-head budget at all -- each head encodes and submits independently, which
-is exactly the shape that ends in EPIPE.
-
-⚠ A lead, not a proof. What is measured is DLM's *rate*; how it paces to achieve that rate, and
-whether matching it prevents the EPIPE, are not established. The wire in those captures settles it.
-⚠ Both MB/s figures are capture-file growth, so they include usbmon overhead and are approximate --
-same recorder and method for both, so the ratio holds, but quote `usb-session-stats.py` for bytes.
-
----
-
-## Landed on 2026-08-17
-
-Each builds warning-clean on its own, so a bad hardware result is bisectable. Selftests read
-`pass:88 fail:0` on hardware.
-
-- `be8d71890581` **Spend a ring slot only on a frame the dock received.** ✅ HW-verified -- the
-  DL7400 paints a desktop. Open bug 1.
-- `af03f95fb956` **Stop offering a DL-3x00 socket with nothing plugged into it.** ✅ HW-verified --
-  the phantom screen is gone and both panels keep working.
-- `53b8fa4cd159` **Come back from the reset that recovers a wedged dock.** ✅ HW-verified.
-- `0948e647efd0` **Stop painting a DL-3x00 socket with nothing plugged into it.** ✅ HW-verified:
-  `scanout head=1 deferred: no monitor has described this socket`, once per repaint, on the
-  connector with no EDID.
-- `6470d5ff7d9d` **Open a stream with the carrier frames the vendor sends.** ⚠ Not the EP08 fix,
-  and not independently validated -- it was in the tree when that fix was measured.
-  The carrier was bounded by a 400 ms window rather than a count, so the *same* DL7400 at the same
-  mode opened a stream with **four** carrier frames when its endpoint was draining slowly and
-  **852** when it was not -- and every one of them walks the dock's ring and steps its frame
-  counter. Now profile data: 5 for the DL7400, 1 for Ella, and the DL-6xxx keeps its measured
-  window.
-- `88e0ab5de5e6` **Derive a DL-3x00's framebuffer row count from the width.** ⚠ Not exercised --
-  the values are unchanged at 1920x1080, which is what Ella ran. A mode sweep is what tests it.
-- `6112303b251d` **Put a DL7400's parameter map among its records.** ⚠ Did **not** fix the EP08
-  wall; see open bug 1.
-- `9c391ecae94c` Sort the KUnit re-exports -- the tree was not `rustfmt`-clean at HEAD.
-
-⚠ A build gotcha worth keeping: an ordinary `/` on a value the compiler cannot prove non-zero adds
-a panic path that objtool reports as `falls through to next function`. `checked_div` removes both
-the warning and the trap.
-
-## Landed earlier on 2026-08-17
-
-- `5ba58eae7cdd` **Build as many heads as the dock has sockets.** `create_objects` used `HEADS` (4,
-  the maximum any dock has) as the number of KMS objects to build, so two-connector docks published
-  four outputs. Not cosmetic: with the phantom connector reporting `connected`, KWin enabled Ella's
-  empty socket and the driver encoded and pushed a **1,491,824-byte keyframe at a socket with no
-  monitor**, onto the same shared pipe that then EPIPE'd. The count now arrives through the
-  constructor, because `create_objects` runs inside registration before probe publishes the
-  profile -- which is already why the ten-bit and cursor flags travel that way. Verified live: 2/2/4
-  connectors for Ridge/Ella/Navarro. Selftests `pass:86 fail:0`.
-- `a4b7fee4aead` + `495275b53ae7` **Power the sinks down on unbind.** New `SOFT_UNBIND` binding in
-  `rust/kernel/usb.rs` plus `park_sinks()` from `quiesce()`. Without it the dock kept scanning out
-  its last decoded frame and both monitors stayed lit on a frozen desktop after unbind. It cannot
-  be done from `disconnect()`: that runs after I/O is revoked, and a transfer issued into a
-  disconnect deadlocks `usb_hub_wq`.
-- `4d0ac6a` + `044f6a1` The mode-sweep captures and their analysis (see below).
-
----
-
-## What the 2026-08-17 captures established
-
-Two `kscreen-doctor` sweeps under DLM, ten `id=0x48 sub=0x22` records each, on two different sinks.
-The timing block is fully decoded and **self-validating**: all ten pixel clocks match the VESA
-standard for their mode exactly, and refresh recomputed as `clk / (htotal * vtotal)` matches the
-independently decoded `off44` every time.
-
-```
-off 26 hactive   off 28 hblank   off 30 hfront   off 32 hsync
-off 34 vactive   off 36 vblank   off 38 vfront   off 40 vsync
-off 70 pixel clock, units of 10 kHz        htotal = hactive + hblank
-```
-
-⛔ **Timing follows the SINK. Never build a static per-mode timing table.** Same dock, same mode,
-two sinks: the HDMI monitor got `2720x1474 @ 200.25 MHz = 49.95 Hz`; the DisplayPort monitor got
-`2720x1481 @ 241.50 MHz = 59.95 Hz`. An earlier version of this document read that as "the DL-3900
-clamps 1440p to 50 Hz, like the DL-6xxx clamps 180 to 120" -- **retracted**, it was the HDMI sink's
-own ceiling. A table built from the first capture would have programmed 200 MHz into a monitor
-asking for 241. Derive timing from the mode and the EDID, the ordinary DRM way.
-
-⭐ Constant in all twenty records: `off22 = 0`, `off23 = 2`, `off68 = 0x0200`, `off69 = 2`,
-`off72 = 0`. `off42` is sync polarity and follows the mode: high-byte bit 0 is hsync-negative,
-bit 1 is vsync-negative. Its low byte was `0x80` only on the single reduced-blanking mode -- one
-sample, a hypothesis, not a fact.
-
-⚠ **Read the resolution out of the record's timing block, never off what was requested.** Three of
-ten DisplayPort steps were silently substituted (1680x1050 and 1440x900 became 1920x1080;
-1280x960 became 1280x1024@75). ⚠ DLM **synthesises** the advertised mode list -- byte-identical for
-both sinks, and capping 1440p at 59.95 on a panel that does 165.
-
----
-
-## Watch list -- observed, not explained
-
-### ⭐ The D6000: EDID fixed, video still dark
-
-**EDID -- ✅ fixed** (`56b57895d5cc`, `c841c1336109`). The keepalive skips its sink re-engage
-whenever the presence probe answers negative, but this family reports a head absent *while its EDID
-handler is not engaged for that head* -- so the loop waited for a positive that only the skipped
-call could produce. Blind re-engagements are now spent on a socket that has **never** answered,
-bounded to ten and only while nothing on that dock is lit.
-
-⚠ **This was never the regression.** At `4f7551789675` -- the last commit before the DL-3x00 series
--- the D6000's cold discovery fails *identically* (`socket 1/2 -- cap:no edid:no`) and is rescued by
-the same re-engage path, which fires there only because the socket has not answered yet. The fix
-makes a rescue that was always load-bearing reliable; it does not restore anything.
-
-⛔ **Video -- OPEN. The dock takes every byte and does not light the sink.** Measured across a
-fresh load: **1464 submissions on `ep 0x0b`, 87,981,136 bytes, 1456 completions status 0**, no
-halts, no errors, the eight `-108`s being the unbind. The connector is up, the CRTC is enabled at
-the panel's native mode, keyframes report `frame ok`, and the panel stays dark. So the codec, the
-ring accounting, the record grammar and the transport are all eliminated.
-
-⛔⛔ **Three false signals, all from reading absence in a short sample. Do not repeat them.**
-This dock's firmware trace and its bus traffic are both activity-dependent, and a quiet window
-looks exactly like a broken one:
-
-| claimed | what it actually was |
-|---|---|
-| "reports a successful write with nothing on the wire" | the capture window caught an idle moment; a capture across a real send has all 88 MB |
-| "five msgids appear only on the pre-Ella build" | the HEAD capture was 4x shorter; a longer one has all five |
-| "`366c51` is the discriminator" | a bisect harness built on it returned **GOOD at HEAD** |
-
-⇒ **Validate any candidate signal at both endpoints before building on it.** That is what made the
-DL7400 hunt work and skipping it cost most of a session here.
-
-⛔⛔ **There is no in-band lit/dark discriminator for this dock, and that is now measured.**
-Its output was cycled with `kscreen-doctor output.DP-9.disable/enable` -- confirmed in dmesg as
-`socket 2 downstream sink powered down` and back -- while its EP84 stream was captured and
-decrypted. Across all 409 frames: every `0x8x sub=0x0c` push is just the firmware trace ASCII
-(`7c 32 34..` = `|24..`), differing only because the tick counter advances, and the presence reply
-`id=0x44 sub=0x20` carries exactly two payloads -- `0501200000000000` for the empty socket and
-`0511270080010100` for the one with a monitor -- **identical while the sink was powered down**.
-⇒ Nothing the dock sends reports sink power. Do not go looking for one again; it costs an hour.
-
-⚠ **Historic note:** The presence status word
-reads `present=true ready=true` while the panel is dark, so `ready` is not it. No periodic
-scanout heartbeat is identifiable in the trace. Getting one needs a labelled lit-vs-dark pair on
-the current firmware, which needs one human look.
-
-⭐ **Reading the dock's own firmware trace** (the instrument, now working):
-
-```
-sudo modprobe vino debug=1 trace_crypto=1
-sudo python3 scripts/dock-trace-live.py --bus <N> --seconds 95 --save /tmp/rt.bin
-# then, with the key vino printed for THAT dock:
-python3 scripts/dock-trace-live.py --decode /tmp/rt.bin --key <key> --riv <riv>
-```
-
-⚠ The tool scrapes an old `CPKEYS` line that no longer exists; pass `--key`/`--riv` by hand from
-`vino-crypto: control key=[..] riv_out=[..]`. **The IN nonce is `riv_out` with byte 7 XOR 0x01.**
-With several docks bound the key lines are not device-tagged -- try each against the dock's bus and
-keep the one that decodes.
-⛔ `captures/vino-freshboot-20260726-1100/dock-trace-decoded.txt` is **not** a usable reference:
-its msgid space is completely disjoint from today's (220 distinct against 60, zero overlap). This
-dock now runs firmware 10.3.56, so any byte-level reference must be recaptured.
-
-⛔ **`bracket_reopen_state` is a dead end, and the reasoning behind it was wrong.** The theory was
-that Ridge is sent a second sink-*down* mid-bracket. Diffed against `4f7551789675`, the bracket's
-markers are **byte-identical** for this dock -- the `reopen` expression evaluates to exactly the
-`3` the old code sent -- so changing it moves Ridge *away* from known-good. The
-`send_stream_prologue` call added to that bracket is gated on `video_on_ctrl_pipe()` and is inert
-here too.
-
-⭐⭐ **vino sends this dock materially the same thing at HEAD as it did pre-Ella.** Captured on
-its own bus across a full load on both revisions and compared:
-
-| | pre-Ella `4f7551789675` | HEAD |
-|---|---|---|
-| video to the dock | 1216 URBs / **77.8 MB** | 1268 URBs / **80.6 MB** |
-| control records, by type | identical | identical |
-| first 723 control records, in order | \- | **2 differ**, and only as a reorder of two `sub=0x24` |
-| mode-set bracket markers | identical (`reopen` is `3` on both) | |
-
-The single real delta is the **status-poll count**: `len=64 sub=0x24` appears **3049** times
-pre-Ella against **697** at HEAD, and every other message type matches exactly. ⚠ Read that as a
-symptom, not a cause: both the keepalive period (250 ms) and the scanout poll floor
-(`STATUS_POLL_MIN_MS`) are unchanged for this family, and the scanout poll is still gated in for it,
-so the extra polls are most likely extra *activation attempts* rather than a different policy.
-
-⇒ Because the bytes are materially the same on both revisions, a regression is the *less* likely
-reading, and "this dock has not been driven by this tree for some time" is the more likely one.
-⭐⭐ **The concrete lead: this dock no longer sends its DISPLAY-CAP push.** In the capture from
-when it drove panels (`captures/vino-replug-validate-20260726-190920`, in the archive root) presence
-came from the dock itself:
-
-```
-per-head monitor presence (DISPLAY-CAP id=0x78): [true, true]
-```
-
-Today it reports `cap:no` on both sockets and an EDID has to be prised out of it with a blind
-re-engage. ⭐ **Verified on the wire, not inferred**: decrypting its EP84 stream across a full
-bring-up gives **596 frames and not one `id=0x78`** -- while the dock is otherwise talkative, with
-97 `0x44/0x20` presence replies and a spread of `0x82/0x85/0x88/0x89/0x8c/0x8d/0x8f/0x91/0x92`
-`sub=0x0c` async pushes. The handler still exists (`id == 0x78 && sub == 0x30` in `session.rs`) and
-vino's control sequence to this dock is byte-identical to the pre-Ella one, so **the dock's own
-behaviour differs from the era when it worked**, not vino's request. Why is the open question.
-
-⛔ A fifth hypothesis died here too: `312a2f73a066` swapped a general `drain_ep84` for a targeted
-`wait_perhead_push`, gated on `!perhead_onehot()` -- false for the DL7400, **true for this dock** --
-and the wait counts a CP acknowledgement and discards it where the drain recorded
-`display_cap_ctr`. It explained the split perfectly. Patching the wait to record the push changes
-nothing, because the push never arrives.
-
-⚠ Unproven but worth checking first: the dock's firmware. Its trace msgid space is completely
-disjoint from the July reference, and vino is known to flash an older dock on enumeration when an
-`.spkg` is present. The July captures cannot settle it -- back then vino could not even read the
-version (`device-open 0xfd(firmware-version) non-fatal (EREMOTEIO)`); it reads 10.3.56 now.
-
-⛔ **Four hypotheses tried and disproved. Do not re-run them.**
-
-| tried | why it is wrong |
-|---|---|
-| parameter map placement | fixed on both paths, wall unchanged |
-| `bracket_reopen_state` | the bracket's markers are byte-identical to pre-Ella for this dock |
-| activation must describe every connector | single-port operation on this dock is **proven**, deliberately, including monitor removal |
-| the three trace/wire "signals" | all sampling artifacts; see the table above |
-
-### ⚠ A DL7400 sink flap, and a dark panel that a dock restart cleared
-
-Seen 2026-08-17 with both docks bound. The DL7400's presence probe flapped every ~20 s --
-`present=false ready=false` then `present=true ready=true` -- each one absorbed by the debounce
-(`socket 1 sink flap healed on its own`), so the connector was never dropped. Meanwhile the panel
-was dark and the scanout path reported `no keyframe owed and no strip content changed` for three
-minutes: the driver believed the dock's framebuffer was current.
-
-⛔ **Do not "fix" this by owing a keyframe on every healed flap.** It is an appealing theory -- a
-sink that went away and came back holds nothing, so the shadow this side diffs against describes a
-framebuffer that no longer exists -- but it is unproven, and the evidence against acting on it is
-that **a dock restart cleared the darkness with no code change**. The flaps themselves are
-long-standing and normally benign; the surrounding comment records that re-driving the head per flap
-costs a full dock-wide re-activation and puts the dock in a permanent loop. A keyframe is cheaper
-than that, but it is still a 3.9 MB frame every twenty seconds bought on a hunch.
-
-⇒ What would settle it: catch the dark state again and check whether forcing a repaint
-(a mode toggle, or anything that calls `owe_keyframe`) lights the panel. If it does, the
-invalidation is right and belongs at the heal site.
-
-## Traps -- physical and procedural
-
-### ⛔⛔ The dock latches its connector set at power-on
-
-Established by elimination on the same dock and cables. A socket the dock did not see when it
-powered on does not become usable by re-running anything in software:
-
-| action | outputs DLM created |
-|---|---|
-| monitor plugged into a running dock | 1 |
-| ... then a fresh session (`authorized` 0 -> 1) | 1 |
-| ... then a full DLM restart with both attached | 1 |
-| **power cycle with both attached** | **2** |
-
-This matters beyond captures: vino was suspected of a presence bug on Ella's second socket, and the
-vendor stack behaves identically, so "socket 2 reports absent" is not by itself a driver fault.
-
-### ⛔⛔ Navarro can refuse `CLEAR_FEATURE(ENDPOINT_HALT)`, and only a power cycle clears it
-
-Seen on 2026-08-17: standard `CLEAR_FEATURE(HALT)` on EP `0x08` and `0x0a` timed out at ~2 s each
-while every other EP0 request answered in 0.1 ms. Reproduced **with vino unbound**, straight from
-usbfs, so it is the dock, not the driver. A `USBDEVFS_RESET` did **not** clear it. The physical
-power cycle did. Interface 0 alt 0 declares all of `0x08 0x0a 0x84 0x02`, so the request was always
-legitimate.
-
-### ⛔⛔ Hold vino off before a replug meant for DLM
-
-vino autoloads by modalias and will take the display function the instant the dock enumerates,
-racing DLM and spending the bring-up. Blacklist it first:
-
-```
-/etc/modprobe.d/zz-temp-vino-blacklist.conf:
-    blacklist vino
-    install vino /bin/false
-```
-
-⚠ **Remember to remove it.** Nothing comes back under vino while that file exists.
-
-### ⛔ Docks change USB bus between plugs
-
-Ella ran as `4-2.1` for most of one boot and as `2-2.1` later the same boot. Never hardcode a
-sysfs path; re-derive it from `idVendor:idProduct` every time.
-
-### ⛔ Start recorders before any physical action, and prove they are writing
-
-A cold plug is the most expensive event to reproduce and cannot be recovered afterwards. One was
-lost on 2026-08-17 by starting the recorders after the power cycle. The order is: start recorders,
-confirm the wire file is *growing*, then ask for the physical action.
-
----
-
-## Capture recipe, as actually used
-
-```
-sudo modprobe -r vino          # plus the blacklist above
-sudo modprobe evdi             # DLM does nothing without it
-( cd /opt/displaylink && sudo ./DisplayLinkManager )     # unit stays MASKED
-sudo tools/capture/capture-newdevice.sh <outdir> <seconds>
-```
-
-⚠ `capture-newdevice.sh` attaches frida to a **running** DLM -- start DLM first or the run is
-wire-only and the CP is opaque.
-⚠ **CP crypto is dormant on a warm dock.** The capture must span a real connect or there is no AKE
-and no keys. A physical replug is not required: USB `authorized` 0 -> 1 forces a full
-re-enumeration and a real AKE. Use a physical power cycle only when the dock's own power-on
-behaviour is the thing being measured.
-⛔ `capture-firstcontact.sh` is for the one-shot **firmware flash**, not for ordinary captures.
-
-Reading a capture:
-
-```
-tools/capture/decrypt-dlm-cp.py wire.pcapng keys.candidates.json --full
-tools/capture/usb-session-stats.py wire.pcapng        # exact endpoint byte accounting
-tools/capture/setmode-table.py <decrypted.txt> <journal.tsv>
-tools/capture/setmode-diff.py  <dec-a> <journal-a> <dec-b> <journal-b>
-tools/capture/ella-modesweep.sh <output> <journal.tsv>  # run as the DESKTOP USER
-```
-
-`wire.pcapng` files are **not** committed -- no capture in this repo carries one. Keep the summary,
-the journal and the keys.
-
----
-
-## Captures on disk from 2026-08-17
-
-| directory | what it holds |
-|---|---|
-| `ella-socket1-20260817` | Cold session, HDMI sink. 15 key candidates, 56 sealed frames decrypted. |
-| `ella-modesweep-20260817` | Ten set-mode records, HDMI sink. ⚠ **Rides socket1's keys -- not standalone.** |
-| `ella-modesweep-dp-20260817` | Ten set-mode records, DisplayPort sink. Own AKE, decrypts standalone. |
-| `ella-coldplug-load-20260817` | Cold plug + 100 s load, **one** head. ~59 MB/s. 26 keys. |
-| `ella-twohead-load-20260817` | Cold plug + load, **two** heads. ~75 MB/s. 19 keys. |
-
----
-
-## Environment
-
-```
-Kernel tree:   vino/linux   (branch `vino`, CONFIG_RUST=y)
-Driver:        drivers/gpu/drm/vino/{vino,cp,drm_sink,video,ake,hdcp,proto,crypto,rng,profile,session,usb_link}.rs
-PATH:          export PATH=/usr/lib/llvm/22/bin:$PATH
-
-Build only:    make LLVM=1 -j16 M=drivers/gpu/drm/vino modules
-Place it:      sudo cp drivers/gpu/drm/vino/vino.ko /lib/modules/$(uname -r)/kernel/drivers/gpu/drm/vino/
-               sudo depmod -a
-```
-
-⛔ **Never put `M=` on a `modules_install` line** -- it installs to `updates/`, which `depmod`
-prefers, so a stray copy silently shadows the real module and every later reinstall appears to do
-nothing.
-⛔ Always `make LLVM=1`, never `LLVM=/path` -- Kbuild records the literal string and mixing the two
-forms rebuilds the whole tree.
-⚠ A green build can mean nothing was built: require a real `RUSTC [M]` / `LD [M]` line.
-⚠ Use `modprobe` / `modprobe -r` and the `remove_all` sysfs attribute, never raw `insmod`/`rmmod`.
-⚠ `vino.ko` only loads on the matching kernel; the user builds, installs and reboots kernels.
+All six series were posted on 2026-08-26. This file is the review response: what came back, what
+has been answered in the tree already, and what is still owed. The previous contents of this file
+(the DL7400/Ridge/Ella capture history, the traps, the capture recipe) are at `3d4e7b4` and are
+recoverable with `git show 3d4e7b4:docs/handover.md`.
+
+## What was posted
+
+| Series | Subject prefix | Patches | Lore id |
+|--------|----------------|---------|---------|
+| rust-core | `[PATCH n/9]` -- **no `v3` in the subject** | 9 | `20260826162851.2497-1-mike@fireburn.co.uk` |
+| rust-crypto | `[PATCH v3 n/2]` | 2 | `20260826163004.3365-1-mike@fireburn.co.uk` |
+| rust-usb | `[PATCH v3 n/5]` | 5 | posted 16:30 to linux-usb |
+| rust-drm | `[PATCH v3 n/23]` | 23 | posted 16:31 to dri-devel |
+| rust-firmware | `[PATCH 1/1]` -- **no `v3`** | 1 | `20260826163716.6274-2-mike@fireburn.co.uk` |
+| drm-vino | `[PATCH v3 n/13]` | 13 | `20260826163913.7052-1-mike@fireburn.co.uk` |
+
+⚠ Two of the six went out without `v3` in the subject, which is why they do not turn up in a
+`subject:"PATCH v3"` search. Fix the prefix for the next posting.
+
+Human replies came from Danilo Krummrich (usb), Eric Biggers (crypto), Miguel Ojeda (crypto, core)
+and Andreas Hindborg (core). ⛔ **Nobody has reviewed rust-drm (23 patches) or the vino driver
+itself.** The only replies on those two are from sashiko-bot.
+
+## ✅ Folded into the series (2026-08-31)
+
+The six review fixes are no longer working-tree changes: they are folded into the commits that
+introduced the lines, the series was rebased with `--autosquash`, and every touched commit builds
+on its own. Backup of the pre-fold tip: branch `vino-backup-20260831-180901` (`7497b498d01b`).
+
+| Change | Folded into |
+|--------|-------------|
+| `crypto`: safe `zeroize()`, `Aes128::drop` uses it, `rust_helper_memzero_explicit` moved here, `#[inline]` on the forwarders, two em-dashes | 1/2 `rust: crypto: add AES-128...` |
+| `crypto`: `Secret::drop` uses `zeroize()`; `rust_helper_aes_enckey_zero` deleted; no longer rewrites `Aes128::drop` | 2/2 `rust: crypto: add synchronous RSA...` |
+| `firmware`: `write()` clamps the reported count; `cleanup` doc corrected | `rust: firmware: add the firmware upload abstraction` |
+| `vino`: single-axis reflection no longer treated as identity | `drm/vino: add the dock activation and scanout path` + `... the KMS device and the atomic path` |
+| `vino`: `Kconfig` gains `depends on CRYPTO` / `depends on MMU` | `drm/vino: allow the driver to be built` |
+
+⚠ The crypto fix did **not** split cleanly along the original patch boundary, and the reason is
+worth keeping: patch 2/2 was introducing `Secret`, `rust_helper_memzero_explicit`, the
+`CONFIG_RUST_CRYPTO_LIB_*` cfg gates **and** a rewrite of `Aes128::drop` -- all infrastructure that
+1/2 already needed. Moving `zeroize()` and the memzero forwarder into 1/2 means 2/2 no longer
+touches `Aes128::drop` at all and adds no second helper. That is a smaller 2/2 to rewrite for
+Eric's RSA-only ask, but it is **not** the Kconfig fix: `RUST_CRYPTO_LIB_AES` and
+`RUST_CRYPTO_LIB_SHA256` are still defined in 2/2 and consumed by 1/2. That move is still owed.
+
+⛔ Do **not** "fix" the em-dash at `rust/kernel/usb.rs:2100`: that line is Colin Braun's URB patch,
+carried unchanged as a prerequisite.
+
+## Replies sent 2026-08-31
+
+Five replies went out: hrtimer 7/9 (keep the context type), hrtimer 2/9 (drop `restart`), usb 1/5
+(the I/O window and `release_driver`), crypto 1/2 (`aes_ctr()`), crypto 2/2 (RSA + Kconfig). Text in
+`outgoing/v3-replies/`.
+
+⚠ **The first three went out as HTML and lore rejects those**, so they are not in the archives --
+Andreas said so on the 2/9 thread. Gmail needs "Plain text mode" turned on in the compose window.
+Resending those three in plain text is still owed.
+
+Commitments made on-list, which v4 has to honour:
+
+- **Drop** `ArcHrTimerHandle::restart` (Andreas) and `Interface::release_driver()` (Danilo).
+- **Move** the two Kconfig hunks from 2/2 into 1/2 (Eric).
+- **Rewrite** 2/2 as an RSA-only API, no generic akcipher (Eric).
+- Cut the bare AES from 1/2 in favour of `aes_ctr()`, leaving the HDCP dKey single-block encrypt as
+  the one open question put back to Eric.
+
+## ✅ Done in the tree 2026-08-31 (second pass)
+
+All folded into the commit that introduced the line, series rebased, tree clean, full kernel build
+green (`LD vmlinux`, `LD [M] vino.ko`), rustfmt clean, checkpatch 0 errors.
+
+| Change | Folded into | Answers |
+|--------|-------------|---------|
+| `restart()` changelog now names the real caller: `enable_vblank()` re-arms a **stopped** timer from outside the callback, under the vblank locks with interrupts disabled | `rust: hrtimer: add ArcHrTimerHandle::restart` | Andreas |
+| USB transport changelog no longer claims the wrapper opens an interrupt endpoint -- `Endpoints` is bulk only; the dock's interrupt-IN endpoint is what the endpoint typing protects against mis-aiming at | `drm/vino: add the USB transport` | sashiko 2/13 |
+| `akcipher` module renamed `rsa`; `RUST_CRYPTO_AKCIPHER` -> `RUST_CRYPTO_RSA` (now also selects `CRYPTO_RSA`); `encrypt()` made private; changelog states the binding deliberately does not wrap `crypto_akcipher` | `rust: crypto: add RSA public-key encryption` + 4 vino commits | ⭐ Eric |
+| Automatic flash refuses a non-package image and one for another dock family, the same checks the userspace upload path makes; `update_pending()` mirrors them | `drm/vino: read the dock's firmware version...` | ⭐ sashiko (brick risk) |
+| `UPDATE_ATTEMPTS` is 4 per-dock slots claimed by compare-exchange, not one global load-then-store slot two docks evict each other from | same | sashiko |
+| Navarro parameter map emits as many records as the bands need instead of overrunning the 4080-byte ceiling above 1920 lines; KUnit test pins 1440p at 2 records and 2160p at 3 | `drm/vino: add the video codec` | sashiko |
+| Three test-only helpers no longer warn in a normal build (`is_metered`, `FrameTrailer::none` gated; the redundant `ella_rows_1080p` accessor deleted) | `drm/vino: add the dock profiles`, `... the video codec` | build warnings |
+
+⚠ **`4K60 is reachable on Navarro`**, so the parameter-map overrun was a live bug, not theoretical:
+594 MHz pixel clock against `max_connector_clock_khz: 699_500`, 497 Mpx/s against a
+`pixel_budget` of 1,216,512,000.
+
+⛔ **`ENCODE_WQ` is still leaked and still needs a decision.** The static `SetOnce<OwnedQueue>` is
+never dropped, so every module load leaks a workqueue and its threads. ⭐ Measured fact that unblocks
+it: `encode_across_cpus` **joins every chunk before returning**, so the queue does not need to
+outlive the module and module-owned ownership would be sound. The two candidate fixes differ in
+behaviour -- a per-device queue gives two docks two queues each at `max_active = nr_cpus`, and that
+fan-out is the load-bearing ~7.4x measurement -- so this wants measuring, not guessing.
+
+## ✅ The base bump -- DONE 2026-08-31
+
+The series now sits on `drm-rust/drm-rust-next` = `c63829528980` (`Merge tag 'v7.3-rc1'`), 17,766
+commits on from the old base. **98 commits on top**: 54 Mike, 37 Lyude, 3 Colin Braun, 3 Alice
+Ryhl, 1 Onur Ozkan. Full build green (`LD vmlinux`, `LD [M] vino.ko`), rustfmt clean, zero warnings
+of ours. Pre-bump tip is on `vino-pre-v73-0831-2003`.
+
+**19 carried prerequisites dropped** because the new base already has them -- the whole
+`SpinLockIrq` / interrupt-module / preempt stack from Lyude, Boqun, Joel and Heiko. Two of ours went
+too: `rust: error: expose EPROTO` (declared upstream) and `x86/boot: Disable jump tables in the
+decompressor`, which git dropped as an empty patch because v7.3-rc1 carries `-fno-jump-tables` at
+`arch/x86/boot/compressed/Makefile:30` already. ⭐ The clang-23 decompressor fix is therefore still
+in effect; nothing was lost.
+
+⛔⛔ **Two things the earlier scouting got WRONG, corrected here:**
+- Colin Braun's two USB patches are **NOT** upstream -- `Urb` and `TransferFlags` exist nowhere in
+  v7.3-rc1. They were auto-skipped by a loop that skipped any non-Mike commit that merely
+  conflicted. They are carried, and must stay carried.
+- A drop list built by **subject match alone is both too strict and too loose**. Three commits
+  (`__preempt_count_{sub,add}_return`, counted interrupt disable, `spinlock.rs` `super::*`) had no
+  subject match yet were present by content. Verify by content -- grep the base for what the commit
+  provides -- never by subject, and never by "it conflicted so skip it".
+
+**API drift v7.3-rc1 forced, folded into the commits that own each file:**
+
+| Change | Why |
+|--------|-----|
+| `usb_device_table!` loses its `MODULE_USB_TABLE` argument | upstream macro now takes three args |
+| `THIS_MODULE` -> `<LocalModule as kernel::ModuleMetadata>::THIS_MODULE` | it is an associated const now |
+| `Driver::probe` takes `Option<&'bound Self::IdInfo>` | upstream derives id info via `info_unchecked_opt` |
+| `module_parameters::X.value()` no longer dereferenced | `value()` returns `T` by value, `value_ref()` returns the reference |
+| `#include "drm/drm.c"` keeps upstream's `CONFIG_DMA_SHARED_BUFFER` guard | Lyude's helpers split vs upstream's new ifdef |
+
+⭐ **A latent defect the newer kernel exposed**: `VinoDrmData` carried three orphaned doc-comment +
+`#[pin]` pairs whose fields had been deleted at some point. The old `#[pin_data]` macro tolerated
+stacked `#[pin]` attributes; v7.3-rc1's rejects them with "attribute specified more than once".
+Removed -- nothing referenced the missing fields.
+
+## v4 patches -- respun 2026-08-31
+
+⚠ `outgoing/` is in `.gitignore`, so `outgoing/v3/` was **never tracked** and its deletion is not
+recoverable with git. It is regenerable from the pre-bump branch `vino-pre-v73-0831-2003` with
+`git format-patch --subject-prefix="PATCH v3"` over the same ranges. `outgoing/v4/` holds seven
+postings generated with
+`--subject-prefix="PATCH v4"`; all 97 series patches apply in order onto the base, verified.
+
+| Posting | Patches |
+|---------|---------|
+| `00-sched` | 1 (unrelated `sched/fair` fix, post separately) |
+| `rust-core` | 12 |
+| `rust-crypto` | 2 |
+| `rust-usb` | 8 |
+| `rust-drm` | 61 |
+| `rust-firmware` | 1 |
+| `drm-vino` | 13 |
+
+⚠ `RECIPIENTS.txt` was carried over for four of them; `drm-vino` and `rust-firmware` never had one.
+⚠ Cover letters are the generated stubs -- **the rust-usb cover still needs the corrected paragraph
+below**, and every cover needs its blurb written before sending.
+
+## rust-usb v3 -- blocked on a reply, not on code
+
+Danilo replied twice, and Cc'd Greg, Oliver and Alan on the cover. **Answer the thread before
+touching the code**: his questions decide the shape.
+
+1. ⛔ **"This seems to reinvent Devres, which we superseded with Rust native lifetimes and
+   higher-ranked types. Please use that instead."** He also asks "How is this different or narrower
+   than the device's `Bound` type state represents?" There is a real answer -- suspend and
+   `pre_reset` close the window while the interface stays bound, so the window *is* narrower than
+   `Bound` -- but it has to be made on-list. Either rebuild `IoWindow` on the existing revocable
+   infrastructure or defend the mutex+condvar window with that argument.
+2. ✅ **DONE -- `Interface::release_driver()` dropped** (no caller anywhere in the tree). It had no
+   caller in this posting. Drop it, or, if vino's sysfs `remove_all` needs it, put it behind a
+   scope type that cannot leak into `Interface<Core>` (he sketched exactly that; the deref chain
+   makes the naive version impossible to constrain).
+3. ⛔ **The cover letter's central claim is wrong -- replacement text below.** v3 said "Alan Stern
+   confirmed that a bound interface implies a configured device". Danilo re-quoted Alan: a user can
+   write `bConfigurationValue` at any time, so that is not an invariant.
+
+   ⭐ The real guarantee is the one worth stating, and it is stronger: changing the configuration
+   **destroys the old interfaces, which unbinds their drivers first**. A driver therefore cannot be
+   holding `Interface<Bound>` while the device is unconfigured -- not because the configuration
+   cannot change, but because the unbind happens before it does. Use for v4:
+
+   > Since v2, the patch that kept `usb::Device` private is dropped. Oliver Neukum's objection was
+   > that USB genuinely does device-level operations and hiding them behind an interface is a
+   > layering violation. The v3 cover claimed a bound interface implies a configured device; that
+   > was wrong, as Alan Stern pointed out -- `bConfigurationValue` is writable at any time. What
+   > the abstraction actually relies on is narrower: changing the configuration destroys the old
+   > interfaces and unbinds their drivers, so no driver holds a bound interface across it.
+   > Danilo Krummrich's related point about gating I/O on the driver lifecycle is addressed by
+   > keeping the I/O helpers on `usb::Interface<Bound>`; the unsafe `as_bound()` he objected to is
+   > gone, as is `reset_configuration()`, and `set_interface()` is split so an interface sets its
+   > own altsetting and the device sets any other.
+4. He thinks dropping v2 10/11 over-corrected: `intf.bulk_send()` is fine, and if the USB topology
+   reading matters, add a borrowed `IoDevice<'a>` newtype rather than concealing the device.
+
+## rust-crypto v3 -- Eric wants 2/2 rewritten
+
+1. ✅ **DONE 2026-08-31 -- "If you need RSA, then please just create an API for RSA specifically. The
+   `crypto_akcipher` abstraction has never worked well."** Patch 2/2 is a generic akcipher wrapper.
+   It needs to become an RSA-specific API.
+2. ✅ **`aes_ctr()` -- Eric answered on 2026-08-31, and the answer keeps `Aes128`.** He will not
+   expose raw-key AES functions ("computing the AES round keys is fairly slow and most users use
+   their AES keys multiple times"), and directs: `aes_prepareenckey()` + `aes_encrypt()` +
+   `memzero_explicit()` for a single block, `aes_prepareenckey()` + `aes_ctr()` +
+   `memzero_explicit()` for CTR, and ⭐ "if you're using either key multiple times you should call
+   `aes_prepareenckey()` just once and cache the result, as that is what it is for."
+
+   That is precisely what `Aes128` does, so the type stays. v4 work: add a CTR method on `Aes128`
+   that calls `aes_ctr()` with the already-prepared key, and replace vino's two hand-rolled CTR
+   loops with it. `encrypt_block` stays for the HDCP 2.2 dKey derivation.
+   ⚠ **Blocked on a base bump**: `aes_ctr()` is not in `4c9ba407018e`. The same bump is the
+   prerequisite for dropping the EPROTO patch, so do it once and clear both.
+3. ✅ **DONE 2026-08-31 -- both symbols now live in 1/2 with the `#[cfg]` gates for its own code.**
+   Was: `RUST_CRYPTO_LIB_AES` and `RUST_CRYPTO_LIB_SHA256` were added in `cbe74d3d59dc` (patch 2/2)
+   but consumed by `c8a44968d623` (patch 1/2).** So 1/2 compiles with every `#[cfg]` block switched
+   off -- a green build that builds nothing, exactly the trap in the memory note. Move the two
+   Kconfig hunks back into 1/2. This is an interactive rebase across ~85 commits, which is why it
+   was left rather than done blind.
+4. Kconfig symbol in `lib/` with the code in `rust/`: Eric objects, **Miguel already answered him**
+   (`CANiq72=uUR4Vo9W55Kq6tQjc+6Q4_+wiWhCo-VLdkvg6PJeoAw@mail.gmail.com`) and says symbols are not
+   tied to paths and can move later. Reply pointing at that rather than reworking it.
+5. `memzero_explicit`: Miguel confirmed Rust has no standard equivalent, so the helper stays. He is
+   asking upstream Rust about it again. ✅ The follow-up he asked for -- one safe Rust function
+   instead of a second helper -- is done.
+6. ✅ **DONE 2026-08-31 -- 1/2 changelog corrected.** It was factually wrong: it says `Aes128` prepares the key schedule once and
+   reuses it "for block encryption and CMAC", but `aes_cmac()` is standalone and re-expands the key
+   every call. Fix the commit message.
+
+## rust-core -- two patches to drop, one to rework, and a split
+
+1. ⛔ **8/9 `rust: error: expose EPROTO` is already upstream** as `b93fb6e76ec1` ("rust: error: add
+   remaining error codes"). ⚠ That commit is **not** in this tree -- the base is
+   `4c9ba407018e`, the drm-rust-next tip of 2026-08-06 -- so dropping the patch breaks the build
+   until the base moves. Rebase first, then drop.
+2. ⚠ **PATCH RESTORED + changelog fixed; the on-list correction is drafted but NOT SENT.**
+   2/9 `ArcHrTimerHandle::restart` -- the reply sent to Andreas is WRONG and needs a
+   correction on-list.** It says "nothing anywhere calls the handle's restart()". It does:
+   `drm_sink/mode_objects.rs:454`, `h.restart(Delta::from_nanos(interval))`. The earlier grep was
+   `\.restart()`, which requires empty parens, and the real call takes a `Delta` -- so the search
+   found nothing and the patch was dropped on that basis. Restoring it was forced by the build:
+   `error[E0599]: no method named restart found for reference &ArcHrTimerHandle<VblankTimer>`.
+
+   ⭐ The call site is the justification the reply should have carried. `enable_vblank` re-arms a
+   timer that has already **stopped** -- `disable_vblank` lets it die by returning `NoRestart` -- so
+   it re-arms from **outside** the callback, where `forward()` + `HrTimerRestart::Restart` cannot
+   reach. It runs under the vblank locks with interrupts disabled, and the safe alternative (drop
+   the handle, call `start()` again) cancels, which blocks until a running callback finishes.
+   That is illegal there. The patch stays; Andreas needs that call site.
+
+   **2026-08-31:** Andreas accepted the drop ("You are welcome :)") before the error was found, so
+   the correction is owed on a thread where he has already agreed. Draft `r-5622368346489276394` is
+   in Gmail, threaded, naming the call site and asking whether `expires-v2` changes the shape.
+   ⚠ Not sent -- needs Plain text mode enabled in the Gmail compose window first.
+
+3. **9/9 `ktime_get_real_seconds`** -- Andreas wants it expressed through the new `TimeUnit` concept
+   as a seconds-based `Instant`, not a bare wrapper.
+4. ⭐ **7/9 hard-callback IRQ state: "This looks good to me"** -- but he is proposing to *remove* the
+   context type in the same series and says "we might have to keep it around for this to work".
+   **Reply asking him to keep it.** Vino is the user that justifies it; this is the one place where
+   being the consumer is leverage.
+5. **Miguel on the cover: "these patches touch different subsystems ... some of them may want that
+   you split things up accordingly."** hrtimer/time, workqueue, io, sync, random and xxhash all
+   have different maintainers. Split rust-core per subsystem for the next posting.
+
+## rust-firmware
+
+✅ The `write()` bounds hole and the `cleanup` doc are fixed above. Still open:
+
+- ⚠ **Pre-existing UAF, not introduced by this patch, but it lands on `Registration::drop`.**
+  `firmware_upload_unregister()` skips `flush_work()` when `progress == FW_UPLOAD_PROG_IDLE`. A
+  sysfs write racing the unregister can queue `fw_upload_main` just before `device_unregister`
+  disables sysfs; `drop` then frees `U::Data` via `from_foreign()` and the queued worker touches it.
+  Worth raising on-list as a separate C fix.
+
+## drm-vino -- sashiko only; act on merit
+
+Credible and cheap to check:
+
+- ⭐ **`Bits::finish` pads the final byte with zero bits.** Zero is a valid symbol, so the decoder
+  can read unintended coefficients off the tail of an unaligned strip; the vendor pads with 1-bits,
+  which reads as a truncated all-ones escape and is ignored. Given the strip-desync history this is
+  the first thing to measure against a vendor capture. ⛔ Verify against **vendor bytes**, not a
+  round-trip through our own decoder.
+- ✅ **DONE 2026-08-31 (with a KUnit test).** Navarro parameter map could exceed `STRIDE_CAP` at 4K. In `navarro_strip_params()` the second
+  record takes `bands.div_ceil(PARAM_BANDS_PER_TLV)` TLVs; at 3840x2160 that is 270 bands, 15 TLVs
+  in record 0 and 19 left, and 19 * 262 = 4978 > 4080. Pure arithmetic, checkable without hardware.
+- ✅ **DONE 2026-08-31.** `update_if_newer()` did not call `package_family()`. The manual `Upload::prepare` path does.
+  A wrong file in `/lib/firmware/vino/` would be flashed on enumeration and brick the dock. Left
+  undone here only because it changes flashing behaviour on real hardware -- but it should be done.
+- ✅ **DONE 2026-08-31 (4 per-dock slots, compare-exchange).** Was one global non-atomic slot. Two docks evict each
+  other's counts, so `MAX_UPDATE_ATTEMPTS` never trips and neither breaks the reflash loop. Make it
+  per-device, or a real compare-and-swap.
+- ⛔ **STILL OPEN, needs a measurement not a guess (see the second-pass section).** `ENCODE_WQ` in a `SetOnce` static is never dropped, so the unbound workqueue leaks its
+  threads on module unload. It is the last global in the driver.
+- ✅ **DONE 2026-08-31.** 2/13's changelog claimed an interrupt endpoint `Endpoints` does not have.
+- Import style (vertical) and `#[inline]` on forwarders were raised on vino 11/13 as well. Mechanical.
+
+Needs judgement, because the bot does not know the threading model:
+
+- ⚠ **The "sleeping in `atomic_update`" cluster** (8/13, 9/13, 11/13, raised many times):
+  `GFP_KERNEL` allocations, `vmap`, sleeping `Mutex`, and a memcpy of up to 14.7 MB inside
+  `atomic_update` / `atomic_enable` / `atomic_disable`. The snapshot-in-commit design is deliberate
+  and hardware-proven, **but a DRM reviewer will raise exactly this**, so have the answer ready:
+  which commits are non-blocking, and where the driver actually sleeps.
+- ⭐ **`atomic_check` reads `last_timing` under a local lock instead of a `drm_private_obj`**, so two
+  concurrent commits each see the other's old bandwidth and both pass. This is the same soft spot as
+  the DPMS-wake depth split -- the rule from that hunt was **never record state in a check** -- and
+  the bot is pointing at it from the other side. Fix it properly.
+- Error paths that propagate without `retire_failed_video_queue()` (`send_stream_open`,
+  `send_video_keepalive`, `submit_prompt_training`) would leave the endpoint wedged. Consistent with
+  the Ella EPIPE history.
+- `video_staging` held across synchronous `queue.send()`; `activate_dual_wake` returning `Ok(false)`
+  on `sent.count_ones() < 2` without `unwind_bracket`/`programmed_timing` cleanup; `edid_target` and
+  `edid_caught` mutated from two connectors' workers. Plausible, but check against the real model.
+
+## Posting mechanics
+
+- ⚠ **Mail bounced for two recipients on multiple series**: `nick.desaulniers+lkml@gmail.com`
+  (Gmail spam-blocked, `550 5.7.1`) and `daniel.almeida@collabora.com` (`554 5.7.7 Email policy`).
+  Both are real reviewers, so the fix is probably a different relay rather than dropping them from
+  `outgoing/v3/*/RECIPIENTS.txt`. Decide before the next send. The `tor.source.kernel.org` bounces
+  are the kernel.org forwarding of the sender address and are separate.
+- **The cover letters say rust-drm and drm-vino are "not sent yet"** when they went out six minutes
+  later. Cross-reference them properly next time.
+- Miguel's v2 ask -- link the related series and say plainly that vino is the user for all of them
+  -- was met in the usb cover. Keep it in every cover.
