@@ -1,31 +1,79 @@
-From c8a44968d623e7b0a3609b493f986dd27d6344ed Mon Sep 17 00:00:00 2001
+From 0ded9d5b3bf8c9b904875f0fb98afba4c1d9cec7 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 3 Jun 2026 22:04:46 +0100
-Subject: [PATCH v3 1/2] rust: crypto: add AES-128, AES-CMAC, SHA-256, and HMAC
+Subject: [PATCH v4 1/2] rust: crypto: add AES-128, AES-CMAC, SHA-256, and HMAC
  bindings
 
 Expose the synchronous lib/crypto AES-128, AES-CMAC, SHA-256, and
 HMAC-SHA256 primitives through safe Rust APIs.
 
-Aes128 prepares the key schedule once and reuses it for block encryption
-and CMAC. The one-shot hash and HMAC helpers operate on slices, and
-every API uses fixed-size outputs. C shims cover interfaces that bindgen
-cannot represent and clear temporary key material before returning.
+Aes128 prepares the key schedule once in Aes128::new and reuses it
+across encrypt_block calls, so a caller building an AES-CTR keystream
+does not re-expand the key per block. aes_cmac is a separate one-shot
+over the in-tree AES-CMAC library and prepares its own key. The hash and
+HMAC helpers operate on slices, and every API uses fixed-size outputs.
+
+zeroize wraps memzero_explicit, which has no equivalent in the Rust
+standard library, and is used wherever key material is dropped. C shims
+cover interfaces that bindgen cannot represent and clear temporary key
+material before returning.
+
+RUST_CRYPTO_LIB_AES and RUST_CRYPTO_LIB_SHA256 gate the bindings and
+select the C libraries they call. Both are built into the kernel because
+Rust abstractions are part of the built-in kernel crate.
 
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
+ lib/crypto/Kconfig              |  19 +++++
  rust/bindings/bindings_helper.h |   3 +
- rust/helpers/crypto.c           |  37 ++++++++++
+ rust/helpers/crypto.c           |  44 ++++++++++
  rust/helpers/helpers.c          |   1 +
- rust/kernel/crypto.rs           | 115 ++++++++++++++++++++++++++++++++
+ rust/kernel/crypto.rs           | 144 ++++++++++++++++++++++++++++++++
  rust/kernel/lib.rs              |   1 +
- 5 files changed, 157 insertions(+)
+ 6 files changed, 212 insertions(+)
  create mode 100644 rust/helpers/crypto.c
  create mode 100644 rust/kernel/crypto.rs
 
+diff --git a/lib/crypto/Kconfig b/lib/crypto/Kconfig
+index 56f308dd0273..cd51f24b54c6 100644
+--- a/lib/crypto/Kconfig
++++ b/lib/crypto/Kconfig
+@@ -43,6 +43,16 @@ config CRYPTO_LIB_AES_CBC_MACS
+ 	  this if your module uses any of the functions from
+ 	  <crypto/aes-cbc-macs.h>.
+ 
++config RUST_CRYPTO_LIB_AES
++	bool
++	depends on RUST
++	select CRYPTO_LIB_AES
++	select CRYPTO_LIB_AES_CBC_MACS
++	help
++	  Enable the Rust bindings for the synchronous AES library functions.
++	  The selected C libraries are built into the kernel because Rust
++	  abstractions are part of the built-in kernel crate.
++
+ config CRYPTO_LIB_AES_CCM
+ 	tristate
+ 	select CRYPTO_LIB_AES
+@@ -250,6 +260,15 @@ config CRYPTO_LIB_SHA256
+ 	  Select this if your module uses any of these functions from
+ 	  <crypto/sha2.h>.
+ 
++config RUST_CRYPTO_LIB_SHA256
++	bool
++	depends on RUST
++	select CRYPTO_LIB_SHA256
++	help
++	  Enable the Rust bindings for the synchronous SHA-256 and HMAC-SHA256
++	  library functions. The selected C library is built into the kernel
++	  because Rust abstractions are part of the built-in kernel crate.
++
+ config CRYPTO_LIB_SHA256_ARCH
+ 	bool
+ 	depends on CRYPTO_LIB_SHA256 && !UML
 diff --git a/rust/bindings/bindings_helper.h b/rust/bindings/bindings_helper.h
-index 2d079f278a04..8d7489b8cce8 100644
+index 0410dbda1060..e253e4ed583c 100644
 --- a/rust/bindings/bindings_helper.h
 +++ b/rust/bindings/bindings_helper.h
 @@ -28,6 +28,9 @@
@@ -40,16 +88,22 @@ index 2d079f278a04..8d7489b8cce8 100644
  #include <drm/drm_device.h>
 diff --git a/rust/helpers/crypto.c b/rust/helpers/crypto.c
 new file mode 100644
-index 000000000000..a18780231ce0
+index 000000000000..54486139f483
 --- /dev/null
 +++ b/rust/helpers/crypto.c
-@@ -0,0 +1,37 @@
+@@ -0,0 +1,44 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +#include <crypto/aes.h>
 +#include <crypto/aes-cbc-macs.h>
 +#include <linux/string.h>
 +
++__rust_helper void rust_helper_memzero_explicit(void *s, size_t count)
++{
++	memzero_explicit(s, count);
++}
++
++#ifdef CONFIG_RUST_CRYPTO_LIB_AES
 +/*
 + * aes_encrypt() takes a transparent union (aes_encrypt_arg) that bindgen cannot
 + * express, so the single-block encrypt step is wrapped here. The key schedule
@@ -81,32 +135,33 @@ index 000000000000..a18780231ce0
 +	aes_cmac(&cmac_key, data, data_len, out);
 +	memzero_explicit(&cmac_key, sizeof(cmac_key));
 +}
++#endif
 diff --git a/rust/helpers/helpers.c b/rust/helpers/helpers.c
-index 0d85b5e68ec2..cb7c668bffa2 100644
+index 440fb7638e3c..a9463612c482 100644
 --- a/rust/helpers/helpers.c
 +++ b/rust/helpers/helpers.c
-@@ -56,6 +56,7 @@
+@@ -55,6 +55,7 @@
  #include "cpufreq.c"
  #include "cpumask.c"
  #include "cred.c"
 +#include "crypto.c"
  #include "device.c"
  #include "dma.c"
- #include "dma-resv.c"
+ #ifdef CONFIG_DMA_SHARED_BUFFER
 diff --git a/rust/kernel/crypto.rs b/rust/kernel/crypto.rs
 new file mode 100644
-index 000000000000..5f7c301b2bb8
+index 000000000000..3c6c3531675a
 --- /dev/null
 +++ b/rust/kernel/crypto.rs
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,144 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! Safe wrappers over the kernel's synchronous library crypto.
 +//!
-+//! Exposes the one-shot `lib/crypto` primitives — AES-128 (an [`Aes128`] key
++//! Exposes the one-shot `lib/crypto` primitives -- AES-128 (an [`Aes128`] key
 +//! prepared once for single-block encryption, the building block for modes the
 +//! library does not yet provide such as AES-CTR), the in-tree AES-CMAC
-+//! ([`aes_cmac`]), SHA-256 and HMAC-SHA256 — for use from Rust. They run
++//! ([`aes_cmac`]), SHA-256 and HMAC-SHA256 -- for use from Rust. They run
 +//! synchronously in the calling context with no allocation; the hashes and the
 +//! MAC are infallible.
 +//!
@@ -114,14 +169,27 @@ index 000000000000..5f7c301b2bb8
 +//! [`include/crypto/aes-cbc-macs.h`](srctree/include/crypto/aes-cbc-macs.h),
 +//! [`include/crypto/sha2.h`](srctree/include/crypto/sha2.h).
 +
-+use crate::{bindings, error::to_result, prelude::*};
++use crate::bindings;
++#[cfg(CONFIG_RUST_CRYPTO_LIB_AES)]
++use crate::{error::to_result, prelude::*};
 +
 +/// Size of a SHA-256 / HMAC-SHA256 digest, in bytes.
 +pub const SHA256_DIGEST_SIZE: usize = 32;
 +/// AES-128 block and key size, in bytes.
 +pub const AES128_BLOCK_SIZE: usize = 16;
 +
++/// Overwrites `bytes` with zeroes so that the compiler cannot elide the write.
++///
++/// Rust has no equivalent of `memzero_explicit()`, so this forwards to the C one.
++#[inline]
++pub fn zeroize(bytes: &mut [u8]) {
++    // SAFETY: `bytes` is valid for `bytes.len()` writes.
++    unsafe { bindings::memzero_explicit(bytes.as_mut_ptr().cast(), bytes.len()) };
++}
++
 +/// Returns the SHA-256 digest of `data`.
++#[cfg(CONFIG_RUST_CRYPTO_LIB_SHA256)]
++#[inline]
 +pub fn sha256(data: &[u8]) -> [u8; SHA256_DIGEST_SIZE] {
 +    let mut out = [0u8; SHA256_DIGEST_SIZE];
 +    // SAFETY: `data` is valid for `data.len()` reads and `out` is a valid
@@ -131,6 +199,8 @@ index 000000000000..5f7c301b2bb8
 +}
 +
 +/// Returns `HMAC-SHA256(key, data)`.
++#[cfg(CONFIG_RUST_CRYPTO_LIB_SHA256)]
++#[inline]
 +pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; SHA256_DIGEST_SIZE] {
 +    let mut out = [0u8; SHA256_DIGEST_SIZE];
 +    // SAFETY: `key` and `data` are valid for their respective lengths and `out`
@@ -152,6 +222,8 @@ index 000000000000..5f7c301b2bb8
 +/// prepared and wiped internally; the call is infallible.
 +///
 +/// [`include/crypto/aes-cbc-macs.h`]: srctree/include/crypto/aes-cbc-macs.h
++#[cfg(CONFIG_RUST_CRYPTO_LIB_AES)]
++#[inline]
 +pub fn aes_cmac(key: &[u8; AES128_BLOCK_SIZE], data: &[u8]) -> [u8; AES128_BLOCK_SIZE] {
 +    let mut out = [0u8; AES128_BLOCK_SIZE];
 +    // SAFETY: `key` is a valid 16-byte key, `data` is valid for `data.len()`
@@ -178,10 +250,13 @@ index 000000000000..5f7c301b2bb8
 +/// let _ct = cipher.encrypt_block(&[0u8; 16]);
 +/// # Ok::<(), Error>(())
 +/// ```
++#[cfg(CONFIG_RUST_CRYPTO_LIB_AES)]
 +pub struct Aes128(bindings::aes_enckey);
 +
++#[cfg(CONFIG_RUST_CRYPTO_LIB_AES)]
 +impl Aes128 {
 +    /// Expands an AES-128 key from 16 raw key bytes.
++    #[inline]
 +    pub fn new(key: &[u8; AES128_BLOCK_SIZE]) -> Result<Self> {
 +        // SAFETY: `aes_enckey` is a plain-old-data key schedule (integer arrays
 +        // in a union of integer arrays); an all-zero bit pattern is a valid,
@@ -197,6 +272,7 @@ index 000000000000..5f7c301b2bb8
 +
 +    /// Encrypts one 16-byte block with the prepared key: returns
 +    /// `AES-128-ECB(key, block)`.
++    #[inline]
 +    pub fn encrypt_block(&self, block: &[u8; AES128_BLOCK_SIZE]) -> [u8; AES128_BLOCK_SIZE] {
 +        let mut out = [0u8; AES128_BLOCK_SIZE];
 +        // SAFETY: `self.0` is a prepared encryption key; `block` and `out` are
@@ -206,16 +282,24 @@ index 000000000000..5f7c301b2bb8
 +    }
 +}
 +
++#[cfg(CONFIG_RUST_CRYPTO_LIB_AES)]
 +impl Drop for Aes128 {
++    #[inline]
 +    fn drop(&mut self) {
-+        // SAFETY: `self.0` is a valid, owned `aes_enckey`; overwriting it with
-+        // an all-zero `aes_enckey` clears the expanded key schedule.
-+        // `write_volatile` keeps the store from being optimised away.
-+        unsafe { core::ptr::write_volatile(&mut self.0, core::mem::zeroed()) };
++        // SAFETY: `aes_enckey` is a plain-old-data key schedule (integer arrays in
++        // a union of integer arrays), so its storage is valid to overwrite as
++        // bytes, and `self.0` is owned and about to be dropped.
++        let key = unsafe {
++            core::slice::from_raw_parts_mut(
++                (&raw mut self.0).cast::<u8>(),
++                core::mem::size_of::<bindings::aes_enckey>(),
++            )
++        };
++        zeroize(key);
 +    }
 +}
 diff --git a/rust/kernel/lib.rs b/rust/kernel/lib.rs
-index d7ced2a4c11f..3c45e4730646 100644
+index 657ec1b1b5a8..96012361426a 100644
 --- a/rust/kernel/lib.rs
 +++ b/rust/kernel/lib.rs
 @@ -62,6 +62,7 @@

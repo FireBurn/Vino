@@ -1,7 +1,7 @@
-From 2f9e5e0ab45eef85c481e03835dc9faf169d8005 Mon Sep 17 00:00:00 2001
+From ec9647dc273f190d85d41ab9846e9adcebadd1c4 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:11 +0100
-Subject: [PATCH v3 12/13] drm/vino: allow the driver to be built
+Subject: [PATCH v4 12/13] drm/vino: allow the driver to be built
 
 Add the Kconfig entry, the Makefile rule and the MAINTAINERS record, so the
 preceding commits become a module.
@@ -12,17 +12,17 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  MAINTAINERS                   |  6 +++++
  drivers/gpu/drm/Kconfig       |  1 +
  drivers/gpu/drm/Makefile      |  1 +
- drivers/gpu/drm/vino/Kconfig  | 42 +++++++++++++++++++++++++++++++++++
+ drivers/gpu/drm/vino/Kconfig  | 44 +++++++++++++++++++++++++++++++++++
  drivers/gpu/drm/vino/Makefile |  2 ++
- 5 files changed, 52 insertions(+)
+ 5 files changed, 54 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/Kconfig
  create mode 100644 drivers/gpu/drm/vino/Makefile
 
 diff --git a/MAINTAINERS b/MAINTAINERS
-index 2b548bba6525..79ccf112fabd 100644
+index 1759bef38aca..9597ef604070 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
-@@ -8537,6 +8537,12 @@ S:	Supported
+@@ -8607,6 +8607,12 @@ S:	Supported
  T:	git https://gitlab.freedesktop.org/drm/misc/kernel.git
  F:	drivers/gpu/drm/udl/
  
@@ -61,23 +61,25 @@ index e635fcffd379..29ab96f6e8de 100644
  obj-$(CONFIG_DRM_EXYNOS) +=exynos/
 diff --git a/drivers/gpu/drm/vino/Kconfig b/drivers/gpu/drm/vino/Kconfig
 new file mode 100644
-index 000000000000..fcc761b4654b
+index 000000000000..294b0962064b
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/Kconfig
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,44 @@
 +# SPDX-License-Identifier: GPL-2.0
 +config DRM_VINO
 +	tristate "DisplayLink DL3 (Vino) open driver"
 +	depends on USB
 +	depends on DRM
 +	depends on RUST
-+	# RUST_DRM_GEM_SHMEM_HELPER depends on MMU; inherit that dependency here so the
-+	# select below cannot generate an unmet-direct-dependency warning on nommu.
++	# CRYPTO_RSA lives under `if CRYPTO`, and RUST_DRM_GEM_SHMEM_HELPER depends on
++	# MMU; inherit both dependencies here so the selects below cannot generate an
++	# unmet-direct-dependency warning.
++	depends on CRYPTO
 +	depends on MMU
 +	select DRM_KMS_HELPER
 +	select RUST_DRM_GEM_SHMEM_HELPER
 +	select CRYPTO_RSA
-+	select RUST_CRYPTO_AKCIPHER
++	select RUST_CRYPTO_RSA
 +	select RUST_CRYPTO_LIB_AES
 +	select RUST_CRYPTO_LIB_SHA256
 +	select FW_LOADER

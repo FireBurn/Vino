@@ -1,5 +1,5 @@
 From: Mike Lothian <mike@fireburn.co.uk>
-Subject: [PATCH 0/9] rust: core abstractions for a USB display driver
+Subject: [PATCH v2 0/8] rust: core abstractions for a USB display driver
 
 Core Rust abstractions a USB display driver needs. They are separated from the
 driver because none of them are display specific: each one covers a kernel
@@ -24,19 +24,16 @@ It is small on purpose. Every patch has a caller in the driver at the end of the
 chain, and nothing is here on the argument that it might be useful to somebody
 later
 
+v2: https://lore.kernel.org/r/20260826162851.2497-1-mike@fireburn.co.uk
+
 The rest of the posting, which is one series per subsystem:
 
-  rust-core, 9 patches, this one
-  rust-crypto, 2 patches, linux-crypto and rust-for-linux
-  https://lore.kernel.org/r/20260826163004.3365-1-mike@fireburn.co.uk
-  rust-usb, 5 patches, linux-usb and rust-for-linux
-  https://lore.kernel.org/r/20260826163101.4168-1-mike@fireburn.co.uk
-  rust-drm, 23 patches, dri-devel and rust-for-linux
-  https://lore.kernel.org/r/20260826163359.4998-1-mike@fireburn.co.uk
-  rust-firmware, 1 patch, linux-kernel and rust-for-linux
-  https://lore.kernel.org/r/20260826163716.6274-1-mike@fireburn.co.uk
-  drm-vino, 13 patches, dri-devel
-  https://lore.kernel.org/r/20260826163913.7052-1-mike@fireburn.co.uk
+  rust-core, 8 patches, this one
+  rust-crypto, 2 patches, to linux-crypto and rust-for-linux, not sent yet
+  rust-usb, 5 patches, to linux-usb and rust-for-linux, not sent yet
+  rust-drm, 23 patches, to dri-devel and rust-for-linux, not sent yet
+  rust-firmware, 1 patch, to linux-kernel and rust-for-linux, not sent yet
+  drm-vino, 13 patches, to dri-devel, not sent yet
 
 Vino is the user for all of them. The abstractions themselves are generic and
 carry no knowledge of DisplayLink
@@ -44,7 +41,7 @@ carry no knowledge of DisplayLink
 The whole thing is one branch, base and prerequisites included, which is the
 quickest way to read it:
 
-  git clone -b vino-v3 https://github.com/FireBurn/linux
+  git clone -b vino https://github.com/FireBurn/linux
   cd linux
   make LLVM=1 rustavailable
   make LLVM=1 -j$(nproc)
@@ -53,7 +50,7 @@ quickest way to read it:
 CONFIG_RUST=y and CONFIG_DRM_VINO=m are the two to set; DRM_VINO selects the
 rest of what it needs
 
-It is the exact tree these patches were generated from, at 4c9ba407018e, the
+It is the exact tree these patches were generated from, at c63829528980, the
 drm-rust-next tip of 2026-08-06. drm-next has moved on since, and this follows
 drm-rust-next deliberately: the KMS layer underneath this work lives only there,
 and that tree picks up drm-next on its own schedule
@@ -89,7 +86,7 @@ implementation and the tests. Every patch it contributed to carries an
 Assisted-by trailer. The Signed-off-by is mine: I have reviewed and tested what
 is here and I stand behind it
 
-Mike Lothian (9):
+Mike Lothian (8):
   rust: sync: completion: add single-shot and timed operations
   rust: hrtimer: add ArcHrTimerHandle::restart
   rust: random: add a safe get_random_bytes wrapper
@@ -97,10 +94,9 @@ Mike Lothian (9):
   rust: workqueue: make OwnedQueue thread-safe
   rust: io: add checked offset copy helpers
   rust: hrtimer: expose interrupt state in hard callbacks
-  rust: error: expose EPROTO
   rust: time: add ktime_get_real_seconds
 
- 11 files changed, 243 insertions(+), 2 deletions(-)
+ 10 files changed, 242 insertions(+), 2 deletions(-)
 
-base-commit: 4c9ba407018e8deb06dbc643112bac8f40404f95
+base-commit: c63829528980507a0a9146031e0c08499f53cf3d
 prerequisite-message-id: <20260312-create-workqueue-v4-0-ea39c351c38f@google.com>

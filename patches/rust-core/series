@@ -5,5 +5,4 @@
 0005-rust-workqueue-make-OwnedQueue-thread-safe.patch
 0006-rust-io-add-checked-offset-copy-helpers.patch
 0007-rust-hrtimer-expose-interrupt-state-in-hard-callback.patch
-0008-rust-error-expose-EPROTO.patch
-0009-rust-time-add-ktime_get_real_seconds.patch
+0008-rust-time-add-ktime_get_real_seconds.patch

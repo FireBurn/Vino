@@ -1,7 +1,7 @@
-From 1c8b5877bb352d4eced19d37220bc33f0af8ec17 Mon Sep 17 00:00:00 2001
+From 9b51c9339a114147ad8e20104aa4dcf26f941bc8 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 17 Aug 2026 17:47:49 +0100
-Subject: [PATCH v3 5/5] rust: usb: let a driver keep its interface usable while
+Subject: [PATCH v4 5/5] rust: usb: let a driver keep its interface usable while
  unbinding
 
 The USB core kills every outstanding URB and disables an interface's
@@ -24,7 +24,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  1 file changed, 14 insertions(+)
 
 diff --git a/rust/kernel/usb.rs b/rust/kernel/usb.rs
-index b2a0fb104ddf..1d8f5bc8a545 100644
+index ee4c5c205c8c..41eba16194d5 100644
 --- a/rust/kernel/usb.rs
 +++ b/rust/kernel/usb.rs
 @@ -107,6 +107,7 @@ unsafe fn register(
@@ -35,7 +35,7 @@ index b2a0fb104ddf..1d8f5bc8a545 100644
          }
  
          // SAFETY: `udrv` is guaranteed to be a valid `DriverType`.
-@@ -474,6 +475,19 @@ pub trait Driver {
+@@ -458,6 +459,19 @@ pub trait Driver {
      /// The table of device ids supported by the driver.
      const ID_TABLE: IdTable<Self::IdInfo>;
  

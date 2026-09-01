@@ -1,7 +1,7 @@
-From 658cef0f2d44c1c3bd9fed12ed174fc672d68913 Mon Sep 17 00:00:00 2001
+From 2eda7392fb0b6665546827519821fcd698f8aaa8 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:31 +0100
-Subject: [PATCH v3 1/13] drm/vino: add the DL3 wire framing
+Subject: [PATCH v4 1/13] drm/vino: add the DL3 wire framing
 
 Every message a DisplayLink DL3 dock exchanges, plaintext or sealed, sits
 inside the same envelope: a length, an identifier, an auxiliary word and a

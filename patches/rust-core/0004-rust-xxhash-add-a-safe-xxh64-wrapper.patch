@@ -1,7 +1,7 @@
-From 64cb240633d30b80c0ab6ee97359f81ac562321d Mon Sep 17 00:00:00 2001
+From 6d73e37f887f4881a6eabafbcb8df4fbc4a6bc14 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 21:44:01 +0100
-Subject: [PATCH 4/9] rust: xxhash: add a safe xxh64 wrapper
+Subject: [PATCH v2 4/8] rust: xxhash: add a safe xxh64 wrapper
 
 Expose xxh64() through a slice-based Rust API for non-cryptographic
 hashing such as framebuffer damage detection.
@@ -16,22 +16,22 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  create mode 100644 rust/kernel/xxhash.rs
 
 diff --git a/rust/bindings/bindings_helper.h b/rust/bindings/bindings_helper.h
-index 1124785e210b..2d079f278a04 100644
+index 4b31aa7f432f..0410dbda1060 100644
 --- a/rust/bindings/bindings_helper.h
 +++ b/rust/bindings/bindings_helper.h
-@@ -93,6 +93,7 @@
+@@ -95,6 +95,7 @@
  #include <linux/wait.h>
  #include <linux/workqueue.h>
  #include <linux/xarray.h>
 +#include <linux/xxhash.h>
+ #include <net/genetlink.h>
+ #include <net/netlink.h>
  #include <trace/events/rust_sample.h>
- 
- /*
 diff --git a/rust/kernel/lib.rs b/rust/kernel/lib.rs
-index f39648246271..d7ced2a4c11f 100644
+index 2c61494e7c51..657ec1b1b5a8 100644
 --- a/rust/kernel/lib.rs
 +++ b/rust/kernel/lib.rs
-@@ -141,6 +141,7 @@
+@@ -146,6 +146,7 @@
  pub mod usb;
  pub mod workqueue;
  pub mod xarray;

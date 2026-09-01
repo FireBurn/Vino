@@ -1,4 +1,4 @@
-From fb8ef42838f94c183ff40cc14271fc3983423960 Mon Sep 17 00:00:00 2001
+From ef6e5ba26530712396af1e6c2965ed09d018c140 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:40:02 +0100
 Subject: [PATCH 1/1] drm/tyr: mark the Rust DRM driver as non-KMS
@@ -14,7 +14,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  1 file changed, 3 insertions(+)
 
 diff --git a/drivers/gpu/drm/tyr/driver.rs b/drivers/gpu/drm/tyr/driver.rs
-index d78ad9d292ff..6b6067c75bc7 100644
+index bfb0ba19caff..32f6f613f960 100644
 --- a/drivers/gpu/drm/tyr/driver.rs
 +++ b/drivers/gpu/drm/tyr/driver.rs
 @@ -1,5 +1,7 @@
@@ -25,7 +25,7 @@ index d78ad9d292ff..6b6067c75bc7 100644
  use kernel::{
      clk::{
          Clk,
-@@ -209,6 +211,7 @@ impl drm::Driver for TyrDrmDriver {
+@@ -208,6 +210,7 @@ impl drm::Driver for TyrDrmDriver {
      type File = TyrDrmFileData;
      type Object = Bo;
      type ParentDevice<Ctx: DeviceContext> = platform::Device<Ctx>;

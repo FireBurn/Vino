@@ -1,7 +1,7 @@
-From 8c9e401f600a96b4740d38b8a6b2532aec86fc63 Mon Sep 17 00:00:00 2001
+From 8dcedc85ebbaf4fa294268f688ddb4cc39f4ab2d Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 21:49:17 +0100
-Subject: [PATCH 1/9] rust: sync: completion: add single-shot and timed operations
+Subject: [PATCH v2 1/8] rust: sync: completion: add single-shot and timed operations
 
 Expose complete() and wait_for_completion_timeout() so Rust drivers
 can coordinate asynchronous completions without open-coding access

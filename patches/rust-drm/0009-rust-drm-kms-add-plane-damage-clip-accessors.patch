@@ -1,7 +1,7 @@
-From 6b20c678a9fa71210feb7c9876f16567c0473a22 Mon Sep 17 00:00:00 2001
+From 570bff8faea43adef001824cea1505937d4838ab Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 16:27:50 +0100
-Subject: [PATCH v3 9/23] rust: drm: kms: add plane damage-clip accessors
+Subject: [PATCH v4 9/23] rust: drm: kms: add plane damage-clip accessors
 
 Add safe access to the FB_DAMAGE_CLIPS rectangles intersected with
 the visible source area.
@@ -19,7 +19,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  2 files changed, 106 insertions(+)
 
 diff --git a/rust/bindings/bindings_helper.h b/rust/bindings/bindings_helper.h
-index 38ad80fae0ed..c4abdd887699 100644
+index 643d47bfc20c..6e608daff8bd 100644
 --- a/rust/bindings/bindings_helper.h
 +++ b/rust/bindings/bindings_helper.h
 @@ -41,6 +41,7 @@

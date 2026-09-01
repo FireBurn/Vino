@@ -1,7 +1,7 @@
-From 8ef8138a24e0cdebcec2e289b02dfea00c2f963c Mon Sep 17 00:00:00 2001
+From afd8c06817a089ee9b19e9f84dcfced5132e6a64 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:54 +0100
-Subject: [PATCH v3 5/13] drm/vino: add the dock profiles
+Subject: [PATCH v4 5/13] drm/vino: add the dock profiles
 
 Three DisplayLink generations are driven here -- Ella (DL-3x00), Ridge
 (DL-6xxx) and Navarro (DL-7400) -- and they differ in connector count,
@@ -17,16 +17,16 @@ being invisible to it.
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- drivers/gpu/drm/vino/profile.rs | 1185 +++++++++++++++++++++++++++++++
- 1 file changed, 1185 insertions(+)
+ drivers/gpu/drm/vino/profile.rs | 1186 +++++++++++++++++++++++++++++++
+ 1 file changed, 1186 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/profile.rs
 
 diff --git a/drivers/gpu/drm/vino/profile.rs b/drivers/gpu/drm/vino/profile.rs
 new file mode 100644
-index 000000000000..43b5d70e02c6
+index 000000000000..a8f65573b623
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/profile.rs
-@@ -0,0 +1,1185 @@
+@@ -0,0 +1,1186 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! What distinguishes one DisplayLink dock from another.
@@ -184,6 +184,7 @@ index 000000000000..43b5d70e02c6
 +    pub(crate) const UNMETERED: Self = Self::new(u32::MAX, u32::MAX);
 +
 +    /// Whether this dock is metered at all.
++    #[cfg(CONFIG_DRM_VINO_KUNIT_TEST)]
 +    pub(crate) fn is_metered(self) -> bool {
 +        self.bytes_per_sec != u32::MAX
 +    }

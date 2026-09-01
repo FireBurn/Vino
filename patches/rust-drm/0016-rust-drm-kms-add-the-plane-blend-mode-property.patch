@@ -1,7 +1,7 @@
-From 1cd73792864faa6629156276cff36b884deb8788 Mon Sep 17 00:00:00 2001
+From cc24411ef95b8e4a388e7cfbe3085f3cb6af7c71 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 22:51:17 +0100
-Subject: [PATCH v3 16/23] rust: drm: kms: add the plane blend-mode property
+Subject: [PATCH v4 16/23] rust: drm: kms: add the plane blend-mode property
 
 Expose drm_plane_create_blend_mode_property() so Rust KMS drivers
 advertising alpha formats can declare how userspace should interpret

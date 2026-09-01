@@ -1,7 +1,7 @@
-From 3dfa2df6107cd046d9732d352e1b15fbd77f14ab Mon Sep 17 00:00:00 2001
+From 3d3cfb73b5fa0f25909f2f798d421c2b33ff95a8 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:13 +0100
-Subject: [PATCH v3 13/13] Documentation/gpu: document the Vino driver
+Subject: [PATCH v4 13/13] Documentation/gpu: document the Vino driver
 
 Describe how a dock is identified and placed by family rather than by
 product ID, what the driver implements in-kernel in place of EVDI and
@@ -290,10 +290,10 @@ index 000000000000..98e82297a82a
 +External-module ``modpost`` also needs a completed kernel build with a
 +matching ``Module.symvers``.
 diff --git a/MAINTAINERS b/MAINTAINERS
-index 79ccf112fabd..1b0d496897ea 100644
+index 9597ef604070..a8624f539d09 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
-@@ -8541,6 +8541,7 @@ DRM DRIVER FOR VINO DISPLAYLINK DL3 DEVICES
+@@ -8611,6 +8611,7 @@ DRM DRIVER FOR VINO DISPLAYLINK DL3 DEVICES
  M:	Mike Lothian <mike@fireburn.co.uk>
  L:	dri-devel@lists.freedesktop.org
  S:	Maintained

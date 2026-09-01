@@ -1,7 +1,7 @@
-From 82942642eaffa6db6290f9435abe471899a2d9d6 Mon Sep 17 00:00:00 2001
+From e1cdc51b7b13407a00dccecbd930d5341f005252 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 16:54:31 +0100
-Subject: [PATCH 6/9] rust: io: add checked offset copy helpers
+Subject: [PATCH v2 6/8] rust: io: add checked offset copy helpers
 
 I/O mappings often need to copy a bounded byte range rather than
 the complete mapping. Add checked helpers that project the requested
@@ -15,10 +15,10 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  1 file changed, 50 insertions(+)
 
 diff --git a/rust/kernel/io.rs b/rust/kernel/io.rs
-index 95f46bb75f9e..aea346b8b79e 100644
+index 5ce9fd129068..0d9b178e65d3 100644
 --- a/rust/kernel/io.rs
 +++ b/rust/kernel/io.rs
-@@ -225,6 +225,30 @@ fn io_view<'a, IO: Io<'a>, U>(
+@@ -226,6 +226,30 @@ fn io_view<'a, IO: Io<'a>, U>(
      Ok(unsafe { IO::Backend::project_view(view, projected_ptr) })
  }
  
@@ -49,7 +49,7 @@ index 95f46bb75f9e..aea346b8b79e 100644
  /// I/O backends.
  ///
  /// This is an abstract representation to be implemented by arbitrary I/O
-@@ -640,6 +664,32 @@ fn copy_to_slice(self, data: &mut [u8])
+@@ -641,6 +665,32 @@ fn copy_to_slice(self, data: &mut [u8])
          }
      }
  

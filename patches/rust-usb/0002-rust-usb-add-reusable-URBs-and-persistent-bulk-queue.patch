@@ -1,7 +1,7 @@
-From d0198ec37071114a04ac7c9bfeb3cadc6a7fcc64 Mon Sep 17 00:00:00 2001
+From e051c9903bf12d28556d4baf78bff4544937e7f6 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 23:40:36 +0100
-Subject: [PATCH v3 2/5] rust: usb: add reusable URBs and persistent bulk queues
+Subject: [PATCH v4 2/5] rust: usb: add reusable URBs and persistent bulk queues
 
 Allow an idle URB to retain its full transfer allocation, vary the
 submitted length, recover the handle after completion or a failed
@@ -60,7 +60,7 @@ index ac7b30334882..1501f5438e43 100644
  rust_helper_usb_sndbulkpipe(struct usb_device *dev, unsigned int endpoint)
  {
 diff --git a/rust/kernel/usb.rs b/rust/kernel/usb.rs
-index c3d0cc36d425..ad40c814616a 100644
+index 48a10ac6406e..30eaa8dbdcfd 100644
 --- a/rust/kernel/usb.rs
 +++ b/rust/kernel/usb.rs
 @@ -28,6 +28,7 @@
@@ -71,7 +71,7 @@ index c3d0cc36d425..ad40c814616a 100644
          CondVar,
          Mutex, //
      },
-@@ -935,7 +936,8 @@ fn timeout_millis(timeout: Delta) -> Result<kernel::ffi::c_int> {
+@@ -903,7 +904,8 @@ fn timeout_millis(timeout: Delta) -> Result<kernel::ffi::c_int> {
  /// The USB adapter owns one `IoWindow` for every successfully bound interface and passes a
  /// reference-counted handle to [`Driver::probe`]. Drivers take an [`Io`] token from it around every
  /// transfer. The adapter revokes the window and blocks until every outstanding token has been
@@ -81,7 +81,7 @@ index c3d0cc36d425..ad40c814616a 100644
  ///
  /// Because [`Io`] borrows the window, and the transfer methods and queues live on [`Io`], a
  /// transfer cannot outlive the window that permitted it.
-@@ -957,6 +959,17 @@ struct IoState {
+@@ -925,6 +927,17 @@ struct IoState {
      open: bool,
      /// How many [`Io`] tokens are currently alive.
      active: usize,
@@ -99,7 +99,7 @@ index c3d0cc36d425..ad40c814616a 100644
  }
  
  impl IoWindow {
-@@ -967,6 +980,8 @@ fn new(interface: ARef<Interface>) -> impl PinInit<Self> {
+@@ -935,6 +948,8 @@ fn new(interface: ARef<Interface>) -> impl PinInit<Self> {
              state <- new_mutex!(IoState {
                  open: true,
                  active: 0,
@@ -108,7 +108,7 @@ index c3d0cc36d425..ad40c814616a 100644
              }),
              idle <- new_condvar!(),
          })
-@@ -993,17 +1008,32 @@ pub fn interface(&self) -> &Interface {
+@@ -961,17 +976,32 @@ pub fn interface(&self) -> &Interface {
  
      /// Closes the window and waits until no I/O is in flight.
      ///
@@ -143,7 +143,7 @@ index c3d0cc36d425..ad40c814616a 100644
      }
  
      /// Reopens a window that was closed by a suspend or pre-reset.
-@@ -1012,6 +1042,36 @@ fn close(&self) {
+@@ -980,6 +1010,36 @@ fn close(&self) {
      fn reopen(&self) {
          self.state.lock().open = true;
      }
@@ -180,7 +180,7 @@ index c3d0cc36d425..ad40c814616a 100644
  }
  
  /// Proof that USB I/O is currently permitted on an interface, and the handle through which every
-@@ -1040,6 +1100,15 @@ pub fn interface(&self) -> &Interface {
+@@ -1008,6 +1068,15 @@ pub fn interface(&self) -> &Interface {
          self.window.interface()
      }
  
@@ -196,7 +196,7 @@ index c3d0cc36d425..ad40c814616a 100644
      /// The `struct usb_device` that interface belongs to.
      fn device(&self) -> *mut bindings::usb_device {
          // SAFETY: the window holds a reference to a valid `struct usb_interface`, and
-@@ -1257,6 +1326,432 @@ pub fn set_alternate_setting(&self, alternate: u8) -> Result {
+@@ -1225,6 +1294,432 @@ pub fn set_alternate_setting(&self, alternate: u8) -> Result {
      }
  }
  
@@ -629,7 +629,7 @@ index c3d0cc36d425..ad40c814616a 100644
  // SAFETY: `usb::Interface` is a transparent wrapper of `struct usb_interface`.
  // The offset is guaranteed to point to a valid device field inside `usb::Interface`.
  unsafe impl<Ctx: device::DeviceContext> device::AsBusDevice<Ctx> for Interface<Ctx> {
-@@ -1512,6 +2007,14 @@ fn status(&self) -> i32 {
+@@ -1482,6 +1977,14 @@ fn status(&self) -> i32 {
          self.inner().status
      }
  
@@ -644,7 +644,7 @@ index c3d0cc36d425..ad40c814616a 100644
      /// Returns a borrow of the driver-private context data, if any.
      pub fn context(&self) -> Option<ArcBorrow<'_, T>> {
          let context = self.inner().context;
-@@ -1533,14 +2036,45 @@ pub fn context(&self) -> Option<ArcBorrow<'_, T>> {
+@@ -1503,14 +2006,45 @@ pub fn context(&self) -> Option<ArcBorrow<'_, T>> {
  pub struct UrbHandle<T, S: UrbState = Idle> {
      /// Pointer to the underlying C `struct urb`.
      urb: NonNull<bindings::urb>,
@@ -692,7 +692,7 @@ index c3d0cc36d425..ad40c814616a 100644
  
  impl<T, S: UrbState> Deref for UrbHandle<T, S> {
      type Target = Urb<T>;
-@@ -1551,6 +2085,76 @@ fn deref(&self) -> &Self::Target {
+@@ -1521,6 +2055,76 @@ fn deref(&self) -> &Self::Target {
      }
  }
  
@@ -769,7 +769,7 @@ index c3d0cc36d425..ad40c814616a 100644
  impl<T, S: UrbState> Drop for UrbHandle<T, S> {
      fn drop(&mut self) {
          // SAFETY: `self.as_raw()` points to a valid, initialized C `struct urb`.
-@@ -1579,7 +2183,7 @@ fn drop(&mut self) {
+@@ -1549,7 +2153,7 @@ fn drop(&mut self) {
              unsafe {
                  drop(KBox::from_raw(ptr::slice_from_raw_parts_mut(
                      urb.transfer_buffer.cast::<u8>(),
@@ -778,7 +778,7 @@ index c3d0cc36d425..ad40c814616a 100644
                  )));
              }
          }
-@@ -1767,6 +2371,8 @@ fn init_common(
+@@ -1737,6 +2341,8 @@ fn init_common(
          transfer_flags: TransferFlags,
          interval: i32,
      ) -> Result<Pin<UrbHandle<T, Idle>>> {
@@ -787,7 +787,7 @@ index c3d0cc36d425..ad40c814616a 100644
          // SAFETY: `usb_alloc_urb` allocates a `struct urb` + ISO frame.
          let urb_ptr =
              unsafe { bindings::usb_alloc_urb(number_of_packets as c_int, mem_flags.as_raw()) };
-@@ -1819,6 +2425,7 @@ fn init_common(
+@@ -1789,6 +2395,7 @@ fn init_common(
          let urb_handle = UrbHandle {
              // SAFETY: `urb_ptr` is guaranteed non-null by the null check above.
              urb: unsafe { NonNull::new_unchecked(urb_ptr) },
@@ -795,7 +795,7 @@ index c3d0cc36d425..ad40c814616a 100644
              _state: PhantomData,
              _ty: PhantomData,
          };
-@@ -1836,6 +2443,18 @@ pub fn submit(
+@@ -1806,6 +2413,18 @@ pub fn submit(
          self: Pin<UrbHandle<T, Idle>>,
          mem_flags: kernel::alloc::Flags,
      ) -> Result<UrbHandle<T, Active>> {
@@ -814,7 +814,7 @@ index c3d0cc36d425..ad40c814616a 100644
          // SAFETY: The urb pointed to is not moved.
          let handle = unsafe { Pin::into_inner_unchecked(self) };
          // SAFETY: `handle.as_raw()` points to a valid, initialized `struct urb`.
-@@ -1843,14 +2462,19 @@ pub fn submit(
+@@ -1813,14 +2432,19 @@ pub fn submit(
  
          if result == 0 {
              let urb = handle.urb;

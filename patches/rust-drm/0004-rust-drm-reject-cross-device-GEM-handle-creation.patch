@@ -1,7 +1,7 @@
-From 50a68340e63a69a32394d3217a667c7c71d33df0 Mon Sep 17 00:00:00 2001
+From 7827e39db6233940c421e70cb0394c604c7ed5a8 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:39:04 +0100
-Subject: [PATCH v3 4/23] rust: drm: reject cross-device GEM handle creation
+Subject: [PATCH v4 4/23] rust: drm: reject cross-device GEM handle creation
 
 The Rust type bounds prove that a GEM object and file use the same
 driver implementation, but one driver can own multiple DRM device
@@ -39,7 +39,7 @@ index 10160601ce5a..0abb7813f011 100644
          // SAFETY: By the type invariants of `Self`, `self.as_raw()` is always valid.
          unsafe { (*self.as_raw()).driver_priv }.cast()
 diff --git a/rust/kernel/drm/gem/mod.rs b/rust/kernel/drm/gem/mod.rs
-index 60491e5521e4..334e946833fb 100644
+index 4f85787efff2..b165d7608d8e 100644
 --- a/rust/kernel/drm/gem/mod.rs
 +++ b/rust/kernel/drm/gem/mod.rs
 @@ -186,6 +186,13 @@ fn create_handle<D, F>(&self, file: &drm::File<F>) -> Result<u32>

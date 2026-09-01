@@ -21,15 +21,15 @@ set -euo pipefail
 
 workspace="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 kernel_tree="${KERNEL_TREE:-$workspace/linux}"
-kernel_base="${KERNEL_BASE:-integration/base-20260809}"
-kernel_head="${KERNEL_HEAD:-vino-v3}"
+kernel_base="${KERNEL_BASE:-integration/base-20260901}"
+kernel_head="${KERNEL_HEAD:-vino}"
 author_email="${AUTHOR_EMAIL:-mike@fireburn.co.uk}"
-msgid_file="${MSGID_FILE:-$workspace/tools/v3-message-ids.txt}"
+msgid_file="${MSGID_FILE:-$workspace/tools/v4-message-ids.txt}"
 output="$workspace/patches"
 
 # The branch people are asked to clone, and where.
 tree_url="https://github.com/FireBurn/linux"
-tree_branch="vino-v3"
+tree_branch="vino"
 
 git -C "$kernel_tree" rev-parse --git-dir >/dev/null 2>&1 ||
     { echo "error: not a git tree: $kernel_tree" >&2; exit 2; }
@@ -81,7 +81,8 @@ title() {
 # reviewer to go looking for two revisions that do not exist.
 reroll() {
     case "$1" in
-    rust-crypto|rust-usb|rust-drm|drm-vino) printf '3' ;;
+    rust-crypto|rust-usb|rust-drm|drm-vino) printf '4' ;;
+    rust-core|rust-firmware)                printf '2' ;;
     *)                                      printf '' ;;
     esac
 }
@@ -91,11 +92,13 @@ reroll() {
 # cover text as a link and nowhere else.
 previous() {
     case "$1" in
-    rust-crypto) printf '20260703030056.2763-1-mike@fireburn.co.uk' ;;
-    rust-usb)    printf '20260703030020.2694-1-mike@fireburn.co.uk' ;;
-    rust-drm)    printf '20260703030123.2814-1-mike@fireburn.co.uk' ;;
-    drm-vino)    printf '20260703030217.2886-1-mike@fireburn.co.uk' ;;
-    *)           printf '' ;;
+    rust-core)     printf '20260826162851.2497-1-mike@fireburn.co.uk' ;;
+    rust-crypto)   printf '20260826163004.3365-1-mike@fireburn.co.uk' ;;
+    rust-usb)      printf '20260826163101.4168-1-mike@fireburn.co.uk' ;;
+    rust-drm)      printf '20260826163359.4998-1-mike@fireburn.co.uk' ;;
+    rust-firmware) printf '20260826163716.6274-1-mike@fireburn.co.uk' ;;
+    drm-vino)      printf '20260826163913.7052-1-mike@fireburn.co.uk' ;;
+    *)             printf '' ;;
     esac
 }
 

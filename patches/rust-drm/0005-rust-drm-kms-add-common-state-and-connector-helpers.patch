@@ -1,7 +1,7 @@
-From d0af8f45bee7bbfff790bde264ea06e2caa08a8c Mon Sep 17 00:00:00 2001
+From 378fcd52b2649592bece28aabe1df58cb8ec57bc Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:45:48 +0100
-Subject: [PATCH v3 5/23] rust: drm: kms: add common state and connector helpers
+Subject: [PATCH v4 5/23] rust: drm: kms: add common state and connector helpers
 
 Add safe KMS helpers for hotplug events, mode timings, CRTC modes,
 plane destination sizes, and EDID mode enumeration.

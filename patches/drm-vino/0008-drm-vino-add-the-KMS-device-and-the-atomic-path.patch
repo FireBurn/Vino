@@ -1,7 +1,7 @@
-From b905c22fb1bb354e40a4018319ce8fae5631be29 Mon Sep 17 00:00:00 2001
+From d83f24b6106e0fb103a6ef7da46799688b4382e2 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:40:37 +0100
-Subject: [PATCH v3 8/13] drm/vino: add the KMS device and the atomic path
+Subject: [PATCH v4 8/13] drm/vino: add the KMS device and the atomic path
 
 Add the KMS half of the sink: the DRM driver and its GEM and file
 types, the CRTCs, planes and connectors the compositor drives over a
@@ -35,14 +35,14 @@ the encoder feed -- follows in the next commit.
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- drivers/gpu/drm/vino/drm_sink.rs              | 1868 +++++++++++++++++
+ drivers/gpu/drm/vino/drm_sink.rs              | 1860 +++++++++++++++++
  drivers/gpu/drm/vino/drm_sink/dispatch.rs     |  446 ++++
  drivers/gpu/drm/vino/drm_sink/driver.rs       |  211 ++
  drivers/gpu/drm/vino/drm_sink/limits.rs       |  489 +++++
- drivers/gpu/drm/vino/drm_sink/mode_objects.rs |  978 +++++++++
+ drivers/gpu/drm/vino/drm_sink/mode_objects.rs |  979 +++++++++
  drivers/gpu/drm/vino/drm_sink/settings.rs     |  574 +++++
  drivers/gpu/drm/vino/drm_sink/worker.rs       |  571 +++++
- 7 files changed, 5137 insertions(+)
+ 7 files changed, 5130 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/drm_sink.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink/dispatch.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink/driver.rs
@@ -53,10 +53,10 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 
 diff --git a/drivers/gpu/drm/vino/drm_sink.rs b/drivers/gpu/drm/vino/drm_sink.rs
 new file mode 100644
-index 000000000000..86708db89699
+index 000000000000..7a235941e0ff
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink.rs
-@@ -0,0 +1,1868 @@
+@@ -0,0 +1,1860 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! DRM/KMS integration for Vino.
@@ -1002,18 +1002,10 @@ index 000000000000..86708db89699
 +    /// Per-connector timestamp of the last accepted frame, used to bound scanout cadence.
 +    #[pin]
 +    last_frame: SpinLock<[Option<Instant<Monotonic>>; MAX_CONNECTORS]>,
-+    /// When `queue_scanout` last ran for each connector, i.e. when KWin's commit tail last handed
-+    /// us a framebuffer. Distinguishes "the compositor stopped committing" from "we dropped the
-+    /// frame".
-+    #[pin]
 +    /// When the streaming status poll last went out, device-wide. The poll keeps the control
 +    /// dialogue alive; it does not need to be per presentation.
 +    #[pin]
 +    last_status_poll: SpinLock<Option<Instant<Monotonic>>>,
-+    /// When each connector's scanout work item last began executing.
-+    #[pin]
-+    /// Rate limiter for the stall diagnostic below.
-+    #[pin]
 +    /// Deadline for the sustained full-frame stream required to train a cold downstream link.
 +    #[pin]
 +    sustain_until: SpinLock<[Option<Instant<Monotonic>>; MAX_CONNECTORS]>,
@@ -3091,10 +3083,10 @@ index 000000000000..96d2d8dcf8c2
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink/mode_objects.rs b/drivers/gpu/drm/vino/drm_sink/mode_objects.rs
 new file mode 100644
-index 000000000000..d3ec818ec1da
+index 000000000000..74d1c1b48612
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink/mode_objects.rs
-@@ -0,0 +1,978 @@
+@@ -0,0 +1,979 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! The KMS objects the compositor drives: CRTC, primary and cursor planes, encoder and connector,
@@ -3798,7 +3790,8 @@ index 000000000000..d3ec818ec1da
 +        let mut clips = [(0usize, 0usize, 0usize, 0usize); MAX_DAMAGE_CLIPS];
 +        let mut nclips = 0usize;
 +        if rotation.angle() == plane::Rotation::ROTATE_0
-+            && !rotation.contains(plane::Rotation::REFLECT_X | plane::Rotation::REFLECT_Y)
++            && !rotation.contains(plane::Rotation::REFLECT_X)
++            && !rotation.contains(plane::Rotation::REFLECT_Y)
 +        {
 +            new.for_each_damage_clip(old, |r| {
 +                let c = (

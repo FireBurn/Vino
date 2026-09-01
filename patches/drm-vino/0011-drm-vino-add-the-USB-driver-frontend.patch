@@ -1,7 +1,7 @@
-From 92296939aae1b4efc257c42683d14ec0b432071d Mon Sep 17 00:00:00 2001
+From fe2de69b1266f2af68ebb7ebfe61a2219a59659a Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:10 +0100
-Subject: [PATCH v3 11/13] drm/vino: add the USB driver frontend
+Subject: [PATCH v4 11/13] drm/vino: add the USB driver frontend
 
 Vino drives DisplayLink DL3 docks as ordinary DRM devices, replacing the
 out-of-tree EVDI module and the closed-source DisplayLinkManager daemon.
@@ -31,16 +31,16 @@ re-activations, which would leave neither panel lit.
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- drivers/gpu/drm/vino/vino.rs | 1747 ++++++++++++++++++++++++++++++++++
- 1 file changed, 1747 insertions(+)
+ drivers/gpu/drm/vino/vino.rs | 1746 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 1746 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/vino.rs
 
 diff --git a/drivers/gpu/drm/vino/vino.rs b/drivers/gpu/drm/vino/vino.rs
 new file mode 100644
-index 000000000000..0813faa43c03
+index 000000000000..c064e7944ed0
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/vino.rs
-@@ -0,0 +1,1747 @@
+@@ -0,0 +1,1746 @@
 +// SPDX-License-Identifier: GPL-2.0
 +// SPDX-FileCopyrightText: Copyright (C) 2026 Mike Lothian
 +
@@ -69,7 +69,7 @@ index 000000000000..0813faa43c03
 +
 +/// Whether the load-time `debug` parameter requested verbose protocol and scanout diagnostics.
 +pub(crate) fn debug_enabled() -> bool {
-+    *crate::module_parameters::debug.value() != 0
++    crate::module_parameters::debug.value() != 0
 +}
 +
 +/// Whether this one module load may disclose its ephemeral session material for a wire capture.
@@ -77,7 +77,7 @@ index 000000000000..0813faa43c03
 +/// This is deliberately separate from ordinary debug logging: the values make a usbmon trace
 +/// decryptable and must never appear during a normal load.
 +fn trace_crypto_enabled() -> bool {
-+    *crate::module_parameters::trace_crypto.value() != 0
++    crate::module_parameters::trace_crypto.value() != 0
 +}
 +
 +/// Emit a driver diagnostic only when the load-time `debug` parameter is nonzero.
@@ -193,7 +193,7 @@ index 000000000000..0813faa43c03
 +    /// Next inner sequence counter after the AKE messages sent by [`run_ake`].
 +    next_ctr: u16,
 +    /// Receiver key retained for each downstream repeater authentication.
-+    rsa: kernel::crypto::akcipher::RsaPublicKey,
++    rsa: kernel::crypto::rsa::RsaPublicKey,
 +    rxid_list: KVec<u8>,
 +}
 +
@@ -1301,7 +1301,6 @@ index 000000000000..0813faa43c03
 +// identity descriptor read in `probe` is the safety valve that keeps that honest.
 +kernel::usb_device_table!(
 +    USB_TABLE,
-+    MODULE_USB_TABLE,
 +    <VinoDriver as usb::Driver>::IdInfo,
 +    [
 +        (
@@ -1339,7 +1338,7 @@ index 000000000000..0813faa43c03
 +    fn probe<'bound>(
 +        intf: &'bound usb::Interface<Core<'_>>,
 +        _id: &usb::DeviceId,
-+        info: &'bound Self::IdInfo,
++        info: Option<&'bound Self::IdInfo>,
 +        io: Arc<usb::IoWindow>,
 +    ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound {
 +        let cdev: &device::Device<Core<'_>> = intf.as_ref();
@@ -1347,7 +1346,7 @@ index 000000000000..0813faa43c03
 +        // function -- drive bring-up only there so the preamble and AKE do not run once per
 +        // interface and pollute the dock's state machine. An interface with no active alternate
 +        // setting has no endpoints to drive.
-+        let function = *info;
++        let function = *info.ok_or(ENODEV)?;
 +        let ifnum = intf.number().ok_or(ENODEV)?;
 +        log_device_identity(cdev, intf, ifnum);
 +
@@ -1363,7 +1362,7 @@ index 000000000000..0813faa43c03
 +        // Writing firmware the dock does not need is a deliberate act: its DFU interface does
 +        // not support upload, so there is no way to read the running image back and nothing to
 +        // restore from if the write goes wrong.
-+        let force = *crate::module_parameters::force_flash.value() != 0;
++        let force = crate::module_parameters::force_flash.value() != 0;
 +        if function == Function::Dfu {
 +            // Every DFU request is addressed to this interface. A failed check is not fatal: a
 +            // dock runs perfectly well on the firmware it shipped with.
@@ -1403,7 +1402,7 @@ index 000000000000..0813faa43c03
 +                    .and_then(|n| KBox::new(n, GFP_KERNEL).map_err(Into::into));
 +                    match name {
 +                        Ok(name) => match kernel::firmware::upload::Registration::new(
-+                            &THIS_MODULE,
++                            &<LocalModule as kernel::ModuleMetadata>::THIS_MODULE,
 +                            cdev,
 +                            &name,
 +                            ctx,
@@ -1548,7 +1547,7 @@ index 000000000000..0813faa43c03
 +                profile.capabilities.hw_cursor,
 +                connectors,
 +            ),
-+            &THIS_MODULE,
++            &<LocalModule as kernel::ModuleMetadata>::THIS_MODULE,
 +        )?;
 +        // `Core` derefs to `Bound`; name the context explicitly so `as_ref()`
 +        // resolves to the bound parent required by DRM registration.

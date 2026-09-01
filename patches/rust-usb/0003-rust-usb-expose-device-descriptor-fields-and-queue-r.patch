@@ -1,7 +1,7 @@
-From 4bdc5da7193ab2058a1ff278426effe23c80be65 Mon Sep 17 00:00:00 2001
+From eecbe1d62ef9cc2d6a18db748fcafbe357db4d21 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 23:40:48 +0100
-Subject: [PATCH v3 3/5] rust: usb: expose device descriptor fields and queue
+Subject: [PATCH v4 3/5] rust: usb: expose device descriptor fields and queue
  readiness
 
 A driver that identifies hardware before it decides to drive it needs the
@@ -22,10 +22,10 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  1 file changed, 96 insertions(+)
 
 diff --git a/rust/kernel/usb.rs b/rust/kernel/usb.rs
-index ad40c814616a..782bae53584d 100644
+index 30eaa8dbdcfd..4d2904a2e9b6 100644
 --- a/rust/kernel/usb.rs
 +++ b/rust/kernel/usb.rs
-@@ -1430,6 +1430,7 @@ fn is_active(&self) -> bool {
+@@ -1398,6 +1398,7 @@ fn is_active(&self) -> bool {
          matches!(self.urb, Some(QueueUrb::Active(_)))
      }
  
@@ -33,7 +33,7 @@ index ad40c814616a..782bae53584d 100644
      fn wait(&self, timeout: Delta) -> bool {
          let millis = timeout.as_millis();
          let millis = if millis <= 0 {
-@@ -1441,6 +1442,7 @@ fn wait(&self, timeout: Delta) -> bool {
+@@ -1409,6 +1410,7 @@ fn wait(&self, timeout: Delta) -> bool {
              .wait_for_completion_timeout(crate::time::msecs_to_jiffies(millis))
      }
  
@@ -41,7 +41,7 @@ index ad40c814616a..782bae53584d 100644
      fn finish(&mut self) -> Result<(i32, usize)> {
          let state = self.urb.take().ok_or(EIO)?;
          let active = match state {
-@@ -1700,6 +1702,34 @@ fn reap(&mut self, i: usize, timeout: Delta) -> Result<bool> {
+@@ -1668,6 +1670,34 @@ fn reap(&mut self, i: usize, timeout: Delta) -> Result<bool> {
          Ok(true)
      }
  
@@ -76,7 +76,7 @@ index ad40c814616a..782bae53584d 100644
      /// Submits `data` as a bulk OUT transfer without waiting for it to complete.
      ///
      /// If the slot about to be reused still has a transfer outstanding, this blocks up to
-@@ -2626,6 +2656,72 @@ fn inner(&self) -> &bindings::usb_device {
+@@ -2596,6 +2626,72 @@ fn inner(&self) -> &bindings::usb_device {
      fn devnum(&self) -> u32 {
          self.inner().devnum as u32
      }

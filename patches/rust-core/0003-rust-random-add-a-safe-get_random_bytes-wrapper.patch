@@ -1,7 +1,7 @@
-From 734d6e814fa6ab65ff8248d0d95ea53b38c98fbf Mon Sep 17 00:00:00 2001
+From f80e2a756212bbf1ce6a57d741c4634f0c26899d Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 21:43:53 +0100
-Subject: [PATCH 3/9] rust: random: add a safe get_random_bytes wrapper
+Subject: [PATCH v2 3/8] rust: random: add a safe get_random_bytes wrapper
 
 Expose a slice-based wrapper around get_random_bytes() so Rust callers
 can fill key, nonce, and other random buffers without touching raw
@@ -16,10 +16,10 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  create mode 100644 rust/kernel/random.rs
 
 diff --git a/rust/kernel/lib.rs b/rust/kernel/lib.rs
-index 08e5730753eb..f39648246271 100644
+index 4d5c96ddc49c..2c61494e7c51 100644
 --- a/rust/kernel/lib.rs
 +++ b/rust/kernel/lib.rs
-@@ -116,6 +116,7 @@
+@@ -119,6 +119,7 @@
  pub mod ptr;
  #[cfg(CONFIG_RUST_PWM_ABSTRACTIONS)]
  pub mod pwm;

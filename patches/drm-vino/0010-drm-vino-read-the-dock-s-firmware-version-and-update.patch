@@ -1,7 +1,7 @@
-From 532af6099b0b33bc13b6390ce09ba7e93f3e58bd Mon Sep 17 00:00:00 2001
+From 0e693c942b244b17cde7986a7e87f9f68631712e Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:09 +0100
-Subject: [PATCH v3 10/13] drm/vino: read the dock's firmware version, and update it
+Subject: [PATCH v4 10/13] drm/vino: read the dock's firmware version, and update it
  over DFU
 
 A DisplayLink dock does not advance bcdDevice when its firmware changes, so
@@ -37,16 +37,16 @@ not ship.
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- drivers/gpu/drm/vino/firmware.rs | 670 +++++++++++++++++++++++++++++++
- 1 file changed, 670 insertions(+)
+ drivers/gpu/drm/vino/firmware.rs | 736 +++++++++++++++++++++++++++++++
+ 1 file changed, 736 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/firmware.rs
 
 diff --git a/drivers/gpu/drm/vino/firmware.rs b/drivers/gpu/drm/vino/firmware.rs
 new file mode 100644
-index 000000000000..13c9cff55ae4
+index 000000000000..c4cf457ab6ad
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/firmware.rs
-@@ -0,0 +1,670 @@
+@@ -0,0 +1,736 @@
 +// SPDX-License-Identifier: GPL-2.0
 +//! Dock firmware: identity, package parsing, and the USB DFU update.
 +//!
@@ -433,14 +433,17 @@ index 000000000000..13c9cff55ae4
 +    Ok(())
 +}
 +
-+/// Automatic updates attempted for one device: the device-name hash in the high 32 bits, the
-+/// attempt count in the low 32.
++/// Automatic updates attempted per device: the device-name hash in the high 32 bits, the attempt
++/// count in the low 32.
 +///
 +/// A dock that re-enumerates still reporting the old version is otherwise rewritten on every
-+/// probe, without end. One slot is enough, because the device that is looping is the one being
-+/// probed; another device simply takes the slot over and starts its own count.
++/// probe, without end. The count has to survive the re-enumeration a write causes, so it cannot
++/// live in driver data. One slot per dock that can be attached at once: a single slot lets two
++/// docks evict each other, and neither ever reaches the limit that breaks the loop.
 +#[cfg(CONFIG_RUST_FW_LOADER_ABSTRACTIONS)]
-+static UPDATE_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
++const UPDATE_SLOTS: usize = 4;
++#[cfg(CONFIG_RUST_FW_LOADER_ABSTRACTIONS)]
++static UPDATE_ATTEMPTS: [AtomicU64; UPDATE_SLOTS] = [const { AtomicU64::new(0) }; UPDATE_SLOTS];
 +#[cfg(CONFIG_RUST_FW_LOADER_ABSTRACTIONS)]
 +const ATTEMPT_KEY_MASK: u64 = 0xffff_ffff_0000_0000;
 +
@@ -463,37 +466,72 @@ index 000000000000..13c9cff55ae4
 +    u64::from(h) << 32
 +}
 +
++/// The slot holding `key`'s count: its own if it has one, otherwise a free slot, otherwise one
++/// shared by hash so that the count stays bounded even with more docks than slots.
++#[cfg(CONFIG_RUST_FW_LOADER_ABSTRACTIONS)]
++fn attempt_slot(key: u64) -> &'static AtomicU64 {
++    let mut free = None;
++    for slot in &UPDATE_ATTEMPTS {
++        let v = slot.load(Ordering::Acquire);
++        if v & ATTEMPT_KEY_MASK == key {
++            return slot;
++        }
++        if v == 0 && free.is_none() {
++            free = Some(slot);
++        }
++    }
++    free.unwrap_or(&UPDATE_ATTEMPTS[(key >> 32) as usize % UPDATE_SLOTS])
++}
++
 +#[cfg(CONFIG_RUST_FW_LOADER_ABSTRACTIONS)]
 +/// Whether `dev` has an automatic write left, without consuming one.
 +fn update_attempts_left(dev: &Device) -> bool {
 +    let key = attempt_key(dev);
-+    let slot = UPDATE_ATTEMPTS.load(Ordering::Acquire);
-+    slot & ATTEMPT_KEY_MASK != key || (slot as u32) < MAX_UPDATE_ATTEMPTS
++    let v = attempt_slot(key).load(Ordering::Acquire);
++    v & ATTEMPT_KEY_MASK != key || (v as u32) < MAX_UPDATE_ATTEMPTS
 +}
 +
 +#[cfg(CONFIG_RUST_FW_LOADER_ABSTRACTIONS)]
 +/// Count another automatic write against `dev`, or report that it has had its share.
++///
++/// Two interfaces of the same dock probe concurrently, so the count is claimed with a
++/// compare-exchange: a plain read-modify-write lets both read the same value and both write one
++/// back, and the limit never counts past one.
 +fn claim_update_attempt(dev: &Device) -> bool {
 +    let key = attempt_key(dev);
-+    let slot = UPDATE_ATTEMPTS.load(Ordering::Acquire);
-+    let count = if slot & ATTEMPT_KEY_MASK == key {
-+        slot as u32
-+    } else {
-+        0
-+    };
-+    if count >= MAX_UPDATE_ATTEMPTS {
-+        return false;
++    let slot = attempt_slot(key);
++    loop {
++        let cur = slot.load(Ordering::Acquire);
++        let count = if cur & ATTEMPT_KEY_MASK == key {
++            cur as u32
++        } else {
++            0
++        };
++        if count >= MAX_UPDATE_ATTEMPTS {
++            return false;
++        }
++        if slot
++            .compare_exchange(
++                cur,
++                key | u64::from(count + 1),
++                Ordering::AcqRel,
++                Ordering::Acquire,
++            )
++            .is_ok()
++        {
++            return true;
++        }
 +    }
-+    UPDATE_ATTEMPTS.store(key | u64::from(count + 1), Ordering::Release);
-+    true
 +}
 +
 +/// Forget the attempts recorded against `dev`, once it is seen running what the package offers.
 +#[cfg(CONFIG_RUST_FW_LOADER_ABSTRACTIONS)]
 +fn clear_update_attempts(dev: &Device) {
 +    let key = attempt_key(dev);
-+    if UPDATE_ATTEMPTS.load(Ordering::Acquire) & ATTEMPT_KEY_MASK == key {
-+        UPDATE_ATTEMPTS.store(0, Ordering::Release);
++    let slot = attempt_slot(key);
++    let cur = slot.load(Ordering::Acquire);
++    if cur & ATTEMPT_KEY_MASK == key {
++        let _ = slot.compare_exchange(cur, 0, Ordering::AcqRel, Ordering::Acquire);
 +    }
 +}
 +
@@ -517,6 +555,30 @@ index 000000000000..13c9cff55ae4
 +        );
 +        return Ok(());
 +    };
++    if !is_package(fw.data()) {
++        dev_warn!(
++            dev,
++            "{} is not a DisplayLink firmware package; leaving the dock on {}\n",
++            name,
++            identity.version
++        );
++        return Ok(());
++    }
++    // The package says which dock it is for. Writing another family's image is the one mistake
++    // here that cannot be undone, so it is refused before the dock is touched -- the same check
++    // the userspace upload path makes.
++    match package_family(fw.data()) {
++        Some(f) if Some(f) == identity.family() => {}
++        _ => {
++            dev_warn!(
++                dev,
++                "{} is not for this dock family; leaving the dock on {}\n",
++                name,
++                identity.version
++            );
++            return Ok(());
++        }
++    }
 +    let Some(packaged) = package_version(fw.data()) else {
 +        dev_warn!(dev, "{} carries no version tag; ignoring it\n", name);
 +        return Ok(());
@@ -565,6 +627,10 @@ index 000000000000..13c9cff55ae4
 +    // and leave the display function unbound waiting for it.
 +    if !is_package(fw.data()) {
 +        return false;
++    }
++    match package_family(fw.data()) {
++        Some(f) if Some(f) == identity.family() => {}
++        _ => return false,
 +    }
 +    let Some(packaged) = package_version(fw.data()) else {
 +        return false;

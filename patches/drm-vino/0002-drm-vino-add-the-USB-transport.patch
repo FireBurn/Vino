@@ -1,17 +1,18 @@
-From c0dd7cb1b6233d9974d15e34429aaf6a51857c36 Mon Sep 17 00:00:00 2001
+From 86d4a9499eb1355ae6631a295468f7e384a412aa Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:35 +0100
-Subject: [PATCH v3 2/13] drm/vino: add the USB transport
+Subject: [PATCH v4 2/13] drm/vino: add the USB transport
 
-The dock exposes control on a bulk pipe pair, video on one or two further
-bulk endpoints, and an interrupt endpoint the dock pushes on. A dock
-generation differs in how many of those it has and in whether video shares
-the control pipe, so the transport takes the endpoint numbers as data
-rather than deciding them.
+The dock exposes control on a bulk pipe pair and video on one or two
+further bulk endpoints. A dock generation differs in how many of those it
+has and in whether video shares the control pipe, so the transport takes
+the endpoint numbers as data rather than deciding them.
 
 Add the link: a bound-interface wrapper that opens those pipes, submits
 video as a queue of pipelined URBs, and reports a stall as a stall rather
-than retrying into a wedged dock.
+than retrying into a wedged dock. Endpoints carry their transfer type and
+direction in the type system, so a bulk-OUT transfer cannot be aimed at
+the dock's interrupt-IN status endpoint.
 
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>

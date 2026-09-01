@@ -1,7 +1,7 @@
-From 62aff2b801b81ec15d3dc8fda79f26019ec1d870 Mon Sep 17 00:00:00 2001
+From 0cab44acd2a85aaf00a3469900099d88587d2f32 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 18:33:00 +0100
-Subject: [PATCH v3 6/23] rust: drm: expose HDCP 2.2 message identifiers
+Subject: [PATCH v4 6/23] rust: drm: expose HDCP 2.2 message identifiers
 
 Add a DRM display module with typed identifiers for the standard
 HDCP 2.2 protocol messages. Transport drivers can use the canonical
@@ -19,7 +19,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  create mode 100644 rust/kernel/drm/display/hdcp.rs
 
 diff --git a/rust/bindings/bindings_helper.h b/rust/bindings/bindings_helper.h
-index 8db7fe00fa1b..ae3017539767 100644
+index c4ff2e05aa94..d16919d9e22e 100644
 --- a/rust/bindings/bindings_helper.h
 +++ b/rust/bindings/bindings_helper.h
 @@ -34,6 +34,7 @@

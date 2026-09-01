@@ -1,7 +1,7 @@
-From c5eb805ed99adeef1711527aa8cfeb5f3534ac7d Mon Sep 17 00:00:00 2001
+From 53054bbfb0933768f91a6761f0cb4fe451c4db41 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 13:23:01 +0100
-Subject: [PATCH v3 7/23] rust: drm: kms: add typed color and rotation properties
+Subject: [PATCH v4 7/23] rust: drm: kms: add typed color and rotation properties
 
 Add typed KMS property support for CRTC gamma lookup tables and
 plane rotation.
@@ -21,7 +21,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  3 files changed, 149 insertions(+)
 
 diff --git a/rust/bindings/bindings_helper.h b/rust/bindings/bindings_helper.h
-index ae3017539767..38ad80fae0ed 100644
+index d16919d9e22e..643d47bfc20c 100644
 --- a/rust/bindings/bindings_helper.h
 +++ b/rust/bindings/bindings_helper.h
 @@ -37,6 +37,7 @@

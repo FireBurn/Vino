@@ -1,7 +1,7 @@
-From 78f6476cfbebee6a874dacc9d91abcc26ee32356 Mon Sep 17 00:00:00 2001
+From 5c2cca7037b04e93aa0fb6708c8db4528d3881cb Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:06 +0100
-Subject: [PATCH 1/1] rust: firmware: add the firmware upload abstraction
+Subject: [PATCH v2 1/1] rust: firmware: add the firmware upload abstraction
 
 request_firmware() covers "pull an image from /lib/firmware"; the other
 half of the firmware loader, firmware_upload_register(), covers "userspace
@@ -17,14 +17,14 @@ codes userspace already reads back out of the error attribute.
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- rust/kernel/firmware.rs | 237 ++++++++++++++++++++++++++++++++++++++++
- 1 file changed, 237 insertions(+)
+ rust/kernel/firmware.rs | 244 ++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 244 insertions(+)
 
 diff --git a/rust/kernel/firmware.rs b/rust/kernel/firmware.rs
-index 6a6b392ffc4e..a6fa565421d7 100644
+index a18f8b84f3e3..f882b0af374d 100644
 --- a/rust/kernel/firmware.rs
 +++ b/rust/kernel/firmware.rs
-@@ -385,3 +385,240 @@ pub const fn build_length(self) -> usize {
+@@ -381,3 +381,247 @@ pub const fn build_length(self) -> usize {
          self.n + 1
      }
  }
@@ -82,7 +82,9 @@ index 6a6b392ffc4e..a6fa565421d7 100644
 +        /// Write `chunk`, which starts at `offset` in the image, returning how much was written.
 +        ///
 +        /// Called repeatedly until the image is consumed, so a driver may write less than it was
-+        /// offered and be called again with the remainder.
++        /// offered and be called again with the remainder. A count larger than `chunk.len()` is
++        /// clamped to it: the core subtracts what is reported from its own remaining length, and
++        /// an over-report would underflow that and push the next chunk past the end of the image.
 +        fn write(
 +            data: <Self::Data as ForeignOwnable>::Borrowed<'_>,
 +            image: &[u8],
@@ -96,7 +98,11 @@ index 6a6b392ffc4e..a6fa565421d7 100644
 +        /// Asked to stop, from another thread: set a flag the other callbacks observe.
 +        fn cancel(data: <Self::Data as ForeignOwnable>::Borrowed<'_>);
 +
-+        /// Undo whatever `prepare` set up. Runs on success and on failure alike.
++        /// Undo whatever `prepare` set up.
++        ///
++        /// Runs once the transfer has finished, whether it succeeded, failed or was cancelled. A
++        /// `prepare` that returns an error is expected to have unwound itself, because the core
++        /// abandons the transfer there and this is not called.
 +        fn cleanup(_data: <Self::Data as ForeignOwnable>::Borrowed<'_>) {}
 +    }
 +
@@ -105,6 +111,7 @@ index 6a6b392ffc4e..a6fa565421d7 100644
 +
 +    impl<U: Upload> Vtable<U> {
 +        /// Turn a driver result into the `enum fw_upload_err` the core expects.
++        #[inline]
 +        fn err(r: Result<(), Error>) -> bindings::fw_upload_err {
 +            match r {
 +                Ok(()) => bindings::fw_upload_err_FW_UPLOAD_ERR_NONE,
@@ -157,7 +164,7 @@ index 6a6b392ffc4e..a6fa565421d7 100644
 +            match U::write(d, image, offset, chunk) {
 +                Ok(n) => {
 +                    // SAFETY: the core passes a valid pointer for the result.
-+                    unsafe { *written = n };
++                    unsafe { *written = n.min(size) };
 +                    bindings::fw_upload_err_FW_UPLOAD_ERR_NONE
 +                }
 +                Err(e) => e as bindings::fw_upload_err,

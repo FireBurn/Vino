@@ -1,7 +1,7 @@
-From 5815f9aff181b8c4714500d37cd93dde4da09d41 Mon Sep 17 00:00:00 2001
+From e55f1b41c284f84d30f30d4b0324219459e74bf4 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 23:39:55 +0100
-Subject: [PATCH v3 1/5] rust: usb: add revocable typed interface I/O
+Subject: [PATCH v4 1/5] rust: usb: add revocable typed interface I/O
 
 Make the USB driver adapter own its bound data and a per-interface
 I/O window. Close the window around disconnect, suspend, and reset
@@ -21,9 +21,9 @@ Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/helpers/usb.c              |  18 +
- rust/kernel/usb.rs              | 767 +++++++++++++++++++++++++++++++-
- samples/rust/rust_driver_usb.rs |   6 +-
- 3 files changed, 772 insertions(+), 19 deletions(-)
+ rust/kernel/usb.rs              | 751 +++++++++++++++++++++++++++++++-
+ samples/rust/rust_driver_usb.rs |  53 ---
+ 3 files changed, 751 insertions(+), 71 deletions(-)
 
 diff --git a/rust/helpers/usb.c b/rust/helpers/usb.c
 index eff1cf7be3c2..ac7b30334882 100644
@@ -52,7 +52,7 @@ index eff1cf7be3c2..ac7b30334882 100644
 +	return usb_rcvintpipe(dev, endpoint);
 +}
 diff --git a/rust/kernel/usb.rs b/rust/kernel/usb.rs
-index f4a3d7c0ef6c..c3d0cc36d425 100644
+index 9590b319166d..48a10ac6406e 100644
 --- a/rust/kernel/usb.rs
 +++ b/rust/kernel/usb.rs
 @@ -6,6 +6,7 @@
@@ -126,10 +126,10 @@ index f4a3d7c0ef6c..c3d0cc36d425 100644
              (*udrv.get()).id_table = T::ID_TABLE.as_ptr();
          }
  
-@@ -109,7 +137,12 @@ extern "C" fn probe_callback(
-             let id = unsafe { &*id.cast::<DeviceId>() };
- 
-             let info = T::ID_TABLE.info(id.index());
+@@ -112,7 +140,12 @@ extern "C" fn probe_callback(
+             // can also come from dynamic IDs, which will ensure that `driver_data` exists in
+             // `T::ID_TABLE` or is 0.
+             let info = unsafe { id.info_unchecked_opt::<T::IdInfo>() };
 -            let data = T::probe(intf, id, info);
 +            let interface: ARef<Interface> = intf.into();
 +            let io = Arc::pin_init(IoWindow::new(interface), GFP_KERNEL)?;
@@ -140,7 +140,7 @@ index f4a3d7c0ef6c..c3d0cc36d425 100644
  
              let dev: &device::Device<device::CoreInternal<'_>> = intf.as_ref();
              dev.set_drvdata(data)?;
-@@ -126,12 +159,94 @@ extern "C" fn disconnect_callback(intf: *mut bindings::usb_interface) {
+@@ -129,12 +162,94 @@ extern "C" fn disconnect_callback(intf: *mut bindings::usb_interface) {
  
          let dev: &device::Device<device::CoreInternal<'_>> = intf.as_ref();
  
@@ -193,8 +193,7 @@ index f4a3d7c0ef6c..c3d0cc36d425 100644
 +        // SAFETY: These callbacks only ever run between a successful `probe_callback()` and
 +        // `disconnect_callback()`, so the driver data is present.
 +        let data = unsafe { dev.drvdata_borrow::<BoundData<'_, T>>() };
- 
--        T::disconnect(intf, data);
++
 +        from_result(|| {
 +            if resume {
 +                data.io.reopen();
@@ -213,7 +212,8 @@ index f4a3d7c0ef6c..c3d0cc36d425 100644
 +            Ok(0)
 +        })
 +    }
-+
+ 
+-        T::disconnect(intf, data);
 +    extern "C" fn suspend_callback(
 +        intf: *mut bindings::usb_interface,
 +        _message: bindings::pm_message_t,
@@ -238,7 +238,7 @@ index f4a3d7c0ef6c..c3d0cc36d425 100644
      }
  }
  
-@@ -289,7 +404,7 @@ macro_rules! usb_device_table {
+@@ -274,7 +389,7 @@ macro_rules! usb_device_table {
  /// # Examples
  ///
  ///```
@@ -247,18 +247,18 @@ index f4a3d7c0ef6c..c3d0cc36d425 100644
  /// use kernel::prelude::*;
  ///
  /// struct MyDriver;
-@@ -313,6 +428,7 @@ macro_rules! usb_device_table {
+@@ -297,6 +412,7 @@ macro_rules! usb_device_table {
  ///         _interface: &'bound usb::Interface<Core<'_>>,
  ///         _id: &usb::DeviceId,
- ///         _info: &'bound Self::IdInfo,
+ ///         _info: Option<&'bound Self::IdInfo>,
 +///         _io: Arc<usb::IoWindow>,
  ///     ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound {
  ///         Err(ENODEV)
  ///     }
-@@ -342,15 +458,77 @@ fn probe<'bound>(
+@@ -326,15 +442,77 @@ fn probe<'bound>(
          interface: &'bound Interface<device::Core<'_>>,
          id: &DeviceId,
-         id_info: &'bound Self::IdInfo,
+         id_info: Option<&'bound Self::IdInfo>,
 +        io: Arc<IoWindow>,
      ) -> impl PinInit<Self::Data<'bound>, Error> + 'bound;
  
@@ -334,7 +334,7 @@ index f4a3d7c0ef6c..c3d0cc36d425 100644
  }
  
  /// A USB interface.
-@@ -544,6 +722,541 @@ pub fn maxp_mult(&self) -> u16 {
+@@ -528,6 +706,525 @@ pub fn maxp_mult(&self) -> u16 {
      }
  }
  
@@ -349,22 +349,6 @@ index f4a3d7c0ef6c..c3d0cc36d425 100644
 +        }
 +        // SAFETY: `alt` is a valid `struct usb_host_interface` (checked non-null above).
 +        Some(unsafe { (*alt).desc.bInterfaceNumber })
-+    }
-+
-+    /// Asks the driver core to unbind whatever driver is currently bound to this interface.
-+    ///
-+    /// This is the narrow, reviewed replacement for handing out a raw `struct device` pointer: it
-+    /// performs exactly one operation (`device_release_driver()`) on this interface's own device,
-+    /// and cannot be used to reach the device-wide state of a composite peer.
-+    ///
-+    /// It is intended for a driver-provided "release my devices" control (e.g. a sysfs attribute),
-+    /// and must not be called from the driver's own `probe()` or `disconnect()` callback: the
-+    /// driver core already holds the device lock across those.
-+    pub fn release_driver(&self) {
-+        // SAFETY: `self.as_raw()` is a valid `struct usb_interface` by the type invariant, so the
-+        // address of its embedded `dev` is a valid `struct device`. `device_release_driver()`
-+        // takes the device lock itself and tolerates a device with no driver bound.
-+        unsafe { bindings::device_release_driver(&raw mut (*self.as_raw()).dev) };
 +    }
 +
 +    /// Asks the USB core to reset the device this interface belongs to, from a work item it owns.
@@ -876,7 +860,7 @@ index f4a3d7c0ef6c..c3d0cc36d425 100644
  // SAFETY: `usb::Interface` is a transparent wrapper of `struct usb_interface`.
  // The offset is guaranteed to point to a valid device field inside `usb::Interface`.
  unsafe impl<Ctx: device::DeviceContext> device::AsBusDevice<Ctx> for Interface<Ctx> {
-@@ -634,17 +1347,20 @@ pub enum TransferFlag {
+@@ -620,17 +1317,20 @@ pub enum TransferFlag {
  
  impl Pipe {
      /// Create a host-to-device (OUT) control pipe (endpoint 0).
@@ -900,7 +884,7 @@ index f4a3d7c0ef6c..c3d0cc36d425 100644
          Self(
              bindings::PIPE_ISOCHRONOUS << 30
                  | dev.devnum() << 8
-@@ -654,7 +1370,10 @@ pub fn new_receive_isoc_pipe(dev: &Device, endpoint: &HostEndpoint) -> Self {
+@@ -640,7 +1340,10 @@ pub fn new_receive_isoc_pipe(dev: &Device, endpoint: &HostEndpoint) -> Self {
      }
  
      /// Create a host-to-device (OUT) isochronous pipe.
@@ -912,7 +896,7 @@ index f4a3d7c0ef6c..c3d0cc36d425 100644
          Self(
              bindings::PIPE_ISOCHRONOUS << 30
                  | dev.devnum() << 8
-@@ -663,7 +1382,10 @@ pub fn new_send_isoc_pipe(dev: &Device, endpoint: &HostEndpoint) -> Self {
+@@ -649,7 +1352,10 @@ pub fn new_send_isoc_pipe(dev: &Device, endpoint: &HostEndpoint) -> Self {
      }
  
      /// Create a host-to-device (OUT) bulk pipe.
@@ -924,7 +908,7 @@ index f4a3d7c0ef6c..c3d0cc36d425 100644
          Self(
              bindings::PIPE_BULK << 30
                  | dev.devnum() << 8
-@@ -672,7 +1394,10 @@ pub fn new_send_bulk_pipe(dev: &Device, endpoint: &HostEndpoint) -> Self {
+@@ -658,7 +1364,10 @@ pub fn new_send_bulk_pipe(dev: &Device, endpoint: &HostEndpoint) -> Self {
      }
  
      /// Create a device-to-host (IN) bulk pipe.
@@ -936,7 +920,7 @@ index f4a3d7c0ef6c..c3d0cc36d425 100644
          Self(
              bindings::PIPE_BULK << 30
                  | dev.devnum() << 8
-@@ -682,7 +1407,10 @@ pub fn new_receive_bulk_pipe(dev: &Device, endpoint: &HostEndpoint) -> Self {
+@@ -668,7 +1377,10 @@ pub fn new_receive_bulk_pipe(dev: &Device, endpoint: &HostEndpoint) -> Self {
      }
  
      /// Create a host-to-device (OUT) interrupt pipe.
@@ -948,7 +932,7 @@ index f4a3d7c0ef6c..c3d0cc36d425 100644
          Self(
              bindings::PIPE_INTERRUPT << 30
                  | dev.devnum() << 8
-@@ -691,7 +1419,10 @@ pub fn new_send_int_pipe(dev: &Device, endpoint: &HostEndpoint) -> Self {
+@@ -677,7 +1389,10 @@ pub fn new_send_int_pipe(dev: &Device, endpoint: &HostEndpoint) -> Self {
      }
  
      /// Create a device-to-host (IN) interrupt pipe.
@@ -961,26 +945,61 @@ index f4a3d7c0ef6c..c3d0cc36d425 100644
              bindings::PIPE_INTERRUPT << 30
                  | dev.devnum() << 8
 diff --git a/samples/rust/rust_driver_usb.rs b/samples/rust/rust_driver_usb.rs
-index 02bd5085f9bc..0f5fb8392149 100644
+index 7ef04e177c80..8b137891791f 100644
 --- a/samples/rust/rust_driver_usb.rs
 +++ b/samples/rust/rust_driver_usb.rs
-@@ -9,7 +9,10 @@
-         Core, //
-     },
-     prelude::*,
--    sync::aref::ARef,
-+    sync::{
-+        aref::ARef,
-+        Arc, //
-+    },
-     usb, //
- };
+@@ -1,54 +1 @@
+-// SPDX-License-Identifier: GPL-2.0
+-// SPDX-FileCopyrightText: Copyright (C) 2025 Collabora Ltd.
  
-@@ -33,6 +36,7 @@ fn probe<'bound>(
-         intf: &'bound usb::Interface<Core<'_>>,
-         _id: &usb::DeviceId,
-         _info: &'bound Self::IdInfo,
-+        _io: Arc<usb::IoWindow>,
-     ) -> impl PinInit<Self, Error> + 'bound {
-         let dev: &device::Device<Core<'_>> = intf.as_ref();
-         dev_info!(dev, "Rust USB driver sample probed\n");
+-//! Rust USB driver sample.
+-
+-use kernel::{
+-    device::{
+-        self,
+-        Core, //
+-    },
+-    prelude::*,
+-    sync::aref::ARef,
+-    usb, //
+-};
+-
+-struct SampleDriver {
+-    _intf: ARef<usb::Interface>,
+-}
+-
+-kernel::usb_device_table!(
+-    USB_TABLE,
+-    <SampleDriver as usb::Driver>::IdInfo,
+-    [(usb::DeviceId::from_id(0x1234, 0x5678), ()),]
+-);
+-
+-impl usb::Driver for SampleDriver {
+-    type IdInfo = ();
+-    type Data<'bound> = Self;
+-    const ID_TABLE: usb::IdTable<Self::IdInfo> = &USB_TABLE;
+-
+-    fn probe<'bound>(
+-        intf: &'bound usb::Interface<Core<'_>>,
+-        _id: &usb::DeviceId,
+-        _info: Option<&'bound Self::IdInfo>,
+-    ) -> impl PinInit<Self, Error> + 'bound {
+-        let dev: &device::Device<Core<'_>> = intf.as_ref();
+-        dev_info!(dev, "Rust USB driver sample probed\n");
+-
+-        Ok(Self { _intf: intf.into() })
+-    }
+-
+-    fn disconnect<'bound>(intf: &'bound usb::Interface<Core<'_>>, _data: Pin<&Self>) {
+-        let dev: &device::Device<Core<'_>> = intf.as_ref();
+-        dev_info!(dev, "Rust USB driver sample disconnected\n");
+-    }
+-}
+-
+-kernel::module_usb_driver! {
+-    type: SampleDriver,
+-    name: "rust_driver_usb",
+-    authors: ["Daniel Almeida"],
+-    description: "Rust USB driver sample",
+-    license: "GPL v2",
+-}

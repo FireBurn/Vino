@@ -1,95 +1,63 @@
-From cbe74d3d59dc64d36e44145a6eb795606285b31d Mon Sep 17 00:00:00 2001
+From 3c490619c23e04c95231ef2a0a6f9a3edd2fac64 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
-Date: Thu, 18 Jun 2026 14:59:24 +0100
-Subject: [PATCH v3 2/2] rust: crypto: add synchronous RSA akcipher support
+Date: Mon, 31 Aug 2026 18:36:09 +0100
+Subject: [PATCH v4 2/2] rust: crypto: add RSA public-key encryption
 
-Add an RAII Rust wrapper for RSA public keys backed by the kernel
-crypto_akcipher implementation. Encode modulus and exponent components
-in the PKCS#1 DER form accepted by the existing RSA transform and
-expose synchronous public-key encryption.
+Add an RAII Rust wrapper for RSA public keys, backed by the kernel's
+`rsa` transform. Encode modulus and exponent in the PKCS#1 DER form that
+transform accepts, and expose one operation: RSAES-OAEP with SHA-256.
 
-Provide RSAES-OAEP with SHA-256 for consumers which need that standard
-encoding, while keeping the OAEP seed explicit for use with the kernel
-CSPRNG and deterministic known-answer tests. Wipe encoded messages,
-expanded AES keys, and Secret byte strings with memzero_explicit().
+The OAEP seed is a parameter rather than drawn internally, so a driver
+can pass the kernel CSPRNG while the tests pass published deterministic
+vectors. Secret wipes fixed-size byte strings on drop through zeroize().
 
-Gate the AES, SHA-256, and akcipher bindings with dedicated Rust
-Kconfig symbols. Cover the DER encoder and OAEP path with a published
-Wycheproof vector.
+This deliberately does not wrap crypto_akcipher itself. That interface
+generalises poorly across algorithms, and nothing here needs it: the
+binding names RSA, takes RSA parameters, and performs the one padding
+mode its callers use. Cover the DER encoder and the OAEP path with a
+published Wycheproof vector.
+
+RUST_CRYPTO_RSA gates the binding and selects the transform it calls.
+The crypto API core is built into the kernel because Rust abstractions
+are part of the built-in kernel crate; individual algorithms may remain
+modules.
 
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- crypto/Kconfig                  |  10 ++
- lib/crypto/Kconfig              |  19 ++
+ crypto/Kconfig                  |  11 ++
  rust/bindings/bindings_helper.h |   1 +
- rust/helpers/crypto.c           |  27 +++
+ rust/helpers/crypto.c           |  15 ++
  rust/kernel/Kconfig.test        |  14 ++
- rust/kernel/crypto.rs           |  72 +++++++-
- rust/kernel/crypto/akcipher.rs  | 298 ++++++++++++++++++++++++++++++++
- 7 files changed, 435 insertions(+), 6 deletions(-)
- create mode 100644 rust/kernel/crypto/akcipher.rs
+ rust/kernel/crypto.rs           |  59 ++++++-
+ rust/kernel/crypto/rsa.rs       | 298 ++++++++++++++++++++++++++++++++
+ 6 files changed, 396 insertions(+), 2 deletions(-)
+ create mode 100644 rust/kernel/crypto/rsa.rs
 
 diff --git a/crypto/Kconfig b/crypto/Kconfig
-index f1e372195273..9b7cfdbef7c4 100644
+index 981d5dc422d4..6b4c3b073d6e 100644
 --- a/crypto/Kconfig
 +++ b/crypto/Kconfig
-@@ -116,6 +116,16 @@ config CRYPTO_AKCIPHER
+@@ -116,6 +116,17 @@ config CRYPTO_AKCIPHER
  	select CRYPTO_AKCIPHER2
  	select CRYPTO_ALGAPI
  
-+config RUST_CRYPTO_AKCIPHER
++config RUST_CRYPTO_RSA
 +	bool
 +	depends on RUST
 +	select CRYPTO_AKCIPHER
++	select CRYPTO_RSA
 +	help
-+	  Enable safe Rust abstractions for the public-key cipher API. The
-+	  crypto API core is built into the kernel because Rust abstractions
-+	  are part of the built-in kernel crate; individual algorithms may
-+	  remain modules.
++	  Enable the Rust bindings for RSA public-key encryption. The crypto
++	  API core is built into the kernel because Rust abstractions are part
++	  of the built-in kernel crate; individual algorithms may remain
++	  modules.
 +
  config CRYPTO_KPP2
  	tristate
  	select CRYPTO_ALGAPI2
-diff --git a/lib/crypto/Kconfig b/lib/crypto/Kconfig
-index 591c1c2a7fb3..9d47fce62f54 100644
---- a/lib/crypto/Kconfig
-+++ b/lib/crypto/Kconfig
-@@ -36,6 +36,16 @@ config CRYPTO_LIB_AES_CBC_MACS
- 	  this if your module uses any of the functions from
- 	  <crypto/aes-cbc-macs.h>.
- 
-+config RUST_CRYPTO_LIB_AES
-+	bool
-+	depends on RUST
-+	select CRYPTO_LIB_AES
-+	select CRYPTO_LIB_AES_CBC_MACS
-+	help
-+	  Enable the Rust bindings for the synchronous AES library functions.
-+	  The selected C libraries are built into the kernel because Rust
-+	  abstractions are part of the built-in kernel crate.
-+
- config CRYPTO_LIB_AESGCM
- 	tristate
- 	select CRYPTO_LIB_AES
-@@ -216,6 +226,15 @@ config CRYPTO_LIB_SHA256
- 	  Select this if your module uses any of these functions from
- 	  <crypto/sha2.h>.
- 
-+config RUST_CRYPTO_LIB_SHA256
-+	bool
-+	depends on RUST
-+	select CRYPTO_LIB_SHA256
-+	help
-+	  Enable the Rust bindings for the synchronous SHA-256 and HMAC-SHA256
-+	  library functions. The selected C library is built into the kernel
-+	  because Rust abstractions are part of the built-in kernel crate.
-+
- config CRYPTO_LIB_SHA256_ARCH
- 	bool
- 	depends on CRYPTO_LIB_SHA256 && !UML
 diff --git a/rust/bindings/bindings_helper.h b/rust/bindings/bindings_helper.h
-index 8d7489b8cce8..bb46317898c1 100644
+index e253e4ed583c..2be6f58f2ffd 100644
 --- a/rust/bindings/bindings_helper.h
 +++ b/rust/bindings/bindings_helper.h
 @@ -28,6 +28,7 @@
@@ -101,23 +69,21 @@ index 8d7489b8cce8..bb46317898c1 100644
  #include <crypto/sha2.h>
  
 diff --git a/rust/helpers/crypto.c b/rust/helpers/crypto.c
-index a18780231ce0..f0cdf7fa8a76 100644
+index 54486139f483..e67fe7271914 100644
 --- a/rust/helpers/crypto.c
 +++ b/rust/helpers/crypto.c
-@@ -1,9 +1,30 @@
+@@ -1,5 +1,6 @@
  // SPDX-License-Identifier: GPL-2.0
  
 +#include <crypto/akcipher.h>
  #include <crypto/aes.h>
  #include <crypto/aes-cbc-macs.h>
  #include <linux/string.h>
+@@ -9,6 +10,20 @@ __rust_helper void rust_helper_memzero_explicit(void *s, size_t count)
+ 	memzero_explicit(s, count);
+ }
  
-+__rust_helper void rust_helper_memzero_explicit(void *s, size_t count)
-+{
-+	memzero_explicit(s, count);
-+}
-+
-+#ifdef CONFIG_RUST_CRYPTO_AKCIPHER
++#ifdef CONFIG_RUST_CRYPTO_RSA
 +__rust_helper void rust_helper_crypto_free_akcipher(struct crypto_akcipher *tfm)
 +{
 +	crypto_free_akcipher(tfm);
@@ -131,29 +97,11 @@ index a18780231ce0..f0cdf7fa8a76 100644
 +}
 +#endif
 +
-+#ifdef CONFIG_RUST_CRYPTO_LIB_AES
+ #ifdef CONFIG_RUST_CRYPTO_LIB_AES
  /*
   * aes_encrypt() takes a transparent union (aes_encrypt_arg) that bindgen cannot
-  * express, so the single-block encrypt step is wrapped here. The key schedule
-@@ -19,6 +40,11 @@ rust_helper_aes_enckey_encrypt_block(const struct aes_enckey *key, u8 *out,
- 	aes_encrypt(key, out, in);
- }
- 
-+__rust_helper void rust_helper_aes_enckey_zero(struct aes_enckey *key)
-+{
-+	memzero_explicit(key, sizeof(*key));
-+}
-+
- /*
-  * AES-CMAC one-shot over the in-tree library (crypto/aes-cbc-macs.h): prepares
-  * the 128-bit key, MACs @data and writes the 16-byte tag to @out. A helper
-@@ -35,3 +61,4 @@ rust_helper_aes_cmac(const u8 *key, const u8 *data, size_t data_len, u8 *out)
- 	aes_cmac(&cmac_key, data, data_len, out);
- 	memzero_explicit(&cmac_key, sizeof(cmac_key));
- }
-+#endif
 diff --git a/rust/kernel/Kconfig.test b/rust/kernel/Kconfig.test
-index e6a5c7a795f0..32e1a0c17d08 100644
+index e6a5c7a795f0..a3826993cb69 100644
 --- a/rust/kernel/Kconfig.test
 +++ b/rust/kernel/Kconfig.test
 @@ -83,4 +83,18 @@ config RUST_BITFIELD_KUNIT_TEST
@@ -164,7 +112,7 @@ index e6a5c7a795f0..32e1a0c17d08 100644
 +	bool "KUnit tests for Rust crypto APIs" if !KUNIT_ALL_TESTS
 +	default KUNIT_ALL_TESTS
 +	select CRYPTO_RSA
-+	select RUST_CRYPTO_AKCIPHER
++	select RUST_CRYPTO_RSA
 +	select RUST_CRYPTO_LIB_SHA256
 +	help
 +	  This option enables KUnit tests for the safe Rust crypto APIs,
@@ -176,40 +124,42 @@ index e6a5c7a795f0..32e1a0c17d08 100644
 +
  endif
 diff --git a/rust/kernel/crypto.rs b/rust/kernel/crypto.rs
-index 5f7c301b2bb8..0cf38541c8d1 100644
+index 3c6c3531675a..c19813257462 100644
 --- a/rust/kernel/crypto.rs
 +++ b/rust/kernel/crypto.rs
-@@ -9,18 +9,75 @@
+@@ -9,14 +9,27 @@
  //! synchronously in the calling context with no allocation; the hashes and the
  //! MAC are infallible.
  //!
 -//! C headers: [`include/crypto/aes.h`](srctree/include/crypto/aes.h),
 +//! Public-key ciphers are available through [`akcipher`] when
-+//! `CONFIG_RUST_CRYPTO_AKCIPHER` is enabled.
++//! `CONFIG_RUST_CRYPTO_RSA` is enabled.
 +//!
 +//! C headers: [`include/crypto/akcipher.h`](srctree/include/crypto/akcipher.h),
 +//! [`include/crypto/aes.h`](srctree/include/crypto/aes.h),
  //! [`include/crypto/aes-cbc-macs.h`](srctree/include/crypto/aes-cbc-macs.h),
  //! [`include/crypto/sha2.h`](srctree/include/crypto/sha2.h).
  
--use crate::{bindings, error::to_result, prelude::*};
 +use core::ops::{Deref, DerefMut};
 +
-+use crate::bindings;
+ use crate::bindings;
+-#[cfg(CONFIG_RUST_CRYPTO_LIB_AES)]
 +#[cfg(any(
-+    CONFIG_RUST_CRYPTO_AKCIPHER,
++    CONFIG_RUST_CRYPTO_RSA,
 +    CONFIG_RUST_CRYPTO_LIB_AES,
 +    CONFIG_RUST_CRYPTO_LIB_SHA256
 +))]
-+use crate::{error::to_result, prelude::*};
-+
-+#[cfg(CONFIG_RUST_CRYPTO_AKCIPHER)]
-+pub mod akcipher;
+ use crate::{error::to_result, prelude::*};
  
++#[cfg(CONFIG_RUST_CRYPTO_RSA)]
++pub mod rsa;
++
  /// Size of a SHA-256 / HMAC-SHA256 digest, in bytes.
  pub const SHA256_DIGEST_SIZE: usize = 32;
  /// AES-128 block and key size, in bytes.
- pub const AES128_BLOCK_SIZE: usize = 16;
+@@ -31,6 +44,48 @@ pub fn zeroize(bytes: &mut [u8]) {
+     unsafe { bindings::memzero_explicit(bytes.as_mut_ptr().cast(), bytes.len()) };
+ }
  
 +/// A fixed-size byte string which is wiped when dropped.
 +///
@@ -220,11 +170,13 @@ index 5f7c301b2bb8..0cf38541c8d1 100644
 +
 +impl<const N: usize> Secret<N> {
 +    /// Wraps bytes which should be wiped when their owner is dropped.
++    #[inline]
 +    pub const fn new(bytes: [u8; N]) -> Self {
 +        Self(bytes)
 +    }
 +
 +    /// Creates an all-zero byte string.
++    #[inline]
 +    pub const fn zeroed() -> Self {
 +        Self([0; N])
 +    }
@@ -245,65 +197,20 @@ index 5f7c301b2bb8..0cf38541c8d1 100644
 +}
 +
 +impl<const N: usize> Drop for Secret<N> {
++    #[inline]
 +    fn drop(&mut self) {
-+        // SAFETY: `self.0` is valid for exactly `N` writable bytes. The helper
-+        // uses `memzero_explicit()`, so the wipe is not optimised away.
-+        unsafe { bindings::memzero_explicit(self.0.as_mut_ptr().cast(), N) };
++        zeroize(&mut self.0);
 +    }
 +}
 +
  /// Returns the SHA-256 digest of `data`.
-+#[cfg(CONFIG_RUST_CRYPTO_LIB_SHA256)]
- pub fn sha256(data: &[u8]) -> [u8; SHA256_DIGEST_SIZE] {
-     let mut out = [0u8; SHA256_DIGEST_SIZE];
-     // SAFETY: `data` is valid for `data.len()` reads and `out` is a valid
-@@ -30,6 +87,7 @@
- }
- 
- /// Returns `HMAC-SHA256(key, data)`.
-+#[cfg(CONFIG_RUST_CRYPTO_LIB_SHA256)]
- pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; SHA256_DIGEST_SIZE] {
-     let mut out = [0u8; SHA256_DIGEST_SIZE];
-     // SAFETY: `key` and `data` are valid for their respective lengths and `out`
-@@ -51,6 +109,7 @@
- /// prepared and wiped internally; the call is infallible.
- ///
- /// [`include/crypto/aes-cbc-macs.h`]: srctree/include/crypto/aes-cbc-macs.h
-+#[cfg(CONFIG_RUST_CRYPTO_LIB_AES)]
- pub fn aes_cmac(key: &[u8; AES128_BLOCK_SIZE], data: &[u8]) -> [u8; AES128_BLOCK_SIZE] {
-     let mut out = [0u8; AES128_BLOCK_SIZE];
-     // SAFETY: `key` is a valid 16-byte key, `data` is valid for `data.len()`
-@@ -77,8 +136,10 @@
- /// let _ct = cipher.encrypt_block(&[0u8; 16]);
- /// # Ok::<(), Error>(())
- /// ```
-+#[cfg(CONFIG_RUST_CRYPTO_LIB_AES)]
- pub struct Aes128(bindings::aes_enckey);
- 
-+#[cfg(CONFIG_RUST_CRYPTO_LIB_AES)]
- impl Aes128 {
-     /// Expands an AES-128 key from 16 raw key bytes.
-     pub fn new(key: &[u8; AES128_BLOCK_SIZE]) -> Result<Self> {
-@@ -105,11 +166,10 @@ impl Aes128 {
-     }
- }
- 
-+#[cfg(CONFIG_RUST_CRYPTO_LIB_AES)]
- impl Drop for Aes128 {
-     fn drop(&mut self) {
--        // SAFETY: `self.0` is a valid, owned `aes_enckey`; overwriting it with
--        // an all-zero `aes_enckey` clears the expanded key schedule.
--        // `write_volatile` keeps the store from being optimised away.
--        unsafe { core::ptr::write_volatile(&mut self.0, core::mem::zeroed()) };
-+        // SAFETY: `self.0` is a valid, owned `aes_enckey`.
-+        unsafe { bindings::aes_enckey_zero(&mut self.0) };
-     }
- }
-diff --git a/rust/kernel/crypto/akcipher.rs b/rust/kernel/crypto/akcipher.rs
+ #[cfg(CONFIG_RUST_CRYPTO_LIB_SHA256)]
+ #[inline]
+diff --git a/rust/kernel/crypto/rsa.rs b/rust/kernel/crypto/rsa.rs
 new file mode 100644
-index 000000000000..c5fc2ca0cfbe
+index 000000000000..9771e37f9b39
 --- /dev/null
-+++ b/rust/kernel/crypto/akcipher.rs
++++ b/rust/kernel/crypto/rsa.rs
 @@ -0,0 +1,298 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
@@ -376,7 +283,7 @@ index 000000000000..c5fc2ca0cfbe
 +    /// Both buffers must have the modulus size. The output is fixed-width,
 +    /// unsigned, and big-endian. Prefer a padded scheme such as
 +    /// [`oaep_sha256_encrypt`](Self::oaep_sha256_encrypt).
-+    pub fn encrypt(&mut self, encoded: &[u8], out: &mut [u8]) -> Result {
++    fn encrypt(&mut self, encoded: &[u8], out: &mut [u8]) -> Result {
 +        if encoded.len() != self.size || out.len() != self.size {
 +            return Err(EINVAL);
 +        }

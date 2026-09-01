@@ -1,7 +1,7 @@
-From ce20f4ee8755fa19834c4df4aa52f5be9d7cf906 Mon Sep 17 00:00:00 2001
+From 07f6d93b8d957783de1db5b6eae6d0f4949ecaa6 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:33:12 +0100
-Subject: [PATCH v3 7/13] drm/vino: add control-session bring-up
+Subject: [PATCH v4 7/13] drm/vino: add control-session bring-up
 
 Bringing a dock up runs once per bind, in order: a plaintext initialisation
 preamble, the link AKE, then the sealed setup burst that authenticates each
@@ -26,7 +26,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 
 diff --git a/drivers/gpu/drm/vino/session.rs b/drivers/gpu/drm/vino/session.rs
 new file mode 100644
-index 000000000000..f14a0f47311e
+index 000000000000..b774b49e800f
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/session.rs
 @@ -0,0 +1,625 @@
@@ -439,7 +439,7 @@ index 000000000000..f14a0f47311e
 +        // (5) AKE_No_Stored_km -- fresh km, RSA-OAEP-SHA256 to Ekpub(km).
 +        let mut km = kernel::crypto::Secret::<{ drm_hdcp::ENCRYPTED_SESSION_KEY_LEN }>::zeroed();
 +        rng::fill(&mut km[..]);
-+        let mut rsa = kernel::crypto::akcipher::RsaPublicKey::new(&modulus, &exponent, GFP_KERNEL)?;
++        let mut rsa = kernel::crypto::rsa::RsaPublicKey::new(&modulus, &exponent, GFP_KERNEL)?;
 +        let ekpub = hdcp::oaep_encrypt_km(&mut rsa, &km)?;
 +        // (4) AKE_No_Stored_km (ctr=4). The dock authenticates its downstream link before it
 +        // answers, so the following receive naturally covers that interval.
@@ -1000,7 +1000,7 @@ index 000000000000..b86380d7327c
 +}
 diff --git a/drivers/gpu/drm/vino/session/setup.rs b/drivers/gpu/drm/vino/session/setup.rs
 new file mode 100644
-index 000000000000..b278ebcf4b4e
+index 000000000000..f944634b0085
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/session/setup.rs
 @@ -0,0 +1,1390 @@
@@ -1977,7 +1977,7 @@ index 000000000000..b278ebcf4b4e
 +            let rtc = cp::rtc_sync_req(
 +                cp_ctr,
 +                now,
-+                *crate::module_parameters::rtc_utc_offset_minutes.value(),
++                crate::module_parameters::rtc_utc_offset_minutes.value(),
 +            )?;
 +            navarro_send!(0x1e, rtc);
 +            for _ in 0..13 {

@@ -1,7 +1,7 @@
-From d88c194ce49f45e72121be374ca668035bce9fb6 Mon Sep 17 00:00:00 2001
+From 926d55580e2ac2654be5594206532c97def16a69 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:40:47 +0100
-Subject: [PATCH v3 9/13] drm/vino: add the dock activation and scanout path
+Subject: [PATCH v4 9/13] drm/vino: add the dock activation and scanout path
 
 Add the dock-facing half of the sink. A cold dock will not light from a
 correct message sequence alone: it needs a measured bring-up choreography,
@@ -43,10 +43,10 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  drivers/gpu/drm/vino/drm_sink/bracket.rs    |  369 ++++
  drivers/gpu/drm/vino/drm_sink/cp_session.rs |  414 ++++
  drivers/gpu/drm/vino/drm_sink/presence.rs   |  435 ++++
- drivers/gpu/drm/vino/drm_sink/scanout.rs    | 1958 +++++++++++++++++++
+ drivers/gpu/drm/vino/drm_sink/scanout.rs    | 1965 +++++++++++++++++++
  drivers/gpu/drm/vino/drm_sink/stream.rs     |  470 +++++
  drivers/gpu/drm/vino/drm_sink/timeline.rs   |  571 ++++++
- 8 files changed, 5424 insertions(+)
+ 8 files changed, 5431 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/drm_sink/activation.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink/bracket.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink/cp_session.rs
@@ -56,7 +56,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  create mode 100644 drivers/gpu/drm/vino/drm_sink/timeline.rs
 
 diff --git a/drivers/gpu/drm/vino/drm_sink.rs b/drivers/gpu/drm/vino/drm_sink.rs
-index 86708db89699..535e7d18ff50 100644
+index 7a235941e0ff..ad4bdaf0f7c3 100644
 --- a/drivers/gpu/drm/vino/drm_sink.rs
 +++ b/drivers/gpu/drm/vino/drm_sink.rs
 @@ -46,11 +46,18 @@
@@ -2088,7 +2088,7 @@ index 000000000000..36b3a46026a5
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink/presence.rs b/drivers/gpu/drm/vino/drm_sink/presence.rs
 new file mode 100644
-index 000000000000..6e58f5729223
+index 000000000000..86504b60b714
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink/presence.rs
 @@ -0,0 +1,435 @@
@@ -2138,7 +2138,7 @@ index 000000000000..6e58f5729223
 +    /// carry gives a black screen just the same: this substitutes for a broken read, it does not
 +    /// negotiate anything.
 +    pub(crate) fn edid_from_userspace(&self, connector: usize) -> bool {
-+        usize::from(*crate::module_parameters::edid_override.value()) & (1 << connector) != 0
++        usize::from(crate::module_parameters::edid_override.value()) & (1 << connector) != 0
 +    }
 +    /// Mark a connector connected from CP engagement alone (no raw EDID). Bring-up fires one
 +    /// hotplug after every connector's EDID has also been cached, so the compositor never probes
@@ -2529,10 +2529,10 @@ index 000000000000..6e58f5729223
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink/scanout.rs b/drivers/gpu/drm/vino/drm_sink/scanout.rs
 new file mode 100644
-index 000000000000..2edd29cffaf6
+index 000000000000..f0f326b37d21
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink/scanout.rs
-@@ -0,0 +1,1958 @@
+@@ -0,0 +1,1965 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! Turning a committed framebuffer into bytes on a video endpoint.
@@ -3218,9 +3218,15 @@ index 000000000000..2edd29cffaf6
 +/// the shared pool's concurrency budget.
 +///
 +/// `WQ_UNBOUND` because strip encoding is pure compute with no CPU affinity worth preserving --
-+/// that property is what let the fan-out reach ~7.4x. Allocated once on first use and never
-+/// destroyed: it is driver-wide, costs one `workqueue_struct`, and outliving every `EncodeChunk` is
-+/// exactly what makes the join safe.
++/// that property is what let the fan-out reach ~7.4x.
++///
++/// Allocated once on first use and never destroyed. A `SetOnce` cannot be drained, so the queue
++/// and its worker threads outlive a module unload: one `workqueue_struct` is leaked per load.
++/// That is a deliberate trade for now and not a property to rely on -- `encode_across_cpus` joins
++/// every chunk before it returns, so the queue does not in fact need to outlive the module, and
++/// moving it into the module's own state would end the leak. What stops that being a one-line
++/// change is `max_active` below: a queue per device would give two docks two queues of that width
++/// each, which is a different machine-wide fan-out from the one that was measured.
 +///
 +/// `max_active` is the CPU count. An unbound queue built without it takes `WQ_DFL_ACTIVE`, which is
 +/// half of `WQ_MAX_ACTIVE` and so far above any useful degree of parallelism that it does not bound
@@ -3560,7 +3566,8 @@ index 000000000000..2edd29cffaf6
 +    // FB_DAMAGE_CLIPS: KWin commonly changes framebuffer objects without publishing that blob.
 +    let kf_bit = 1u32 << connector_index;
 +    let identity = rotation.angle() == plane::Rotation::ROTATE_0
-+        && !rotation.contains(plane::Rotation::REFLECT_X | plane::Rotation::REFLECT_Y);
++        && !rotation.contains(plane::Rotation::REFLECT_X)
++        && !rotation.contains(plane::Rotation::REFLECT_Y);
 +    let owes_keyframe = data
 +        .keyframe_pending
 +        .load(core::sync::atomic::Ordering::Acquire)

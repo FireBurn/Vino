@@ -1,5 +1,5 @@
 From: Mike Lothian <mike@fireburn.co.uk>
-Subject: [PATCH v3 0/13] drm/vino: a Rust driver for DisplayLink DL3 docks
+Subject: [PATCH v4 0/13] drm/vino: a Rust driver for DisplayLink DL3 docks
 
 Vino is a DRM/KMS driver for DisplayLink DL3 docks. These devices carry no
 standard display protocol: the host encodes each frame with a vendor codec and
@@ -103,20 +103,15 @@ vendor binaries. There is no vendor documentation for any of it, every constant
 here came from a measurement, and the assistance noted below covers that work as
 well as the implementation
 
-v2: https://lore.kernel.org/r/20260703030217.2886-1-mike@fireburn.co.uk
+v2: https://lore.kernel.org/r/20260826163913.7052-1-mike@fireburn.co.uk
 
 The rest of the posting, which is one series per subsystem:
 
-  rust-core, 9 patches, rust-for-linux and linux-kernel
-  https://lore.kernel.org/r/20260826162851.2497-1-mike@fireburn.co.uk
-  rust-crypto, 2 patches, linux-crypto and rust-for-linux
-  https://lore.kernel.org/r/20260826163004.3365-1-mike@fireburn.co.uk
-  rust-usb, 5 patches, linux-usb and rust-for-linux
-  https://lore.kernel.org/r/20260826163101.4168-1-mike@fireburn.co.uk
-  rust-drm, 23 patches, dri-devel and rust-for-linux
-  https://lore.kernel.org/r/20260826163359.4998-1-mike@fireburn.co.uk
-  rust-firmware, 1 patch, linux-kernel and rust-for-linux
-  https://lore.kernel.org/r/20260826163716.6274-1-mike@fireburn.co.uk
+  rust-core, 8 patches, to rust-for-linux and linux-kernel, not sent yet
+  rust-crypto, 2 patches, to linux-crypto and rust-for-linux, not sent yet
+  rust-usb, 5 patches, to linux-usb and rust-for-linux, not sent yet
+  rust-drm, 23 patches, to dri-devel and rust-for-linux, not sent yet
+  rust-firmware, 1 patch, to linux-kernel and rust-for-linux, not sent yet
   drm-vino, 13 patches, this one
 
 Vino is the user for all of them. The abstractions themselves are generic and
@@ -125,7 +120,7 @@ carry no knowledge of DisplayLink
 The whole thing is one branch, base and prerequisites included, which is the
 quickest way to read it:
 
-  git clone -b vino-v3 https://github.com/FireBurn/linux
+  git clone -b vino https://github.com/FireBurn/linux
   cd linux
   make LLVM=1 rustavailable
   make LLVM=1 -j$(nproc)
@@ -134,7 +129,7 @@ quickest way to read it:
 CONFIG_RUST=y and CONFIG_DRM_VINO=m are the two to set; DRM_VINO selects the
 rest of what it needs
 
-It is the exact tree these patches were generated from, at 4c9ba407018e, the
+It is the exact tree these patches were generated from, at c63829528980, the
 drm-rust-next tip of 2026-08-06. drm-next has moved on since, and this follows
 drm-rust-next deliberately: the KMS layer underneath this work lives only there,
 and that tree picks up drm-next on its own schedule
@@ -191,9 +186,9 @@ Mike Lothian (13):
   drm/vino: allow the driver to be built
   Documentation/gpu: document the Vino driver
 
- 43 files changed, 24047 insertions(+), 4 deletions(-)
+ 43 files changed, 24139 insertions(+), 4 deletions(-)
 
-base-commit: 4c9ba407018e8deb06dbc643112bac8f40404f95
+base-commit: c63829528980507a0a9146031e0c08499f53cf3d
 prerequisite-message-id: <20250305230406.567126-1-lyude@redhat.com>
 prerequisite-message-id: <20260712-urb-abstraction-v1-v1-0-9fa011634ead@gmail.com>
 prerequisite-message-id: <20260312-create-workqueue-v4-0-ea39c351c38f@google.com>

@@ -1,7 +1,7 @@
-From 7be488f8441c6c24d2c7011c5f5bf7e50a696601 Mon Sep 17 00:00:00 2001
+From a05a4172c1b55ffccc83ffd0b0a56f512e9a1180 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 21:52:01 +0100
-Subject: [PATCH v3 12/23] rust: drm: kms: add owned CRTC and vblank references
+Subject: [PATCH v4 12/23] rust: drm: kms: add owned CRTC and vblank references
 
 `&Crtc<T>` is only valid for the callback DRM handed it to, and
 `VblankRef` borrows one. That does not fit two common shapes:

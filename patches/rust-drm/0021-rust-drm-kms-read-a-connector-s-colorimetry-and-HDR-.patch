@@ -1,7 +1,7 @@
-From 922a06501512ccf53b4f3ba1ec0b23f458a7f1ad Mon Sep 17 00:00:00 2001
+From 8518107a16812f2922a5673f85df483bdc768905 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 03:40:28 +0100
-Subject: [PATCH v3 21/23] rust: drm: kms: read a connector's colorimetry and HDR
+Subject: [PATCH v4 21/23] rust: drm: kms: read a connector's colorimetry and HDR
  metadata
 
 A driver that carries a transfer function to its sink needs the connector

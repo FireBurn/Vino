@@ -1,7 +1,7 @@
-From 28eea1c54984bf5b451804daf1266b0659abb0ac Mon Sep 17 00:00:00 2001
+From a7a9f7635bbe28c256edab1a103102f3422c0c08 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 18:51:55 +0100
-Subject: [PATCH v3 23/23] rust: drm: kms: expose a connector's requested link depth
+Subject: [PATCH v4 23/23] rust: drm: kms: expose a connector's requested link depth
 
 `max bpc` is how userspace asks for the number of bits the link
 carries, and it is deliberately independent of the framebuffer's

@@ -1,5 +1,5 @@
 From: Mike Lothian <mike@fireburn.co.uk>
-Subject: [PATCH v3 0/2] rust: crypto: AES, CMAC, SHA-256, HMAC and RSA bindings
+Subject: [PATCH v4 0/2] rust: crypto: AES, CMAC, SHA-256, HMAC and RSA bindings
 
 Synchronous crypto bindings for a driver that has to authenticate a device
 before it is allowed to drive it
@@ -23,21 +23,16 @@ Nothing here knows what HDCP is. The consumer is the DisplayLink driver at the
 end of the chain, whose control plane is sealed with AES-CTR and keyed by an
 HDCP 2.2 exchange
 
-v2: https://lore.kernel.org/r/20260703030056.2763-1-mike@fireburn.co.uk
+v2: https://lore.kernel.org/r/20260826163004.3365-1-mike@fireburn.co.uk
 
 The rest of the posting, which is one series per subsystem:
 
-  rust-core, 9 patches, rust-for-linux and linux-kernel
-  https://lore.kernel.org/r/20260826162851.2497-1-mike@fireburn.co.uk
+  rust-core, 8 patches, to rust-for-linux and linux-kernel, not sent yet
   rust-crypto, 2 patches, this one
-  rust-usb, 5 patches, linux-usb and rust-for-linux
-  https://lore.kernel.org/r/20260826163101.4168-1-mike@fireburn.co.uk
-  rust-drm, 23 patches, dri-devel and rust-for-linux
-  https://lore.kernel.org/r/20260826163359.4998-1-mike@fireburn.co.uk
-  rust-firmware, 1 patch, linux-kernel and rust-for-linux
-  https://lore.kernel.org/r/20260826163716.6274-1-mike@fireburn.co.uk
-  drm-vino, 13 patches, dri-devel
-  https://lore.kernel.org/r/20260826163913.7052-1-mike@fireburn.co.uk
+  rust-usb, 5 patches, to linux-usb and rust-for-linux, not sent yet
+  rust-drm, 23 patches, to dri-devel and rust-for-linux, not sent yet
+  rust-firmware, 1 patch, to linux-kernel and rust-for-linux, not sent yet
+  drm-vino, 13 patches, to dri-devel, not sent yet
 
 Vino is the user for all of them. The abstractions themselves are generic and
 carry no knowledge of DisplayLink
@@ -45,7 +40,7 @@ carry no knowledge of DisplayLink
 The whole thing is one branch, base and prerequisites included, which is the
 quickest way to read it:
 
-  git clone -b vino-v3 https://github.com/FireBurn/linux
+  git clone -b vino https://github.com/FireBurn/linux
   cd linux
   make LLVM=1 rustavailable
   make LLVM=1 -j$(nproc)
@@ -54,7 +49,7 @@ quickest way to read it:
 CONFIG_RUST=y and CONFIG_DRM_VINO=m are the two to set; DRM_VINO selects the
 rest of what it needs
 
-It is the exact tree these patches were generated from, at 4c9ba407018e, the
+It is the exact tree these patches were generated from, at c63829528980, the
 drm-rust-next tip of 2026-08-06. drm-next has moved on since, and this follows
 drm-rust-next deliberately: the KMS layer underneath this work lives only there,
 and that tree picks up drm-next on its own schedule
@@ -79,8 +74,8 @@ is here and I stand behind it
 
 Mike Lothian (2):
   rust: crypto: add AES-128, AES-CMAC, SHA-256, and HMAC bindings
-  rust: crypto: add synchronous RSA akcipher support
+  rust: crypto: add RSA public-key encryption
 
- 9 files changed, 592 insertions(+), 6 deletions(-)
+ 9 files changed, 608 insertions(+), 2 deletions(-)
 
-base-commit: 4c9ba407018e8deb06dbc643112bac8f40404f95
+base-commit: c63829528980507a0a9146031e0c08499f53cf3d

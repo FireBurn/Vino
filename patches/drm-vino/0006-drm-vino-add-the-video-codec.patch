@@ -1,7 +1,7 @@
-From 808418eb0e71d4696b7de94d2abae29a48bfd940 Mon Sep 17 00:00:00 2001
+From f6eb2c62e7a9e1485590bc8587c74b21d288d91a Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:33:09 +0100
-Subject: [PATCH v3 6/13] drm/vino: add the video codec
+Subject: [PATCH v4 6/13] drm/vino: add the video codec
 
 The dock decodes a proprietary multilevel Haar codec: 128x8 or 64x16
 strips, an 8x8 transform, per-plane significance trees and a unary VLC
@@ -33,14 +33,14 @@ reconstructs every sharp edge from a truncated magnitude.
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- drivers/gpu/drm/vino/color.rs                | 420 ++++++++
- drivers/gpu/drm/vino/cp.rs                   |   8 +-
- drivers/gpu/drm/vino/video.rs                | 436 ++++++++
- drivers/gpu/drm/vino/video/haar/records.rs   | 985 +++++++++++++++++++
- drivers/gpu/drm/vino/video/haar/strip.rs     | 507 ++++++++++
- drivers/gpu/drm/vino/video/haar/transform.rs | 802 +++++++++++++++
- drivers/gpu/drm/vino/video_arm.rs            | 243 +++++
- 7 files changed, 3397 insertions(+), 4 deletions(-)
+ drivers/gpu/drm/vino/color.rs                |  420 ++++++++
+ drivers/gpu/drm/vino/cp.rs                   |    8 +-
+ drivers/gpu/drm/vino/video.rs                |  436 ++++++++
+ drivers/gpu/drm/vino/video/haar/records.rs   | 1009 ++++++++++++++++++
+ drivers/gpu/drm/vino/video/haar/strip.rs     |  507 +++++++++
+ drivers/gpu/drm/vino/video/haar/transform.rs |  802 ++++++++++++++
+ drivers/gpu/drm/vino/video_arm.rs            |  243 +++++
+ 7 files changed, 3421 insertions(+), 4 deletions(-)
  create mode 100644 drivers/gpu/drm/vino/color.rs
  create mode 100644 drivers/gpu/drm/vino/video.rs
  create mode 100644 drivers/gpu/drm/vino/video/haar/records.rs
@@ -944,10 +944,10 @@ index 000000000000..5ee4eef2f83a
 +}
 diff --git a/drivers/gpu/drm/vino/video/haar/records.rs b/drivers/gpu/drm/vino/video/haar/records.rs
 new file mode 100644
-index 000000000000..422ae7d83ae2
+index 000000000000..d993d3369f96
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/video/haar/records.rs
-@@ -0,0 +1,985 @@
+@@ -0,0 +1,1009 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! Framing strips into the records a frame is made of.
@@ -1072,10 +1072,6 @@ index 000000000000..422ae7d83ae2
 +// did not expect, so the generic even-then-odd interlace is not close enough -- it diverges at
 +// the second band, sending 2 where the dock wants 3. No band appears twice, so unlike the
 +// DL7400 there are no split-row producer boundaries to reproduce.
-+/// The DL-3x00 producer band order, exposed so a selftest can pin it.
-+pub(crate) fn ella_rows_1080p() -> &'static [u8] {
-+    ELLA_ROWS_1080P
-+}
 +pub(crate) const ELLA_ROWS_1080P: &[u8] = &[
 +    0, 3, 5, 7, 9, 11, 13, 16, 18, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 44, 46, 48, 50,
 +    51, 53, 55, 56, 58, 60, 61, 63, 65, 66, 1, 2, 4, 6, 8, 10, 12, 14, 15, 17, 19, 20, 22, 24, 26,
@@ -1378,7 +1374,8 @@ index 000000000000..422ae7d83ae2
 +/// The map covers the whole frame: one byte per strip, `height / strip_h` bands of
 +/// `width / strip_w` strips, each band padded to [`PARAM_BAND_STRIDE`]. At 2560x1440 that is
 +/// 180 bands of 20 strips, which is what every captured DLM map contains, split 120 + 60
-+/// across the two records.
++/// across two records. A taller surface simply takes more records: 2160 lines is 270 bands and
++/// needs three.
 +///
 +/// Values come from [`strip_size_class`] applied to the strips in `frames`. A position this
 +/// frame does not carry stays zero, which is what DLM sends for it.
@@ -1442,12 +1439,11 @@ index 000000000000..422ae7d83ae2
 +    let mut band = 0usize;
 +    let mut record = 0usize;
 +    while band < bands {
-+        // The first record takes up to PARAM_TLVS_PER_RECORD sub-records, the second the rest.
-+        let take_tlvs = if record == 0 {
-+            PARAM_TLVS_PER_RECORD
-+        } else {
-+            bands.div_ceil(PARAM_BANDS_PER_TLV)
-+        };
++        // Every record takes up to PARAM_TLVS_PER_RECORD sub-records. A full one is
++        // PARAM_TLVS_PER_RECORD * (8 + PARAM_BANDS_PER_TLV * PARAM_BAND_STRIDE) + 12 = 3972 bytes,
++        // just inside the 4080-byte record ceiling; asking for more than that in one record
++        // overruns it above 240 bands, which is any surface taller than 1920 lines.
++        let take_tlvs = PARAM_TLVS_PER_RECORD;
 +        let mut body = KVec::new();
 +        for _ in 0..take_tlvs {
 +            if band >= bands {
@@ -1493,6 +1489,7 @@ index 000000000000..422ae7d83ae2
 +    ///
 +    /// A trailer borrowed from another generation is an unrecognised record in the middle of
 +    /// the stream, so a dock whose format is not known closes nothing.
++    #[cfg(CONFIG_DRM_VINO_KUNIT_TEST)]
 +    pub(crate) fn none() -> Self {
 +        Self {
 +            bytes: [0u8; 96],
@@ -1876,7 +1873,7 @@ index 000000000000..422ae7d83ae2
 +        // the format rather than a preference. The generic even-then-odd interlace diverges at the
 +        // second band -- it sends 2 where the dock wants 3 -- which is inside the first sixty
 +        // strips of every frame.
-+        let rows = ella_rows_1080p();
++        let rows = ELLA_ROWS_1080P;
 +        assert_eq!(rows.len(), 68);
 +        assert_eq!(&rows[..8], &[0, 3, 5, 7, 9, 11, 13, 16]);
 +        assert_eq!(&rows[33..37], &[65, 66, 1, 2]);
@@ -1931,6 +1928,33 @@ index 000000000000..422ae7d83ae2
 +        assert_eq!(t1[32 + 19], 4);
 +        assert_eq!(t1[32 + 23], 16);
 +        assert_eq!(t1[32 + 27], 8);
++    }
++
++    /// Every `kind=0x200f` parameter record has to fit the dock's record ceiling. A full record
++    /// carries PARAM_TLVS_PER_RECORD sub-records of 8 + PARAM_BANDS_PER_TLV * PARAM_BAND_STRIDE
++    /// bytes plus a 12-byte header, which is 3972 and covers 120 bands, so a taller surface takes
++    /// more records rather than a bigger one: 1440 lines is 180 bands and takes two, 2160 lines is
++    /// 270 bands and takes three. Asking one record to carry the whole remainder overruns the
++    /// ceiling on anything past 1920 lines.
++    #[test]
++    fn navarro_parameter_records_stay_within_the_record_ceiling() -> Result {
++        let geometry = video::haar::Geometry::new(16, true, false, 3, 0x07, 3);
++        let frames: [KVec<u8>; 0] = [];
++        for (width, height, want_records) in [(2560usize, 1440usize, 2usize), (3840, 2160, 3)] {
++            let mut remembered: KVec<u8> = KVec::new();
++            let out = navarro_strip_params(geometry, 0, width, height, &frames, &mut remembered)?;
++            let mut off = 0usize;
++            let mut records = 0usize;
++            while off < out.len() {
++                let size = usize::from(u16::from_le_bytes([out[off + 2], out[off + 3]]));
++                assert!(size <= 0x0ff0);
++                off += size + 4;
++                records += 1;
++            }
++            assert_eq!(off, out.len());
++            assert_eq!(records, want_records);
++        }
++        Ok(())
 +    }
 +}
 diff --git a/drivers/gpu/drm/vino/video/haar/strip.rs b/drivers/gpu/drm/vino/video/haar/strip.rs

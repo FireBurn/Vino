@@ -1,7 +1,7 @@
-From fb8d9f61f34a433889c21c43255ef59da0bfe5f9 Mon Sep 17 00:00:00 2001
+From 0dc7564dcead42368c52467ec14755970fb33d39 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:36 +0100
-Subject: [PATCH v3 3/13] drm/vino: add the crypto primitives and the HDCP 2.2 AKE
+Subject: [PATCH v4 3/13] drm/vino: add the crypto primitives and the HDCP 2.2 AKE
 
 A DL3 dock authenticates as an HDCP 2.2 receiver before it will accept any
 configuration, and every later control message is sealed with keys the
@@ -306,7 +306,7 @@ index 000000000000..4fc14b8bd70c
 +}
 diff --git a/drivers/gpu/drm/vino/hdcp.rs b/drivers/gpu/drm/vino/hdcp.rs
 new file mode 100644
-index 000000000000..5118c9388cc3
+index 000000000000..c8a0b971e732
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/hdcp.rs
 @@ -0,0 +1,146 @@
@@ -424,7 +424,7 @@ index 000000000000..5118c9388cc3
 +/// RSA-1024 public key (`modulus[128]`, `exponent`), giving the 128-byte
 +/// `Ekpub(km)` for `AKE_No_Stored_km` (sec 5.4). Generates a fresh OAEP seed.
 +pub(super) fn oaep_encrypt_km(
-+    key: &mut kernel::crypto::akcipher::RsaPublicKey,
++    key: &mut kernel::crypto::rsa::RsaPublicKey,
 +    km: &[u8; drm_hdcp::ENCRYPTED_SESSION_KEY_LEN],
 +) -> Result<[u8; drm_hdcp::ENCRYPTED_MASTER_KEY_LEN]> {
 +    let mut seed = kernel::crypto::Secret::zeroed();

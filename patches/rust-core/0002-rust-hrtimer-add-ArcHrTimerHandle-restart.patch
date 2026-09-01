@@ -1,20 +1,26 @@
-From 47c3ba5277fd6c6102fae578a5c107a01d496eea Mon Sep 17 00:00:00 2001
+From 7382441e5c102e13d928e6c7ce3c112fba337224 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 21:52:22 +0100
-Subject: [PATCH 2/9] rust: hrtimer: add ArcHrTimerHandle::restart
+Subject: [PATCH v2 2/8] rust: hrtimer: add ArcHrTimerHandle::restart
 
-Restarting an already-started timer through the safe API means dropping
-its handle and calling `HrTimerPointer::start()` again. Dropping the
-handle cancels, and cancelling blocks until a running callback returns,
-so this is unavailable to any caller that cannot sleep -- a driver
-re-arming its timer from a callback invoked with interrupts disabled,
-say. Such drivers fall back to the unsafe `HasHrTimer::start()`
-on a raw pointer.
+Re-arming a timer that has already stopped means dropping its handle and
+calling `HrTimerPointer::start()` again. Dropping the handle cancels, and
+cancelling blocks until a running callback returns, so this is
+unavailable to a caller that cannot sleep.
+
+A DRM driver hits this in its `enable_vblank()`. Its software vblank
+source stops when `disable_vblank()` clears an enabled flag and the next
+callback returns `HrTimerRestart::NoRestart`, so re-enabling has no
+running callback to forward from and has to re-arm the timer from
+outside one. That path runs under the vblank locks with interrupts
+disabled, so it cannot block. Such drivers otherwise fall back to the
+unsafe `HasHrTimer::start()` on a raw pointer.
 
 Add `restart()` on the handle. It re-queues the timer in place without
-cancelling first. It is safe because the handle already owns the
-`Arc` that keeps the timer alive and still cancels it on drop, which
-is exactly what `HasHrTimer::start()` requires of its caller.
+cancelling first, so it never waits on the callback. It is safe because
+the handle already owns the `Arc` that keeps the timer alive and still
+cancels it on drop, which is exactly what `HasHrTimer::start()` requires
+of its caller.
 
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>

@@ -1,7 +1,7 @@
-From 6749d57c40fb468ff9419c7f7d4a696aace32e40 Mon Sep 17 00:00:00 2001
+From 448c09aa156c91510686ac988ef38f605832f99a Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 4 Aug 2026 21:36:59 +0100
-Subject: [PATCH 9/9] rust: time: add ktime_get_real_seconds
+Subject: [PATCH v2 8/8] rust: time: add ktime_get_real_seconds
 
 Reading an `Instant<RealTime>` is the wrong tool for a caller that only
 wants a calendar time in seconds: it takes a full nanosecond timestamp and
@@ -20,7 +20,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  1 file changed, 14 insertions(+)
 
 diff --git a/rust/kernel/time.rs b/rust/kernel/time.rs
-index 363e93cbb139..a9922f1b493d 100644
+index 6c0a5e8090d0..6af1b61fc90d 100644
 --- a/rust/kernel/time.rs
 +++ b/rust/kernel/time.rs
 @@ -129,6 +129,20 @@ fn ktime_get() -> bindings::ktime_t {
