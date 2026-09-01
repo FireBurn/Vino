@@ -206,30 +206,33 @@ Sweep command, for the respin:
 
 ## 5. Decisions for Mike
 
-### 5.1 `[?]` `trace_crypto` -- keep or cut
+### 5.1 `[~]` `trace_crypto` -- kept for now, nobody has objected yet
 
-`vino.rs:1671` defines it; `session.rs:527` and `session/setup.rs:745` print the
-control key, delivered RIV, raw video key and nonce to dmesg.
+Checked 2026-09-01: **no upstream reviewer has raised it.** Hindborg, Krummrich
+and Biggers said nothing about it across the whole v3 round. The only place it
+was ever flagged is `check.md` line 211, which is a pre-submission AI review, not
+a reviewer.
 
-The cover flags it honestly and argues the case. But a kernel config that
-discloses key material draws a NAK rather than a discussion, and it can be
-carried as a local debug patch at no cost to anybody outside this tree.
+The cover flags it openly and invites the argument, and on v3 nobody took it up.
 
-Recommendation: cut for v4, keep out-of-tree, say in the cover that it exists
-and where to get it. Cheap to concede, expensive to argue about in the same
-thread as a 24k-line driver.
+WARNING -- that is weaker evidence than it looks: v3's driver went to dri-devel,
+so the crypto people never read the patch the parameter is in. The audience most
+likely to object has not seen it. If it survives v4 on dri-devel with the crypto
+lists cc'd, that is a real answer; v3 is not.
 
-### 5.2 `[?]` Automatic firmware flash at probe
+Leave as is. Revisit only if somebody actually raises it.
 
-`vino.rs:1329` calls `firmware::update_if_newer()` from `probe()`, so a
-persistent firmware write can happen automatically with no rollback or readback.
-The kernel's firmware-upload framework is built around userspace initiating
-persistent updates, and the manual path already exists at
-`/sys/class/firmware/vino-<dock>/`.
+### 5.2 `[x]` Automatic firmware flash at probe -- DECIDED: keep it
 
-Recommendation: make the sysfs path the only one for the first posting. Does not
-lose a capability -- moves who decides. If it stays, the cover needs a paragraph
-on why probe-time is right for a dock too old to enumerate its connectors.
+Mike's call, 2026-09-01: probe-time flashing stays. The cover now carries the
+argument instead of leaving it to be challenged -- why probe rather than
+userspace (a dock whose shipped firmware cannot enumerate its connectors has no
+display to prompt on and looks output-less to userspace, so deferring to
+userspace means the hardware that most needs the update cannot ask for it), what
+bounds it (forward-only, no downgrade, no rewrite of the running version,
+per-dock attempt counter surviving re-enumeration, nothing at all without an
+image in /lib/firmware/vino), and what does not (DFU here has no upload, so
+there is no readback and nothing to roll back to).
 
 ### 5.3 `[?]` Send strategy
 

@@ -609,8 +609,30 @@ under the names they already have:
 From the 6.8.1 bundle those carry 12.2.15, 12.2.25 and 12.2.26, and that is what
 the three docks here are running. Each was written by this driver, from 11.4.47,
 11.5.28 and 11.5.29 respectively, so the DFU path is exercised rather than only
-read. A manual write is also there through /sys/class/firmware/vino-<dock>/,
-which is the direction the firmware upload API is designed around
+read
+
+The write happens from probe, and that is deliberate rather than an oversight, so
+here is the argument for it. The firmware upload API is built around userspace
+starting a persistent write, and that path is here too as
+/sys/class/firmware/vino-<dock>/. But the case this exists for is a dock whose
+shipped firmware cannot enumerate its connectors: there is no display to show a
+prompt on, and nothing for userspace to act on, because from userspace the dock
+looks like it has no outputs. Deferring the decision to userspace means the
+hardware that most needs the update is the hardware that cannot ask for it
+
+What bounds it. The automatic path only ever moves forward: update_if_newer()
+refuses a downgrade and refuses to rewrite the running version, so the sysfs path
+is the only way to write an arbitrary image. Attempts are counted per dock in
+storage that survives the re-enumeration a write causes, so a dock that fails to
+come back on the new image is retried a bounded number of times rather than
+reflashed in a loop. And with no image installed nothing happens at all: probe
+says what it found and carries on, so the whole path is opt-in by putting a file
+in /lib/firmware/vino
+
+What does not. DFU on these docks does not support upload, so the running image
+cannot be read back and there is nothing to roll back to. That is the real risk
+and it is not mitigated, only bounded by refusing every write except a newer
+packaged image
 
 Tested on:
 
