@@ -1,21 +1,21 @@
-From a8c050198ea2a8c55d7971e93b8a19d63a26844a Mon Sep 17 00:00:00 2001
+From 7b00417da008ed50b157e53dba083163441d463f Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 22:52:46 +0100
-Subject: [PATCH v4 20/23] rust: drm: kms: add synthesized CVT connector modes
+Subject: [PATCH v4 19/22] rust: drm: kms: attach the connector colour properties
 
-Expose a lock-scoped helper for adding a driver-synthesized CVT timing
-to a connector probe result. This lets virtual and transport-backed
-displays offer valid continuous-frequency modes without reaching into
-DRM mode lists.
+Expose lock-scoped helpers for attaching HDR_OUTPUT_METADATA, Colorspace
+and max bpc to a connector. A driver whose sink reports a wider colour
+volume than sRGB has to publish these before userspace can select one,
+and attaching them is only legal while the connector is unregistered.
 
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- rust/kernel/drm/kms/connector.rs | 84 ++++++++++++++++++++++++++++++++
- 1 file changed, 84 insertions(+)
+ rust/kernel/drm/kms/connector.rs | 54 ++++++++++++++++++++++++++++++++
+ 1 file changed, 54 insertions(+)
 
 diff --git a/rust/kernel/drm/kms/connector.rs b/rust/kernel/drm/kms/connector.rs
-index dd126469788f..952c8e02777b 100644
+index 8f1a9ec0946a..f3eab1b89e74 100644
 --- a/rust/kernel/drm/kms/connector.rs
 +++ b/rust/kernel/drm/kms/connector.rs
 @@ -495,6 +495,60 @@ pub fn attach_encoder<E>(&self, encoder: &UnregisteredEncoder<E>) -> Result
@@ -79,40 +79,3 @@ index dd126469788f..952c8e02777b 100644
  }
  
  /// Common methods available on any type which implements [`AsRawConnector`].
-@@ -723,6 +777,36 @@ pub fn set_preferred_mode(&self, (h_pref, w_pref): (u32, u32)) {
-         unsafe { bindings::drm_set_preferred_mode(self.as_raw(), h_pref, w_pref) }
-     }
- 
-+    /// Add a driver-synthesised CVT mode to this connector's probed mode list.
-+    ///
-+    /// For a display whose EDID declares continuous frequencies, a driver may legitimately offer a
-+    /// timing the EDID does not itself enumerate. `reduced` selects CVT reduced blanking (CVT-RB),
-+    /// which matters when the *pixel clock* rather than the pixel rate is the constrained
-+    /// resource -- RB cuts the clock for the same active pixels.
-+    ///
-+    /// Returns `EINVAL` if the core could not build the timing.
-+    pub fn add_cvt_mode(
-+        &self,
-+        hdisplay: i32,
-+        vdisplay: i32,
-+        vrefresh: i32,
-+        reduced: bool,
-+    ) -> Result {
-+        let dev = self.drm_dev().as_raw();
-+        // SAFETY: `dev` is this connector's live `drm_device`; `drm_cvt_mode` only computes a
-+        // timing and allocates it, and we hold the mode-config lock via our type invariants.
-+        let mode = unsafe {
-+            bindings::drm_cvt_mode(dev, hdisplay, vdisplay, vrefresh, reduced, false, false)
-+        };
-+        if mode.is_null() {
-+            return Err(EINVAL);
-+        }
-+        // SAFETY: `mode` was just allocated by `drm_cvt_mode` and ownership passes to the
-+        // connector here; we hold the locks required to modify its mode list.
-+        unsafe { bindings::drm_mode_probed_add(self.as_raw(), mode) };
-+        Ok(())
-+    }
-+
-     /// Parse an EDID, update the connector information, and add its advertised modes.
-     ///
-     /// Returns the number of modes added.

@@ -16,7 +16,27 @@ rather than a class device
   Letting a driver keep its interface usable while unbinding, so teardown can
     still talk to the device it is releasing
 
-Changes since v2:
+Changes since v3:
+
+  release_driver() is gone. Danilo Krummrich asked what used it, and nothing in
+    this posting did: it backed a /sys/devices/vino/remove_all file that was cut
+    along with the rest of the development scaffolding, and the binding method
+    outlived its caller
+  interrupt_recv(), Endpoint::max_packet_size() and the InterruptIn endpoint
+    kind are gone for the same reason. The driver is bulk-only, so the typed
+    endpoint set is now BulkIn and BulkOut, which is what it actually uses
+  Rebased onto v7.3-rc1
+
+Still open, and the reason this may need another round: Danilo's point that the
+revocable I/O window reinvents Devres. The hand-rolled open/closed flag and
+wait-for-quiescence should go regardless. What is not clear is whether the
+lifetime and higher-ranked machinery can express a window that closes and then
+reopens, several times, within one bind -- which is what suspend/resume and
+pre_reset/post_reset need, where revocation is one-way. If it can, this gets
+respun on top of it; if it cannot, the guarantee looks USB-specific and belongs
+behind a USB type
+
+Changes in v3 that are still the shape of this series:
 
   v2 10/11, "keep usb::Device private and gate ...", is dropped entirely.
     Oliver Neukum was right that it was conceptually wrong: USB does device
@@ -43,14 +63,14 @@ sound, and is worth restating because the whole shape depends on it: an
 unconfigured device has no interfaces, so an interface that exists implies a
 configured device
 
-v2: https://lore.kernel.org/r/20260826163101.4168-1-mike@fireburn.co.uk
+v3: https://lore.kernel.org/r/20260826163101.4168-1-mike@fireburn.co.uk
 
 The rest of the posting, which is one series per subsystem:
 
   rust-core, 8 patches, to rust-for-linux and linux-kernel, not sent yet
   rust-crypto, 2 patches, to linux-crypto and rust-for-linux, not sent yet
   rust-usb, 5 patches, this one
-  rust-drm, 23 patches, to dri-devel and rust-for-linux, not sent yet
+  rust-drm, 22 patches, to dri-devel and rust-for-linux, not sent yet
   rust-firmware, 1 patch, to linux-kernel and rust-for-linux, not sent yet
   drm-vino, 13 patches, to dri-devel, not sent yet
 
@@ -70,7 +90,8 @@ CONFIG_RUST=y and CONFIG_DRM_VINO=m are the two to set; DRM_VINO selects the
 rest of what it needs
 
 It is the exact tree these patches were generated from, at c63829528980, the
-drm-rust-next tip of 2026-08-06. drm-next has moved on since, and this follows
+drm-rust-next tip of 2026-08-31, which merges v7.3-rc1. drm-next has moved on
+since, and this follows
 drm-rust-next deliberately: the KMS layer underneath this work lives only there,
 and that tree picks up drm-next on its own schedule
 
@@ -101,7 +122,7 @@ Mike Lothian (5):
   rust: usb: add a vendor-and-interface-info device id constructor
   rust: usb: let a driver keep its interface usable while unbinding
 
- 3 files changed, 1532 insertions(+), 78 deletions(-)
+ 3 files changed, 1476 insertions(+), 78 deletions(-)
 
 base-commit: c63829528980507a0a9146031e0c08499f53cf3d
 prerequisite-message-id: <20260712-urb-abstraction-v1-v1-0-9fa011634ead@gmail.com>

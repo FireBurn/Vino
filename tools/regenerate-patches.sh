@@ -41,6 +41,11 @@ done
 base_sha="$(git -C "$kernel_tree" rev-parse "$kernel_base")"
 base_short="${base_sha:0:12}"
 
+# Counted, not typed: the cover quotes these and they drift with every test added.
+vino_src="$kernel_tree/drivers/gpu/drm/vino"
+kunit_tests="$(grep -rho '#\[test\]' "$vino_src" --include=*.rs | wc -l)"
+kunit_suites="$(grep -rho '#\[kunit_tests(' "$vino_src" --include=*.rs | wc -l)"
+
 # Series order is apply order, and also send order: a later one may depend on an
 # earlier one, never the reverse. Membership is decided from the subject alone so
 # that adding a commit needs no edit here.
@@ -87,7 +92,7 @@ reroll() {
     esac
 }
 
-# The v2 posting this series continues, if there was one. Documentation says not
+# The posting this series continues, if there was one. Documentation says not
 # to In-Reply-To an older revision of a multi-patch series, so this goes in the
 # cover text as a link and nowhere else.
 previous() {
@@ -99,6 +104,18 @@ previous() {
     rust-firmware) printf '20260826163716.6274-1-mike@fireburn.co.uk' ;;
     drm-vino)      printf '20260826163913.7052-1-mike@fireburn.co.uk' ;;
     *)             printf '' ;;
+    esac
+}
+
+# The version tag the previous posting carried. A series going out as v4 was
+# last seen as v3; one going out as v2 was posted untagged, which is a v1.
+previous_ver() {
+    local r
+    r="$(reroll "$1")"
+    case "$r" in
+    '') printf '' ;;
+    2)  printf '1' ;;
+    *)  printf '%d' "$((r - 1))" ;;
     esac
 }
 
@@ -118,8 +135,11 @@ lists() {
 # time to know: they can be taken on their own.
 depends() {
     case "$1" in
-    drm-vino) printf 'rust-core, rust-crypto, rust-usb, rust-drm, rust-firmware' ;;
-    *)        printf 'none' ;;
+    drm-vino)      printf 'rust-core, rust-crypto, rust-usb, rust-drm, rust-firmware' ;;
+    rust-core)     printf "Ryhl's workqueue series" ;;
+    rust-usb)      printf "Braun's URB series" ;;
+    rust-drm)      printf "Lyude's KMS series" ;;
+    *)             printf 'none' ;;
     esac
 }
 
@@ -196,7 +216,8 @@ CONFIG_RUST=y and CONFIG_DRM_VINO=m are the two to set; DRM_VINO selects the
 rest of what it needs
 
 It is the exact tree these patches were generated from, at $base_short, the
-drm-rust-next tip of 2026-08-06. drm-next has moved on since, and this follows
+drm-rust-next tip of 2026-08-31, which merges v7.3-rc1. drm-next has moved on
+since, and this follows
 drm-rust-next deliberately: the KMS layer underneath this work lives only there,
 and that tree picks up drm-next on its own schedule
 
@@ -299,13 +320,20 @@ facility that has C callers today and no Rust binding
     ktime_get_real_seconds()
   workqueue: make OwnedQueue thread safe
   io: offset copy helpers that check the bounds they are given
-  error: expose EPROTO
 
-None of these nine has been posted before, so this goes out unversioned even
-though the drivers it feeds are on their third round. A runtime platform-device
-creator and a root-device attribute group went out inside the rust: drm v2
-series, where they did not belong, and they are not here either, because the
-consumer that needed them is not part of this posting
+Changes since v1:
+
+  The EPROTO patch is gone: it landed upstream this cycle, so this is eight
+    patches rather than nine
+  hrtimer: ArcHrTimerHandle::restart stays, and its commit message now names
+    the call site that needs it. Andreas Hindborg asked whether forward() plus
+    HrTimerRestart::Restart covers it; it does not, because enable_vblank
+    re-arms a timer that has already stopped, from under the vblank locks with
+    interrupts disabled, where dropping the handle and calling start() again
+    would block on a running callback
+  hrtimer: the interrupt-state accessor is unchanged and still depends on the
+    callback context type Andreas was considering removing. If it goes, the
+    guarantee it carries needs somewhere else to live
 
 It is small on purpose. Every patch has a caller in the driver at the end of the
 chain, and nothing is here on the argument that it might be useful to somebody
@@ -320,16 +348,33 @@ The first patch covers AES-128, AES-CMAC, SHA-256 and HMAC over the existing
 synchronous crypto API. The second adds RSA through akcipher, which HDCP 2.2
 needs to verify a device certificate and wrap a session key
 
-Changes since v2:
+Changes since v3:
 
-  The hand-rolled AES-CMAC is gone, along with its own dbl() subkey
-    derivation. It delegates to the in-tree aes_cmac library through
-    include/crypto/aes-cbc-macs.h, which is what Eric Biggers asked for
-  There is no private RSA primitive either. Modexp goes through
-    crypto_alloc_akcipher("rsa"), and OAEP padding and the HDCP key material
-    are held in a memory-wiping secret type
-  v2's separate CMAC fix is folded into the commit that introduces the CMAC,
-    so this is two patches rather than three
+  The generic akcipher wrapper is gone. Eric Biggers' point was that
+    crypto_akcipher has never worked well as an abstraction, so there is now an
+    RSA-only API: rust/kernel/crypto/rsa.rs, doing RSAES-OAEP-SHA256 public-key
+    encryption with a caller-supplied seed, and nothing else. The seed is
+    explicit so the driver can pass the kernel CSPRNG while the tests pass
+    published deterministic vectors
+  RUST_CRYPTO_LIB_AES and RUST_CRYPTO_LIB_SHA256 are declared in the patch that
+    adds the code that needs them, rather than in the one after it. That was
+    Eric's "this is being added in the wrong patch"
+  The rust_helper_aes_enckey_zero forwarder is gone. It could always have
+    called memzero_explicit instead of existing, which is what Eric and Miguel
+    Ojeda both said. There is now one safe zeroize() in the kernel crate, used
+    by Secret and Aes128
+  Rebased onto v7.3-rc1
+
+Still to settle on-list, and flagged here rather than left to be found:
+
+  lib/crypto grew aes_ctr() this cycle, which replaces the driver's two CTR
+    loops outright. Doing that leaves exactly one caller of the bare block
+    cipher, the HDCP 2.2 dKey derivation, which is a single AES-128 ECB block.
+    Whether lib/crypto should expose a one-shot single-block encrypt for that,
+    or whether that one caller keeps aes_prepareenckey() and aes_encrypt()
+    directly, is the open question on the v3 thread
+  Whether the Kconfig symbols belong in lib/crypto/Kconfig with the code in
+    rust/. That one is not specific to this series and follows Miguel's reply
 
 Nothing here knows what HDCP is. The consumer is the DisplayLink driver at the
 end of the chain, whose control plane is sealed with AES-CTR and keyed by an
@@ -352,7 +397,27 @@ rather than a class device
   Letting a driver keep its interface usable while unbinding, so teardown can
     still talk to the device it is releasing
 
-Changes since v2:
+Changes since v3:
+
+  release_driver() is gone. Danilo Krummrich asked what used it, and nothing in
+    this posting did: it backed a /sys/devices/vino/remove_all file that was cut
+    along with the rest of the development scaffolding, and the binding method
+    outlived its caller
+  interrupt_recv(), Endpoint::max_packet_size() and the InterruptIn endpoint
+    kind are gone for the same reason. The driver is bulk-only, so the typed
+    endpoint set is now BulkIn and BulkOut, which is what it actually uses
+  Rebased onto v7.3-rc1
+
+Still open, and the reason this may need another round: Danilo's point that the
+revocable I/O window reinvents Devres. The hand-rolled open/closed flag and
+wait-for-quiescence should go regardless. What is not clear is whether the
+lifetime and higher-ranked machinery can express a window that closes and then
+reopens, several times, within one bind -- which is what suspend/resume and
+pre_reset/post_reset need, where revocation is one-way. If it can, this gets
+respun on top of it; if it cannot, the guarantee looks USB-specific and belongs
+behind a USB type
+
+Changes in v3 that are still the shape of this series:
 
   v2 10/11, "keep usb::Device private and gate ...", is dropped entirely.
     Oliver Neukum was right that it was conceptually wrong: USB does device
@@ -389,8 +454,7 @@ Broadly they fall into four groups:
 
   Lifetime and ownership: mode-object references tied to their owners, owned
     CRTC and vblank references, a safe constructor for owned registration data,
-    pinning the owner while DRM files remain open, and rejecting cross-device
-    GEM handle creation
+    and rejecting cross-device GEM handle creation
   Properties a driver must read or publish: typed colour and rotation, plane
     blend mode, FB_DAMAGE_CLIPS, connector colorimetry and HDR metadata, and a
     connector's requested link depth
@@ -398,13 +462,36 @@ Broadly they fall into four groups:
     connector helpers, checked plane geometry, walking the CRTCs an atomic
     commit carries, and CRTC mode changes
   Modes and framebuffers: an owned display mode constructor, mode flags and CTA
-    VIC matching, synthesized CVT connector modes, and validated shmem scanout
+    VIC matching, the connector colour properties, and validated shmem scanout
     views
 
 Also here are the HDCP 2.2 message identifiers, which are DRM UAPI rather than
 driver constants
 
-Changes since v2:
+Changes since v3:
+
+  "rust: drm: pin the owner while DRM files remain open" is dropped. v3 said it
+    should go the moment Alvin Sun's ModuleMetadata fix landed, and it has: the
+    base already stamps file_operations::owner from the driver's OwnerModule
+    associated type, so this was a second mechanism for the same guarantee, and
+    it was charging every Rust DRM driver an extra argument to
+    UnregisteredDevice::new() for it. 23 patches becomes 22
+  Four public functions with no caller anywhere in the tree are gone:
+    add_cvt_mode(), any_mode(), UnregisteredCrtc::enable_gamma() and
+    Framebuffer::to_aref(). Danilo Krummrich caught the equivalent by hand in
+    the USB series; this is the rest of that sweep, done here rather than left
+    to be found
+  "add synthesized CVT connector modes" is renamed to "attach the connector
+    colour properties", which is what it does now that add_cvt_mode() has gone,
+    and what the other three functions in it always did
+  Rebased onto v7.3-rc1
+
+Known and not fixed in this round: "rust: drm: expose CRTC mode changes" adds a
+CRTC colour-management API as well as the mode-change accessor its subject
+describes, and wants splitting. The patch order is also still roughly the order
+the work was done in rather than one that reads
+
+Changes in v3 that are still the shape of this series:
 
   Lyude's 43 commits are carried in order and patch-identical to the imported
     source, with her messages and tags untouched and no trailer of mine on any
@@ -450,8 +537,12 @@ not a duplicate of this: that is the pull direction, and upstream still has no
 binding for the push one
 
 The consumer is the DisplayLink driver at the end of the chain, which writes
-dock firmware over DFU. This has not been posted before, so it goes out
-unversioned even though that driver is on its third round
+dock firmware over DFU
+
+Changes since v1:
+
+  Rebased onto v7.3-rc1; no functional change. The abstraction drew no review
+    comments on the first posting
 BLURB
         ;;
     drm-vino) cat <<'BLURB'
@@ -480,7 +571,8 @@ Three generations are supported, and they differ in more than identifiers:
 The differences are data. A dock is placed by family into a DockProfile carrying
 its endpoints, codec geometry, allocation rules and quirks, and there is one code
 path through the driver for all three. No per-device branches, and no module
-parameter selects a profile or a code path
+parameter selects a profile or a code path -- the parameters that exist are
+diagnostics and overrides, not a way to pick an implementation
 
 On DL-7400 the driver drives 30 bpp in PQ: 2560x1440p120 on two connectors, with
 the sink reporting 10 bit. Depth is not a flag on the wire but a set of
@@ -520,10 +612,25 @@ Tested on:
     2560x1440p120 in 30 bpp PQ
 
 All three bind concurrently on the same host, with monitors attached, driving a
-KDE desktop. 97 KUnit tests across 19 suites run at module load under
-CONFIG_DRM_VINO_KUNIT_TEST
+KDE desktop. @KUNIT_TESTS@ KUnit tests across @KUNIT_SUITES@ suites run at module
+load under CONFIG_DRM_VINO_KUNIT_TEST
 
-Changes since v2:
+Changes since v3:
+
+  The dock firmware update keeps its retry count in four slots rather than one.
+    The count has to survive the re-enumeration a write causes, so it cannot
+    live in driver data; with a single slot two docks attached at once evict
+    each other and neither ever reaches the limit that breaks a reflash loop
+  The codec no longer assumes a surface fits in two parameter records. 2160
+    lines is 270 bands and needs three
+  Kconfig gains depends on CRYPTO, since CRYPTO_RSA lives under it, and selects
+    RUST_CRYPTO_RSA rather than RUST_CRYPTO_AKCIPHER, following the crypto
+    series' move to an RSA-only API
+  UnregisteredDevice::new() loses the owning-module argument, following the
+    rust-drm patch this drops
+  Rebased onto v7.3-rc1
+
+Changes in v3 that are still the shape of this series:
 
   It works, which v2 did not. The gate was one byte: the EDID engage message
     carries its connector selector in two places and the second was being filled
@@ -636,10 +743,12 @@ for group in "${series_order[@]}"; do
     {
         printf 'From: Mike Lothian <%s>\n' "$author_email"
         printf 'Subject: [%s 0/%d] %s\n\n' "$subject_tag" "$count" "$(title "$group")"
-        blurb "$group"
+        blurb "$group" \
+            | sed -e "s/@KUNIT_TESTS@/$kunit_tests/g" -e "s/@KUNIT_SUITES@/$kunit_suites/g"
         printf '\n'
         if [ -n "$prev" ]; then
-            printf 'v2: https://lore.kernel.org/r/%s\n\n' "$prev"
+            printf '%s: https://lore.kernel.org/r/%s\n\n' \
+                "v$(previous_ver "$group")" "$prev"
         fi
         siblings "$group"
         printf '\n'
@@ -681,7 +790,8 @@ for group in "${carried_order[@]}"; do
     {
         printf 'From: Mike Lothian <%s>\n' "$author_email"
         printf 'Subject: [NOT POSTED 0/%d] %s\n\n' "$count" "$(title "$group")"
-        blurb "$group"
+        blurb "$group" \
+            | sed -e "s/@KUNIT_TESTS@/$kunit_tests/g" -e "s/@KUNIT_SUITES@/$kunit_suites/g"
     } >"$dir/0000-cover-letter.patch"
     printf '%-14s %2d %-7s %-8s not posted\n' "$group" "$count" "$(plural "$count")" ""
 done
@@ -708,7 +818,9 @@ fi
             "$group" "${counts[$group]}" "${ver:+v$ver}" "$(lists "$group")" "$(depends "$group")"
     done
     printf '\nApply order is the table order, and it is also send order: each cover letter\n'
-    printf 'links the ones already sent, so fill in `tools/v3-message-ids.txt` after each\n'
+    printf 'links the ones already sent, so fill in `%s` after each\n' \
+        "tools/$(basename "$msgid_file")"
+
     printf 'posting and re-run this before preparing the next.\n\n'
     printf '## Not posted\n\n'
     printf 'Under `not-posted/`. Both are build fixes the reference tree needs and neither\n'

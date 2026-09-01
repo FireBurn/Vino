@@ -17,17 +17,21 @@ not a duplicate of this: that is the pull direction, and upstream still has no
 binding for the push one
 
 The consumer is the DisplayLink driver at the end of the chain, which writes
-dock firmware over DFU. This has not been posted before, so it goes out
-unversioned even though that driver is on its third round
+dock firmware over DFU
 
-v2: https://lore.kernel.org/r/20260826163716.6274-1-mike@fireburn.co.uk
+Changes since v1:
+
+  Rebased onto v7.3-rc1; no functional change. The abstraction drew no review
+    comments on the first posting
+
+v1: https://lore.kernel.org/r/20260826163716.6274-1-mike@fireburn.co.uk
 
 The rest of the posting, which is one series per subsystem:
 
   rust-core, 8 patches, to rust-for-linux and linux-kernel, not sent yet
   rust-crypto, 2 patches, to linux-crypto and rust-for-linux, not sent yet
   rust-usb, 5 patches, to linux-usb and rust-for-linux, not sent yet
-  rust-drm, 23 patches, to dri-devel and rust-for-linux, not sent yet
+  rust-drm, 22 patches, to dri-devel and rust-for-linux, not sent yet
   rust-firmware, 1 patch, this one
   drm-vino, 13 patches, to dri-devel, not sent yet
 
@@ -47,7 +51,8 @@ CONFIG_RUST=y and CONFIG_DRM_VINO=m are the two to set; DRM_VINO selects the
 rest of what it needs
 
 It is the exact tree these patches were generated from, at c63829528980, the
-drm-rust-next tip of 2026-08-06. drm-next has moved on since, and this follows
+drm-rust-next tip of 2026-08-31, which merges v7.3-rc1. drm-next has moved on
+since, and this follows
 drm-rust-next deliberately: the KMS layer underneath this work lives only there,
 and that tree picks up drm-next on its own schedule
 

@@ -1,5 +1,5 @@
 From: Mike Lothian <mike@fireburn.co.uk>
-Subject: [PATCH v4 0/23] rust: drm: KMS abstractions for a Rust display driver
+Subject: [PATCH v4 0/22] rust: drm: KMS abstractions for a Rust display driver
 
 KMS abstractions for a Rust display driver, continuing Lyude Paul's KMS series
 rather than replacing it. The first patch adapts that work to the DRM APIs as
@@ -9,8 +9,7 @@ Broadly they fall into four groups:
 
   Lifetime and ownership: mode-object references tied to their owners, owned
     CRTC and vblank references, a safe constructor for owned registration data,
-    pinning the owner while DRM files remain open, and rejecting cross-device
-    GEM handle creation
+    and rejecting cross-device GEM handle creation
   Properties a driver must read or publish: typed colour and rotation, plane
     blend mode, FB_DAMAGE_CLIPS, connector colorimetry and HDR metadata, and a
     connector's requested link depth
@@ -18,13 +17,36 @@ Broadly they fall into four groups:
     connector helpers, checked plane geometry, walking the CRTCs an atomic
     commit carries, and CRTC mode changes
   Modes and framebuffers: an owned display mode constructor, mode flags and CTA
-    VIC matching, synthesized CVT connector modes, and validated shmem scanout
+    VIC matching, the connector colour properties, and validated shmem scanout
     views
 
 Also here are the HDCP 2.2 message identifiers, which are DRM UAPI rather than
 driver constants
 
-Changes since v2:
+Changes since v3:
+
+  "rust: drm: pin the owner while DRM files remain open" is dropped. v3 said it
+    should go the moment Alvin Sun's ModuleMetadata fix landed, and it has: the
+    base already stamps file_operations::owner from the driver's OwnerModule
+    associated type, so this was a second mechanism for the same guarantee, and
+    it was charging every Rust DRM driver an extra argument to
+    UnregisteredDevice::new() for it. 23 patches becomes 22
+  Four public functions with no caller anywhere in the tree are gone:
+    add_cvt_mode(), any_mode(), UnregisteredCrtc::enable_gamma() and
+    Framebuffer::to_aref(). Danilo Krummrich caught the equivalent by hand in
+    the USB series; this is the rest of that sweep, done here rather than left
+    to be found
+  "add synthesized CVT connector modes" is renamed to "attach the connector
+    colour properties", which is what it does now that add_cvt_mode() has gone,
+    and what the other three functions in it always did
+  Rebased onto v7.3-rc1
+
+Known and not fixed in this round: "rust: drm: expose CRTC mode changes" adds a
+CRTC colour-management API as well as the mode-change accessor its subject
+describes, and wants splitting. The patch order is also still roughly the order
+the work was done in rather than one that reads
+
+Changes in v3 that are still the shape of this series:
 
   Lyude's 43 commits are carried in order and patch-identical to the imported
     source, with her messages and tags untouched and no trailer of mine on any
@@ -52,14 +74,14 @@ UnregisteredDevice::new() takes no module. And where an early patch here fixes a
 commit of Lyude's that is itself unmerged, that fix would be better folded into
 her next revision than carried separately, and I am happy to do it that way
 
-v2: https://lore.kernel.org/r/20260826163359.4998-1-mike@fireburn.co.uk
+v3: https://lore.kernel.org/r/20260826163359.4998-1-mike@fireburn.co.uk
 
 The rest of the posting, which is one series per subsystem:
 
   rust-core, 8 patches, to rust-for-linux and linux-kernel, not sent yet
   rust-crypto, 2 patches, to linux-crypto and rust-for-linux, not sent yet
   rust-usb, 5 patches, to linux-usb and rust-for-linux, not sent yet
-  rust-drm, 23 patches, this one
+  rust-drm, 22 patches, this one
   rust-firmware, 1 patch, to linux-kernel and rust-for-linux, not sent yet
   drm-vino, 13 patches, to dri-devel, not sent yet
 
@@ -79,7 +101,8 @@ CONFIG_RUST=y and CONFIG_DRM_VINO=m are the two to set; DRM_VINO selects the
 rest of what it needs
 
 It is the exact tree these patches were generated from, at c63829528980, the
-drm-rust-next tip of 2026-08-06. drm-next has moved on since, and this follows
+drm-rust-next tip of 2026-08-31, which merges v7.3-rc1. drm-next has moved on
+since, and this follows
 drm-rust-next deliberately: the KMS layer underneath this work lives only there,
 and that tree picks up drm-next on its own schedule
 
@@ -103,7 +126,7 @@ implementation and the tests. Every patch it contributed to carries an
 Assisted-by trailer. The Signed-off-by is mine: I have reviewed and tested what
 is here and I stand behind it
 
-Mike Lothian (23):
+Mike Lothian (22):
   rust: drm: kms: adapt Lyude's KMS series to current DRM APIs
   rust: drm: kms: tie mode-object references to their owners
   rust: drm: kms: constrain connector encoder attachment
@@ -118,17 +141,16 @@ Mike Lothian (23):
   rust: drm: kms: add owned CRTC and vblank references
   rust: drm: kms: plane: add FB_DAMAGE_CLIPS property support
   rust: drm: add a safe constructor for owned registration data
-  rust: drm: pin the owner while DRM files remain open
   rust: drm: kms: add the plane blend-mode property
   rust: drm: add an owned display mode constructor
   rust: drm: expose mode flags and CTA VIC matching
   rust: drm: expose CRTC mode changes
-  rust: drm: kms: add synthesized CVT connector modes
+  rust: drm: kms: attach the connector colour properties
   rust: drm: kms: read a connector's colorimetry and HDR metadata
   rust: drm: kms: walk the CRTCs an atomic commit carries
   rust: drm: kms: expose a connector's requested link depth
 
- 22 files changed, 2062 insertions(+), 99 deletions(-)
+ 21 files changed, 1943 insertions(+), 95 deletions(-)
 
 base-commit: c63829528980507a0a9146031e0c08499f53cf3d
 prerequisite-message-id: <20250305230406.567126-1-lyude@redhat.com>

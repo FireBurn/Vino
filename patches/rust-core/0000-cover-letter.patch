@@ -12,26 +12,33 @@ facility that has C callers today and no Rust binding
     ktime_get_real_seconds()
   workqueue: make OwnedQueue thread safe
   io: offset copy helpers that check the bounds they are given
-  error: expose EPROTO
 
-None of these nine has been posted before, so this goes out unversioned even
-though the drivers it feeds are on their third round. A runtime platform-device
-creator and a root-device attribute group went out inside the rust: drm v2
-series, where they did not belong, and they are not here either, because the
-consumer that needed them is not part of this posting
+Changes since v1:
+
+  The EPROTO patch is gone: it landed upstream this cycle, so this is eight
+    patches rather than nine
+  hrtimer: ArcHrTimerHandle::restart stays, and its commit message now names
+    the call site that needs it. Andreas Hindborg asked whether forward() plus
+    HrTimerRestart::Restart covers it; it does not, because enable_vblank
+    re-arms a timer that has already stopped, from under the vblank locks with
+    interrupts disabled, where dropping the handle and calling start() again
+    would block on a running callback
+  hrtimer: the interrupt-state accessor is unchanged and still depends on the
+    callback context type Andreas was considering removing. If it goes, the
+    guarantee it carries needs somewhere else to live
 
 It is small on purpose. Every patch has a caller in the driver at the end of the
 chain, and nothing is here on the argument that it might be useful to somebody
 later
 
-v2: https://lore.kernel.org/r/20260826162851.2497-1-mike@fireburn.co.uk
+v1: https://lore.kernel.org/r/20260826162851.2497-1-mike@fireburn.co.uk
 
 The rest of the posting, which is one series per subsystem:
 
   rust-core, 8 patches, this one
   rust-crypto, 2 patches, to linux-crypto and rust-for-linux, not sent yet
   rust-usb, 5 patches, to linux-usb and rust-for-linux, not sent yet
-  rust-drm, 23 patches, to dri-devel and rust-for-linux, not sent yet
+  rust-drm, 22 patches, to dri-devel and rust-for-linux, not sent yet
   rust-firmware, 1 patch, to linux-kernel and rust-for-linux, not sent yet
   drm-vino, 13 patches, to dri-devel, not sent yet
 
@@ -51,7 +58,8 @@ CONFIG_RUST=y and CONFIG_DRM_VINO=m are the two to set; DRM_VINO selects the
 rest of what it needs
 
 It is the exact tree these patches were generated from, at c63829528980, the
-drm-rust-next tip of 2026-08-06. drm-next has moved on since, and this follows
+drm-rust-next tip of 2026-08-31, which merges v7.3-rc1. drm-next has moved on
+since, and this follows
 drm-rust-next deliberately: the KMS layer underneath this work lives only there,
 and that tree picks up drm-next on its own schedule
 

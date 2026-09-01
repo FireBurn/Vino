@@ -1,7 +1,7 @@
-From 445e43c3ff50ec8e959f6ae307b4e05d71c6a769 Mon Sep 17 00:00:00 2001
+From 18973f81acee70ad3fb7e109c964c99c8fe3b416 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 19:15:31 +0100
-Subject: [PATCH v4 10/23] rust: drm: framebuffer: add validated shmem scanout views
+Subject: [PATCH v4 10/22] rust: drm: framebuffer: add validated shmem scanout views
 
 Add framebuffer geometry and reference-counting operations for drivers
 that retain and inspect scanout buffers outside an atomic callback.
@@ -22,8 +22,8 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  rust/helpers/drm/drm.c             |   1 +
  rust/helpers/drm/framebuffer.c     |  13 ++
  rust/kernel/drm/fourcc.rs          |  28 ++-
- rust/kernel/drm/kms/framebuffer.rs | 345 ++++++++++++++++++++++++++++-
- 4 files changed, 382 insertions(+), 5 deletions(-)
+ rust/kernel/drm/kms/framebuffer.rs | 340 ++++++++++++++++++++++++++++-
+ 4 files changed, 377 insertions(+), 5 deletions(-)
  create mode 100644 rust/helpers/drm/framebuffer.c
 
 diff --git a/rust/helpers/drm/drm.c b/rust/helpers/drm/drm.c
@@ -96,7 +96,7 @@ index a30e40dbc037..010823c4c86c 100644
 +/// 30 bpp 10:10:10 BGR with alpha.
 +pub const ABGR2101010: u32 = fourcc_code(b'A', b'B', b'3', b'0');
 diff --git a/rust/kernel/drm/kms/framebuffer.rs b/rust/kernel/drm/kms/framebuffer.rs
-index 54d0391388a9..02e9e63cff30 100644
+index 54d0391388a9..b1f3d1eadf11 100644
 --- a/rust/kernel/drm/kms/framebuffer.rs
 +++ b/rust/kernel/drm/kms/framebuffer.rs
 @@ -5,8 +5,20 @@
@@ -267,15 +267,10 @@ index 54d0391388a9..02e9e63cff30 100644
  impl<T: KmsDriver> Framebuffer<T> {
      /// Convert a raw pointer to a `struct drm_framebuffer` into a [`Framebuffer`]
      ///
-@@ -67,4 +218,196 @@ pub(super) unsafe fn from_raw<'a>(ptr: *const bindings::drm_framebuffer) -> &'a
+@@ -67,4 +218,191 @@ pub(super) unsafe fn from_raw<'a>(ptr: *const bindings::drm_framebuffer) -> &'a
          // SAFETY: Our data layout is identical to drm_framebuffer
          unsafe { &*ptr.cast() }
      }
-+
-+    /// Return an owned reference to this framebuffer.
-+    pub fn to_aref(&self) -> ARef<Self> {
-+        self.into()
-+    }
 +
 +    /// Return the framebuffer width in pixels.
 +    pub fn width(&self) -> u32 {

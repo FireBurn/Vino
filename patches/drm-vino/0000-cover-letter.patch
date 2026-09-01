@@ -26,7 +26,8 @@ Three generations are supported, and they differ in more than identifiers:
 The differences are data. A dock is placed by family into a DockProfile carrying
 its endpoints, codec geometry, allocation rules and quirks, and there is one code
 path through the driver for all three. No per-device branches, and no module
-parameter selects a profile or a code path
+parameter selects a profile or a code path -- the parameters that exist are
+diagnostics and overrides, not a way to pick an implementation
 
 On DL-7400 the driver drives 30 bpp in PQ: 2560x1440p120 on two connectors, with
 the sink reporting 10 bit. Depth is not a flag on the wire but a set of
@@ -66,10 +67,25 @@ Tested on:
     2560x1440p120 in 30 bpp PQ
 
 All three bind concurrently on the same host, with monitors attached, driving a
-KDE desktop. 97 KUnit tests across 19 suites run at module load under
-CONFIG_DRM_VINO_KUNIT_TEST
+KDE desktop. 98 KUnit tests across 19 suites run at module
+load under CONFIG_DRM_VINO_KUNIT_TEST
 
-Changes since v2:
+Changes since v3:
+
+  The dock firmware update keeps its retry count in four slots rather than one.
+    The count has to survive the re-enumeration a write causes, so it cannot
+    live in driver data; with a single slot two docks attached at once evict
+    each other and neither ever reaches the limit that breaks a reflash loop
+  The codec no longer assumes a surface fits in two parameter records. 2160
+    lines is 270 bands and needs three
+  Kconfig gains depends on CRYPTO, since CRYPTO_RSA lives under it, and selects
+    RUST_CRYPTO_RSA rather than RUST_CRYPTO_AKCIPHER, following the crypto
+    series' move to an RSA-only API
+  UnregisteredDevice::new() loses the owning-module argument, following the
+    rust-drm patch this drops
+  Rebased onto v7.3-rc1
+
+Changes in v3 that are still the shape of this series:
 
   It works, which v2 did not. The gate was one byte: the EDID engage message
     carries its connector selector in two places and the second was being filled
@@ -103,14 +119,14 @@ vendor binaries. There is no vendor documentation for any of it, every constant
 here came from a measurement, and the assistance noted below covers that work as
 well as the implementation
 
-v2: https://lore.kernel.org/r/20260826163913.7052-1-mike@fireburn.co.uk
+v3: https://lore.kernel.org/r/20260826163913.7052-1-mike@fireburn.co.uk
 
 The rest of the posting, which is one series per subsystem:
 
   rust-core, 8 patches, to rust-for-linux and linux-kernel, not sent yet
   rust-crypto, 2 patches, to linux-crypto and rust-for-linux, not sent yet
   rust-usb, 5 patches, to linux-usb and rust-for-linux, not sent yet
-  rust-drm, 23 patches, to dri-devel and rust-for-linux, not sent yet
+  rust-drm, 22 patches, to dri-devel and rust-for-linux, not sent yet
   rust-firmware, 1 patch, to linux-kernel and rust-for-linux, not sent yet
   drm-vino, 13 patches, this one
 
@@ -130,7 +146,8 @@ CONFIG_RUST=y and CONFIG_DRM_VINO=m are the two to set; DRM_VINO selects the
 rest of what it needs
 
 It is the exact tree these patches were generated from, at c63829528980, the
-drm-rust-next tip of 2026-08-06. drm-next has moved on since, and this follows
+drm-rust-next tip of 2026-08-31, which merges v7.3-rc1. drm-next has moved on
+since, and this follows
 drm-rust-next deliberately: the KMS layer underneath this work lives only there,
 and that tree picks up drm-next on its own schedule
 
@@ -186,7 +203,7 @@ Mike Lothian (13):
   drm/vino: allow the driver to be built
   Documentation/gpu: document the Vino driver
 
- 43 files changed, 24139 insertions(+), 4 deletions(-)
+ 43 files changed, 24138 insertions(+), 4 deletions(-)
 
 base-commit: c63829528980507a0a9146031e0c08499f53cf3d
 prerequisite-message-id: <20250305230406.567126-1-lyude@redhat.com>

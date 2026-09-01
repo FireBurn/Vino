@@ -8,29 +8,46 @@ The first patch covers AES-128, AES-CMAC, SHA-256 and HMAC over the existing
 synchronous crypto API. The second adds RSA through akcipher, which HDCP 2.2
 needs to verify a device certificate and wrap a session key
 
-Changes since v2:
+Changes since v3:
 
-  The hand-rolled AES-CMAC is gone, along with its own dbl() subkey
-    derivation. It delegates to the in-tree aes_cmac library through
-    include/crypto/aes-cbc-macs.h, which is what Eric Biggers asked for
-  There is no private RSA primitive either. Modexp goes through
-    crypto_alloc_akcipher("rsa"), and OAEP padding and the HDCP key material
-    are held in a memory-wiping secret type
-  v2's separate CMAC fix is folded into the commit that introduces the CMAC,
-    so this is two patches rather than three
+  The generic akcipher wrapper is gone. Eric Biggers' point was that
+    crypto_akcipher has never worked well as an abstraction, so there is now an
+    RSA-only API: rust/kernel/crypto/rsa.rs, doing RSAES-OAEP-SHA256 public-key
+    encryption with a caller-supplied seed, and nothing else. The seed is
+    explicit so the driver can pass the kernel CSPRNG while the tests pass
+    published deterministic vectors
+  RUST_CRYPTO_LIB_AES and RUST_CRYPTO_LIB_SHA256 are declared in the patch that
+    adds the code that needs them, rather than in the one after it. That was
+    Eric's "this is being added in the wrong patch"
+  The rust_helper_aes_enckey_zero forwarder is gone. It could always have
+    called memzero_explicit instead of existing, which is what Eric and Miguel
+    Ojeda both said. There is now one safe zeroize() in the kernel crate, used
+    by Secret and Aes128
+  Rebased onto v7.3-rc1
+
+Still to settle on-list, and flagged here rather than left to be found:
+
+  lib/crypto grew aes_ctr() this cycle, which replaces the driver's two CTR
+    loops outright. Doing that leaves exactly one caller of the bare block
+    cipher, the HDCP 2.2 dKey derivation, which is a single AES-128 ECB block.
+    Whether lib/crypto should expose a one-shot single-block encrypt for that,
+    or whether that one caller keeps aes_prepareenckey() and aes_encrypt()
+    directly, is the open question on the v3 thread
+  Whether the Kconfig symbols belong in lib/crypto/Kconfig with the code in
+    rust/. That one is not specific to this series and follows Miguel's reply
 
 Nothing here knows what HDCP is. The consumer is the DisplayLink driver at the
 end of the chain, whose control plane is sealed with AES-CTR and keyed by an
 HDCP 2.2 exchange
 
-v2: https://lore.kernel.org/r/20260826163004.3365-1-mike@fireburn.co.uk
+v3: https://lore.kernel.org/r/20260826163004.3365-1-mike@fireburn.co.uk
 
 The rest of the posting, which is one series per subsystem:
 
   rust-core, 8 patches, to rust-for-linux and linux-kernel, not sent yet
   rust-crypto, 2 patches, this one
   rust-usb, 5 patches, to linux-usb and rust-for-linux, not sent yet
-  rust-drm, 23 patches, to dri-devel and rust-for-linux, not sent yet
+  rust-drm, 22 patches, to dri-devel and rust-for-linux, not sent yet
   rust-firmware, 1 patch, to linux-kernel and rust-for-linux, not sent yet
   drm-vino, 13 patches, to dri-devel, not sent yet
 
@@ -50,7 +67,8 @@ CONFIG_RUST=y and CONFIG_DRM_VINO=m are the two to set; DRM_VINO selects the
 rest of what it needs
 
 It is the exact tree these patches were generated from, at c63829528980, the
-drm-rust-next tip of 2026-08-06. drm-next has moved on since, and this follows
+drm-rust-next tip of 2026-08-31, which merges v7.3-rc1. drm-next has moved on
+since, and this follows
 drm-rust-next deliberately: the KMS layer underneath this work lives only there,
 and that tree picks up drm-next on its own schedule
 

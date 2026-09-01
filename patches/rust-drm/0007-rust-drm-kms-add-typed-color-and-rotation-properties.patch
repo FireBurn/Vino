@@ -1,7 +1,7 @@
-From 53054bbfb0933768f91a6761f0cb4fe451c4db41 Mon Sep 17 00:00:00 2001
+From 26d210fa89b13bd66c1ff7edb8384c3c9899b44c Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 13:23:01 +0100
-Subject: [PATCH v4 7/23] rust: drm: kms: add typed color and rotation properties
+Subject: [PATCH v4 7/22] rust: drm: kms: add typed color and rotation properties
 
 Add typed KMS property support for CRTC gamma lookup tables and
 plane rotation.
@@ -16,9 +16,9 @@ Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/bindings/bindings_helper.h |  1 +
- rust/kernel/drm/kms/crtc.rs     | 53 ++++++++++++++++++
+ rust/kernel/drm/kms/crtc.rs     | 42 +++++++++++++++
  rust/kernel/drm/kms/plane.rs    | 95 +++++++++++++++++++++++++++++++++
- 3 files changed, 149 insertions(+)
+ 3 files changed, 138 insertions(+)
 
 diff --git a/rust/bindings/bindings_helper.h b/rust/bindings/bindings_helper.h
 index d16919d9e22e..643d47bfc20c 100644
@@ -33,7 +33,7 @@ index d16919d9e22e..643d47bfc20c 100644
  #include <drm/drm_connector.h>
  #include <drm/drm_crtc.h>
 diff --git a/rust/kernel/drm/kms/crtc.rs b/rust/kernel/drm/kms/crtc.rs
-index a3217f8c55e8..a7024d8921ca 100644
+index a3217f8c55e8..731fccc8f7ba 100644
 --- a/rust/kernel/drm/kms/crtc.rs
 +++ b/rust/kernel/drm/kms/crtc.rs
 @@ -25,6 +25,27 @@
@@ -64,32 +64,14 @@ index a3217f8c55e8..a7024d8921ca 100644
  /// The main trait for implementing the [`struct drm_crtc`] API for [`Crtc`].
  ///
  /// Any KMS driver should have at least one implementation of this type, which allows them to create
-@@ -357,6 +378,17 @@ pub fn new<'a, PrimaryData, CursorData>(
-         // SAFETY: We just allocated the crtc above, so this pointer must be valid
-         Ok(unsafe { &*this })
-     }
-+
-+    /// Enable colour management on this CRTC, creating a `GAMMA_LUT` property of `gamma_size`
-+    /// entries that userspace can program (no degamma LUT, no CTM). The set LUT is then readable
-+    /// from the CRTC state via [`RawCrtcState::gamma_lut`].
-+    ///
-+    /// Call this during [`KmsDriver::probe`](crate::drm::kms::KmsDriver::probe), before the device
-+    /// is registered.
-+    pub fn enable_gamma(&self, gamma_size: u32) {
-+        // SAFETY: `as_raw()` is a valid, not-yet-registered CRTC.
-+        unsafe { bindings::drm_crtc_enable_color_mgmt(self.as_raw(), 0, false, gamma_size) };
-+    }
- }
- 
- // SAFETY: We inherit all relevant invariants of `Crtc`
-@@ -686,6 +718,27 @@ fn mode(&self) -> &DisplayMode {
+@@ -686,6 +707,27 @@ fn mode(&self) -> &DisplayMode {
          // atomic-state API serializes access while the mode can be changed.
          unsafe { DisplayMode::as_ref(core::ptr::addr_of!((*self.as_raw()).mode)) }
      }
 +
 +    /// Returns the CRTC's gamma LUT for this state as an array of [`ColorLut`] entries, or
-+    /// [`None`] if no gamma LUT is programmed. Requires gamma to have been enabled on the CRTC
-+    /// (see [`UnregisteredCrtc::enable_gamma`]).
++    /// [`None`] if no gamma LUT is programmed. Requires colour management to have been enabled
++    /// on the CRTC.
 +    ///
 +    fn gamma_lut(&self) -> Option<&[ColorLut]> {
 +        // SAFETY: `as_raw()` is a valid `drm_crtc_state`.

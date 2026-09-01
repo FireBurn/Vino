@@ -1,4 +1,4 @@
-From fe2de69b1266f2af68ebb7ebfe61a2219a59659a Mon Sep 17 00:00:00 2001
+From b1c4c87be2c97af50db190b688b122f68aa07b06 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:10 +0100
 Subject: [PATCH v4 11/13] drm/vino: add the USB driver frontend
@@ -31,16 +31,16 @@ re-activations, which would leave neither panel lit.
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- drivers/gpu/drm/vino/vino.rs | 1746 ++++++++++++++++++++++++++++++++++
- 1 file changed, 1746 insertions(+)
+ drivers/gpu/drm/vino/vino.rs | 1745 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 1745 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/vino.rs
 
 diff --git a/drivers/gpu/drm/vino/vino.rs b/drivers/gpu/drm/vino/vino.rs
 new file mode 100644
-index 000000000000..c064e7944ed0
+index 000000000000..264c828c40ae
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/vino.rs
-@@ -0,0 +1,1746 @@
+@@ -0,0 +1,1745 @@
 +// SPDX-License-Identifier: GPL-2.0
 +// SPDX-FileCopyrightText: Copyright (C) 2026 Mike Lothian
 +
@@ -1547,7 +1547,6 @@ index 000000000000..c064e7944ed0
 +                profile.capabilities.hw_cursor,
 +                connectors,
 +            ),
-+            &<LocalModule as kernel::ModuleMetadata>::THIS_MODULE,
 +        )?;
 +        // `Core` derefs to `Bound`; name the context explicitly so `as_ref()`
 +        // resolves to the bound parent required by DRM registration.

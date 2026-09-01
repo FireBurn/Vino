@@ -1,7 +1,7 @@
-From a7a9f7635bbe28c256edab1a103102f3422c0c08 Mon Sep 17 00:00:00 2001
+From c276841cd8639622f91613bb5408fb5fdd7a61c3 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 18:51:55 +0100
-Subject: [PATCH v4 23/23] rust: drm: kms: expose a connector's requested link depth
+Subject: [PATCH v4 22/22] rust: drm: kms: expose a connector's requested link depth
 
 `max bpc` is how userspace asks for the number of bits the link
 carries, and it is deliberately independent of the framebuffer's
@@ -37,10 +37,10 @@ index 010823c4c86c..3a68af66f236 100644
  /// 32 bpp RGB with unused alpha.
  pub const XRGB8888: u32 = fourcc_code(b'X', b'R', b'2', b'4');
 diff --git a/rust/kernel/drm/kms/connector.rs b/rust/kernel/drm/kms/connector.rs
-index 231857cc1f20..633f4f76a610 100644
+index 4e7475779f46..3a549d61b9c0 100644
 --- a/rust/kernel/drm/kms/connector.rs
 +++ b/rust/kernel/drm/kms/connector.rs
-@@ -935,6 +935,22 @@ fn colorspace(&self) -> u32 {
+@@ -883,6 +883,22 @@ fn colorspace(&self) -> u32 {
          self.as_raw().colorspace
      }
  
