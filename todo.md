@@ -206,21 +206,43 @@ Sweep command, for the respin:
 
 ## 5. Decisions for Mike
 
-### 5.1 `[~]` `trace_crypto` -- kept for now, nobody has objected yet
+### 5.1 `[~]` `trace_crypto` -- kept; the gate is the open question, not the capability
 
 Checked 2026-09-01: **no upstream reviewer has raised it.** Hindborg, Krummrich
-and Biggers said nothing about it across the whole v3 round. The only place it
-was ever flagged is `check.md` line 211, which is a pre-submission AI review, not
-a reviewer.
+and Biggers said nothing across the whole v3 round. The only place it was ever
+flagged is `check.md` line 211, a pre-submission AI review of our own.
 
-The cover flags it openly and invites the argument, and on v3 nobody took it up.
+WARNING -- weaker evidence than it looks: v3's driver went to dri-devel, so the
+crypto people never read the patch the parameter is in.
 
-WARNING -- that is weaker evidence than it looks: v3's driver went to dri-devel,
-so the crypto people never read the patch the parameter is in. The audience most
-likely to object has not seen it. If it survives v4 on dri-devel with the crypto
-lists cc'd, that is a real answer; v3 is not.
+**In-tree precedent, which is good.** Two relevant ones:
 
-Leave as is. Revisit only if somebody actually raises it.
+- `drivers/gpu/drm/amd/display/modules/hdcp/hdcp_log.c` traces the raw bytes of
+  `ake_stored_km`, `ake_no_stored_km` and `ske_eks` through `HDCP_DDC_WRITE_TRACE`,
+  which is a plain `pr_debug()` -- runtime dynamic debug, no Kconfig, no taint.
+  ⚠ But those are the *encrypted* wire messages, not derived keys. Weaker than
+  what vino does.
+- `CONFIG_CIFS_DEBUG_DUMP_KEYS` is the real analogue: "Dump encryption keys for
+  offline decryption (Unsafe)", dumping plaintext AES session keys to the console
+  so that "Wireshark [can] decrypt and dissect encrypted network captures". That
+  is vino's exact use case, accepted in-tree, and it says "Enable this carefully.
+  If unsure, say N."
+
+So the *capability* has a maintainer-accepted precedent and should be cited in
+the cover. What differs is the **gate**: CIFS requires a compile-time Kconfig
+under `CIFS_DEBUG`; vino uses a runtime module parameter.
+
+⚖ The trade, which is Mike's call and is genuinely two-sided:
+
+- Moving to a Kconfig matches the precedent exactly and is the easiest thing to
+  defend.
+- But it undercuts the justification. The argument for keeping this at all is
+  that somebody holding a dock nobody here owns can produce a decryptable
+  capture. A Kconfig means they must rebuild their kernel first, which most
+  people with a dock and a bug will not do.
+
+Cheapest defensible middle: keep the parameter, cite CIFS_DEBUG_DUMP_KEYS in the
+cover, and match its language -- name it unsafe and say what it discloses.
 
 ### 5.2 `[x]` Automatic firmware flash at probe -- DECIDED: keep it
 
