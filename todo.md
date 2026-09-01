@@ -50,25 +50,25 @@ is easy to repeat: check `git for-each-ref`, not `git branch`.
 
 ## 2. Open review comments from v3 -- owed to reviewers
 
-### 2.1 `[ ]` Use `aes_ctr()` instead of hand-rolled CTR loops (Eric Biggers)
+### 2.1 `[x]` Use `aes_ctr()` instead of hand-rolled CTR loops (Eric Biggers) -- DONE
 
-**The largest remaining item.** Mike's reply promised it; not done. The base has
-`aes_ctr()` (`lib/crypto/aes.c:1119`, `EXPORT_SYMBOL_GPL` at `:1144`) and the
-driver still hand-rolls two CTR loops:
+Done 2026-09-01. `kernel::crypto::aes_ctr_128()` binds the library `aes_ctr()`
+through a helper (it takes the same transparent union as `aes_encrypt()`), and
+both `cp.rs` loops are gone. `RUST_CRYPTO_LIB_AES` selects `CRYPTO_LIB_AES_CTR`;
+the declaration lives in `crypto/aes-ctr.h`, not `crypto/aes.h`. The rust-crypto
+0001 commit is retitled to name CTR, and both covers say so.
 
-- `drivers/gpu/drm/vino/cp.rs:648` (`seal_livemac`)
-- `drivers/gpu/drm/vino/cp.rs:1129`
+WARNING -- one semantic note, commented in `cp.rs` rather than worked around:
+`aes_ctr()` advances a full 128-bit counter, while the protocol counts in a
+32-bit field with zeroes above it. Proved by enumerating the counter blocks:
+identical for every reachable value, diverging only once `seq + nblocks` crosses
+2^32, which is 64 GiB of control traffic in one session. The decrypt side
+verifies the Dl3Cmac before decrypting, so a wire-supplied `seq` cannot reach it.
 
-Both are textbook SP 800-38A: 8-byte nonce, four zero bytes, 32-bit big-endian
-counter starting at `seq`. `aes_ctr()` replaces both outright.
-
-Needs, in order:
-1. A Rust binding for `aes_ctr()` in `rust/kernel/crypto.rs`.
-2. Both `cp.rs` call sites converted.
-3. Then decide the follow-up below, because it changes how much of `Aes128` survives.
-
-The rust-crypto cover already flags this as open on-list, so the changelog does
-not need rewriting when it lands -- just tightening.
+WARNING -- **`seal_livemac_roundtrip` would not have caught a keystream change**:
+seal and open share the model, which is the round-trip trap. The counter-block
+enumeration is the real evidence. **A hardware run is still wanted:** this is
+byte-exactness with a dock, and it has not been on hardware.
 
 ### 2.2 `[?]` The one remaining bare-block-cipher caller (question is on-list)
 
@@ -250,23 +250,22 @@ drm-vino **RFC v4** rather than a merge candidate.
 - [ ] Keep `Assisted-by: Claude:claude-opus-5` consistent; never strip one from a
   commit Claude actually wrote.
 
-### 6.1 `[?]` The push guards from the WORKLOG are not in place -- NEW
+### 6.1 `[x]` The push guards from the WORKLOG are off -- deliberate, leave them
 
 `WORKLOG.md` records `git remote set-url --push <remote> DISABLED` on every
-remote in both trees, as a deliberate guard. As of today `git remote -v` in
-`vino/linux` shows **real push URLs** for drm-rust, freedesktop, github, gitlab
-and lyude. The `sendemail.smtpServer` guard is still in place and
-`send-series.sh` still refuses `--send` without `--smtp-server`.
+remote. They are off, and Mike confirmed on 2026-09-01 that they stay off: they
+were a precaution while the Synaptics question was open, and it no longer is.
+The `sendemail.smtpServer` guard is still in place and `send-series.sh` still
+refuses `--send` without `--smtp-server`, which is the one that matters.
 
-Presumably removed deliberately for the v3 send. Flagging it because the WORKLOG
-still claims otherwise, and `gitlab Vino:main` is protected against force-push.
+Still true that `gitlab Vino:main` is protected against force-push, so never
+amend an already-pushed superproject commit.
 
 ---
 
 ## Suggested order of work
 
-1. §2.1 `aes_ctr()` -- owed reply, deletes code, and §2.2 depends on it.
-2. §5.1 / §5.2 decisions, so the code settles before the split.
+1. §5.1 / §5.2 decisions, so the code settles before the split.
 3. §3 splits and reordering, including §3.3 and the subject-vs-diff audit.
 4. Re-run `tools/check-series.sh --build` after each step. Nothing goes out
    until it passes.
