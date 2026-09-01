@@ -684,12 +684,23 @@ Changes in v3 that are still the shape of this series:
   The related series are linked and Vino is named as the user for all of them,
     which Miguel Ojeda asked for
 
-The trace_crypto module parameter, default off, deliberately logs one session's
-keys so that a USB capture of that session can be decrypted. Every constant in
-this driver came from such a capture, and it is the only way somebody holding a
+DRM_VINO_DEBUG_DUMP_KEYS, default n, deliberately logs one session's keys so
+that a USB capture of that session can be decrypted. Every constant in this
+driver came from such a capture, and it is the only way somebody holding a
 DisplayLink dock nobody here owns can produce one that says anything. It is
-flagged here rather than left to be found, because a kernel option that
-discloses key material is a fair thing to argue about
+flagged here rather than left to be found, because an option that discloses key
+material is a fair thing to argue about
+
+It is modelled on CIFS_DEBUG_DUMP_KEYS, which exists for the same reason and
+says so in the same words: dump the session keys so that a capture can be
+decrypted and dissected offline. As there, this is a compile-time option that
+distributions do not turn on, and the keys it discloses protect one session with
+one dock and are renegotiated on every bring-up. Unlike there, a kernel built
+with it still logs nothing until the driver's debug parameter is also set, so
+carrying the option is not the same as disclosing anything
+
+Both log sites are cfg-gated rather than parameter-gated, so a kernel without
+the option does not carry the code at all
 
 The protocol was reverse engineered from captured wire traffic and from the
 vendor binaries. There is no vendor documentation for any of it, every constant

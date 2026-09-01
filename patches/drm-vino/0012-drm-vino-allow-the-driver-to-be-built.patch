@@ -1,4 +1,4 @@
-From 7a029168466ad0fd8e496886d0da7b27291307a2 Mon Sep 17 00:00:00 2001
+From 97b5211e9eef367077f9c222be3a91ff5aa38fd3 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:11 +0100
 Subject: [PATCH v4 12/13] drm/vino: allow the driver to be built
@@ -9,12 +9,12 @@ preceding commits become a module.
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- MAINTAINERS                   |  6 +++++
+ MAINTAINERS                   |  6 ++++
  drivers/gpu/drm/Kconfig       |  1 +
  drivers/gpu/drm/Makefile      |  1 +
- drivers/gpu/drm/vino/Kconfig  | 44 +++++++++++++++++++++++++++++++++++
+ drivers/gpu/drm/vino/Kconfig  | 63 +++++++++++++++++++++++++++++++++++
  drivers/gpu/drm/vino/Makefile |  2 ++
- 5 files changed, 54 insertions(+)
+ 5 files changed, 73 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/Kconfig
  create mode 100644 drivers/gpu/drm/vino/Makefile
 
@@ -61,10 +61,10 @@ index e635fcffd379..29ab96f6e8de 100644
  obj-$(CONFIG_DRM_EXYNOS) +=exynos/
 diff --git a/drivers/gpu/drm/vino/Kconfig b/drivers/gpu/drm/vino/Kconfig
 new file mode 100644
-index 000000000000..294b0962064b
+index 000000000000..ac6bc62a1f24
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/Kconfig
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,63 @@
 +# SPDX-License-Identifier: GPL-2.0
 +config DRM_VINO
 +	tristate "DisplayLink DL3 (Vino) open driver"
@@ -97,6 +97,25 @@ index 000000000000..294b0962064b
 +	  dock's video endpoints.
 +
 +	  To compile this as a module, choose M here: the module is called vino.
++
++	  If unsure, say N.
++
++config DRM_VINO_DEBUG_DUMP_KEYS
++	bool "Dump Vino session keys for offline decryption (Unsafe)"
++	depends on DRM_VINO
++	help
++	  Enabling this will dump the control-plane and video session keys,
++	  and the nonces derived with them, to the kernel log when a dock is
++	  brought up. This allows a USB capture of that session to be
++	  decrypted and dissected offline, which is how the protocol this
++	  driver implements was worked out in the first place, and is what
++	  somebody reporting a fault on a dock can supply.
++
++	  The keys protect one session with one dock and are renegotiated on
++	  every bring-up, but they are secrets and this puts them in the log.
++	  Even with this built in, nothing is logged unless the driver's debug
++	  parameter is also set, so that a kernel carrying the option does not
++	  disclose anything until it is asked to. Enable this carefully.
 +
 +	  If unsure, say N.
 +

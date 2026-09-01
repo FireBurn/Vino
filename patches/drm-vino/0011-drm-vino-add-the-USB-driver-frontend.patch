@@ -1,4 +1,4 @@
-From 722d3bd7df0dd1e9114f76f65ea3f6f3eb95759b Mon Sep 17 00:00:00 2001
+From 9f2ada74bf4fd18475a5390a2cb90af69d4c8f2b Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:10 +0100
 Subject: [PATCH v4 11/13] drm/vino: add the USB driver frontend
@@ -31,16 +31,16 @@ re-activations, which would leave neither panel lit.
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- drivers/gpu/drm/vino/vino.rs | 1745 ++++++++++++++++++++++++++++++++++
- 1 file changed, 1745 insertions(+)
+ drivers/gpu/drm/vino/vino.rs | 1733 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 1733 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/vino.rs
 
 diff --git a/drivers/gpu/drm/vino/vino.rs b/drivers/gpu/drm/vino/vino.rs
 new file mode 100644
-index 000000000000..264c828c40ae
+index 000000000000..4c84907ecd3b
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/vino.rs
-@@ -0,0 +1,1745 @@
+@@ -0,0 +1,1733 @@
 +// SPDX-License-Identifier: GPL-2.0
 +// SPDX-FileCopyrightText: Copyright (C) 2026 Mike Lothian
 +
@@ -70,14 +70,6 @@ index 000000000000..264c828c40ae
 +/// Whether the load-time `debug` parameter requested verbose protocol and scanout diagnostics.
 +pub(crate) fn debug_enabled() -> bool {
 +    crate::module_parameters::debug.value() != 0
-+}
-+
-+/// Whether this one module load may disclose its ephemeral session material for a wire capture.
-+///
-+/// This is deliberately separate from ordinary debug logging: the values make a usbmon trace
-+/// decryptable and must never appear during a normal load.
-+fn trace_crypto_enabled() -> bool {
-+    crate::module_parameters::trace_crypto.value() != 0
 +}
 +
 +/// Emit a driver diagnostic only when the load-time `debug` parameter is nonzero.
@@ -1709,10 +1701,6 @@ index 000000000000..264c828c40ae
 +        debug: u8 {
 +            default: 0,
 +            description: "Enable verbose Vino protocol and scanout diagnostics",
-+        },
-+        trace_crypto: u8 {
-+            default: 0,
-+            description: "Diagnostic: disclose one session's keys to decrypt a USB capture",
 +        },
 +        rtc_utc_offset_minutes: i32 {
 +            default: 0,

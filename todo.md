@@ -206,43 +206,39 @@ Sweep command, for the respin:
 
 ## 5. Decisions for Mike
 
-### 5.1 `[~]` `trace_crypto` -- kept; the gate is the open question, not the capability
+### 5.1 `[x]` `trace_crypto` -- DONE: now DRM_VINO_DEBUG_DUMP_KEYS + debug=
 
-Checked 2026-09-01: **no upstream reviewer has raised it.** Hindborg, Krummrich
-and Biggers said nothing across the whole v3 round. The only place it was ever
-flagged is `check.md` line 211, a pre-submission AI review of our own.
+Mike's call, 2026-09-01: stop it being a module parameter.
 
-WARNING -- weaker evidence than it looks: v3's driver went to dri-devel, so the
-crypto people never read the patch the parameter is in.
+WARNING -- **Rust's `pr_debug!` is not C's.** Both `pr_debug!` (print.rs:398) and
+`dev_dbg!` (device.rs:376) are `if cfg!(debug_assertions)`, and this build is
+`-Cdebug-assertions=n`, so they compile to nothing. No Rust logging macro hooks
+into dynamic debug at all -- there is no `dyndbg=` control and no `_ddebug`
+descriptor. Enabling them means `CONFIG_RUST_DEBUG_ASSERTIONS=y`, which is a
+global Rust switch: a plain Rust debug build would have started dumping dock keys
+with nothing in the config to say so, and no way to turn it off again. So
+`pr_debug!` was the wrong instrument here, not the right one made awkward.
 
-**In-tree precedent, which is good.** Two relevant ones:
+What landed instead, which achieves the same thing:
 
+- `CONFIG_DRM_VINO_DEBUG_DUMP_KEYS`, bool, default n, "(Unsafe)" in the prompt,
+  modelled on `CONFIG_CIFS_DEBUG_DUMP_KEYS` down to the wording. Both log sites
+  are `#[cfg]`-gated, so a kernel without it does not carry the code.
+- **and** the existing `debug` module parameter, so a kernel built with the
+  option still discloses nothing until debugging is switched on. CIFS has only
+  the compile-time gate; this is one better.
+- The `trace_crypto` module parameter is gone, along with `trace_crypto_enabled()`.
+- The cover cites the CIFS precedent rather than arguing from first principles.
+
+In-tree precedent for the capability, for the record:
+
+- `CONFIG_CIFS_DEBUG_DUMP_KEYS` -- "Dump encryption keys for offline decryption
+  (Unsafe)", plaintext AES session keys to the console, expressly so "Wireshark
+  [can] decrypt and dissect encrypted network captures". Vino's exact use case.
 - `drivers/gpu/drm/amd/display/modules/hdcp/hdcp_log.c` traces the raw bytes of
-  `ake_stored_km`, `ake_no_stored_km` and `ske_eks` through `HDCP_DDC_WRITE_TRACE`,
-  which is a plain `pr_debug()` -- runtime dynamic debug, no Kconfig, no taint.
-  ⚠ But those are the *encrypted* wire messages, not derived keys. Weaker than
-  what vino does.
-- `CONFIG_CIFS_DEBUG_DUMP_KEYS` is the real analogue: "Dump encryption keys for
-  offline decryption (Unsafe)", dumping plaintext AES session keys to the console
-  so that "Wireshark [can] decrypt and dissect encrypted network captures". That
-  is vino's exact use case, accepted in-tree, and it says "Enable this carefully.
-  If unsure, say N."
-
-So the *capability* has a maintainer-accepted precedent and should be cited in
-the cover. What differs is the **gate**: CIFS requires a compile-time Kconfig
-under `CIFS_DEBUG`; vino uses a runtime module parameter.
-
-⚖ The trade, which is Mike's call and is genuinely two-sided:
-
-- Moving to a Kconfig matches the precedent exactly and is the easiest thing to
-  defend.
-- But it undercuts the justification. The argument for keeping this at all is
-  that somebody holding a dock nobody here owns can produce a decryptable
-  capture. A Kconfig means they must rebuild their kernel first, which most
-  people with a dock and a bug will not do.
-
-Cheapest defensible middle: keep the parameter, cite CIFS_DEBUG_DUMP_KEYS in the
-cover, and match its language -- name it unsafe and say what it discloses.
+  `ake_stored_km`, `ake_no_stored_km` and `ske_eks` at plain `pr_debug()` with no
+  Kconfig at all. ⚠ Those are the encrypted wire messages, not derived keys, so
+  it is the weaker of the two precedents -- cite CIFS.
 
 ### 5.2 `[x]` Automatic firmware flash at probe -- DECIDED: keep it
 
