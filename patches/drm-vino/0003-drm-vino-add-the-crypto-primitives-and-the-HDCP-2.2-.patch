@@ -1,4 +1,4 @@
-From 3b8f38970d3870c0507058dfa71300145ac4dbbb Mon Sep 17 00:00:00 2001
+From 6a581d371d3d2b6407eef11653ae27d4fbca1c45 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:36 +0100
 Subject: [PATCH v4 3/13] drm/vino: add the crypto primitives and the HDCP 2.2 AKE
@@ -210,7 +210,7 @@ index 000000000000..54d24ca2d096
 +}
 diff --git a/drivers/gpu/drm/vino/crypto.rs b/drivers/gpu/drm/vino/crypto.rs
 new file mode 100644
-index 000000000000..4fc14b8bd70c
+index 000000000000..d5db19cf2f99
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/crypto.rs
 @@ -0,0 +1,90 @@
@@ -221,14 +221,14 @@ index 000000000000..4fc14b8bd70c
 +
 +use super::*;
 +
-+/// An AES-128 key prepared once for single-block encryption; re-exported so the
-+/// AES-CTR keystream loops in [`cp`](super::cp) can expand the key once and reuse
-+/// it across every block (rather than re-expanding per block).
-+pub(super) use kernel::crypto::Aes128;
++use kernel::crypto::Aes128;
 +
-+/// `AES_ECB(key, block)` -- one 16-byte AES-128 block. Convenience one-shot for
-+/// callers that encrypt a single block (e.g. HDCP dKey derivation); the AES-CTR
-+/// paths build an [`Aes128`] once and call [`Aes128::encrypt_block`] in a loop.
++/// `AES-128-CTR(key, counter, data)` in place, for the sealed control plane.
++pub(super) use kernel::crypto::aes_ctr_128;
++
++/// `AES_ECB(key, block)` -- one 16-byte AES-128 block, which HDCP 2.2 needs for the
++/// dKey derivation. That is the only bare block cipher left here: the control plane's
++/// AES-CTR goes through [`kernel::crypto::aes_ctr_128`].
 +pub(super) fn aes128_ecb(key: &[u8; 16], block: &[u8; 16]) -> Result<[u8; 16]> {
 +    Ok(Aes128::new(key)?.encrypt_block(block))
 +}

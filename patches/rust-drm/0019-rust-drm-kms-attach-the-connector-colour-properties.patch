@@ -1,4 +1,4 @@
-From 7b00417da008ed50b157e53dba083163441d463f Mon Sep 17 00:00:00 2001
+From 376ad0d0bdce4513b9e40f6f5734ca5120f36689 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 22:52:46 +0100
 Subject: [PATCH v4 19/22] rust: drm: kms: attach the connector colour properties

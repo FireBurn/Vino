@@ -83,6 +83,8 @@ Changes since v3:
     series' move to an RSA-only API
   UnregisteredDevice::new() loses the owning-module argument, following the
     rust-drm patch this drops
+  The control plane's two AES-CTR loops are replaced by the library's
+    aes_ctr(), following the crypto series
   Rebased onto v7.3-rc1
 
 Changes in v3 that are still the shape of this series:
@@ -203,7 +205,7 @@ Mike Lothian (13):
   drm/vino: allow the driver to be built
   Documentation/gpu: document the Vino driver
 
- 43 files changed, 24138 insertions(+), 4 deletions(-)
+ 43 files changed, 24135 insertions(+), 4 deletions(-)
 
 base-commit: c63829528980507a0a9146031e0c08499f53cf3d
 prerequisite-message-id: <20250305230406.567126-1-lyude@redhat.com>

@@ -1,4 +1,4 @@
-From 9c932533f9508433a1411d2b0a911bcb495c9dad Mon Sep 17 00:00:00 2001
+From 3ea05ae533834cc348880f37fffa9ab2e642250a Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 17:13:59 +0100
 Subject: [PATCH v4 14/22] rust: drm: add a safe constructor for owned registration data

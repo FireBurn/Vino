@@ -70,7 +70,7 @@ title() {
     case "$1" in
     sched-fair)    printf 'sched/fair: stop reading a guard flag after the guard drops it' ;;
     rust-core)     printf 'rust: core abstractions for a USB display driver' ;;
-    rust-crypto)   printf 'rust: crypto: AES, CMAC, SHA-256, HMAC and RSA bindings' ;;
+    rust-crypto)   printf 'rust: crypto: AES, AES-CTR, CMAC, SHA-256, HMAC and RSA bindings' ;;
     rust-usb)      printf 'rust: usb: host-side abstractions for a bulk-endpoint driver' ;;
     rust-drm)      printf 'rust: drm: KMS abstractions for a Rust display driver' ;;
     rust-firmware) printf 'rust: firmware: the firmware upload abstraction' ;;
@@ -344,9 +344,9 @@ BLURB
 Synchronous crypto bindings for a driver that has to authenticate a device
 before it is allowed to drive it
 
-The first patch covers AES-128, AES-CMAC, SHA-256 and HMAC over the existing
-synchronous crypto API. The second adds RSA through akcipher, which HDCP 2.2
-needs to verify a device certificate and wrap a session key
+The first patch covers AES-128, AES-128-CTR, AES-CMAC, SHA-256 and HMAC over the
+existing library crypto. The second adds RSA, which HDCP 2.2 needs to verify a
+device certificate and wrap a session key
 
 Changes since v3:
 
@@ -363,16 +363,24 @@ Changes since v3:
     called memzero_explicit instead of existing, which is what Eric and Miguel
     Ojeda both said. There is now one safe zeroize() in the kernel crate, used
     by Secret and Aes128
+  There is an aes_ctr_128() binding, and the driver's two hand-rolled CTR
+    loops are gone. Eric Biggers pointed out that lib/crypto grew aes_ctr()
+    this cycle; it is a straight replacement, since both loops were plain
+    SP 800-38A. crypto/aes-ctr.h names a protocol using CTR directly as a
+    supported caller, which is what this is
   Rebased onto v7.3-rc1
 
 Still to settle on-list, and flagged here rather than left to be found:
 
-  lib/crypto grew aes_ctr() this cycle, which replaces the driver's two CTR
-    loops outright. Doing that leaves exactly one caller of the bare block
-    cipher, the HDCP 2.2 dKey derivation, which is a single AES-128 ECB block.
-    Whether lib/crypto should expose a one-shot single-block encrypt for that,
-    or whether that one caller keeps aes_prepareenckey() and aes_encrypt()
-    directly, is the open question on the v3 thread
+  That leaves exactly one caller of the bare block cipher: the HDCP 2.2 dKey
+    derivation, a single AES-128 ECB block. Whether lib/crypto should expose a
+    one-shot single-block encrypt for it, or whether that caller keeps
+    aes_prepareenckey() and aes_encrypt() directly, is the open question on the
+    v3 thread. Aes128 stays for now because that caller needs it
+  aes_ctr() advances a full 128-bit counter. The protocol counts blocks in a
+    32-bit field with zeroes above it, so the two agree until that field would
+    carry, which is 2^32 blocks into one control session. The driver comments
+    the constraint rather than reimplementing the counter to preserve it
   Whether the Kconfig symbols belong in lib/crypto/Kconfig with the code in
     rust/. That one is not specific to this series and follows Miguel's reply
 
@@ -628,6 +636,8 @@ Changes since v3:
     series' move to an RSA-only API
   UnregisteredDevice::new() loses the owning-module argument, following the
     rust-drm patch this drops
+  The control plane's two AES-CTR loops are replaced by the library's
+    aes_ctr(), following the crypto series
   Rebased onto v7.3-rc1
 
 Changes in v3 that are still the shape of this series:

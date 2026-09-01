@@ -1,4 +1,4 @@
-From 28bc53dadb970a5177ca50786e770df30fc420ae Mon Sep 17 00:00:00 2001
+From ed0ca29a2934416b80a77b7ae3f849bd8450592b Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:34:28 +0100
 Subject: [PATCH v4 1/22] rust: drm: kms: adapt Lyude's KMS series to current DRM APIs

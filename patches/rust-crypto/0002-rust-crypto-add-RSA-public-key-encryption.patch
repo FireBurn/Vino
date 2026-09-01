@@ -1,4 +1,4 @@
-From 3c490619c23e04c95231ef2a0a6f9a3edd2fac64 Mon Sep 17 00:00:00 2001
+From d68f1b30d6ed4a034092cfca7d3813deadc53f92 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 31 Aug 2026 18:36:09 +0100
 Subject: [PATCH v4 2/2] rust: crypto: add RSA public-key encryption
@@ -69,7 +69,7 @@ index e253e4ed583c..2be6f58f2ffd 100644
  #include <crypto/sha2.h>
  
 diff --git a/rust/helpers/crypto.c b/rust/helpers/crypto.c
-index 54486139f483..e67fe7271914 100644
+index 1deeb2629719..dd115778ef39 100644
 --- a/rust/helpers/crypto.c
 +++ b/rust/helpers/crypto.c
 @@ -1,5 +1,6 @@
@@ -78,8 +78,8 @@ index 54486139f483..e67fe7271914 100644
 +#include <crypto/akcipher.h>
  #include <crypto/aes.h>
  #include <crypto/aes-cbc-macs.h>
- #include <linux/string.h>
-@@ -9,6 +10,20 @@ __rust_helper void rust_helper_memzero_explicit(void *s, size_t count)
+ #include <crypto/aes-ctr.h>
+@@ -10,6 +11,20 @@ __rust_helper void rust_helper_memzero_explicit(void *s, size_t count)
  	memzero_explicit(s, count);
  }
  
@@ -124,7 +124,7 @@ index e6a5c7a795f0..a3826993cb69 100644
 +
  endif
 diff --git a/rust/kernel/crypto.rs b/rust/kernel/crypto.rs
-index 3c6c3531675a..c19813257462 100644
+index ea38fbe78fbb..886fdf0280ad 100644
 --- a/rust/kernel/crypto.rs
 +++ b/rust/kernel/crypto.rs
 @@ -9,14 +9,27 @@

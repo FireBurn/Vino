@@ -1,4 +1,4 @@
-From b552d14423822e4b0cceb252e93584f44217223c Mon Sep 17 00:00:00 2001
+From 17c9f7385ad655325d6fb81c59f13a378c03796f Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:49 +0100
 Subject: [PATCH v4 4/13] drm/vino: add the encrypted control plane
@@ -19,11 +19,11 @@ never acted on.
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- drivers/gpu/drm/vino/cp.rs        | 1590 +++++++++++++++++++++++++++++
+ drivers/gpu/drm/vino/cp.rs        | 1587 +++++++++++++++++++++++++++++
  drivers/gpu/drm/vino/cp/cursor.rs |  158 +++
  drivers/gpu/drm/vino/cp/edid.rs   |  464 +++++++++
  drivers/gpu/drm/vino/cp/mode.rs   |  874 ++++++++++++++++
- 4 files changed, 3086 insertions(+)
+ 4 files changed, 3083 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/cp.rs
  create mode 100644 drivers/gpu/drm/vino/cp/cursor.rs
  create mode 100644 drivers/gpu/drm/vino/cp/edid.rs
@@ -31,10 +31,10 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 
 diff --git a/drivers/gpu/drm/vino/cp.rs b/drivers/gpu/drm/vino/cp.rs
 new file mode 100644
-index 000000000000..0afbf64974db
+index 000000000000..71808163e0e0
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/cp.rs
-@@ -0,0 +1,1590 @@
+@@ -0,0 +1,1587 @@
 +// SPDX-License-Identifier: GPL-2.0
 +//! Encrypted-control-plane message builders (the inner plaintext of the type=4
 +//! sub=0x24 AES-CTR frames) plus the AES-CTR `seal` that encrypts and frames them.
@@ -669,6 +669,19 @@ index 000000000000..0afbf64974db
 +/// Seal a CP message with AES-CTR followed by a freshly computed Dl3Cmac.
 +///
 +/// `content_pt` excludes the 16-byte tag. The clear wire header supplies the sequence counter.
++/// The initial AES-CTR counter block: the delivered riv, four zero bytes, and the frame's
++/// sequence number big-endian in the low four bytes.
++///
++/// The dock counts blocks in that 32-bit field. `aes_ctr_128` advances the whole 128-bit block,
++/// which is the same thing until the field would carry into the zero bytes above it -- 2^32
++/// blocks, or 64 GiB, into a single control session.
++fn ctr_block(riv: &[u8; 8], seq: u32) -> [u8; 16] {
++    let mut ctr = [0u8; 16];
++    ctr[..8].copy_from_slice(riv);
++    ctr[12..].copy_from_slice(&seq.to_be_bytes());
++    ctr
++}
++
 +pub(super) fn seal_livemac(
 +    ks: &[u8; 16],
 +    riv: &[u8; 8],
@@ -676,17 +689,9 @@ index 000000000000..0afbf64974db
 +    content_pt: &[u8],
 +) -> Result<KVec<u8>> {
 +    let seq = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
-+    let cipher = crypto::Aes128::new(ks)?;
 +    let mut ct = KVec::with_capacity(content_pt.len(), GFP_KERNEL)?;
-+    for (i, chunk) in content_pt.chunks(16).enumerate() {
-+        let mut iv = [0u8; 16];
-+        iv[..8].copy_from_slice(riv);
-+        iv[12..].copy_from_slice(&seq.wrapping_add(i as u32).to_be_bytes());
-+        let ksb = cipher.encrypt_block(&iv);
-+        for (j, &p) in chunk.iter().enumerate() {
-+            ct.push(p ^ ksb[j], GFP_KERNEL)?;
-+        }
-+    }
++    ct.extend_from_slice(content_pt, GFP_KERNEL)?;
++    crypto::aes_ctr_128(ks, &mut ctr_block(riv, seq), &mut ct);
 +    let tag = dl3cmac_tag(ks, riv, seq as u64, &ct)?;
 +    let mut frame = KVec::with_capacity(16 + ct.len() + 16, GFP_KERNEL)?;
 +    frame.extend_from_slice(&header[..16], GFP_KERNEL)?;
@@ -1157,17 +1162,9 @@ index 000000000000..0afbf64974db
 +        return Err(EINVAL);
 +    }
 +
-+    let cipher = crypto::Aes128::new(ks)?;
 +    let mut plaintext = KVec::with_capacity(ct.len(), GFP_KERNEL)?;
-+    for (i, chunk) in ct.chunks(16).enumerate() {
-+        let mut iv = [0u8; 16];
-+        iv[..8].copy_from_slice(in_riv);
-+        iv[12..].copy_from_slice(&seq.wrapping_add(i as u32).to_be_bytes());
-+        let ksb = cipher.encrypt_block(&iv);
-+        for (j, &c) in chunk.iter().enumerate() {
-+            plaintext.push(c ^ ksb[j], GFP_KERNEL)?;
-+        }
-+    }
++    plaintext.extend_from_slice(ct, GFP_KERNEL)?;
++    crypto::aes_ctr_128(ks, &mut ctr_block(in_riv, seq), &mut plaintext);
 +    Ok(plaintext)
 +}
 +

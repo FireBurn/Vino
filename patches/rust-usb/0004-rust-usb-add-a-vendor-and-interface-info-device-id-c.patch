@@ -1,4 +1,4 @@
-From a37a29e0921524f18dd0f32d1cf52eaaaece6b4b Mon Sep 17 00:00:00 2001
+From be45533022b16b8d6fd9339a4597bdc9b0f324d6 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sun, 9 Aug 2026 19:17:41 +0100
 Subject: [PATCH v4 4/5] rust: usb: add a vendor-and-interface-info device id

@@ -1,4 +1,4 @@
-From 26d210fa89b13bd66c1ff7edb8384c3c9899b44c Mon Sep 17 00:00:00 2001
+From 1b28728bdd622743916b46fef49d1e50ec844992 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 13:23:01 +0100
 Subject: [PATCH v4 7/22] rust: drm: kms: add typed color and rotation properties

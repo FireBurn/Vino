@@ -1,4 +1,4 @@
-From e3040f31e6e7c92199c5a07910c58136818513d9 Mon Sep 17 00:00:00 2001
+From da44fceb211c7ea63a2fad53633e98cfa8d34a92 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 23:40:36 +0100
 Subject: [PATCH v4 2/5] rust: usb: add reusable URBs and persistent bulk queues

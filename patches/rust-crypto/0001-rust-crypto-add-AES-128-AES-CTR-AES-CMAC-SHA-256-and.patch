@@ -1,45 +1,44 @@
-From 0ded9d5b3bf8c9b904875f0fb98afba4c1d9cec7 Mon Sep 17 00:00:00 2001
+From dd8d379f929e8842617627108bde583d8ed49f11 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 3 Jun 2026 22:04:46 +0100
-Subject: [PATCH v4 1/2] rust: crypto: add AES-128, AES-CMAC, SHA-256, and HMAC
- bindings
+Subject: [PATCH v4 1/2] rust: crypto: add AES-128, AES-CTR, AES-CMAC, SHA-256, and
+ HMAC bindings
 
-Expose the synchronous lib/crypto AES-128, AES-CMAC, SHA-256, and
-HMAC-SHA256 primitives through safe Rust APIs.
+Add synchronous bindings for the library crypto a driver needs to
+authenticate a device before it is allowed to drive it: AES-128 single
+block encryption, AES-128-CTR, AES-CMAC, SHA-256 and HMAC-SHA256.
 
-Aes128 prepares the key schedule once in Aes128::new and reuses it
-across encrypt_block calls, so a caller building an AES-CTR keystream
-does not re-expand the key per block. aes_cmac is a separate one-shot
-over the in-tree AES-CMAC library and prepares its own key. The hash and
-HMAC helpers operate on slices, and every API uses fixed-size outputs.
+aes_ctr() and aes_encrypt() take a transparent union that bindgen cannot
+express, and the AES-CMAC one-shot prepares a key struct that Rust cannot
+construct, so those three go through helpers. SHA-256 and HMAC-SHA256 are
+plain extern functions and are bound directly.
 
-zeroize wraps memzero_explicit, which has no equivalent in the Rust
-standard library, and is used wherever key material is dropped. C shims
-cover interfaces that bindgen cannot represent and clear temporary key
-material before returning.
+The CTR binding is the one a protocol uses directly rather than through a
+mode built on top of it, which crypto/aes-ctr.h names as a supported
+caller. It takes the initial counter block and advances it past the data,
+so a caller can carry one keystream across several calls.
 
-RUST_CRYPTO_LIB_AES and RUST_CRYPTO_LIB_SHA256 gate the bindings and
-select the C libraries they call. Both are built into the kernel because
-Rust abstractions are part of the built-in kernel crate.
+Secret wipes its bytes when dropped, and zeroize() forwards to
+memzero_explicit(), for which Rust has no equivalent.
 
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- lib/crypto/Kconfig              |  19 +++++
+ lib/crypto/Kconfig              |  20 ++++
  rust/bindings/bindings_helper.h |   3 +
- rust/helpers/crypto.c           |  44 ++++++++++
+ rust/helpers/crypto.c           |  62 +++++++++++
  rust/helpers/helpers.c          |   1 +
- rust/kernel/crypto.rs           | 144 ++++++++++++++++++++++++++++++++
+ rust/kernel/crypto.rs           | 192 ++++++++++++++++++++++++++++++++
  rust/kernel/lib.rs              |   1 +
- 6 files changed, 212 insertions(+)
+ 6 files changed, 279 insertions(+)
  create mode 100644 rust/helpers/crypto.c
  create mode 100644 rust/kernel/crypto.rs
 
 diff --git a/lib/crypto/Kconfig b/lib/crypto/Kconfig
-index 56f308dd0273..cd51f24b54c6 100644
+index 56f308dd0273..04d7b6f3769a 100644
 --- a/lib/crypto/Kconfig
 +++ b/lib/crypto/Kconfig
-@@ -43,6 +43,16 @@ config CRYPTO_LIB_AES_CBC_MACS
+@@ -43,6 +43,17 @@ config CRYPTO_LIB_AES_CBC_MACS
  	  this if your module uses any of the functions from
  	  <crypto/aes-cbc-macs.h>.
  
@@ -48,6 +47,7 @@ index 56f308dd0273..cd51f24b54c6 100644
 +	depends on RUST
 +	select CRYPTO_LIB_AES
 +	select CRYPTO_LIB_AES_CBC_MACS
++	select CRYPTO_LIB_AES_CTR
 +	help
 +	  Enable the Rust bindings for the synchronous AES library functions.
 +	  The selected C libraries are built into the kernel because Rust
@@ -56,7 +56,7 @@ index 56f308dd0273..cd51f24b54c6 100644
  config CRYPTO_LIB_AES_CCM
  	tristate
  	select CRYPTO_LIB_AES
-@@ -250,6 +260,15 @@ config CRYPTO_LIB_SHA256
+@@ -250,6 +261,15 @@ config CRYPTO_LIB_SHA256
  	  Select this if your module uses any of these functions from
  	  <crypto/sha2.h>.
  
@@ -88,14 +88,15 @@ index 0410dbda1060..e253e4ed583c 100644
  #include <drm/drm_device.h>
 diff --git a/rust/helpers/crypto.c b/rust/helpers/crypto.c
 new file mode 100644
-index 000000000000..54486139f483
+index 000000000000..1deeb2629719
 --- /dev/null
 +++ b/rust/helpers/crypto.c
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,62 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +#include <crypto/aes.h>
 +#include <crypto/aes-cbc-macs.h>
++#include <crypto/aes-ctr.h>
 +#include <linux/string.h>
 +
 +__rust_helper void rust_helper_memzero_explicit(void *s, size_t count)
@@ -117,6 +118,23 @@ index 000000000000..54486139f483
 +				     const u8 *in)
 +{
 +	aes_encrypt(key, out, in);
++}
++
++/*
++ * AES-128-CTR one-shot over the in-tree library. aes_ctr() takes the same
++ * transparent union as aes_encrypt(), and the key schedule is internal to one
++ * message, so both are wrapped here. @ctr is the initial counter block and is
++ * advanced past the data, as the C function leaves it. Encryption and
++ * decryption are the same operation.
++ */
++__rust_helper void
++rust_helper_aes_ctr_128(const u8 *key, u8 *ctr, u8 *data, size_t len)
++{
++	struct aes_enckey enckey;
++
++	aes_prepareenckey(&enckey, key, AES_KEYSIZE_128);
++	aes_ctr(data, data, len, ctr, &enckey);
++	memzero_explicit(&enckey, sizeof(enckey));
 +}
 +
 +/*
@@ -150,10 +168,10 @@ index 440fb7638e3c..a9463612c482 100644
  #ifdef CONFIG_DMA_SHARED_BUFFER
 diff --git a/rust/kernel/crypto.rs b/rust/kernel/crypto.rs
 new file mode 100644
-index 000000000000..3c6c3531675a
+index 000000000000..ea38fbe78fbb
 --- /dev/null
 +++ b/rust/kernel/crypto.rs
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,192 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! Safe wrappers over the kernel's synchronous library crypto.
@@ -231,6 +249,54 @@ index 000000000000..3c6c3531675a
 +    // helper requires.
 +    unsafe { bindings::aes_cmac(key.as_ptr(), data.as_ptr(), data.len(), out.as_mut_ptr()) };
 +    out
++}
++
++/// Applies AES-128-CTR (SP 800-38A) to `data` in place, computed by the in-tree
++/// AES library ([`include/crypto/aes.h`]). The 128-bit key is prepared and wiped
++/// internally; the call is infallible.
++///
++/// `counter` is the initial counter block, and is advanced past `data` so that a
++/// caller can continue one keystream across several calls. It is a full 128-bit
++/// big-endian counter: a protocol carrying a narrower counter field in the low
++/// bytes matches this only until that field would carry into the bytes above it.
++///
++/// Encryption and decryption are the same operation.
++///
++/// # Examples
++///
++/// ```
++/// use kernel::crypto::aes_ctr_128;
++/// let key = [0u8; 16];
++/// let mut counter = [0u8; 16];
++/// let mut data = *b"sixteen bytes...";
++/// let original = data;
++/// aes_ctr_128(&key, &mut counter, &mut data);
++/// assert_ne!(data, original);
++///
++/// let mut counter = [0u8; 16];
++/// aes_ctr_128(&key, &mut counter, &mut data);
++/// assert_eq!(data, original);
++/// ```
++///
++/// [`include/crypto/aes.h`]: srctree/include/crypto/aes.h
++#[cfg(CONFIG_RUST_CRYPTO_LIB_AES)]
++#[inline]
++pub fn aes_ctr_128(
++    key: &[u8; AES128_BLOCK_SIZE],
++    counter: &mut [u8; AES128_BLOCK_SIZE],
++    data: &mut [u8],
++) {
++    // SAFETY: `key` is a valid 16-byte key, `counter` a valid 16-byte counter
++    // block valid for reads and writes, and `data` is valid for `data.len()`
++    // reads and writes, as the helper requires.
++    unsafe {
++        bindings::aes_ctr_128(
++            key.as_ptr(),
++            counter.as_mut_ptr(),
++            data.as_mut_ptr(),
++            data.len(),
++        )
++    };
 +}
 +
 +/// An AES-128 key, expanded once for single-block encryption.
