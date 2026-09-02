@@ -91,12 +91,22 @@ Two actions fall out, both **open**:
 - `[ ]` Cut the rest of `Aes128` from rust-crypto 0001. The HDCP 2.2 dKey
   derivation keeps `aes_prepareenckey()` + `aes_encrypt()` +
   `memzero_explicit()` directly. No lib/crypto change is being asked for.
-- `[ ]` **`aes_ctr_128()` prepares the key on every call, and that is wrong
-  for this driver.** The control-plane key is fixed for the life of a
-  session and every sealed message uses it, so the schedule is rebuilt per
-  message. Hold the prepared key with the session instead. This is a change
-  to the binding's shape, not just its caller: the helper takes a raw key
-  today and needs to take a prepared one.
+- `[x]` ~~`aes_ctr_128()` prepares the key on every call~~ -- **FIXED.** The
+  free function is gone; `Aes128` (which already cached a schedule for
+  `encrypt_block`) grew a `ctr()` method, and the helper takes a prepared
+  `struct aes_enckey` instead of raw key bytes. On the driver side
+  `cp::SessionKey` holds the expanded key next to the raw bytes the Dl3Cmac
+  still needs, and `Session`/`CpLink` hold that instead of a `Secret<16>`,
+  so a session expands its key once rather than twice per message (seal and
+  open both did it).
+  ⚠ **Not yet folded into the series** -- it spans six commits across two
+  series (the binding in rust-crypto, then vino/crypto.rs, cp.rs+cp/edid.rs,
+  drm_sink, session.rs, vino.rs), and each has to keep compiling on its own.
+  Fold before v4 goes out.
+  ⚠ **The video ARM path still re-expands per frame.** `seal_video_arm()`
+  keys from a per-connector `Secret<24>`, not the session key, so it builds a
+  `SessionKey` per call. Same defect, one level down; worth doing but it means
+  the video keys becoming prepared keys too.
 
 ### 2.3 `[?]` Answer Krummrich on the revocable I/O window
 
@@ -263,12 +273,22 @@ real, but it is coupling, not line count.
   The queues build on the URBs, so the order is forced and the split is clean.
   Independent of the 2.3 question.
 
-### 3.5 `[?]` Move the Kconfig/Makefile earlier in `drm-vino`
+### 3.5 `[x]` Move the Kconfig/Makefile earlier in `drm-vino` -- NO, precedent says last
 
-0012 of 13 adds `CONFIG_DRM_VINO`, so patches 0001-0011 add ~20k lines that no
-normal kernel build compiles, and `git bisect` has nothing to test. Do not
-contort the design with stub scaffolding just to satisfy the rule -- if it needs
-fake stubs, leave it and say why in the cover.
+Checked rather than argued, the same way 3.1 was. Both patterns exist in tree:
+
+- **panthor** put `drm/panthor: Allow driver compilation` (37 lines) **last**, as
+  commit 11 of 11, after ~12,800 lines of driver.
+- **imagination** put its Kconfig **first**, in a 708-line skeleton commit that
+  registered a stub driver, then grew it.
+
+Vino is built the panthor way -- logical blocks, then enabled -- and its
+`allow the driver to be built` is 0012 of 13, the same shape. Rewriting the
+series into imagination's shape means writing a skeleton that exists only to be
+compiled, which is the "contort the design with stub scaffolding" this item
+already warned against. Leave it, and say in the cover that the Kconfig lands
+last so the preceding commits are read as one driver rather than a stub that
+grows.
 
 ---
 
