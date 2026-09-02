@@ -127,43 +127,30 @@ open/closed flag and wait-for-quiescence should go regardless.
 The rust-usb v4 cover now states this openly rather than presenting the design
 as settled.
 
-### 2.4 `[~]` Send the outstanding replies -- DRAFTED 2026-09-02, awaiting Mike
+### 2.4 `[x]` Send the outstanding replies -- SENT 2026-09-02
 
-⛔ **The `X-Status` lines in `outgoing/v3-replies/` were wrong in both
-directions.** Checked against `[Gmail]/Sent Mail`, which is the only thing
-that actually knows. What was really sent on 2026-08-31:
+**Sent 2026-09-02, confirmed in `[Gmail]/Sent Mail`:**
 
 | draft | sent | as |
 |---|---|---|
-| 01 hindborg 7/9 | 17:44 | **multipart/alternative** -- lore rejected it |
-| 02 hindborg 2/9 | 17:45 | **multipart/alternative** -- lore rejected it |
-| 04 biggers 1/2  | 17:51 | **multipart/alternative** -- lore rejected it |
-| 06 correction   | 18:01 | ⛔ **not the correction** -- the 18:01 message is only "Fudge / I have to keep remembering to enable plain text in gmail" |
-| 03 krummrich    | 18:04 | text/plain, real content ✅ |
-| 05 biggers 2/2  | 18:04 | text/plain, real content ✅ |
+| 2 hrtimer 2/9 correction | 13:49 | text/plain ✅ |
+| 3 crypto v3 1/2, Biggers | 13:51 | text/plain ✅ |
+| 1 hrtimer 7/9 resend | -- | not sent; draft discarded |
 
-So 05 was **not** unsent, and the correction **was** still unsent -- and it
-matters: Andreas's own reply quotes "I will drop this patch rather than
-carry an API with no user", and v4 keeps it.
+⚠ **One Cc bounced: `bqe@google.com`** on the crypto reply -- Burak Emir's
+retired Google address, carried over from the thread's own Cc list. The kernel
+`.mailmap` already redirects it to `burak.emir@gmail.com`. Everyone else and
+both lists were delivered, so nothing needs resending. It is **not** a risk for
+the v4 postings: `send-series.sh` builds Cc from `get_maintainer.pl`, and that
+address only appears as an author of `lib/find_bit_benchmark_rust.rs`, which the
+series does not touch. Drop or mailmap it if a reply is ever threaded onto that
+Cc list again.
 
-**Three plain-text drafts are now in `[Gmail]/Drafts`**, threaded on the real
-Message-IDs read out of the mailbox:
-
-1. `Re: [PATCH 7/9] rust: hrtimer: expose interrupt state in hard callbacks`
-   -- verbatim resend, so lore gets it at all.
-2. `Re: [PATCH 2/9] rust: hrtimer: add ArcHrTimerHandle::restart` -- the
-   correction. **Send this one first.**
-3. `Re: [PATCH v3 1/2] rust: crypto: ...` -- new, answering Biggers's
-   2026-08-31 reply and conceding the cached-key point (2.2).
-
-⚠ **02 is deliberately not resent.** Its content ("I will drop this patch")
-is now known to be wrong, and neither it nor the correction ever reached
-lore, so the archive would gain a false statement followed by its
-retraction. Draft 2 replaces it. ⚠ There is also an **older multipart/mixed
-draft on the same thread** left in place -- do not send that one.
-
-⚠ 04 is not resent either: Biggers answered it on 31 Aug, so resending would
-re-ask a question already answered. Draft 3 replaces it.
+⚠ Draft 1 was the verbatim resend of the 7/9 reply, whose only purpose was that
+lore never received the 2026-08-31 `multipart/alternative` original. It was
+discarded, so **that reply is still absent from the archive** -- Andreas has it
+in his inbox, the public record does not. Fine if deliberate; worth a fresh
+reply on the v4 posting if not.
 
 ### 2.5 `[?]` Ask Biggers where the RSA API should live
 
