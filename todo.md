@@ -208,32 +208,18 @@ Sweep command, for the respin:
 
 ### 5.1 `[x]` `trace_crypto` -- DONE: now just the `debug` parameter
 
-Mike's call, 2026-09-01: stop it being its own module parameter. Mike's call,
-2026-09-02: `CONFIG_DRM_VINO_DEBUG_DUMP_KEYS` was overkill, so it is gone too.
-One switch governs the key dump, the driver's existing `debug` parameter, and
-both sites are plain `vino_debug!` like every other diagnostic in the driver.
+Mike's call: the key dump is not its own module parameter and not its own
+Kconfig. The driver's existing `debug` parameter is the only switch, both sites
+are plain `vino_debug!` like every other diagnostic, and the cover says nothing
+about it.
 
-WARNING -- **Rust's `pr_debug!` is not C's.** Both `pr_debug!` (print.rs:398) and
-`dev_dbg!` (device.rs:376) are `if cfg!(debug_assertions)`, and this build is
-`-Cdebug-assertions=n`, so they compile to nothing. No Rust logging macro hooks
-into dynamic debug at all -- there is no `dyndbg=` control and no `_ddebug`
-descriptor. Enabling them means `CONFIG_RUST_DEBUG_ASSERTIONS=y`, which is a
-global Rust switch: a plain Rust debug build would have started dumping dock keys
-with nothing in the config to say so, and no way to turn it off again. So
-`pr_debug!` was the wrong instrument here, not the right one made awkward.
-`vino_debug!` is `pr_info!` under `debug_enabled()`, so nothing in vino's logging
-depends on `CONFIG_RUST_DEBUG_ASSERTIONS` either way.
-
-In-tree precedent for the capability, for the record:
-
-- `CONFIG_CIFS_DEBUG_DUMP_KEYS` -- "Dump encryption keys for offline decryption
-  (Unsafe)", plaintext AES session keys to the console, expressly so "Wireshark
-  [can] decrypt and dissect encrypted network captures". Vino's exact use case,
-  and the cover cites it as the reasoning rather than as a Kconfig to copy.
-- `drivers/gpu/drm/amd/display/modules/hdcp/hdcp_log.c` traces the raw bytes of
-  `ake_stored_km`, `ake_no_stored_km` and `ske_eks` at plain `pr_debug()` with no
-  Kconfig at all -- the shape vino now has. WARNING: those are the encrypted wire
-  messages, not derived keys, so it is the weaker of the two precedents.
+WARNING -- **Rust's `pr_debug!` is not C's**, so do not reach for it here. Both
+`pr_debug!` (print.rs:398) and `dev_dbg!` (device.rs:376) are
+`if cfg!(debug_assertions)`; there is no `dyndbg=` control and no `_ddebug`
+descriptor behind any Rust logging macro. Using them would tie the key dump to
+the global `CONFIG_RUST_DEBUG_ASSERTIONS`, with no runtime way to turn it off.
+`vino_debug!` is `pr_info!` under `debug_enabled()`, so nothing in vino's
+logging depends on that config either way.
 
 ### 5.2 `[x]` Automatic firmware flash at probe -- DECIDED: keep it
 

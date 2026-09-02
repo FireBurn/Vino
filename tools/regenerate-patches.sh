@@ -684,17 +684,6 @@ Changes in v3 that are still the shape of this series:
   The related series are linked and Vino is named as the user for all of them,
     which Miguel Ojeda asked for
 
-The driver's debug parameter logs one session's keys, so that a USB capture
-taken alongside can be decrypted and dissected. Every constant in this driver
-came from such a capture, and it is the only way somebody holding a DisplayLink
-dock nobody here owns can produce a report that says anything. It is flagged
-here rather than left to be found, because logging key material is a fair thing
-to argue about
-
-The same reasoning is behind CIFS_DEBUG_DUMP_KEYS, which says so in the same
-words. The keys protect one session with one dock and are renegotiated on every
-bring-up, and nothing is logged unless debugging is asked for at load time
-
 The protocol was reverse engineered from captured wire traffic and from the
 vendor binaries. There is no vendor documentation for any of it, every constant
 here came from a measurement, and the assistance noted below covers that work as
