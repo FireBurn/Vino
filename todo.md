@@ -99,10 +99,13 @@ Two actions fall out, both **open**:
   still needs, and `Session`/`CpLink` hold that instead of a `Secret<16>`,
   so a session expands its key once rather than twice per message (seal and
   open both did it).
-  ⚠ **Not yet folded into the series** -- it spans six commits across two
-  series (the binding in rust-crypto, then vino/crypto.rs, cp.rs+cp/edid.rs,
-  drm_sink, session.rs, vino.rs), and each has to keep compiling on its own.
-  Fold before v4 goes out.
+  Folded into the six commits that own the lines (the binding in rust-crypto,
+  then vino/crypto.rs, cp.rs+cp/edid.rs, session.rs, drm_sink, vino.rs).
+  ⚠ The KUnit tests only type-check with `CONFIG_DRM_VINO_KUNIT_TEST=y`, and
+  the default build does not set it -- four of them broke on the new key type
+  and the ordinary build said nothing. Build both ways after any signature
+  change; `llvm-objdump -h vino.o | grep kunit_test_suites` gives the suite
+  count from the section size.
   ⚠ **The video ARM path still re-expands per frame.** `seal_video_arm()`
   keys from a per-connector `Secret<24>`, not the session key, so it builds a
   `SessionKey` per call. Same defect, one level down; worth doing but it means

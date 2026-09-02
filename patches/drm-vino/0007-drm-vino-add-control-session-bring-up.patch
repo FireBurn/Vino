@@ -1,4 +1,4 @@
-From d1db1c29dc1ea45f578a1593e75f19c994118474 Mon Sep 17 00:00:00 2001
+From 4ce2e88e1736a746ed2bdfb8ceab44ddee6730c7 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:33:12 +0100
 Subject: [PATCH v4 7/13] drm/vino: add control-session bring-up
@@ -26,7 +26,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 
 diff --git a/drivers/gpu/drm/vino/session.rs b/drivers/gpu/drm/vino/session.rs
 new file mode 100644
-index 000000000000..2364da1e8a78
+index 000000000000..5acd78f88adb
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/session.rs
 @@ -0,0 +1,623 @@
@@ -500,7 +500,7 @@ index 000000000000..2364da1e8a78
 +        rng::fill(&mut ske_ks[..]);
 +        rng::fill(&mut riv);
 +        let edkey = hdcp::compute_eks(&km, &rtx, &rrx, &rn, &ske_ks)?;
-+        let ks = cp::cp_session_key(&ske_ks);
++        let ks = cp::SessionKey::new(*cp::cp_session_key(&ske_ks))?;
 +        // SKE carries the full RIV. Control AES-CTR toggles byte 7 bit 2;
 +        // Dl3Cmac separately transforms byte 0 bit 7.
 +        let riv_ske = riv; // deliver the full random RIV before the control transform
@@ -558,7 +558,7 @@ index 000000000000..2364da1e8a78
 +        // counter from here for msg0.
 +        vino_debug!(
 +            "vino-crypto: control key={:02x?} riv_out={riv:02x?} next_ctr={}\n",
-+            &ks[..],
++            &ks.raw()[..],
 +            hseq
 +        );
 +        Ok(Session {

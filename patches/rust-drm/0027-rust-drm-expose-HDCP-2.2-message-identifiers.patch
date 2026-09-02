@@ -1,4 +1,4 @@
-From e40a1a2bb821153902b9b3c0e9e197e8eedf4ffb Mon Sep 17 00:00:00 2001
+From 502259f0df2de13b0d41fe42f9ad7363b3abf8c9 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 18:33:00 +0100
 Subject: [PATCH v4 27/27] rust: drm: expose HDCP 2.2 message identifiers

@@ -1,4 +1,4 @@
-From af484aa29087fad36f00c788a2ae25e6727a5849 Mon Sep 17 00:00:00 2001
+From 02e4b6764f7ce702eb85908608dd62f542cc90e6 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:13 +0100
 Subject: [PATCH v4 13/13] Documentation/gpu: document the Vino driver

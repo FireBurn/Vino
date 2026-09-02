@@ -1,4 +1,4 @@
-From 83d5bf04b28812300266cd21078460141892b169 Mon Sep 17 00:00:00 2001
+From 263b41738e89833ecced46f3e9d5a7efa8ed839d Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:40:47 +0100
 Subject: [PATCH v4 9/13] drm/vino: add the dock activation and scanout path
@@ -38,7 +38,7 @@ been down long enough for the dock to have let go of it.
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- drivers/gpu/drm/vino/drm_sink.rs            |   11 +
+ drivers/gpu/drm/vino/drm_sink.rs            |   13 +-
  drivers/gpu/drm/vino/drm_sink/activation.rs | 1196 +++++++++++
  drivers/gpu/drm/vino/drm_sink/bracket.rs    |  369 ++++
  drivers/gpu/drm/vino/drm_sink/cp_session.rs |  414 ++++
@@ -46,7 +46,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  drivers/gpu/drm/vino/drm_sink/scanout.rs    | 1965 +++++++++++++++++++
  drivers/gpu/drm/vino/drm_sink/stream.rs     |  470 +++++
  drivers/gpu/drm/vino/drm_sink/timeline.rs   |  571 ++++++
- 8 files changed, 5431 insertions(+)
+ 8 files changed, 5432 insertions(+), 1 deletion(-)
  create mode 100644 drivers/gpu/drm/vino/drm_sink/activation.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink/bracket.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink/cp_session.rs
@@ -56,7 +56,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  create mode 100644 drivers/gpu/drm/vino/drm_sink/timeline.rs
 
 diff --git a/drivers/gpu/drm/vino/drm_sink.rs b/drivers/gpu/drm/vino/drm_sink.rs
-index 7a235941e0ff..ad4bdaf0f7c3 100644
+index 7a235941e0ff..1d0e4351e5e9 100644
 --- a/drivers/gpu/drm/vino/drm_sink.rs
 +++ b/drivers/gpu/drm/vino/drm_sink.rs
 @@ -46,11 +46,18 @@
@@ -89,6 +89,15 @@ index 7a235941e0ff..ad4bdaf0f7c3 100644
  
  /// Connector mode used until a downstream EDID is available.
  const FALLBACK_W: i32 = 2560;
+@@ -324,7 +335,7 @@ struct StripHashState {
+ /// `counter` is the inner protocol counter. The enclosing mutex advances both atomically with a
+ /// complete request/reply transaction.
+ pub(super) struct CpLink {
+-    ks: kernel::crypto::Secret<16>,
++    ks: crate::cp::SessionKey,
+     riv: [u8; 8],
+     wire_seq: u32,
+     counter: u16,
 diff --git a/drivers/gpu/drm/vino/drm_sink/activation.rs b/drivers/gpu/drm/vino/drm_sink/activation.rs
 new file mode 100644
 index 000000000000..e505d80ed80d
@@ -1668,7 +1677,7 @@ index 000000000000..e18a698ca16b
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink/cp_session.rs b/drivers/gpu/drm/vino/drm_sink/cp_session.rs
 new file mode 100644
-index 000000000000..36b3a46026a5
+index 000000000000..5f54f0d1c422
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink/cp_session.rs
 @@ -0,0 +1,414 @@
@@ -1799,7 +1808,7 @@ index 000000000000..36b3a46026a5
 +    pub(crate) fn publish_session(
 +        &self,
 +        dev: &BoundInterface<'_>,
-+        ks: &[u8; 16],
++        ks: crate::cp::SessionKey,
 +        riv: &[u8; 8],
 +        wire_seq: u32,
 +        counter: u16,
@@ -1817,7 +1826,7 @@ index 000000000000..36b3a46026a5
 +            }
 +        };
 +        *self.cp_link.lock() = Some(CpLink {
-+            ks: kernel::crypto::Secret::new(*ks),
++            ks,
 +            riv: *riv,
 +            wire_seq,
 +            counter,
@@ -1850,7 +1859,7 @@ index 000000000000..36b3a46026a5
 +        tag_reserved: usize,
 +        reserved_counter: Option<u16>,
 +        build: impl FnOnce(u16) -> Result<KVec<u8>>,
-+        consume: impl FnOnce(&[u8; 16], &[u8; 8], &[u8]) -> Result<T>,
++        consume: impl FnOnce(&crate::cp::SessionKey, &[u8; 8], &[u8]) -> Result<T>,
 +    ) -> Result<T> {
 +        self.check_cp_session()?;
 +        self.send_cp_locked(dev, id, tag_reserved, reserved_counter, build, consume)
@@ -1863,7 +1872,7 @@ index 000000000000..36b3a46026a5
 +        tag_reserved: usize,
 +        reserved_counter: Option<u16>,
 +        build: impl FnOnce(u16) -> Result<KVec<u8>>,
-+        consume: impl FnOnce(&[u8; 16], &[u8; 8], &[u8]) -> Result<T>,
++        consume: impl FnOnce(&crate::cp::SessionKey, &[u8; 8], &[u8]) -> Result<T>,
 +    ) -> Result<T> {
 +        let mut guard = self.cp_link.lock();
 +        let Some(link) = (&mut *guard).as_mut() else {

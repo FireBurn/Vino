@@ -1,4 +1,4 @@
-From ef0faef471113ae366a97764a08ec08c08ae6aab Mon Sep 17 00:00:00 2001
+From 45215161e976ae4ee61c35d75075e75328445d0a Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:10 +0100
 Subject: [PATCH v4 11/13] drm/vino: add the USB driver frontend
@@ -31,16 +31,16 @@ re-activations, which would leave neither panel lit.
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- drivers/gpu/drm/vino/vino.rs | 1733 ++++++++++++++++++++++++++++++++++
- 1 file changed, 1733 insertions(+)
+ drivers/gpu/drm/vino/vino.rs | 1734 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 1734 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/vino.rs
 
 diff --git a/drivers/gpu/drm/vino/vino.rs b/drivers/gpu/drm/vino/vino.rs
 new file mode 100644
-index 000000000000..4c84907ecd3b
+index 000000000000..4a4bb22d6181
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/vino.rs
-@@ -0,0 +1,1733 @@
+@@ -0,0 +1,1734 @@
 +// SPDX-License-Identifier: GPL-2.0
 +// SPDX-FileCopyrightText: Copyright (C) 2026 Mike Lothian
 +
@@ -180,7 +180,8 @@ index 000000000000..4c84907ecd3b
 +
 +/// The state a completed HDCP 2.2 AKE leaves for control-plane setup.
 +struct Session {
-+    ks: kernel::crypto::Secret<{ drm_hdcp::ENCRYPTED_SESSION_KEY_LEN }>,
++    /// The control-plane key, expanded once: every sealed message on the session uses it.
++    ks: cp::SessionKey,
 +    riv: [u8; drm_hdcp::RIV_LEN],
 +    /// Next inner sequence counter after the AKE messages sent by [`run_ake`].
 +    next_ctr: u16,
@@ -529,7 +530,7 @@ index 000000000000..4c84907ecd3b
 +                data.set_cp_engaged(true);
 +                data.publish_session(
 +                    dev,
-+                    &session.ks,
++                    cp::SessionKey::new(*session.ks.raw())?,
 +                    &session.riv,
 +                    wseq_end,
 +                    ctr_end,

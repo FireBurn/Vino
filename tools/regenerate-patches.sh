@@ -363,20 +363,22 @@ Changes since v3:
     called memzero_explicit instead of existing, which is what Eric and Miguel
     Ojeda both said. There is now one safe zeroize() in the kernel crate, used
     by Secret and Aes128
-  There is an aes_ctr_128() binding, and the driver's two hand-rolled CTR
-    loops are gone. Eric Biggers pointed out that lib/crypto grew aes_ctr()
-    this cycle; it is a straight replacement, since both loops were plain
-    SP 800-38A. crypto/aes-ctr.h names a protocol using CTR directly as a
-    supported caller, which is what this is
+  Aes128 gained a ctr() method and the driver's two hand-rolled CTR loops are
+    gone. Eric Biggers pointed out that lib/crypto grew aes_ctr() this cycle;
+    it is a straight replacement, since both loops were plain SP 800-38A.
+    crypto/aes-ctr.h names a protocol using CTR directly as a supported caller,
+    which is what this is
+  CTR runs on a key already expanded, not on raw key bytes, which was Eric's
+    second point: a caller using one key for many messages should expand it
+    once. The driver holds the expanded control-plane key with the session, so
+    a session expands once rather than twice per message
+  The bare block cipher keeps aes_prepareenckey() and aes_encrypt(), which is
+    what Eric asked for when he said the library is not going to grow AES
+    functions taking raw keys. Its one caller is the HDCP 2.2 dKey derivation
   Rebased onto v7.3-rc1
 
 Still to settle on-list, and flagged here rather than left to be found:
 
-  That leaves exactly one caller of the bare block cipher: the HDCP 2.2 dKey
-    derivation, a single AES-128 ECB block. Whether lib/crypto should expose a
-    one-shot single-block encrypt for it, or whether that caller keeps
-    aes_prepareenckey() and aes_encrypt() directly, is the open question on the
-    v3 thread. Aes128 stays for now because that caller needs it
   aes_ctr() advances a full 128-bit counter. The protocol counts blocks in a
     32-bit field with zeroes above it, so the two agree until that field would
     carry, which is 2^32 blocks into one control session. The driver comments

@@ -1,4 +1,4 @@
-From 398abfecd05f8f037d5cf080ccb572518256b621 Mon Sep 17 00:00:00 2001
+From d4e452cff2099b687ec34e2c0e63cde2e8cc4849 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:36 +0100
 Subject: [PATCH v4 3/13] drm/vino: add the crypto primitives and the HDCP 2.2 AKE
@@ -18,10 +18,10 @@ Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/ake.rs    | 175 +++++++++++++++++++++++++++++++++
- drivers/gpu/drm/vino/crypto.rs |  90 +++++++++++++++++
+ drivers/gpu/drm/vino/crypto.rs |  88 +++++++++++++++++
  drivers/gpu/drm/vino/hdcp.rs   | 146 +++++++++++++++++++++++++++
  drivers/gpu/drm/vino/rng.rs    |   9 ++
- 4 files changed, 420 insertions(+)
+ 4 files changed, 418 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/ake.rs
  create mode 100644 drivers/gpu/drm/vino/crypto.rs
  create mode 100644 drivers/gpu/drm/vino/hdcp.rs
@@ -210,10 +210,10 @@ index 000000000000..54d24ca2d096
 +}
 diff --git a/drivers/gpu/drm/vino/crypto.rs b/drivers/gpu/drm/vino/crypto.rs
 new file mode 100644
-index 000000000000..d5db19cf2f99
+index 000000000000..34d63e3f29d2
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/crypto.rs
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,88 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! Thin adapters onto the shared [`kernel::crypto`] library-crypto bindings, so the
@@ -221,14 +221,12 @@ index 000000000000..d5db19cf2f99
 +
 +use super::*;
 +
-+use kernel::crypto::Aes128;
-+
-+/// `AES-128-CTR(key, counter, data)` in place, for the sealed control plane.
-+pub(super) use kernel::crypto::aes_ctr_128;
++/// An AES-128 key expanded once, for the sealed control plane's AES-CTR.
++pub(super) use kernel::crypto::Aes128;
 +
 +/// `AES_ECB(key, block)` -- one 16-byte AES-128 block, which HDCP 2.2 needs for the
 +/// dKey derivation. That is the only bare block cipher left here: the control plane's
-+/// AES-CTR goes through [`kernel::crypto::aes_ctr_128`].
++/// AES-CTR runs on a key held expanded for the whole session.
 +pub(super) fn aes128_ecb(key: &[u8; 16], block: &[u8; 16]) -> Result<[u8; 16]> {
 +    Ok(Aes128::new(key)?.encrypt_block(block))
 +}

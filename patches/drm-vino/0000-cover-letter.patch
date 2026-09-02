@@ -220,7 +220,7 @@ Mike Lothian (13):
   drm/vino: allow the driver to be built
   Documentation/gpu: document the Vino driver
 
- 43 files changed, 24119 insertions(+), 4 deletions(-)
+ 43 files changed, 24173 insertions(+), 5 deletions(-)
 
 base-commit: c63829528980507a0a9146031e0c08499f53cf3d
 prerequisite-message-id: <20250305230406.567126-1-lyude@redhat.com>

@@ -1,4 +1,4 @@
-From 82b04866ebd2e791374e45f426f8e5aa6a75bd4e Mon Sep 17 00:00:00 2001
+From be3ef3a6d66c04d7cfca239ad9cb78fbea978b86 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 2 Sep 2026 02:28:49 +0100
 Subject: [PATCH v4 15/27] rust: drm: expose CRTC mode changes

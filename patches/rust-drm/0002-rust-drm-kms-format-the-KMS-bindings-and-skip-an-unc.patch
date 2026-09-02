@@ -1,4 +1,4 @@
-From 71e5dd7d5bfcc3b6d884c9f2c6d3a3985e171b16 Mon Sep 17 00:00:00 2001
+From ed0f06fcb44292d75e4e54efe0db2846bbb96798 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 2 Sep 2026 02:30:34 +0100
 Subject: [PATCH v4 2/27] rust: drm: kms: format the KMS bindings and skip an

@@ -1,4 +1,4 @@
-From c0333dd6fa80bb2530a68bb5d7fd31d334c2298d Mon Sep 17 00:00:00 2001
+From 8a05d43942b45ca9ccc4a6100680279821bbef7b Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 2 Sep 2026 02:27:30 +0100
 Subject: [PATCH v4 16/27] rust: drm: kms: add CRTC colour lookup table entries

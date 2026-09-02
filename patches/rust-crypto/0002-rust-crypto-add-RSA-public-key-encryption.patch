@@ -1,4 +1,4 @@
-From d68f1b30d6ed4a034092cfca7d3813deadc53f92 Mon Sep 17 00:00:00 2001
+From 083c016141dbeaf343404cc241b6e68822961c54 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 31 Aug 2026 18:36:09 +0100
 Subject: [PATCH v4 2/2] rust: crypto: add RSA public-key encryption
@@ -69,7 +69,7 @@ index e253e4ed583c..2be6f58f2ffd 100644
  #include <crypto/sha2.h>
  
 diff --git a/rust/helpers/crypto.c b/rust/helpers/crypto.c
-index 1deeb2629719..dd115778ef39 100644
+index fa4dea7e8834..05f62e16be2a 100644
 --- a/rust/helpers/crypto.c
 +++ b/rust/helpers/crypto.c
 @@ -1,5 +1,6 @@
@@ -124,10 +124,10 @@ index e6a5c7a795f0..a3826993cb69 100644
 +
  endif
 diff --git a/rust/kernel/crypto.rs b/rust/kernel/crypto.rs
-index ea38fbe78fbb..886fdf0280ad 100644
+index 652a42a3211c..d10782c8acf8 100644
 --- a/rust/kernel/crypto.rs
 +++ b/rust/kernel/crypto.rs
-@@ -9,14 +9,27 @@
+@@ -8,15 +8,28 @@
  //! synchronously in the calling context with no allocation; the hashes and the
  //! MAC are infallible.
  //!
@@ -137,6 +137,7 @@ index ea38fbe78fbb..886fdf0280ad 100644
 +//!
 +//! C headers: [`include/crypto/akcipher.h`](srctree/include/crypto/akcipher.h),
 +//! [`include/crypto/aes.h`](srctree/include/crypto/aes.h),
+ //! [`include/crypto/aes-ctr.h`](srctree/include/crypto/aes-ctr.h),
  //! [`include/crypto/aes-cbc-macs.h`](srctree/include/crypto/aes-cbc-macs.h),
  //! [`include/crypto/sha2.h`](srctree/include/crypto/sha2.h).
  

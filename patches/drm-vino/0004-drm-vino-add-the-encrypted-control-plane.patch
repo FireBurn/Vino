@@ -1,4 +1,4 @@
-From 1cb88825cc576f8e37eccfb95f8ed968a60ade26 Mon Sep 17 00:00:00 2001
+From f243c652be10ba7b01b578fe5e59be6f7372d3d3 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:49 +0100
 Subject: [PATCH v4 4/13] drm/vino: add the encrypted control plane
@@ -19,11 +19,11 @@ never acted on.
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- drivers/gpu/drm/vino/cp.rs        | 1587 +++++++++++++++++++++++++++++
+ drivers/gpu/drm/vino/cp.rs        | 1623 +++++++++++++++++++++++++++++
  drivers/gpu/drm/vino/cp/cursor.rs |  158 +++
- drivers/gpu/drm/vino/cp/edid.rs   |  464 +++++++++
+ drivers/gpu/drm/vino/cp/edid.rs   |  482 +++++++++
  drivers/gpu/drm/vino/cp/mode.rs   |  874 ++++++++++++++++
- 4 files changed, 3083 insertions(+)
+ 4 files changed, 3137 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/cp.rs
  create mode 100644 drivers/gpu/drm/vino/cp/cursor.rs
  create mode 100644 drivers/gpu/drm/vino/cp/edid.rs
@@ -31,10 +31,10 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 
 diff --git a/drivers/gpu/drm/vino/cp.rs b/drivers/gpu/drm/vino/cp.rs
 new file mode 100644
-index 000000000000..71808163e0e0
+index 000000000000..09ad9ca620d9
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/cp.rs
-@@ -0,0 +1,1587 @@
+@@ -0,0 +1,1623 @@
 +// SPDX-License-Identifier: GPL-2.0
 +//! Encrypted-control-plane message builders (the inner plaintext of the type=4
 +//! sub=0x24 AES-CTR frames) plus the AES-CTR `seal` that encrypts and frames them.
@@ -70,6 +70,37 @@ index 000000000000..71808163e0e0
 +        key[i] ^= CP_KEY_WHITEN[i];
 +    }
 +    kernel::crypto::Secret::new(key)
++}
++
++/// A control-plane session key, with its AES schedule expanded once.
++///
++/// Expanding an AES key costs far more than encrypting a block, and every sealed
++/// message on a session uses the same key, so the schedule is held with the
++/// session rather than rebuilt per message. The raw bytes are kept alongside it
++/// because the Dl3Cmac prepares a key of its own from them.
++pub(super) struct SessionKey {
++    raw: kernel::crypto::Secret<16>,
++    aes: crypto::Aes128,
++}
++
++impl SessionKey {
++    /// Expands `key`, the whitened session key from [`cp_session_key`].
++    pub(super) fn new(key: [u8; 16]) -> Result<Self> {
++        Ok(Self {
++            aes: crypto::Aes128::new(&key)?,
++            raw: kernel::crypto::Secret::new(key),
++        })
++    }
++
++    /// The raw key bytes, for the Dl3Cmac and for handing the session on.
++    pub(super) fn raw(&self) -> &[u8; 16] {
++        &self.raw
++    }
++
++    /// Encrypts or decrypts `data` in place with the frame's counter block.
++    fn ctr(&self, riv: &[u8; 8], seq: u32, data: &mut [u8]) {
++        self.aes.ctr(&mut ctr_block(riv, seq), data);
++    }
 +}
 +
 +/// Derive a stream's AES-CTR content nonce from the RIV its `SKE_Send_Eks` restatement
@@ -384,7 +415,7 @@ index 000000000000..71808163e0e0
 +/// Interactive replies use [`in_riv`], while capability replies can use the outgoing RIV.
 +/// Flipping bit 7 of byte 0 selects the second connector.
 +pub(super) fn decode_any(
-+    ks: &[u8; 16],
++    ks: &SessionKey,
 +    out_riv: &[u8; 8],
 +    wire: &[u8],
 +) -> Option<(&'static str, u16, u16, u16, [u8; 24])> {
@@ -440,7 +471,7 @@ index 000000000000..71808163e0e0
 +/// Firmware revisions use both the outgoing RIV and its byte-7-bit-0 variant for replies, with
 +/// byte-0-bit-7 selecting the connector, so all four combinations are checked.
 +pub(super) fn verify_in_ack(
-+    ks: &[u8; 16],
++    ks: &SessionKey,
 +    out_riv: &[u8; 8],
 +    wire: &[u8],
 +) -> Option<(u16, u16, u16)> {
@@ -475,7 +506,7 @@ index 000000000000..71808163e0e0
 +///
 +/// Ridge seals every reply as wire `sub=0x45`. Navarro also pushes frames framed in the clear as
 +/// wire `sub=0x25`, with the inner message at offset 16 and nothing to decrypt.
-+pub(super) fn inner_plaintext(ks: &[u8; 16], out_riv: &[u8; 8], wire: &[u8]) -> Option<KVec<u8>> {
++pub(super) fn inner_plaintext(ks: &SessionKey, out_riv: &[u8; 8], wire: &[u8]) -> Option<KVec<u8>> {
 +    if wire.len() <= 16 {
 +        return None;
 +    }
@@ -531,7 +562,7 @@ index 000000000000..71808163e0e0
 +}
 +
 +pub(super) fn decode_in_lenient(
-+    ks: &[u8; 16],
++    ks: &SessionKey,
 +    out_riv: &[u8; 8],
 +    wire: &[u8],
 +) -> Option<(u16, u16, u16)> {
@@ -579,7 +610,7 @@ index 000000000000..71808163e0e0
 +/// live control key. One parser covers both, so L', ReceiverID/V', receiver-auth status and M' are
 +/// decoded alongside Rrx rather than falling through as generic traffic.
 +pub(super) fn per_connector_hdcp_push(
-+    ks: &[u8; 16],
++    ks: &SessionKey,
 +    out_riv: &[u8; 8],
 +    wire: &[u8],
 +) -> Option<PerheadHdcpPush> {
@@ -672,7 +703,7 @@ index 000000000000..71808163e0e0
 +/// The initial AES-CTR counter block: the delivered riv, four zero bytes, and the frame's
 +/// sequence number big-endian in the low four bytes.
 +///
-+/// The dock counts blocks in that 32-bit field. `aes_ctr_128` advances the whole 128-bit block,
++/// The dock counts blocks in that 32-bit field. `Aes128::ctr` advances the whole 128-bit block,
 +/// which is the same thing until the field would carry into the zero bytes above it -- 2^32
 +/// blocks, or 64 GiB, into a single control session.
 +fn ctr_block(riv: &[u8; 8], seq: u32) -> [u8; 16] {
@@ -683,7 +714,7 @@ index 000000000000..71808163e0e0
 +}
 +
 +pub(super) fn seal_livemac(
-+    ks: &[u8; 16],
++    ks: &SessionKey,
 +    riv: &[u8; 8],
 +    header: &[u8],
 +    content_pt: &[u8],
@@ -691,8 +722,8 @@ index 000000000000..71808163e0e0
 +    let seq = u32::from_le_bytes([header[12], header[13], header[14], header[15]]);
 +    let mut ct = KVec::with_capacity(content_pt.len(), GFP_KERNEL)?;
 +    ct.extend_from_slice(content_pt, GFP_KERNEL)?;
-+    crypto::aes_ctr_128(ks, &mut ctr_block(riv, seq), &mut ct);
-+    let tag = dl3cmac_tag(ks, riv, seq as u64, &ct)?;
++    ks.ctr(riv, seq, &mut ct);
++    let tag = dl3cmac_tag(ks.raw(), riv, seq as u64, &ct)?;
 +    let mut frame = KVec::with_capacity(16 + ct.len() + 16, GFP_KERNEL)?;
 +    frame.extend_from_slice(&header[..16], GFP_KERNEL)?;
 +    frame.extend_from_slice(&ct, GFP_KERNEL)?;
@@ -706,7 +737,7 @@ index 000000000000..71808163e0e0
 +/// bring-up live loop ([`VinoDriver::send_live_cp`]) and the runtime KMS senders
 +/// ([`drm_sink::VinoDrmData::send_cp`]) so both produce a byte-identical wire frame.
 +pub(super) fn seal_interactive(
-+    ks: &[u8; 16],
++    ks: &SessionKey,
 +    riv: &[u8; 8],
 +    id: u16,
 +    wire_seq: u32,
@@ -1123,7 +1154,7 @@ index 000000000000..71808163e0e0
 +    hdr[8..10].copy_from_slice(&sub.to_le_bytes());
 +    hdr[10..12].copy_from_slice(&aux.to_le_bytes());
 +    hdr[12..16].copy_from_slice(&seq.to_le_bytes());
-+    seal_livemac(key, riv, &hdr, content)
++    seal_livemac(&SessionKey::new(*key)?, riv, &hdr, content)
 +}
 +/// Derive the primary dock-to-host CP RIV from the host-to-dock RIV.
 +///
@@ -1142,7 +1173,12 @@ index 000000000000..71808163e0e0
 +/// one-hot selector there (`00 80` / `80 00`). A zero-padding heuristic therefore rejects two
 +/// connectors' authentic messages, while accepting arbitrary unauthenticated ciphertext with a
 +/// chance plaintext prefix would be unsafe.
-+pub(super) fn open_in(ks: &[u8; 16], in_riv: &[u8; 8], seq: u32, body: &[u8]) -> Result<KVec<u8>> {
++pub(super) fn open_in(
++    ks: &SessionKey,
++    in_riv: &[u8; 8],
++    seq: u32,
++    body: &[u8],
++) -> Result<KVec<u8>> {
 +    // Both platforms authenticate an inbound frame with a trailing Dl3Cmac over the whole body.
 +    // Verifying it is what lets callers read the plaintext without also testing it for
 +    // plausibility -- and that matters, because Navarro's per-connector HDCP pushes carry a
@@ -1152,7 +1188,7 @@ index 000000000000..71808163e0e0
 +        return Err(EINVAL);
 +    }
 +    let (ct, wire_tag) = body.split_at(body.len() - 16);
-+    let expected = dl3cmac_tag(ks, in_riv, seq as u64, ct)?;
++    let expected = dl3cmac_tag(ks.raw(), in_riv, seq as u64, ct)?;
 +    // Accumulate the difference so a tag mismatch does not reveal the first differing byte.
 +    let mut different = 0u8;
 +    for (&actual, &want) in wire_tag.iter().zip(expected.iter()) {
@@ -1164,7 +1200,7 @@ index 000000000000..71808163e0e0
 +
 +    let mut plaintext = KVec::with_capacity(ct.len(), GFP_KERNEL)?;
 +    plaintext.extend_from_slice(ct, GFP_KERNEL)?;
-+    crypto::aes_ctr_128(ks, &mut ctr_block(in_riv, seq), &mut plaintext);
++    ks.ctr(in_riv, seq, &mut plaintext);
 +    Ok(plaintext)
 +}
 +
@@ -1177,10 +1213,10 @@ index 000000000000..71808163e0e0
 +    fn seal_livemac_roundtrip() -> Result {
 +        // A sealed CP frame must decrypt back to its content under the IN riv, and its
 +        // appended tag must equal a fresh Dl3Cmac over the ciphertext (encrypt-then-MAC).
-+        let ks = [
++        let ks = SessionKey::new([
 +            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
 +            0xee, 0xff,
-+        ];
++        ])?;
 +        let riv = [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17];
 +        let content = [0xa5u8; 32];
 +        let mut hdr = [0u8; 16];
@@ -1195,7 +1231,7 @@ index 000000000000..71808163e0e0
 +        // so both its MAC nonce and content keystream reject this fixture.
 +        assert_ne!(in_riv(&riv), riv);
 +        assert!(open_in(&ks, &in_riv(&riv), 4, body).is_err());
-+        assert_eq!(&frame[16 + 32..], &dl3cmac_tag(&ks, &riv, 4, ct)?[..]);
++        assert_eq!(&frame[16 + 32..], &dl3cmac_tag(ks.raw(), &riv, 4, ct)?[..]);
 +
 +        let mut damaged = KVec::new();
 +        damaged.extend_from_slice(body, GFP_KERNEL)?;
@@ -1207,7 +1243,7 @@ index 000000000000..71808163e0e0
 +
 +    #[test]
 +    fn reply_decoders_accept_all_supported_rivs() -> Result {
-+        let ks = [0x5au8; 16];
++        let ks = SessionKey::new([0x5au8; 16])?;
 +        let out_head0 = [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17];
 +        let in_head0 = in_riv(&out_head0);
 +        let mut out_head1 = out_head0;
@@ -1306,7 +1342,7 @@ index 000000000000..71808163e0e0
 +        // other is exactly the defect above.
 +        build_assert!(FINALIZE_FINGERPRINT.len() == CP_SETUP_FINALIZE_STEPS.len());
 +
-+        let ks = [0x5au8; 16];
++        let ks = SessionKey::new([0x5au8; 16])?;
 +        let riv = [0x11u8; 8];
 +        for (i, &(id, _sub, content_len)) in CP_SETUP_PER_HEAD.iter().enumerate() {
 +            let content = KVec::from_elem(0u8, content_len, GFP_KERNEL)?;
@@ -1371,7 +1407,7 @@ index 000000000000..71808163e0e0
 +            (4, 0x0018, 0x000e, 1104),
 +        ];
 +        build_assert!(FINGERPRINT_H0.len() == VIDEO_ARM_BURST.len());
-+        let ks = [0x5au8; 16];
++        let ks = SessionKey::new([0x5au8; 16])?;
 +        let riv = [0x11u8; 8];
 +        for (i, &(wire_type, sub_base, aux, body_len)) in VIDEO_ARM_BURST.iter().enumerate() {
 +            let (want_type, want_sub, want_aux, want_body) = FINGERPRINT_H0[i];
@@ -1386,7 +1422,7 @@ index 000000000000..71808163e0e0
 +                assert_eq!(u16::from_le_bytes([frame[8], frame[9]]), want_sub);
 +            } else {
 +                let content = KVec::from_elem(0u8, body_len, GFP_KERNEL)?;
-+                let frame = seal_video_arm(&ks, &riv, sub_base, aux, 0, &content)?;
++                let frame = seal_video_arm(ks.raw(), &riv, sub_base, aux, 0, &content)?;
 +                assert_eq!(frame.len(), 16 + body_len + 16);
 +                assert_eq!(u16::from_le_bytes([frame[8], frame[9]]), want_sub);
 +                assert_eq!(u16::from_le_bytes([frame[10], frame[11]]), want_aux);
@@ -1788,10 +1824,10 @@ index 000000000000..036aa66239ba
 +}
 diff --git a/drivers/gpu/drm/vino/cp/edid.rs b/drivers/gpu/drm/vino/cp/edid.rs
 new file mode 100644
-index 000000000000..0e7b765f3546
+index 000000000000..d68256657245
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/cp/edid.rs
-@@ -0,0 +1,464 @@
+@@ -0,0 +1,482 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! Asking the dock what is plugged into a connector.
@@ -1901,7 +1937,7 @@ index 000000000000..0e7b765f3546
 +/// (see [`edid_reply_len`]). The EDID starts at inner offset 22 and its base-block extension count
 +/// determines the returned length. All supported direction and connector RIV variants are checked.
 +pub(crate) fn parse_edid_from_reply(
-+    ks: &[u8; 16],
++    ks: &super::SessionKey,
 +    out_riv: &[u8; 8],
 +    wire: &[u8],
 +) -> Result<Option<KVec<u8>>> {
@@ -2021,7 +2057,7 @@ index 000000000000..0e7b765f3546
 +/// Returns the inner message id, the little-endian status at offsets 22 through 25 and the ready
 +/// bit at offset 26. `None` means no matching reply was decrypted.
 +pub(crate) fn probe_reply_status(
-+    ks: &[u8; 16],
++    ks: &super::SessionKey,
 +    out_riv: &[u8; 8],
 +    wire: &[u8],
 +) -> Option<(u16, u32, bool)> {
@@ -2067,7 +2103,11 @@ index 000000000000..0e7b765f3546
 +///
 +/// Inner offset 26 bit 7 indicates that the downstream DDC read has completed. `None` distinguishes
 +/// an unrelated or undecipherable frame from a matching reply that is not ready.
-+pub(crate) fn edid_poll_ready(ks: &[u8; 16], out_riv: &[u8; 8], wire: &[u8]) -> Option<bool> {
++pub(crate) fn edid_poll_ready(
++    ks: &super::SessionKey,
++    out_riv: &[u8; 8],
++    wire: &[u8],
++) -> Option<bool> {
 +    if wire.len() <= 16 || u16::from_le_bytes([wire[8], wire[9]]) != 0x45 {
 +        return None;
 +    }
@@ -2111,7 +2151,7 @@ index 000000000000..0e7b765f3546
 +    #[test]
 +    fn edid_reply_guards() -> Result {
 +        // The pre-decrypt guards reject non-EDID frames without touching the cipher.
-+        let ks = [0u8; 16];
++        let ks = super::SessionKey::new([0u8; 16])?;
 +        let riv = [0u8; 8];
 +        assert!(parse_edid_from_reply(&ks, &riv, &[0u8; 10])?.is_none());
 +        let mut wrong_sub = [0u8; 20];
@@ -2154,7 +2194,13 @@ index 000000000000..0e7b765f3546
 +        assert_eq!(&req[8..22], &[0u8; 14]);
 +        // Pin the complete wire framing as well:
 +        // aux=0x09 (cp::aux_for_id(0x15, ..)), body = 32 + 16 (tag) = 48 bytes.
-+        let frame = cp::seal_interactive(&[0x5au8; 16], &[0x11u8; 8], 0x15, 0, &req)?;
++        let frame = cp::seal_interactive(
++            &cp::SessionKey::new([0x5au8; 16])?,
++            &[0x11u8; 8],
++            0x15,
++            0,
++            &req,
++        )?;
 +        assert_eq!(frame.len(), 16 + 32 + 16);
 +        assert_eq!(u16::from_le_bytes([frame[10], frame[11]]), 0x09);
 +        Ok(())
@@ -2171,7 +2217,13 @@ index 000000000000..0e7b765f3546
 +            &[0x16, 0x00, 0x23, 0x00, 0x30, 0x00, 0x00, 0x00]
 +        );
 +        assert_eq!(&req[8..22], &[0u8; 14]);
-+        let frame = cp::seal_interactive(&[0x5au8; 16], &[0x11u8; 8], 0x16, 0, &req)?;
++        let frame = cp::seal_interactive(
++            &cp::SessionKey::new([0x5au8; 16])?,
++            &[0x11u8; 8],
++            0x16,
++            0,
++            &req,
++        )?;
 +        assert_eq!(frame.len(), 16 + 32 + 16);
 +        assert_eq!(u16::from_le_bytes([frame[10], frame[11]]), 0x08); // cp::aux_for_id(0x16, ..)
 +        Ok(())
@@ -2209,8 +2261,9 @@ index 000000000000..0e7b765f3546
 +            0xc2, 0x49, 0xfb, 0x67, 0x54, 0xd5, 0x47, 0x72, 0xb7, 0x19, 0x24, 0x8f, 0xb1, 0xb0,
 +            0xb2, 0x83, 0x89, 0x62, 0x4b, 0xcb, 0x59, 0x15, 0x1f, 0x8f, 0x85, 0xc3, 0xa5, 0x9d,
 +        ];
-+        assert_eq!(edid_poll_ready(&KS, &OUT_RIV, &NOT_READY), Some(false));
-+        assert_eq!(edid_poll_ready(&KS, &OUT_RIV, &READY), Some(true));
++        let ks = super::SessionKey::new(KS)?;
++        assert_eq!(edid_poll_ready(&ks, &OUT_RIV, &NOT_READY), Some(false));
++        assert_eq!(edid_poll_ready(&ks, &OUT_RIV, &READY), Some(true));
 +        Ok(())
 +    }
 +
@@ -2246,6 +2299,7 @@ index 000000000000..0e7b765f3546
 +        inner[2..4].copy_from_slice(&0x20u16.to_le_bytes());
 +        inner[22..26].copy_from_slice(&0x1234u32.to_le_bytes());
 +        inner[26] = 0x80;
++        let key = cp::SessionKey::new(key)?;
 +        let mut wire = cp::seal_interactive(&key, &riv, 0x78, 11, &inner)?;
 +        wire[8..10].copy_from_slice(&0x45u16.to_le_bytes());
 +

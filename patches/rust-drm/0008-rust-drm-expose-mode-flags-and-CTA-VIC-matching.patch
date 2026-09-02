@@ -1,4 +1,4 @@
-From 0d9f2f822b2ce5ebe5750777b2fa3dfc605de66a Mon Sep 17 00:00:00 2001
+From 75a42c4051d10b788c433e40b52285f6663740b6 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 21:37:16 +0100
 Subject: [PATCH v4 8/27] rust: drm: expose mode flags and CTA VIC matching

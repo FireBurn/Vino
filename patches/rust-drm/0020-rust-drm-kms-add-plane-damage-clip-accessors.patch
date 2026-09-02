@@ -1,4 +1,4 @@
-From 8663c82dead9f346af53b54825fa5f65fe0bd885 Mon Sep 17 00:00:00 2001
+From 79a7a15876d8e22275bc8b3358cbb8fd4bdbf267 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 16:27:50 +0100
 Subject: [PATCH v4 20/27] rust: drm: kms: add plane damage-clip accessors
