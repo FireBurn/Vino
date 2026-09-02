@@ -1,7 +1,7 @@
-From 88f922a01ee9c817f047d23ecc75ee21c992747d Mon Sep 17 00:00:00 2001
+From 3985093f384957e594eb25b608b13812779319c5 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 21:52:01 +0100
-Subject: [PATCH v4 13/22] rust: drm: kms: plane: add FB_DAMAGE_CLIPS property support
+Subject: [PATCH v4 22/27] rust: drm: kms: plane: add FB_DAMAGE_CLIPS property support
 
 Userspace can only hand a driver the rectangles that actually changed
 between two framebuffers if the plane advertises the FB_DAMAGE_CLIPS
@@ -24,12 +24,12 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  1 file changed, 21 insertions(+)
 
 diff --git a/rust/kernel/drm/kms/plane.rs b/rust/kernel/drm/kms/plane.rs
-index bc830503b142..62de8a1dad19 100644
+index 2e0828448a3d..62f4b53d24fa 100644
 --- a/rust/kernel/drm/kms/plane.rs
 +++ b/rust/kernel/drm/kms/plane.rs
-@@ -438,6 +438,27 @@ pub fn create_rotation_property(
-             )
-         })
+@@ -350,6 +350,27 @@ pub fn new<'a>(
+         // SAFETY: We just allocated the plane above, so this pointer must be valid
+         Ok(unsafe { &*this })
      }
 +
 +    /// Attaches the `FB_DAMAGE_CLIPS` property to this plane.

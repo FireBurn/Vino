@@ -1,7 +1,7 @@
-From 37848f472ecc20ef731eb68474e7d56e2e8ac7d3 Mon Sep 17 00:00:00 2001
+From 786a6d46b19396f657ad0b31adc7645ffccefda5 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 21:52:01 +0100
-Subject: [PATCH v4 12/22] rust: drm: kms: add owned CRTC and vblank references
+Subject: [PATCH v4 18/27] rust: drm: kms: add owned CRTC and vblank references
 
 `&Crtc<T>` is only valid for the callback DRM handed it to, and
 `VblankRef` borrows one. That does not fit two common shapes:
@@ -35,7 +35,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  2 files changed, 101 insertions(+)
 
 diff --git a/rust/kernel/drm/kms/crtc.rs b/rust/kernel/drm/kms/crtc.rs
-index 731fccc8f7ba..e933d5098e43 100644
+index e4248a6fa39f..d4308d2fb5e1 100644
 --- a/rust/kernel/drm/kms/crtc.rs
 +++ b/rust/kernel/drm/kms/crtc.rs
 @@ -14,6 +14,7 @@
@@ -46,7 +46,7 @@ index 731fccc8f7ba..e933d5098e43 100644
      types::{NotThreadSafe, Opaque},
  };
  use core::{
-@@ -304,6 +305,59 @@ pub(crate) fn get_vblank_ptr(&self) -> *mut bindings::drm_vblank_crtc {
+@@ -374,6 +375,59 @@ pub(crate) fn get_vblank_ptr(&self) -> *mut bindings::drm_vblank_crtc {
      pub(crate) const fn has_vblank() -> bool {
          T::OPS.funcs.enable_vblank.is_some()
      }

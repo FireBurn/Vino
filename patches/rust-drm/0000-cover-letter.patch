@@ -1,5 +1,5 @@
 From: Mike Lothian <mike@fireburn.co.uk>
-Subject: [PATCH v4 0/22] rust: drm: KMS abstractions for a Rust display driver
+Subject: [PATCH v4 0/27] rust: drm: KMS abstractions for a Rust display driver
 
 KMS abstractions for a Rust display driver, continuing Lyude Paul's KMS series
 rather than replacing it. The first patch adapts that work to the DRM APIs as
@@ -81,7 +81,7 @@ The rest of the posting, which is one series per subsystem:
   rust-core, 8 patches, to rust-for-linux and linux-kernel, not sent yet
   rust-crypto, 2 patches, to linux-crypto and rust-for-linux, not sent yet
   rust-usb, 5 patches, to linux-usb and rust-for-linux, not sent yet
-  rust-drm, 22 patches, this one
+  rust-drm, 27 patches, this one
   rust-firmware, 1 patch, to linux-kernel and rust-for-linux, not sent yet
   drm-vino, 13 patches, to dri-devel, not sent yet
 
@@ -126,31 +126,36 @@ implementation and the tests. Every patch it contributed to carries an
 Assisted-by trailer. The Signed-off-by is mine: I have reviewed and tested what
 is here and I stand behind it
 
-Mike Lothian (22):
+Mike Lothian (27):
   rust: drm: kms: adapt Lyude's KMS series to current DRM APIs
+  rust: drm: kms: format the KMS bindings and skip an uncompilable doctest
   rust: drm: kms: tie mode-object references to their owners
   rust: drm: kms: constrain connector encoder attachment
-  rust: drm: reject cross-device GEM handle creation
-  rust: drm: kms: add common state and connector helpers
-  rust: drm: expose HDCP 2.2 message identifiers
-  rust: drm: kms: add typed color and rotation properties
-  rust: drm: kms: add connector detect() and mode_valid() hooks
-  rust: drm: kms: add plane damage-clip accessors
-  rust: drm: framebuffer: add validated shmem scanout views
-  rust: drm: kms: expose checked plane geometry
-  rust: drm: kms: add owned CRTC and vblank references
-  rust: drm: kms: plane: add FB_DAMAGE_CLIPS property support
   rust: drm: add a safe constructor for owned registration data
-  rust: drm: kms: add the plane blend-mode property
   rust: drm: add an owned display mode constructor
+  rust: drm: kms: expose display mode timings
   rust: drm: expose mode flags and CTA VIC matching
-  rust: drm: expose CRTC mode changes
+  rust: drm: kms: add connector detect() and mode_valid() hooks
+  rust: drm: kms: add connector hotplug and EDID mode helpers
   rust: drm: kms: attach the connector colour properties
   rust: drm: kms: read a connector's colorimetry and HDR metadata
-  rust: drm: kms: walk the CRTCs an atomic commit carries
   rust: drm: kms: expose a connector's requested link depth
+  rust: drm: kms: expose the CRTC mode and the plane destination size
+  rust: drm: expose CRTC mode changes
+  rust: drm: kms: add CRTC colour lookup table entries
+  rust: drm: kms: add CRTC colour management
+  rust: drm: kms: add owned CRTC and vblank references
+  rust: drm: kms: walk the CRTCs an atomic commit carries
+  rust: drm: kms: add plane damage-clip accessors
+  rust: drm: kms: expose checked plane geometry
+  rust: drm: kms: plane: add FB_DAMAGE_CLIPS property support
+  rust: drm: kms: add the plane rotation property
+  rust: drm: kms: add the plane blend-mode property
+  rust: drm: framebuffer: add validated shmem scanout views
+  rust: drm: reject cross-device GEM handle creation
+  rust: drm: expose HDCP 2.2 message identifiers
 
- 21 files changed, 1943 insertions(+), 95 deletions(-)
+ 21 files changed, 1941 insertions(+), 93 deletions(-)
 
 base-commit: c63829528980507a0a9146031e0c08499f53cf3d
 prerequisite-message-id: <20250305230406.567126-1-lyude@redhat.com>

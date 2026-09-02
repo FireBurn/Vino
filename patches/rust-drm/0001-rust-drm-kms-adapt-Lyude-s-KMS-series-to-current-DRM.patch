@@ -1,10 +1,11 @@
-From ed0ca29a2934416b80a77b7ae3f849bd8450592b Mon Sep 17 00:00:00 2001
+From 003b8ae9e824565909918b88b43aaebc73d53748 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:34:28 +0100
-Subject: [PATCH v4 1/22] rust: drm: kms: adapt Lyude's KMS series to current DRM APIs
+Subject: [PATCH v4 1/27] rust: drm: kms: adapt Lyude's KMS series to current DRM APIs
 
-Adapt the Rust KMS bindings to the current DRM APIs while preserving
-Lyude Paul's implementation as a separate, unchanged series.
+Lyude Paul's KMS series predates several DRM API changes. Carry it here
+unchanged, so that it stays reviewable as her series, and put every
+adaptation it needs in this one commit.
 
 Update the atomic state type to drm_atomic_commit, initialize the
 current callback-table fields, remove the retired CRTC helper field,

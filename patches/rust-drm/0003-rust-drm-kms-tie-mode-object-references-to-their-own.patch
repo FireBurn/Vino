@@ -1,7 +1,7 @@
-From cafdf4727ec7f2e2d73a6ced605e4c3ccaedf5b5 Mon Sep 17 00:00:00 2001
+From 4510a8eae9265210e65bca85b576e5b3931a5c48 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:35:15 +0100
-Subject: [PATCH v4 2/22] rust: drm: kms: tie mode-object references to their owners
+Subject: [PATCH v4 3/27] rust: drm: kms: tie mode-object references to their owners
 
 The plane and encoder constructors accepted a caller-selected output
 lifetime longer than the unregistered KMS device borrow.
@@ -24,7 +24,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  3 files changed, 62 insertions(+), 6 deletions(-)
 
 diff --git a/rust/kernel/drm/kms/crtc.rs b/rust/kernel/drm/kms/crtc.rs
-index b1c68838205e..683d9ee4ec25 100644
+index 2c72893f2b16..586d79c768be 100644
 --- a/rust/kernel/drm/kms/crtc.rs
 +++ b/rust/kernel/drm/kms/crtc.rs
 @@ -302,7 +302,7 @@ impl<T: DriverCrtc> UnregisteredCrtc<T> {
@@ -37,10 +37,10 @@ index b1c68838205e..683d9ee4ec25 100644
          primary: &'a UnregisteredPlane<PrimaryData>,
          cursor: Option<&'a UnregisteredPlane<CursorData>>,
 diff --git a/rust/kernel/drm/kms/encoder.rs b/rust/kernel/drm/kms/encoder.rs
-index aa6f9fbaa5f1..f90d139cdb04 100644
+index c3c1567a01a1..8758a9459bcc 100644
 --- a/rust/kernel/drm/kms/encoder.rs
 +++ b/rust/kernel/drm/kms/encoder.rs
-@@ -273,15 +273,35 @@ impl<T: DriverEncoder> UnregisteredEncoder<T> {
+@@ -268,15 +268,35 @@ impl<T: DriverEncoder> UnregisteredEncoder<T> {
      /// A driver may use this from their [`KmsDriver::create_objects`] callback in order to
      /// construct new [`UnregisteredEncoder`] objects.
      ///
@@ -79,7 +79,7 @@ index aa6f9fbaa5f1..f90d139cdb04 100644
              try_pin_init!(Encoder {
                  encoder: Opaque::new(bindings::drm_encoder {
 diff --git a/rust/kernel/drm/kms/plane.rs b/rust/kernel/drm/kms/plane.rs
-index 0c549dece483..f52f9c872de3 100644
+index ae5b91ce8dd5..bcbd3d1a1173 100644
 --- a/rust/kernel/drm/kms/plane.rs
 +++ b/rust/kernel/drm/kms/plane.rs
 @@ -255,8 +255,29 @@ impl<T: DriverPlane> UnregisteredPlane<T> {

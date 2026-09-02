@@ -1,23 +1,28 @@
-From 410ad8e72043be3d041cc4e9bd8e16b86493c5d6 Mon Sep 17 00:00:00 2001
+From 35609e621b0b7658c3aae18d7a548b3ccce6549b Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
-Date: Mon, 27 Jul 2026 21:38:46 +0100
-Subject: [PATCH v4 18/22] rust: drm: expose CRTC mode changes
+Date: Wed, 2 Sep 2026 02:28:49 +0100
+Subject: [PATCH v4 17/27] rust: drm: kms: add CRTC colour management
 
-Allow Rust DRM drivers to distinguish a modeset or enable transition
-from an ordinary atomic page flip. This avoids repeating mode-specific
-validation on the page-flip hot path.
+Add the colour-management side of the CRTC API: ColorCtm for the colour
+transformation matrix, enable_color_mgmt() to attach the degamma, CTM
+and gamma properties to a CRTC under construction, and the state
+accessors that read the programmed degamma LUT and CTM back.
+
+A driver that applies colour transforms in software needs the matrix as
+signed fixed-point coefficients; the raw blob stores them as u64
+sign-magnitude, which is not what arithmetic on them wants.
 
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- rust/kernel/drm/kms/crtc.rs | 138 ++++++++++++++++++++++++++++++++++++
- 1 file changed, 138 insertions(+)
+ rust/kernel/drm/kms/crtc.rs | 132 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 132 insertions(+)
 
 diff --git a/rust/kernel/drm/kms/crtc.rs b/rust/kernel/drm/kms/crtc.rs
-index e933d5098e43..74316548ea13 100644
+index 3b989c6dffca..e4248a6fa39f 100644
 --- a/rust/kernel/drm/kms/crtc.rs
 +++ b/rust/kernel/drm/kms/crtc.rs
-@@ -31,6 +31,17 @@
+@@ -30,6 +30,17 @@
  pub struct ColorLut(bindings::drm_color_lut);
  
  impl ColorLut {
@@ -35,7 +40,7 @@ index e933d5098e43..74316548ea13 100644
      /// Red channel value.
      pub fn red(&self) -> u16 {
          self.0.red
-@@ -47,6 +58,65 @@ pub fn blue(&self) -> u16 {
+@@ -46,6 +57,65 @@ pub fn blue(&self) -> u16 {
      }
  }
  
@@ -101,7 +106,7 @@ index e933d5098e43..74316548ea13 100644
  /// The main trait for implementing the [`struct drm_crtc`] API for [`Crtc`].
  ///
  /// Any KMS driver should have at least one implementation of this type, which allows them to create
-@@ -432,6 +502,27 @@ pub fn new<'a, PrimaryData, CursorData>(
+@@ -378,6 +448,27 @@ pub fn new<'a, PrimaryData, CursorData>(
          // SAFETY: We just allocated the crtc above, so this pointer must be valid
          Ok(unsafe { &*this })
      }
@@ -129,20 +134,7 @@ index e933d5098e43..74316548ea13 100644
  }
  
  // SAFETY: We inherit all relevant invariants of `Crtc`
-@@ -755,6 +846,12 @@ fn active(&self) -> bool {
-         unsafe { (*self.as_raw()).active }
-     }
- 
-+    /// Returns whether the mode or enable state changed in this atomic state.
-+    fn mode_changed(&self) -> bool {
-+        // SAFETY: The atomic-state API serializes access to this state, including its bitfields.
-+        unsafe { (*self.as_raw()).mode_changed() }
-+    }
-+
-     /// Return the display mode programmed into this CRTC state.
-     fn mode(&self) -> &DisplayMode {
-         // SAFETY: `mode` is embedded in the CRTC state and therefore has the same lifetime. The
-@@ -782,6 +879,47 @@ fn gamma_lut(&self) -> Option<&[ColorLut]> {
+@@ -734,6 +825,47 @@ fn gamma_lut(&self) -> Option<&[ColorLut]> {
          // entries valid for the state's lifetime.
          Some(unsafe { core::slice::from_raw_parts(data.cast::<ColorLut>(), n) })
      }

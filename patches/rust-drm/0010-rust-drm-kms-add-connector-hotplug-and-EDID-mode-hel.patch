@@ -1,0 +1,86 @@
+From 4d9300b184b662de00f42d64f2f8eb7553473326 Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Wed, 2 Sep 2026 02:30:34 +0100
+Subject: [PATCH v4 10/27] rust: drm: kms: add connector hotplug and EDID mode helpers
+
+Add Device::hotplug_event(), for drivers that learn about a connector
+change out of band rather than from an interrupt, and
+ConnectorGuard::add_edid_modes(), which parses an EDID, updates the
+connector information from it and adds the modes it advertises.
+
+add_edid_modes() propagates a drm_edid_connector_update() failure and
+frees the temporary drm_edid on every path, including the error ones.
+
+Assisted-by: Claude:claude-opus-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/kernel/drm/kms.rs           | 11 +++++++++++
+ rust/kernel/drm/kms/connector.rs | 33 ++++++++++++++++++++++++++++++++
+ 2 files changed, 44 insertions(+)
+
+diff --git a/rust/kernel/drm/kms.rs b/rust/kernel/drm/kms.rs
+index 0bd18f6175ae..c10b2488af9b 100644
+--- a/rust/kernel/drm/kms.rs
++++ b/rust/kernel/drm/kms.rs
+@@ -357,6 +357,17 @@ impl<T: Driver> private::KmsImpl for PhantomData<T> {
+ 
+ impl<T: Driver> KmsImpl for PhantomData<T> {}
+ 
++impl<T: KmsDriver, C: crate::drm::device::DeviceContext> Device<T, C> {
++    /// Send a hotplug uevent to userspace, prompting it to re-probe connector state.
++    ///
++    /// This is useful for drivers which detect connector changes out of band, for example when a
++    /// dock supplies an EDID after bring-up.
++    pub fn hotplug_event(&self) {
++        // SAFETY: `self.as_raw()` is a live KMS-capable DRM device.
++        unsafe { bindings::drm_kms_helper_hotplug_event(self.as_raw()) };
++    }
++}
++
+ /// Various device-wide information for a [`Device`] that is provided during initialization.
+ #[derive(Copy, Clone)]
+ pub struct ModeConfigInfo {
+diff --git a/rust/kernel/drm/kms/connector.rs b/rust/kernel/drm/kms/connector.rs
+index 6401b79ea880..8f1a9ec0946a 100644
+--- a/rust/kernel/drm/kms/connector.rs
++++ b/rust/kernel/drm/kms/connector.rs
+@@ -700,6 +700,39 @@ pub fn set_preferred_mode(&self, (h_pref, w_pref): (u32, u32)) {
+         // SAFETY: We hold the locks required to call this via our type invariants.
+         unsafe { bindings::drm_set_preferred_mode(self.as_raw(), h_pref, w_pref) }
+     }
++
++    /// Parse an EDID, update the connector information, and add its advertised modes.
++    ///
++    /// Returns the number of modes added.
++    pub fn add_edid_modes(&self, edid: &[u8]) -> Result<i32> {
++        const EDID_BASE_BLOCK_LEN: usize = 128;
++
++        if edid.len() < EDID_BASE_BLOCK_LEN {
++            return Err(EINVAL);
++        }
++
++        // SAFETY: `edid` points to `edid.len()` initialized bytes, which the helper copies.
++        let drm_edid = unsafe { bindings::drm_edid_alloc(edid.as_ptr().cast(), edid.len()) };
++        if drm_edid.is_null() {
++            return Err(ENOMEM);
++        }
++
++        // SAFETY: The connector is live and the guard holds the mode-config lock. `drm_edid`
++        // points to an allocation returned by `drm_edid_alloc` above.
++        let ret = unsafe { bindings::drm_edid_connector_update(self.as_raw(), drm_edid) };
++        if let Err(err) = to_result(ret) {
++            // SAFETY: `drm_edid` was allocated above and has not been freed.
++            unsafe { bindings::drm_edid_free(drm_edid) };
++            return Err(err);
++        }
++
++        // SAFETY: The connector information was successfully updated from this EDID above.
++        let count = unsafe { bindings::drm_edid_connector_add_modes(self.as_raw()) };
++        // SAFETY: `drm_edid` was allocated above and is no longer needed.
++        unsafe { bindings::drm_edid_free(drm_edid) };
++
++        Ok(count)
++    }
+ }
+ 
+ /// A trait implemented by any type which can produce a reference to a

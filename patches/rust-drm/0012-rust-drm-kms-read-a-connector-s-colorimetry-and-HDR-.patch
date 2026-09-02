@@ -1,7 +1,7 @@
-From c71a88de1f71b6a359da81dbcabfb96504575a5b Mon Sep 17 00:00:00 2001
+From 51e11724fecdb7cbfe759fe87e7b70623a355234 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 03:40:28 +0100
-Subject: [PATCH v4 20/22] rust: drm: kms: read a connector's colorimetry and HDR
+Subject: [PATCH v4 12/27] rust: drm: kms: read a connector's colorimetry and HDR
  metadata
 
 A driver that carries a transfer function to its sink needs the connector
@@ -231,10 +231,10 @@ index f3eab1b89e74..4e7475779f46 100644
  
  /// The main interface for a [`struct drm_connector_state`].
 diff --git a/rust/kernel/drm/kms/crtc.rs b/rust/kernel/drm/kms/crtc.rs
-index 74316548ea13..d4308d2fb5e1 100644
+index 586d79c768be..7046123efe28 100644
 --- a/rust/kernel/drm/kms/crtc.rs
 +++ b/rust/kernel/drm/kms/crtc.rs
-@@ -1037,6 +1037,19 @@ pub(super) fn new<D: KmsDriver>(
+@@ -795,6 +795,19 @@ pub(super) fn new<D: KmsDriver>(
      }
  }
  

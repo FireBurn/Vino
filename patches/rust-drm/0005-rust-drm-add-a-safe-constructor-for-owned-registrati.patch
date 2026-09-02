@@ -1,7 +1,7 @@
-From 3ea05ae533834cc348880f37fffa9ab2e642250a Mon Sep 17 00:00:00 2001
+From 948aa50e14c8ba3b74d9bb235104d3a6b15f813b Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 17:13:59 +0100
-Subject: [PATCH v4 14/22] rust: drm: add a safe constructor for owned registration data
+Subject: [PATCH v4 5/27] rust: drm: add a safe constructor for owned registration data
 
 A DRM registration whose associated data is 'static cannot outlive any
 references held by that data. Add a safe constructor for this common

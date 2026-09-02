@@ -135,46 +135,70 @@ What does still matter is that each commit is a coherent unit a reviewer can
 hold in their head and that bisect can test -- that is §3.2 and §3.5, not a line
 count.
 
-### 3.2 `[ ]` Reorder `rust-drm` logically
+### 3.2 `[x]` Reorder `rust-drm` logically -- DONE
 
-Still ordered by when it was written (authored dates run 22 Jul, 22 Jul, ...,
-2 Jul x3, 22 Jul, ..., 27 Jul, 8 Aug, 23 Aug, 24 Aug). Proposed grouping:
+22 commits -> 27, reordered into groups. Verified at each step by comparing the
+applied tree against the pre-work branch: every split produced a byte-identical
+tree, and the reorder differs only by `enable_fb_damage_clips` moving earlier
+within `plane.rs` (21 lines out, the same 21 in), which follows its commit
+moving. Builds warning-clean, `rustfmtcheck` passes, `check-series.sh` applies
+all six series in send order and reproduces the branch.
 
-1. Fixes to Lyude's unmerged series -- better still, folded into her next revision.
-2. Core plumbing: registration data, mode objects.
-3. Connector: detect/mode_valid, modes, colour properties, colorimetry/HDR, link depth.
-4. CRTC: mode changes, colour management, vblank refs, atomic-commit walk.
-5. Plane: geometry, damage clips, FB_DAMAGE_CLIPS, blend mode, colour/rotation.
-6. Framebuffer: shmem scanout views.
-7. Generic DRM: cross-device GEM, HDCP message ids.
+The order now runs: fixes to Lyude's series (4) -- registration data -- modes
+(3) -- connector (5) -- CRTC (6) -- plane (5) -- framebuffer -- generic DRM (2),
+with the carried `drm-tyr` patch at the end instead of buried in the middle.
 
-Consider splitting into two or three postings; 22 in one series against a
-still-moving KMS layer is a lot to ask.
+**Four mistitled or mixed commits found in the audit, all fixed:**
 
-### 3.3 `[ ]` Split `rust: drm: expose CRTC mode changes` -- NEW, found 2026-09-01
+- `add typed color and rotation properties` put `ColorLut` (CRTC) and
+  `Rotation`/`BlendModes` (plane) in one commit. This was *why* the order could
+  not be fixed by moving commits alone -- `expose CRTC mode changes` depends on
+  the CRTC half. Split into `add CRTC colour lookup table entries` and `add the
+  plane rotation property`.
+- `BlendModes` was defined eight commits away from `create_blend_mode_property`,
+  its only user. Moved into that commit.
+- `expose CRTC mode changes` also added a whole CRTC colour-management API
+  (3.3). Split.
+- `add common state and connector helpers` was a grab-bag of five unrelated
+  things, and worse, a chunk of it was **rustfmt and doctest fixes to Lyude's
+  files** hidden under that title. Split four ways, with the formatting fixes
+  now stated as such and sitting next to the adapt commit.
+- `expose a connector's requested link depth` also introduced
+  `FORMAT_MOD_LINEAR`, used only by the framebuffer commit. Moved there.
 
-Its subject and message describe `mode_changed()`. It also adds an entire CRTC
-colour-management API: `ColorCtm`, `ColorLut::new`, `coefficient`,
-`coefficients`, `enable_color_mgmt`, `degamma_lut`, `ctm`. Should be two commits:
+⚠ **A pure reorder is not conflict-free.** Six conflicts, and the dangerous ones
+were where git absorbed *context* from a commit that now comes later: taking
+"theirs" wholesale silently pulled `create_rotation_property` and
+`enable_fb_damage_clips` into the wrong commits, and one resolution dropped a
+closing brace that only the build caught. Check every "both sides are
+additions" resolution against what actually belongs at that point.
 
-- `rust: drm: expose CRTC mode changes` -- just `mode_changed()`
-- `rust: drm: kms: add CRTC colour management` -- the rest
+### 3.3 `[x]` Split `rust: drm: expose CRTC mode changes` -- DONE
 
-Deferred to the §3.2 pass rather than done piecemeal, because it wants doing
-alongside the reordering. Its sibling problem was already fixed: the commit
-titled "add synthesized CVT connector modes" is now correctly titled "attach the
-connector colour properties".
+Now `expose CRTC mode changes` (just `mode_changed()`) and `add CRTC colour
+management` (`ColorCtm`, `enable_color_mgmt`, `degamma_lut`, `ctm`).
 
-⚠ **Audit the other 95 commit subjects against their diffs while doing §3.2.**
-Two of the first few checked were mistitled, which is not a good rate.
+The subject-vs-diff audit ran over all 27 rust-drm commits, not just this one;
+the results are in 3.2 above. One body restated its subject (`adapt Lyude's KMS
+series`) and was reworded.
 
-### 3.4 `[ ]` Split the two large `rust-usb` patches
+### 3.4 `[~]` Split the two large `rust-usb` patches -- CHECKED, one half blocked
 
-- 0001 (754 added) introduces revocable ownership, interface I/O, typed
-  endpoints, transfers and lifecycle at once. Separate the lifetime/revocation
-  primitive from typed USB I/O.
-- 0002 (650 added) should introduce the reusable URB separately from persistent
-  bulk queues.
+Checked against the feedback the way 3.1 should have been. Nobody asked for a
+split here either, but unlike 3.1 the two commits do each introduce two
+abstractions at once, and 698 and 650 added lines are roughly twice the in-tree
+norm for a Rust abstraction commit (pci 315, auxiliary 303, platform 215, devres
+191, dma 389, drm gem 351; configfs at 1057 is the outlier). So the concern is
+real, but it is coupling, not line count.
+
+- **0001, revocable typed interface I/O -- BLOCKED, do not split yet.**
+  Krummrich has asked for exactly this code to be rewritten on Devres and
+  higher-ranked lifetimes, or else justified as USB-specific (2.3). Splitting a
+  commit that may be substantially rewritten is wasted work. Wait for the answer.
+- **0002, reusable URBs and persistent bulk queues -- split it.** Two
+  abstractions, and its own commit message is already two paragraphs saying so.
+  The queues build on the URBs, so the order is forced and the split is clean.
+  Independent of the 2.3 question.
 
 ### 3.5 `[?]` Move the Kconfig/Makefile earlier in `drm-vino`
 
@@ -259,8 +283,11 @@ drm-vino **RFC v4** rather than a merge candidate.
 - [x] KUnit count is computed from the tree, not typed (was 97, is 98).
 - [x] The "no module parameters" claim now says what it means: no parameter
   selects a profile or a code path.
-- [ ] `rust-drm 0016` has a commit body whose first sentence restates the subject.
-- [ ] Wrap the handful of commit-message lines over 75 columns.
+- [x] The one body restating its subject was `adapt Lyude's KMS series`, now
+  reworded. Checked all 27 rust-drm commits, not just the one.
+- [x] ~~Wrap the commit-message lines over 75 columns.~~ **Nothing to do.** The
+  only two over-length lines in the whole branch are a `Fixes:` trailer and a
+  `Link:` trailer, which are exempt and must not be wrapped.
 - [ ] Send `sched-fair` separately to Peter Zijlstra / Ingo Molnar once v4 is out.
 - [ ] Keep `Assisted-by: Claude:claude-opus-5` consistent; never strip one from a
   commit Claude actually wrote.

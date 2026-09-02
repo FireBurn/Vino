@@ -1,7 +1,7 @@
-From 6a0eb162352b4bd5998df94525ef32026e30a087 Mon Sep 17 00:00:00 2001
+From 0ca7c89b3bec64139d3726de442aa94c36423e23 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 22:52:04 +0100
-Subject: [PATCH v4 16/22] rust: drm: add an owned display mode constructor
+Subject: [PATCH v4 6/27] rust: drm: add an owned display mode constructor
 
 Add a safe constructor for standalone display modes used by drivers
 and tests.
@@ -16,14 +16,14 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  1 file changed, 61 insertions(+), 1 deletion(-)
 
 diff --git a/rust/kernel/drm/kms/modes.rs b/rust/kernel/drm/kms/modes.rs
-index cc3c486eecf1..b48a02edfc13 100644
+index 0f29a9c00062..5ae9aa5548ed 100644
 --- a/rust/kernel/drm/kms/modes.rs
 +++ b/rust/kernel/drm/kms/modes.rs
-@@ -6,7 +6,33 @@
- 
+@@ -1,7 +1,33 @@
+ // SPDX-License-Identifier: GPL-2.0
  use bindings;
  
--use crate::types::Opaque;
+-use crate::{prelude::*, types::Opaque};
 +use crate::{
 +    error::{code::EINVAL, Result},
 +    types::Opaque,
@@ -54,7 +54,7 @@ index cc3c486eecf1..b48a02edfc13 100644
  
  /// DRM kernel-internal display mode structure.
  ///
-@@ -30,6 +56,40 @@ unsafe impl Send for DisplayMode {}
+@@ -25,6 +51,40 @@ unsafe impl Send for DisplayMode {}
  unsafe impl Sync for DisplayMode {}
  
  impl DisplayMode {

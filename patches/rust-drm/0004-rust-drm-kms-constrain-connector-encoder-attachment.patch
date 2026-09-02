@@ -1,7 +1,7 @@
-From 5087d1102fd01a5aa79b83254a3c3a0d3db64b1a Mon Sep 17 00:00:00 2001
+From 195ee74335007e279acde84997875d4599b1968e Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:38:17 +0100
-Subject: [PATCH v4 3/22] rust: drm: kms: constrain connector encoder attachment
+Subject: [PATCH v4 4/27] rust: drm: kms: constrain connector encoder attachment
 
 drm_connector_attach_encoder() requires both objects to belong to the same
 DRM device. The safe wrapper previously accepted any AsRawEncoder,
@@ -19,7 +19,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  1 file changed, 15 insertions(+), 4 deletions(-)
 
 diff --git a/rust/kernel/drm/kms/connector.rs b/rust/kernel/drm/kms/connector.rs
-index 78b08b94587b..b36d138ae950 100644
+index 18d50d181c13..c0b16e8d6e22 100644
 --- a/rust/kernel/drm/kms/connector.rs
 +++ b/rust/kernel/drm/kms/connector.rs
 @@ -404,11 +404,22 @@ pub fn new<'a>(

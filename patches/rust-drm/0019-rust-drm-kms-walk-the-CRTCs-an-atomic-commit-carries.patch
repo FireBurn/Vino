@@ -1,7 +1,7 @@
-From 5ac2c488a994f1c381f106f60c573f2b749ebd6e Mon Sep 17 00:00:00 2001
+From 4796d7c01ecc72a4643b86f9b6abbe728dfe8500 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sun, 23 Aug 2026 15:42:27 +0100
-Subject: [PATCH v4 21/22] rust: drm: kms: walk the CRTCs an atomic commit carries
+Subject: [PATCH v4 19/27] rust: drm: kms: walk the CRTCs an atomic commit carries
 
 A driver enforcing a constraint its CRTCs share -- a bandwidth budget,
 a clock source, a fixed pool of scanout engines -- has to weigh what

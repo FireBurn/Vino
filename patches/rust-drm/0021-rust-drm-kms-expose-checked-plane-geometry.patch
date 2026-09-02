@@ -1,7 +1,7 @@
-From 24b56ef3dd207c4dbeea2b9bc18af96a9538b1f5 Mon Sep 17 00:00:00 2001
+From 9c1244d2a9e030f8c75d933e71e8fc2ca24dbf40 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 19:24:16 +0100
-Subject: [PATCH v4 11/22] rust: drm: kms: expose checked plane geometry
+Subject: [PATCH v4 21/27] rust: drm: kms: expose checked plane geometry
 
 Expose the requested source rectangle and the visibility and clipped
 rectangles produced by drm_atomic_helper_check_plane_state().
@@ -18,14 +18,14 @@ generated bindings.
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- rust/kernel/drm/kms/plane.rs | 59 ++++++++++++++++++++++++++++++++++++
- 1 file changed, 59 insertions(+)
+ rust/kernel/drm/kms/plane.rs | 58 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 58 insertions(+)
 
 diff --git a/rust/kernel/drm/kms/plane.rs b/rust/kernel/drm/kms/plane.rs
-index 3bff4091abb2..bc830503b142 100644
+index 7dd59f8dfb99..2e0828448a3d 100644
 --- a/rust/kernel/drm/kms/plane.rs
 +++ b/rust/kernel/drm/kms/plane.rs
-@@ -758,6 +758,65 @@ fn crtc_h(&self) -> u32 {
+@@ -670,6 +670,64 @@ fn crtc_h(&self) -> u32 {
          self.as_raw().crtc_h
      }
  
@@ -87,7 +87,6 @@ index 3bff4091abb2..bc830503b142 100644
 +    fn visible_destination(&self) -> Option<Rect> {
 +        self.visible().then(|| Rect::from_raw(&self.as_raw().dst))
 +    }
-+
-     /// The plane's rotation/reflection (`DRM_MODE_ROTATE_*` | `DRM_MODE_REFLECT_*` bitmask), for a
-     /// plane with a rotation property (see
-     /// [`UnregisteredPlane::create_rotation_property`]). Defaults to `DRM_MODE_ROTATE_0`.
+     /// Return the current [`OpaqueCrtc`] assigned to this plane, if there is one.
+     ///
+     /// The returned CRTC reference cannot outlive the plane-state borrow:

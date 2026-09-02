@@ -1,7 +1,7 @@
-From 6f33e5faddbda55bd4568c0550dd1ca11e2bc7c6 Mon Sep 17 00:00:00 2001
+From 86759a37348edc70dcce9a1e30af5bef1b563701 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 16:27:50 +0100
-Subject: [PATCH v4 8/22] rust: drm: kms: add connector detect() and mode_valid() hooks
+Subject: [PATCH v4 9/27] rust: drm: kms: add connector detect() and mode_valid() hooks
 
 Add optional connector detect() and mode_valid() callbacks to the
 safe KMS API.
@@ -17,7 +17,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  1 file changed, 116 insertions(+), 3 deletions(-)
 
 diff --git a/rust/kernel/drm/kms/connector.rs b/rust/kernel/drm/kms/connector.rs
-index 793a7bb5bfef..8f1a9ec0946a 100644
+index c0b16e8d6e22..6401b79ea880 100644
 --- a/rust/kernel/drm/kms/connector.rs
 +++ b/rust/kernel/drm/kms/connector.rs
 @@ -5,7 +5,8 @@

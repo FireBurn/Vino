@@ -1,0 +1,79 @@
+From c0333dd6fa80bb2530a68bb5d7fd31d334c2298d Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Wed, 2 Sep 2026 02:27:30 +0100
+Subject: [PATCH v4 16/27] rust: drm: kms: add CRTC colour lookup table entries
+
+ColorLut exposes a drm_color_lut entry as validated red, green and blue
+components, and the CRTC state's gamma_lut() hands back the programmed
+table as a slice of them.
+
+The C type is a plain POD, but a driver that reads it out of a raw
+state pointer has to get the element count from a second field of the
+blob; returning a slice makes the length part of the type.
+
+Assisted-by: Claude:claude-opus-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/kernel/drm/kms/crtc.rs | 42 +++++++++++++++++++++++++++++++++++++
+ 1 file changed, 42 insertions(+)
+
+diff --git a/rust/kernel/drm/kms/crtc.rs b/rust/kernel/drm/kms/crtc.rs
+index c0a2ce35739f..3b989c6dffca 100644
+--- a/rust/kernel/drm/kms/crtc.rs
++++ b/rust/kernel/drm/kms/crtc.rs
+@@ -25,6 +25,27 @@
+ };
+ use macros::vtable;
+ 
++/// One entry in a DRM gamma or degamma lookup table.
++#[repr(transparent)]
++pub struct ColorLut(bindings::drm_color_lut);
++
++impl ColorLut {
++    /// Red channel value.
++    pub fn red(&self) -> u16 {
++        self.0.red
++    }
++
++    /// Green channel value.
++    pub fn green(&self) -> u16 {
++        self.0.green
++    }
++
++    /// Blue channel value.
++    pub fn blue(&self) -> u16 {
++        self.0.blue
++    }
++}
++
+ /// The main trait for implementing the [`struct drm_crtc`] API for [`Crtc`].
+ ///
+ /// Any KMS driver should have at least one implementation of this type, which allows them to create
+@@ -692,6 +713,27 @@ fn mode(&self) -> &DisplayMode {
+         // atomic-state API serializes access while the mode can be changed.
+         unsafe { DisplayMode::as_ref(core::ptr::addr_of!((*self.as_raw()).mode)) }
+     }
++
++    /// Returns the CRTC's gamma LUT for this state as an array of [`ColorLut`] entries, or
++    /// [`None`] if no gamma LUT is programmed. Requires colour management to have been enabled
++    /// on the CRTC.
++    ///
++    fn gamma_lut(&self) -> Option<&[ColorLut]> {
++        // SAFETY: `as_raw()` is a valid `drm_crtc_state`.
++        let blob = unsafe { (*self.as_raw()).gamma_lut };
++        if blob.is_null() {
++            return None;
++        }
++        // SAFETY: a non-null gamma_lut blob is valid for the state's lifetime.
++        let (data, length) = unsafe { ((*blob).data, (*blob).length) };
++        let n = length / core::mem::size_of::<ColorLut>();
++        if data.is_null() || n == 0 {
++            return None;
++        }
++        // SAFETY: `ColorLut` is transparent over `drm_color_lut`; the blob holds `n` contiguous
++        // entries valid for the state's lifetime.
++        Some(unsafe { core::slice::from_raw_parts(data.cast::<ColorLut>(), n) })
++    }
+ }
+ impl<T: AsRawCrtcState> RawCrtcState for T {}
+ 

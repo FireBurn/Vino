@@ -13,7 +13,7 @@ series and others -- which are dependencies to base on, never patches to post.
 | `rust-core` | 8 | v2 | rust-for-linux and linux-kernel | Ryhl's workqueue series |
 | `rust-crypto` | 2 | v4 | linux-crypto and rust-for-linux | none |
 | `rust-usb` | 5 | v4 | linux-usb and rust-for-linux | Braun's URB series |
-| `rust-drm` | 22 | v4 | dri-devel and rust-for-linux | Lyude's KMS series |
+| `rust-drm` | 27 | v4 | dri-devel and rust-for-linux | Lyude's KMS series |
 | `rust-firmware` | 1 | v2 | linux-kernel and rust-for-linux | none |
 | `drm-vino` | 13 | v4 | dri-devel | rust-core, rust-crypto, rust-usb, rust-drm, rust-firmware |
 

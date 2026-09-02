@@ -1,7 +1,7 @@
-From 376ad0d0bdce4513b9e40f6f5734ca5120f36689 Mon Sep 17 00:00:00 2001
+From 98aaca81abe5e1b70ea0e7aac2ccc56f4eec3dfe Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 22:52:46 +0100
-Subject: [PATCH v4 19/22] rust: drm: kms: attach the connector colour properties
+Subject: [PATCH v4 11/27] rust: drm: kms: attach the connector colour properties
 
 Expose lock-scoped helpers for attaching HDR_OUTPUT_METADATA, Colorspace
 and max bpc to a connector. A driver whose sink reports a wider colour

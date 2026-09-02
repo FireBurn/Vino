@@ -1,7 +1,7 @@
-From d3e8f7df59cfc03a1d977d8c74a983d06ebaec93 Mon Sep 17 00:00:00 2001
+From 68dc885f12877ceebc9f8ef79793ced030cd43c0 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 19:15:31 +0100
-Subject: [PATCH v4 10/22] rust: drm: framebuffer: add validated shmem scanout views
+Subject: [PATCH v4 25/27] rust: drm: framebuffer: add validated shmem scanout views
 
 Add framebuffer geometry and reference-counting operations for drivers
 that retain and inspect scanout buffers outside an atomic callback.
@@ -21,9 +21,9 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  rust/helpers/drm/drm.c             |   1 +
  rust/helpers/drm/framebuffer.c     |  13 ++
- rust/kernel/drm/fourcc.rs          |  28 ++-
+ rust/kernel/drm/fourcc.rs          |  31 ++-
  rust/kernel/drm/kms/framebuffer.rs | 340 ++++++++++++++++++++++++++++-
- 4 files changed, 377 insertions(+), 5 deletions(-)
+ 4 files changed, 380 insertions(+), 5 deletions(-)
  create mode 100644 rust/helpers/drm/framebuffer.c
 
 diff --git a/rust/helpers/drm/drm.c b/rust/helpers/drm/drm.c
@@ -58,15 +58,18 @@ index 000000000000..672cee03463a
 +	drm_framebuffer_put(fb);
 +}
 diff --git a/rust/kernel/drm/fourcc.rs b/rust/kernel/drm/fourcc.rs
-index a30e40dbc037..010823c4c86c 100644
+index a30e40dbc037..3a68af66f236 100644
 --- a/rust/kernel/drm/fourcc.rs
 +++ b/rust/kernel/drm/fourcc.rs
-@@ -12,9 +12,29 @@ const fn fourcc_code(a: u8, b: u8, c: u8, d: u8) -> u32 {
+@@ -12,9 +12,32 @@ const fn fourcc_code(a: u8, b: u8, c: u8, d: u8) -> u32 {
  // TODO: We manually import this because we don't have a reasonable way of getting constants from
  // function-like macros in bindgen yet.
  pub(crate) const FORMAT_MOD_INVALID: u64 = 0xffffffffffffff;
 +/// Linear framebuffer layout (`DRM_FORMAT_MOD_LINEAR`).
-+pub(crate) const FORMAT_MOD_LINEAR: u64 = 0;
++///
++/// A driver that accepts only linear scanout has to say so through the plane's format-modifier
++/// list, or userspace sees no `IN_FORMATS` property and has to guess what the plane will take.
++pub const FORMAT_MOD_LINEAR: u64 = 0;
  
 -// TODO: We need to automate importing all of these. For the time being, just add the single one
 -// that we need

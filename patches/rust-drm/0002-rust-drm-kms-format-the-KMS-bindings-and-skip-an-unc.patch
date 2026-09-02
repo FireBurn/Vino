@@ -1,0 +1,133 @@
+From 71e5dd7d5bfcc3b6d884c9f2c6d3a3985e171b16 Mon Sep 17 00:00:00 2001
+From: Mike Lothian <mike@fireburn.co.uk>
+Date: Wed, 2 Sep 2026 02:30:34 +0100
+Subject: [PATCH v4 2/27] rust: drm: kms: format the KMS bindings and skip an
+ uncompilable doctest
+
+Run the KMS bindings through rustfmt and drop an unused Sealed import,
+so the series builds warning-clean under `make rustfmtcheck`.
+
+The impl_from_opaque_mode_obj! doctest is marked `ignore` rather than
+`compile_fail`: it is illustrative, names types that do not exist, and
+so fails to compile for reasons that have nothing to do with what it is
+demonstrating.
+
+Assisted-by: Claude:claude-opus-5
+Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
+---
+ rust/kernel/drm/kms.rs           | 7 ++-----
+ rust/kernel/drm/kms/connector.rs | 2 +-
+ rust/kernel/drm/kms/crtc.rs      | 4 ++--
+ rust/kernel/drm/kms/encoder.rs   | 9 ++-------
+ rust/kernel/drm/kms/plane.rs     | 4 ++--
+ rust/kernel/drm/kms/vblank.rs    | 2 +-
+ 6 files changed, 10 insertions(+), 18 deletions(-)
+
+diff --git a/rust/kernel/drm/kms.rs b/rust/kernel/drm/kms.rs
+index 8baf9c2906f5..0bd18f6175ae 100644
+--- a/rust/kernel/drm/kms.rs
++++ b/rust/kernel/drm/kms.rs
+@@ -77,7 +77,7 @@ unsafe fn setup_kms(_drm: &Device<Self::Driver>) -> Result<ModeConfigInfo> {
+ /// generate said functions for any kind of type which the original mode object driver trait can be
+ /// derived from. All conversions check the mode object's vtable. For example:
+ ///
+-/// ```compile_fail
++/// ```ignore
+ /// impl<'a, T: DriverConnectorState> ConnectorState<T> {
+ ///     impl_from_opaque_mode_obj! {
+ ///         // | An optional lifetime and param-variables to declare for each function
+@@ -245,10 +245,7 @@ pub trait KmsDriver: Driver {
+     type Encoder: encoder::DriverEncoder<Driver = Self>;
+ 
+     /// Return a [`ModeConfigInfo`] structure for this [`device::Device`].
+-    fn mode_config_info(
+-        dev: &device::Device,
+-        drm_data: &Self::Data,
+-    ) -> Result<ModeConfigInfo>;
++    fn mode_config_info(dev: &device::Device, drm_data: &Self::Data) -> Result<ModeConfigInfo>;
+ 
+     /// Create mode objects like [`crtc::Crtc`], [`plane::Plane`], etc. for this device
+     fn create_objects(drm: &UnregisteredKmsDevice<'_, Self>) -> Result
+diff --git a/rust/kernel/drm/kms/connector.rs b/rust/kernel/drm/kms/connector.rs
+index 78b08b94587b..18d50d181c13 100644
+--- a/rust/kernel/drm/kms/connector.rs
++++ b/rust/kernel/drm/kms/connector.rs
+@@ -5,7 +5,7 @@
+ //! C header: [`include/drm/drm_connector.h`](srctree/include/drm/drm_connector.h)
+ 
+ use super::{
+-    atomic::*, encoder::*, KmsDriver, ModeConfigGuard, ModeObject, ModeObjectVtable, Sealed
++    atomic::*, encoder::*, KmsDriver, ModeConfigGuard, ModeObject, ModeObjectVtable, Sealed,
+ };
+ use crate::{
+     alloc::KBox,
+diff --git a/rust/kernel/drm/kms/crtc.rs b/rust/kernel/drm/kms/crtc.rs
+index b1c68838205e..2c72893f2b16 100644
+--- a/rust/kernel/drm/kms/crtc.rs
++++ b/rust/kernel/drm/kms/crtc.rs
+@@ -5,8 +5,8 @@
+ //! C header: [`include/drm/drm_crtc.h`](srctree/include/drm/drm_crtc.h)
+ 
+ use super::{
+-    atomic::*, plane::*, vblank::*, KmsDriver, ModeObject, ModeObjectVtable, StaticModeObject,
+-    UnregisteredKmsDevice, Sealed,
++    atomic::*, modes::DisplayMode, plane::*, vblank::*, KmsDriver, ModeObject, ModeObjectVtable,
++    Sealed, StaticModeObject, UnregisteredKmsDevice,
+ };
+ use crate::{
+     alloc::KBox,
+diff --git a/rust/kernel/drm/kms/encoder.rs b/rust/kernel/drm/kms/encoder.rs
+index aa6f9fbaa5f1..c3c1567a01a1 100644
+--- a/rust/kernel/drm/kms/encoder.rs
++++ b/rust/kernel/drm/kms/encoder.rs
+@@ -5,7 +5,7 @@
+ //! C header: [`include/drm/drm_encoder.h`](srctree/include/drm/drm_encoder.h)
+ 
+ use super::{
+-    KmsDriver, ModeObject, ModeObjectVtable, StaticModeObject, UnregisteredKmsDevice, Sealed
++    KmsDriver, ModeObject, ModeObjectVtable, Sealed, StaticModeObject, UnregisteredKmsDevice,
+ };
+ use crate::{
+     alloc::KBox,
+@@ -15,12 +15,7 @@
+     types::{NotThreadSafe, Opaque},
+ };
+ use bindings;
+-use core::{
+-    marker::*,
+-    mem,
+-    ops::Deref,
+-    ptr::null,
+-};
++use core::{marker::*, mem, ops::Deref, ptr::null};
+ use macros::paste;
+ 
+ /// A macro for generating our type ID enumerator.
+diff --git a/rust/kernel/drm/kms/plane.rs b/rust/kernel/drm/kms/plane.rs
+index 0c549dece483..ae5b91ce8dd5 100644
+--- a/rust/kernel/drm/kms/plane.rs
++++ b/rust/kernel/drm/kms/plane.rs
+@@ -5,8 +5,8 @@
+ //! C header: [`include/drm/drm_plane.h`](srctree/include/drm/drm_plane.h)
+ 
+ use super::{
+-    atomic::*, crtc::*, framebuffer::*, KmsDriver, ModeObject, ModeObjectVtable, StaticModeObject,
+-    UnregisteredKmsDevice, Sealed
++    atomic::*, crtc::*, framebuffer::*, KmsDriver, ModeObject, ModeObjectVtable, Sealed,
++    StaticModeObject, UnregisteredKmsDevice,
+ };
+ use crate::{
+     alloc::KBox,
+diff --git a/rust/kernel/drm/kms/vblank.rs b/rust/kernel/drm/kms/vblank.rs
+index dc34e02e8ccb..a725a46110d8 100644
+--- a/rust/kernel/drm/kms/vblank.rs
++++ b/rust/kernel/drm/kms/vblank.rs
+@@ -4,7 +4,7 @@
+ //!
+ //! C header: [`include/drm/drm_vblank.h`](srcfree/include/drm/drm_vblank.h)
+ 
+-use super::{crtc::*, ModeObject, modes::*, Sealed};
++use super::{crtc::*, modes::*, ModeObject};
+ use bindings;
+ use core::{
+     marker::*,

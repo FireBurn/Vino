@@ -1,7 +1,7 @@
-From de4050f02ac0a0aed5c7c4165d3cab645e0b1b35 Mon Sep 17 00:00:00 2001
+From 8663c82dead9f346af53b54825fa5f65fe0bd885 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 16:27:50 +0100
-Subject: [PATCH v4 9/22] rust: drm: kms: add plane damage-clip accessors
+Subject: [PATCH v4 20/27] rust: drm: kms: add plane damage-clip accessors
 
 Add safe access to the FB_DAMAGE_CLIPS rectangles intersected with
 the visible source area.
@@ -19,10 +19,10 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  2 files changed, 106 insertions(+)
 
 diff --git a/rust/bindings/bindings_helper.h b/rust/bindings/bindings_helper.h
-index 643d47bfc20c..6e608daff8bd 100644
+index c4ff2e05aa94..92f5f2700586 100644
 --- a/rust/bindings/bindings_helper.h
 +++ b/rust/bindings/bindings_helper.h
-@@ -41,6 +41,7 @@
+@@ -39,6 +39,7 @@
  #include <drm/clients/drm_client_setup.h>
  #include <drm/drm_connector.h>
  #include <drm/drm_crtc.h>
@@ -31,10 +31,10 @@ index 643d47bfc20c..6e608daff8bd 100644
  #include <drm/drm_drv.h>
  #include <drm/drm_edid.h>
 diff --git a/rust/kernel/drm/kms/plane.rs b/rust/kernel/drm/kms/plane.rs
-index 8e3f711b0767..3bff4091abb2 100644
+index 3a95c45b6728..7dd59f8dfb99 100644
 --- a/rust/kernel/drm/kms/plane.rs
 +++ b/rust/kernel/drm/kms/plane.rs
-@@ -693,6 +693,49 @@ pub trait FromRawPlaneState: AsRawPlaneState {
+@@ -605,6 +605,49 @@ pub trait FromRawPlaneState: AsRawPlaneState {
      unsafe fn from_raw_mut<'a>(ptr: *mut bindings::drm_plane_state) -> &'a mut Self;
  }
  
@@ -84,7 +84,7 @@ index 8e3f711b0767..3bff4091abb2 100644
  /// Common methods available on any type which implements [`AsRawPlane`].
  ///
  /// This is implemented internally by DRM, and provides many of the basic methods for working with
-@@ -774,6 +817,68 @@ fn atomic_helper_check<S, D>(
+@@ -679,6 +722,68 @@ fn atomic_helper_check<S, D>(
          })
      }
  
