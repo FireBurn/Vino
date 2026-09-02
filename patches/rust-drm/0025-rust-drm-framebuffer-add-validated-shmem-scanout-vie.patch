@@ -1,4 +1,4 @@
-From 9c2d41a843a53616c0bf20aff15729ea2a0e2fae Mon Sep 17 00:00:00 2001
+From fc39d94e7d9d8e654f3ac8c98a95c5778da49b6a Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 19:15:31 +0100
 Subject: [PATCH v4 25/27] rust: drm: framebuffer: add validated shmem scanout views

@@ -397,8 +397,10 @@ rather than a class device
 
   Revocable typed interface I/O, so an interface cannot be used after the core
     has taken it back
-  Reusable URBs and persistent bulk queues, which is what keeps a video stream
-    in flight without allocating per transfer
+  Reusable URBs, so a driver that submits the same buffer repeatedly does not
+    free and reallocate it per transfer
+  Persistent bulk queues built on those URBs, which is what keeps a video
+    stream in flight without allocating on the transfer path
   The device descriptor fields a driver needs to identify hardware before it
     decides to drive it, and a queue-readiness check
   A device id constructor matching on vendor together with interface class,
@@ -416,6 +418,13 @@ Changes since v3:
   interrupt_recv(), Endpoint::max_packet_size() and the InterruptIn endpoint
     kind are gone for the same reason. The driver is bulk-only, so the typed
     endpoint set is now BulkIn and BulkOut, which is what it actually uses
+  URB reuse and the bulk queues are separate patches. They were one commit
+    introducing two abstractions, and the queues are where the I/O window is
+    integrated, so keeping them apart makes the part under discussion below a
+    smaller thing to read
+  Gary Guo's point about /sys/devices/vino/remove_all is taken: sysfs unbind
+    already covers it, and evdi shipping the file does not make it a precedent
+    because evdi is not upstream. The binding stays dropped
   Rebased onto v7.3-rc1
 
 Still open, and the reason this may need another round: Danilo's point that the

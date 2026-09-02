@@ -1,4 +1,4 @@
-From 263b41738e89833ecced46f3e9d5a7efa8ed839d Mon Sep 17 00:00:00 2001
+From ebeeea1554424dc0ccd8eb141cf8e5e453150dca Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:40:47 +0100
 Subject: [PATCH v4 9/13] drm/vino: add the dock activation and scanout path

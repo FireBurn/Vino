@@ -1,4 +1,4 @@
-From 07207ac23b3f249aca1423c1801991e456fe73f2 Mon Sep 17 00:00:00 2001
+From d487ade65a36cb547611d3590e2ebf5ba6062112 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 21:52:01 +0100
 Subject: [PATCH v4 22/27] rust: drm: kms: plane: add FB_DAMAGE_CLIPS property support

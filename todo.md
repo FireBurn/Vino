@@ -258,7 +258,7 @@ The subject-vs-diff audit ran over all 27 rust-drm commits, not just this one;
 the results are in 3.2 above. One body restated its subject (`adapt Lyude's KMS
 series`) and was reworded.
 
-### 3.4 `[~]` Split the two large `rust-usb` patches -- CHECKED, one half blocked
+### 3.4 `[~]` Split the two large `rust-usb` patches -- 0002 DONE, 0001 blocked
 
 Checked against the feedback the way 3.1 should have been. Nobody asked for a
 split here either, but unlike 3.1 the two commits do each introduce two
@@ -271,10 +271,16 @@ real, but it is coupling, not line count.
   Krummrich has asked for exactly this code to be rewritten on Devres and
   higher-ranked lifetimes, or else justified as USB-specific (2.3). Splitting a
   commit that may be substantially rewritten is wasted work. Wait for the answer.
-- **0002, reusable URBs and persistent bulk queues -- split it.** Two
-  abstractions, and its own commit message is already two paragraphs saying so.
-  The queues build on the URBs, so the order is forced and the split is clean.
-  Independent of the 2.3 question.
+- **0002 -- `[x]` SPLIT.** Now `rust: usb: allow an URB to be reused` (92
+  lines) and `rust: usb: add persistent bulk queues` (556). ⚠ The boundary is
+  not where the old commit message put it: `UrbCanceller` is private and its
+  only user is the queue registration, and the two C helpers
+  (`usb_fill_bulk_urb`, `reinit_completion`) are queue infrastructure, so all
+  three go with the queues rather than with the URB reuse. The reuse commit
+  references nothing from the queue commit, checked by grepping its own diff.
+  ⚠ The queue commit integrates with `IoWindow`/`IoState`, so a 2.3 rewrite
+  lands on it -- that is a reason to expect churn there, not a reason to leave
+  the two abstractions welded together.
 
 ### 3.5 `[x]` Move the Kconfig/Makefile earlier in `drm-vino` -- NO, precedent says last
 

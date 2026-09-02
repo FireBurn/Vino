@@ -1,4 +1,4 @@
-From 6c93415e0b23842193be722c9d9be7343a89b030 Mon Sep 17 00:00:00 2001
+From 5bdab3e16df68e467fcb284e567fb0dd28161cfa Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 2 Sep 2026 02:28:49 +0100
 Subject: [PATCH v4 17/27] rust: drm: kms: add CRTC colour management

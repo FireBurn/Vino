@@ -1,7 +1,7 @@
 From 70ac11ec6d3294e5ebba1a4ca6a5c248ade963fe Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 23:39:55 +0100
-Subject: [PATCH v4 1/5] rust: usb: add revocable typed interface I/O
+Subject: [PATCH v4 1/6] rust: usb: add revocable typed interface I/O
 
 Make the USB driver adapter own its bound data and a per-interface
 I/O window. Close the window around disconnect, suspend, and reset

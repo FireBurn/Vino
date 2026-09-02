@@ -80,7 +80,7 @@ The rest of the posting, which is one series per subsystem:
 
   rust-core, 8 patches, to rust-for-linux and linux-kernel, not sent yet
   rust-crypto, 2 patches, to linux-crypto and rust-for-linux, not sent yet
-  rust-usb, 5 patches, to linux-usb and rust-for-linux, not sent yet
+  rust-usb, 6 patches, to linux-usb and rust-for-linux, not sent yet
   rust-drm, 27 patches, this one
   rust-firmware, 1 patch, to linux-kernel and rust-for-linux, not sent yet
   drm-vino, 13 patches, to dri-devel, not sent yet

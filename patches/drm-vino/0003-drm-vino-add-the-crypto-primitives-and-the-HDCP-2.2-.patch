@@ -1,4 +1,4 @@
-From d4e452cff2099b687ec34e2c0e63cde2e8cc4849 Mon Sep 17 00:00:00 2001
+From 6f9374ad418cc701a98586399cca64750bebf685 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:36 +0100
 Subject: [PATCH v4 3/13] drm/vino: add the crypto primitives and the HDCP 2.2 AKE

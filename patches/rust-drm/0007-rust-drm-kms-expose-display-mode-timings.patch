@@ -1,4 +1,4 @@
-From 977828fb8d3aa4322186808990a01117d93d2b7f Mon Sep 17 00:00:00 2001
+From d88483ce42c4d8805046a984af0e57e887af512a Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 2 Sep 2026 02:30:34 +0100
 Subject: [PATCH v4 7/27] rust: drm: kms: expose display mode timings

@@ -1,4 +1,4 @@
-From 8ab336c7869b6f561891671752a8403e1af56988 Mon Sep 17 00:00:00 2001
+From 5860094c4c3a3f1969c04de314483d75d1a0557e Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:38:17 +0100
 Subject: [PATCH v4 4/27] rust: drm: kms: constrain connector encoder attachment

@@ -1,4 +1,4 @@
-From 1a54cf51d70af9e34fac17786db1eef64e44abba Mon Sep 17 00:00:00 2001
+From 495fd25cbba8b3e9145009ec6a732e3c6f4ab4e4 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 2 Sep 2026 02:27:30 +0100
 Subject: [PATCH v4 23/27] rust: drm: kms: add the plane rotation property

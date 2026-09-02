@@ -1,4 +1,4 @@
-From 95a26d168960cb0566437236f86c702b57cf8c49 Mon Sep 17 00:00:00 2001
+From 9255160784cdb3ff6aa6885a52092328d76f9452 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 18:40:02 +0100
 Subject: [PATCH 1/1] drm/tyr: mark the Rust DRM driver as non-KMS

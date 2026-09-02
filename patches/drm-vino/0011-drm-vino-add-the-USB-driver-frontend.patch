@@ -1,4 +1,4 @@
-From 45215161e976ae4ee61c35d75075e75328445d0a Mon Sep 17 00:00:00 2001
+From 8cd0e8b92bfeb7edcc1a30a123d6abe4fb939cbb Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:10 +0100
 Subject: [PATCH v4 11/13] drm/vino: add the USB driver frontend

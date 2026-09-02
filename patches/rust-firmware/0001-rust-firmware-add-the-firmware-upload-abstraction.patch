@@ -1,4 +1,4 @@
-From ae633946209d47404d8f131c79daed72ae742c31 Mon Sep 17 00:00:00 2001
+From 8ba646ce7c78b532245d7c10657104e945ceba39 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:06 +0100
 Subject: [PATCH v2 1/1] rust: firmware: add the firmware upload abstraction

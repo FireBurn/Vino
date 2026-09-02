@@ -1,4 +1,4 @@
-From c0309283572c7532feca91ab4eada36fe3533bce Mon Sep 17 00:00:00 2001
+From 4b9e0c9b4eb2f581db66f4e5101827ed7ee25d09 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:54 +0100
 Subject: [PATCH v4 5/13] drm/vino: add the dock profiles
