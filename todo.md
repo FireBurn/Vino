@@ -88,9 +88,14 @@ byte-exactness with a dock, and it has not been on hardware.
 
 Two actions fall out, both **open**:
 
-- `[ ]` Cut the rest of `Aes128` from rust-crypto 0001. The HDCP 2.2 dKey
-  derivation keeps `aes_prepareenckey()` + `aes_encrypt()` +
-  `memzero_explicit()` directly. No lib/crypto change is being asked for.
+- `[x]` ~~Cut the rest of `Aes128`~~ -- **nothing to cut.** That plan assumed
+  lib/crypto might grow a one-shot single-block encrypt, leaving `Aes128` with
+  no reason to exist. Biggers ruled that out, so the type stays and all three
+  of its methods have users: `encrypt_block()` for the HDCP dKey, `ctr()` for
+  both control-plane sites, `new()` for both. Checked the rest of the binding
+  the same way -- `zeroize` and `SHA256_DIGEST_SIZE` have no outside callers
+  but are used by `Secret`'s `Drop` and by the hash return types, so they earn
+  their place too.
 - `[x]` ~~`aes_ctr_128()` prepares the key on every call~~ -- **FIXED.** The
   free function is gone; `Aes128` (which already cached a schedule for
   `encrypt_block`) grew a `ctr()` method, and the helper takes a prepared
