@@ -108,19 +108,32 @@ Miguel's thread.
 
 ## 3. Reviewability
 
-### 3.1 `[ ]` Split the five oversized `drm-vino` commits
+### 3.1 `[x]` Split the five largest `drm-vino` commits -- MEASURED, NO ACTION
 
-| patch | added | proposed split |
-|---|---|---|
-| 0009 activation + scanout | **5439** | activation / streams / framebuffer+damage / encode+submit |
-| 0008 KMS + atomic path | **5137** | mode objects / atomic state+check / properties+damage / vblank |
-| 0006 video codec | **3428** | transforms / coding / record+framing |
-| 0004 encrypted control plane | **3090** | envelope+sealing / messages+EDID / control+cursor |
-| 0007 session bring-up | **2355** | parsers / state machine+setup phases |
-| 0011 USB frontend | 1747 | probe+matching / lifecycle+recovery |
+**Do not propose this again.** It was never asked for: no reviewer raised commit
+size in v3, and the only hit for "size" across all six reply drafts is a `size_t`
+in a quoted hunk. The v3 complaint was patches being out of *order*, which is
+§3.2, and content that should not have been posted at all, which is §1.
 
-0001 is 72 lines and 0002 is 251, so the series is very lopsided. This is a
-**commit** split, not a source-file split; the file layout is fine.
+Vino's sizes are ordinary for a new DRM driver. Added lines in the introducing
+series, measured in this tree:
+
+| driver | commits | total | largest |
+|---|---|---|---|
+| xe | 1 | 40575 | 40575 |
+| imagination | ~20 | ~33000 | 6531 regs, then 4756 / 4015 / 3832 / 3438 |
+| **vino** | **13** | **24119** | **5431 / 5130 / 3421 / 3083 / 2348** |
+| panthor | 11 | ~12825 | 3552 / 2870 / 1865 |
+| tyr, nova | 1 | 650, 288 | skeleton, grown in-tree afterwards |
+
+Vino is between panthor and imagination on totals and peaks, and far more
+granular than xe. Its largest commit is 14% above imagination's largest logic
+commit, which is not a different category. Splitting further would make it the
+most finely divided new DRM driver in the tree.
+
+What does still matter is that each commit is a coherent unit a reviewer can
+hold in their head and that bisect can test -- that is §3.2 and §3.5, not a line
+count.
 
 ### 3.2 `[ ]` Reorder `rust-drm` logically
 
