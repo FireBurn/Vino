@@ -70,13 +70,33 @@ seal and open share the model, which is the round-trip trap. The counter-block
 enumeration is the real evidence. **A hardware run is still wanted:** this is
 byte-exactness with a dock, and it has not been on hardware.
 
-### 2.2 `[?]` The one remaining bare-block-cipher caller (question is on-list)
+### 2.2 `[x]` The bare-block-cipher caller -- ANSWERED by Biggers, 2026-08-31
 
-Doing 2.1 leaves exactly one caller of the block cipher: the HDCP 2.2 dKey
-derivation (`crypto.rs:17`), a single AES-128 ECB block. Either lib/crypto grows
-a one-shot single-block encrypt, or that caller keeps `aes_prepareenckey()` /
-`aes_encrypt()` directly. Biggers has not answered. Cut the rest of `Aes128`
-from rust-crypto 0001 once he does.
+⚠ The answer had been sitting unread in the mailbox. Biggers replied on
+2026-08-31 (`<20260831170546.GA239479@google.com>`):
+
+> I'm not currently planning to make the crypto library expose AES functions
+> that take raw keys, since computing the AES round keys is fairly slow and
+> most users use their AES keys multiple times. So in this case I guess keep
+> planning to use the sequence that is already supported: aes_prepareenckey()
+> + aes_encrypt() + memzero_explicit(). For CTR mode, use aes_prepareenckey()
+> + aes_ctr() + memzero_explicit().
+>
+> But if you're using either key multiple times you should call
+> aes_prepareenckey() just once and cache the result, as that is what it is
+> for.
+
+Two actions fall out, both **open**:
+
+- `[ ]` Cut the rest of `Aes128` from rust-crypto 0001. The HDCP 2.2 dKey
+  derivation keeps `aes_prepareenckey()` + `aes_encrypt()` +
+  `memzero_explicit()` directly. No lib/crypto change is being asked for.
+- `[ ]` **`aes_ctr_128()` prepares the key on every call, and that is wrong
+  for this driver.** The control-plane key is fixed for the life of a
+  session and every sealed message uses it, so the schedule is rebuilt per
+  message. Hold the prepared key with the session instead. This is a change
+  to the binding's shape, not just its caller: the helper takes a raw key
+  today and needs to take a prepared one.
 
 ### 2.3 `[?]` Answer Krummrich on the revocable I/O window
 
@@ -89,13 +109,43 @@ open/closed flag and wait-for-quiescence should go regardless.
 The rust-usb v4 cover now states this openly rather than presenting the design
 as settled.
 
-### 2.4 `[ ]` Send the outstanding replies
+### 2.4 `[~]` Send the outstanding replies -- DRAFTED 2026-09-02, awaiting Mike
 
-- `06-hindborg-restart-correction.txt` -- marked NOT SENT. **This one matters**:
-  Andreas currently believes the `restart()` patch is being dropped, and v4
-  keeps it. Send before v4 lands.
-- `05-biggers-2of2-rsa-and-kconfig.txt` -- no `X-Status`, appears unsent.
-- Resend 01, 02 and 04 in **plain text**; lore rejected them as HTML.
+⛔ **The `X-Status` lines in `outgoing/v3-replies/` were wrong in both
+directions.** Checked against `[Gmail]/Sent Mail`, which is the only thing
+that actually knows. What was really sent on 2026-08-31:
+
+| draft | sent | as |
+|---|---|---|
+| 01 hindborg 7/9 | 17:44 | **multipart/alternative** -- lore rejected it |
+| 02 hindborg 2/9 | 17:45 | **multipart/alternative** -- lore rejected it |
+| 04 biggers 1/2  | 17:51 | **multipart/alternative** -- lore rejected it |
+| 06 correction   | 18:01 | ⛔ **not the correction** -- the 18:01 message is only "Fudge / I have to keep remembering to enable plain text in gmail" |
+| 03 krummrich    | 18:04 | text/plain, real content ✅ |
+| 05 biggers 2/2  | 18:04 | text/plain, real content ✅ |
+
+So 05 was **not** unsent, and the correction **was** still unsent -- and it
+matters: Andreas's own reply quotes "I will drop this patch rather than
+carry an API with no user", and v4 keeps it.
+
+**Three plain-text drafts are now in `[Gmail]/Drafts`**, threaded on the real
+Message-IDs read out of the mailbox:
+
+1. `Re: [PATCH 7/9] rust: hrtimer: expose interrupt state in hard callbacks`
+   -- verbatim resend, so lore gets it at all.
+2. `Re: [PATCH 2/9] rust: hrtimer: add ArcHrTimerHandle::restart` -- the
+   correction. **Send this one first.**
+3. `Re: [PATCH v3 1/2] rust: crypto: ...` -- new, answering Biggers's
+   2026-08-31 reply and conceding the cached-key point (2.2).
+
+⚠ **02 is deliberately not resent.** Its content ("I will drop this patch")
+is now known to be wrong, and neither it nor the correction ever reached
+lore, so the archive would gain a false statement followed by its
+retraction. Draft 2 replaces it. ⚠ There is also an **older multipart/mixed
+draft on the same thread** left in place -- do not send that one.
+
+⚠ 04 is not resent either: Biggers answered it on 31 Aug, so resending would
+re-ask a question already answered. Draft 3 replaces it.
 
 ### 2.5 `[?]` Ask Biggers where the RSA API should live
 
@@ -103,6 +153,19 @@ A narrow Rust wrapper over the existing `rsa` transform, or something in
 lib/crypto? Only operation needed is RSAES-OAEP-SHA256 public-key encryption
 with a caller-supplied seed. The lib/-Kconfig-vs-rust/-code placement follows
 Miguel's thread.
+
+### 2.6 `[x]` `device_release_driver()` -- ANSWERED by Gary Guo, 2026-08-31
+
+Also unread until now (`<DL3AO2K8IS07.3QB2IM7YJL8WT@garyguo.net>`), on the
+`remove_all` question in the sent reply to Krummrich:
+
+> EVDI is not an upstream driver, so the fact that it supports something
+> isn't really a justification of adding a new API interface that is already
+> covered by sysfs unbind.
+
+That settles it. The binding stays dropped, and the "should it come back
+later with its user attached" question is closed -- do not reopen it.
+`/sys/bus/usb/drivers/vino/unbind` is the answer.
 
 ---
 
