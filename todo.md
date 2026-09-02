@@ -381,8 +381,10 @@ drm-vino **RFC v4** rather than a merge candidate.
   only two over-length lines in the whole branch are a `Fixes:` trailer and a
   `Link:` trailer, which are exempt and must not be wrapped.
 - [ ] Send `sched-fair` separately to Peter Zijlstra / Ingo Molnar once v4 is out.
-- [ ] Keep `Assisted-by: Claude:claude-opus-5` consistent; never strip one from a
-  commit Claude actually wrote.
+- [x] `Assisted-by:` is consistent: 59 commits, one spelling
+  (`Assisted-by: Claude:claude-opus-5`), and the commits without it are Lyude's,
+  which correctly have none. The nine new commits from the 3.2/3.3/3.4 splits
+  all carry it plus a `Signed-off-by`.
 
 ### 6.1 `[x]` The push guards from the WORKLOG are off -- deliberate, leave them
 
