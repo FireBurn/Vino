@@ -1,4 +1,4 @@
-From f1fad8a0150af0169c4b111acd729d38c4493aa1 Mon Sep 17 00:00:00 2001
+From b656de287736d7d45a5401a91d5f3ea23a583042 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:33:12 +0100
 Subject: [PATCH v4 7/13] drm/vino: add control-session bring-up
@@ -16,20 +16,20 @@ the bytes.
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- drivers/gpu/drm/vino/session.rs         |  626 ++++++++++
+ drivers/gpu/drm/vino/session.rs         |  625 ++++++++++
  drivers/gpu/drm/vino/session/replies.rs |  337 ++++++
- drivers/gpu/drm/vino/session/setup.rs   | 1391 +++++++++++++++++++++++
- 3 files changed, 2354 insertions(+)
+ drivers/gpu/drm/vino/session/setup.rs   | 1389 +++++++++++++++++++++++
+ 3 files changed, 2351 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/session.rs
  create mode 100644 drivers/gpu/drm/vino/session/replies.rs
  create mode 100644 drivers/gpu/drm/vino/session/setup.rs
 
 diff --git a/drivers/gpu/drm/vino/session.rs b/drivers/gpu/drm/vino/session.rs
 new file mode 100644
-index 000000000000..fcb9f6ab61db
+index 000000000000..2d466897117b
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/session.rs
-@@ -0,0 +1,626 @@
+@@ -0,0 +1,625 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! Bringing a dock's encrypted control session up.
@@ -556,14 +556,13 @@ index 000000000000..fcb9f6ab61db
 +
 +        // `hseq` points past the last capability/AKE frame; `send_cp_setup` continues the inner
 +        // counter from here for msg0.
-+        #[cfg(CONFIG_DRM_VINO_DEBUG_DUMP_KEYS)]
-+        if crate::debug_enabled() {
-+            pr_info!(
-+                "vino-crypto: control key={:02x?} riv_out={riv:02x?} next_ctr={}\n",
-+                &ks[..],
-+                hseq
-+            );
-+        }
++        // The session keys, so that a USB capture taken alongside can be decrypted and dissected
++        // offline. They are renegotiated on every bring-up and protect one session with one dock.
++        vino_debug!(
++            "vino-crypto: control key={:02x?} riv_out={riv:02x?} next_ctr={}\n",
++            &ks[..],
++            hseq
++        );
 +        Ok(Session {
 +            ks,
 +            riv,
@@ -1001,10 +1000,10 @@ index 000000000000..b86380d7327c
 +}
 diff --git a/drivers/gpu/drm/vino/session/setup.rs b/drivers/gpu/drm/vino/session/setup.rs
 new file mode 100644
-index 000000000000..a1118044d2c1
+index 000000000000..2623d7a624ff
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/session/setup.rs
-@@ -0,0 +1,1391 @@
+@@ -0,0 +1,1389 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! The post-authentication setup burst.
@@ -1749,15 +1748,13 @@ index 000000000000..a1118044d2c1
 +                }
 +            }
 +
-+            #[cfg(CONFIG_DRM_VINO_DEBUG_DUMP_KEYS)]
-+            if crate::debug_enabled() {
-+                pr_info!(
-+                    "vino-crypto: video connector={connector} raw_key={:02x?} delivered_riv={riv_h:02x?} key={:02x?} nonce={:02x?}\n",
-+                    &ske_ks_h[..],
-+                    &video_keys[connector][..16],
-+                    &video_keys[connector][16..24]
-+                );
-+            }
++            // The per-connector video keys, for the same offline decryption as the control key.
++            vino_debug!(
++                "vino-crypto: video connector={connector} raw_key={:02x?} delivered_riv={riv_h:02x?} key={:02x?} nonce={:02x?}\n",
++                &ske_ks_h[..],
++                &video_keys[connector][..16],
++                &video_keys[connector][16..24]
++            );
 +            connector_ok[connector] = true;
 +            heads_authenticated += 1;
 +        }

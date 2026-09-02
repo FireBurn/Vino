@@ -206,9 +206,12 @@ Sweep command, for the respin:
 
 ## 5. Decisions for Mike
 
-### 5.1 `[x]` `trace_crypto` -- DONE: now DRM_VINO_DEBUG_DUMP_KEYS + debug=
+### 5.1 `[x]` `trace_crypto` -- DONE: now just the `debug` parameter
 
-Mike's call, 2026-09-01: stop it being a module parameter.
+Mike's call, 2026-09-01: stop it being its own module parameter. Mike's call,
+2026-09-02: `CONFIG_DRM_VINO_DEBUG_DUMP_KEYS` was overkill, so it is gone too.
+One switch governs the key dump, the driver's existing `debug` parameter, and
+both sites are plain `vino_debug!` like every other diagnostic in the driver.
 
 WARNING -- **Rust's `pr_debug!` is not C's.** Both `pr_debug!` (print.rs:398) and
 `dev_dbg!` (device.rs:376) are `if cfg!(debug_assertions)`, and this build is
@@ -218,27 +221,19 @@ descriptor. Enabling them means `CONFIG_RUST_DEBUG_ASSERTIONS=y`, which is a
 global Rust switch: a plain Rust debug build would have started dumping dock keys
 with nothing in the config to say so, and no way to turn it off again. So
 `pr_debug!` was the wrong instrument here, not the right one made awkward.
-
-What landed instead, which achieves the same thing:
-
-- `CONFIG_DRM_VINO_DEBUG_DUMP_KEYS`, bool, default n, "(Unsafe)" in the prompt,
-  modelled on `CONFIG_CIFS_DEBUG_DUMP_KEYS` down to the wording. Both log sites
-  are `#[cfg]`-gated, so a kernel without it does not carry the code.
-- **and** the existing `debug` module parameter, so a kernel built with the
-  option still discloses nothing until debugging is switched on. CIFS has only
-  the compile-time gate; this is one better.
-- The `trace_crypto` module parameter is gone, along with `trace_crypto_enabled()`.
-- The cover cites the CIFS precedent rather than arguing from first principles.
+`vino_debug!` is `pr_info!` under `debug_enabled()`, so nothing in vino's logging
+depends on `CONFIG_RUST_DEBUG_ASSERTIONS` either way.
 
 In-tree precedent for the capability, for the record:
 
 - `CONFIG_CIFS_DEBUG_DUMP_KEYS` -- "Dump encryption keys for offline decryption
   (Unsafe)", plaintext AES session keys to the console, expressly so "Wireshark
-  [can] decrypt and dissect encrypted network captures". Vino's exact use case.
+  [can] decrypt and dissect encrypted network captures". Vino's exact use case,
+  and the cover cites it as the reasoning rather than as a Kconfig to copy.
 - `drivers/gpu/drm/amd/display/modules/hdcp/hdcp_log.c` traces the raw bytes of
   `ake_stored_km`, `ake_no_stored_km` and `ske_eks` at plain `pr_debug()` with no
-  Kconfig at all. ⚠ Those are the encrypted wire messages, not derived keys, so
-  it is the weaker of the two precedents -- cite CIFS.
+  Kconfig at all -- the shape vino now has. WARNING: those are the encrypted wire
+  messages, not derived keys, so it is the weaker of the two precedents.
 
 ### 5.2 `[x]` Automatic firmware flash at probe -- DECIDED: keep it
 
