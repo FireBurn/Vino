@@ -111,10 +111,35 @@ Two actions fall out, both **open**:
   and the ordinary build said nothing. Build both ways after any signature
   change; `llvm-objdump -h vino.o | grep kunit_test_suites` gives the suite
   count from the section size.
-  ⚠ **The video ARM path still re-expands per frame.** `seal_video_arm()`
-  keys from a per-connector `Secret<24>`, not the session key, so it builds a
-  `SessionKey` per call. Same defect, one level down; worth doing but it means
-  the video keys becoming prepared keys too.
+- `[x]` **The video ARM path re-expanded too** -- **FIXED.** `seal_video_arm()`
+  keyed from the stored per-connector blob and built a `SessionKey` per call.
+  `cp::VideoKey` now holds that connector's expanded key next to the nonce it
+  counts from; `set_video_keys()` expands each one at engagement and stores
+  `Arc<VideoKey>`, so a caller seals from a prepared key.
+  ⚠ **Not a hot-path win, and the commit must not claim one.** `seal_video_arm`
+  seals *control* records, not pixel records: four in the arm burst, a handful
+  across the prologue/config/open paths, and one per presentation on the
+  Navarro report path (`scanout.rs`). That last one is per frame, so the change
+  is real, but it is a few hundred expansions a second, not the per-strip cost
+  the loop shape suggests. It is the right change because Biggers asked for the
+  schedule to be cached when a key is used more than once -- not for speed.
+  Folded per file into the five commits that own the lines (`cp.rs`,
+  `session/setup.rs`, `drm_sink.rs`, `drm_sink/stream.rs`, `vino.rs`); the
+  rebase reproduces the pre-fold tree exactly.
+  Also removed a duplicated `debug_assert_eq!(b.len(), 304)` in
+  `navarro_pipe_descriptor` found on the way past.
+
+### 2.2b `[!]` The toolchain moved under the tree
+
+rustc went 1.98.0 -> 1.98.1 on this box on 2026-09-01, which invalidates every
+`rust/*.rmeta` in the build tree: an `M=drivers/gpu/drm/vino` build fails with
+2031 errors about `core` and `kernel` "compiled by an incompatible version of
+rustc", and none of them are yours. A full `make LLVM=1` is the fix.
+
+The series builds warning-clean under 1.98.1 -- vmlinux, modules, `rustfmtcheck`,
+and a second pass with `CONFIG_DRM_VINO_KUNIT_TEST=y` (19 suites still
+register). Worth knowing before the v4 send: this is the first build of the
+series on the toolchain it would be posted from.
 
 ### 2.3 `[?]` Answer Krummrich on the revocable I/O window
 
