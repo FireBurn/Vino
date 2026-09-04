@@ -1,4 +1,4 @@
-From 3b316da57d1c6fa7f76500c02e974607d7356b4c Mon Sep 17 00:00:00 2001
+From 161b68225aab92f40962786dacbb2c44a29b5d75 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:33:09 +0100
 Subject: [PATCH v4 6/13] drm/vino: add the video codec
@@ -475,10 +475,10 @@ index 000000000000..050ddb12f617
 +    }
 +}
 diff --git a/drivers/gpu/drm/vino/cp.rs b/drivers/gpu/drm/vino/cp.rs
-index 09ad9ca620d9..c7dec4a16a89 100644
+index 6ca36ed74755..2b5f9ac2da9c 100644
 --- a/drivers/gpu/drm/vino/cp.rs
 +++ b/drivers/gpu/drm/vino/cp.rs
-@@ -1525,8 +1525,8 @@ fn navarro_pipe_descriptor_matches_authenticated_capture() -> Result {
+@@ -1550,8 +1550,8 @@ fn navarro_pipe_descriptor_matches_authenticated_capture() -> Result {
  
          // The decoder configuration is the same message Ridge sends, with the DL7400's layout word.
          let tail = [0x5a; 14];
@@ -489,7 +489,7 @@ index 09ad9ca620d9..c7dec4a16a89 100644
          assert_eq!(config.len(), 1104);
          assert_eq!(
              &config[..26],
-@@ -1578,8 +1578,8 @@ fn ella_stream_records_match_the_captured_bytes() -> Result {
+@@ -1603,8 +1603,8 @@ fn ella_stream_records_match_the_captured_bytes() -> Result {
  
          // The decoder configuration, in full. 1920x1080 is stated as 1088 lines: the surface the
          // dock is told about is the padded one the codec actually produces.

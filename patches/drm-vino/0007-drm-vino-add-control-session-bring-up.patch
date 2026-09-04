@@ -1,4 +1,4 @@
-From 51502c2324636656450b39856ea305bbee7b231f Mon Sep 17 00:00:00 2001
+From ced20d1dde4f8dc6809466ac2dfd407b05529455 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:33:12 +0100
 Subject: [PATCH v4 7/13] drm/vino: add control-session bring-up
@@ -18,8 +18,8 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
  drivers/gpu/drm/vino/session.rs         |  623 ++++++++++
  drivers/gpu/drm/vino/session/replies.rs |  337 ++++++
- drivers/gpu/drm/vino/session/setup.rs   | 1388 +++++++++++++++++++++++
- 3 files changed, 2348 insertions(+)
+ drivers/gpu/drm/vino/session/setup.rs   | 1385 +++++++++++++++++++++++
+ 3 files changed, 2345 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/session.rs
  create mode 100644 drivers/gpu/drm/vino/session/replies.rs
  create mode 100644 drivers/gpu/drm/vino/session/setup.rs
@@ -998,10 +998,10 @@ index 000000000000..b86380d7327c
 +}
 diff --git a/drivers/gpu/drm/vino/session/setup.rs b/drivers/gpu/drm/vino/session/setup.rs
 new file mode 100644
-index 000000000000..93a3d6893a39
+index 000000000000..b0ce4bd5703d
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/session/setup.rs
-@@ -0,0 +1,1388 @@
+@@ -0,0 +1,1385 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! The post-authentication setup burst.
@@ -2098,12 +2098,9 @@ index 000000000000..93a3d6893a39
 +            for connector in 0..connector_count {
 +                settle_polls!(profile.protocol.setup_polls.before_open(connector as u8));
 +                let stream_id = profile.geometry().stream_id(connector as u8);
-+                let mut vkey = kernel::crypto::Secret::<16>::zeroed();
-+                vkey.copy_from_slice(&video_keys[connector][..16]);
-+                let mut vnonce = [0u8; 8];
-+                vnonce.copy_from_slice(&video_keys[connector][16..24]);
++                let vkey = cp::VideoKey::new(&video_keys[connector])?;
 +                let content = cp::stream_open(profile.protocol.stream_marker_kind);
-+                let open = cp::seal_video_arm(&vkey, &vnonce, stream_id, 0x000a, 0, &content)?;
++                let open = cp::seal_video_arm(&vkey, stream_id, 0x000a, 0, &content)?;
 +                link.ctrl_send(&open, timeout(), GFP_KERNEL)?;
 +                let announce = cp::stream_announce(
 +                    u16::from(profile.geometry().connector_selector(connector as u8)),

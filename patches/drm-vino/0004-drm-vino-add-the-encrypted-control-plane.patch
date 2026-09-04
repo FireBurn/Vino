@@ -1,4 +1,4 @@
-From c8f285ace9d82281ef93adf41f253f16c36be185 Mon Sep 17 00:00:00 2001
+From 60c835df18e74d0f44d34b72936c9c1e3e7443f8 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:49 +0100
 Subject: [PATCH v4 4/13] drm/vino: add the encrypted control plane
@@ -19,11 +19,11 @@ never acted on.
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- drivers/gpu/drm/vino/cp.rs        | 1623 +++++++++++++++++++++++++++++
+ drivers/gpu/drm/vino/cp.rs        | 1648 +++++++++++++++++++++++++++++
  drivers/gpu/drm/vino/cp/cursor.rs |  158 +++
  drivers/gpu/drm/vino/cp/edid.rs   |  482 +++++++++
- drivers/gpu/drm/vino/cp/mode.rs   |  874 ++++++++++++++++
- 4 files changed, 3137 insertions(+)
+ drivers/gpu/drm/vino/cp/mode.rs   |  874 +++++++++++++++
+ 4 files changed, 3162 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/cp.rs
  create mode 100644 drivers/gpu/drm/vino/cp/cursor.rs
  create mode 100644 drivers/gpu/drm/vino/cp/edid.rs
@@ -31,10 +31,10 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 
 diff --git a/drivers/gpu/drm/vino/cp.rs b/drivers/gpu/drm/vino/cp.rs
 new file mode 100644
-index 000000000000..09ad9ca620d9
+index 000000000000..6ca36ed74755
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/cp.rs
-@@ -0,0 +1,1623 @@
+@@ -0,0 +1,1648 @@
 +// SPDX-License-Identifier: GPL-2.0
 +//! Encrypted-control-plane message builders (the inner plaintext of the type=4
 +//! sub=0x24 AES-CTR frames) plus the AES-CTR `seal` that encrypts and frames them.
@@ -100,6 +100,31 @@ index 000000000000..09ad9ca620d9
 +    /// Encrypts or decrypts `data` in place with the frame's counter block.
 +    fn ctr(&self, riv: &[u8; 8], seq: u32, data: &mut [u8]) {
 +        self.aes.ctr(&mut ctr_block(riv, seq), data);
++    }
++}
++
++/// A connector's video sealing key: the whitened `SKE_Send_Eks` key with its schedule
++/// expanded, and the content nonce its stream counts from.
++///
++/// Every sealed record on the connector uses both, so they are split out of the stored
++/// blob once and held together thereafter.
++pub(super) struct VideoKey {
++    key: SessionKey,
++    nonce: [u8; 8],
++}
++
++impl VideoKey {
++    /// Expands the key at the front of a stored blob and keeps the nonce behind it. The blob
++    /// is laid out as key(16) || nonce(8) || pad(8); the pad is unused.
++    pub(super) fn new(blob: &kernel::crypto::Secret<32>) -> Result<Self> {
++        let mut key = [0u8; 16];
++        key.copy_from_slice(&blob[..16]);
++        let mut nonce = [0u8; 8];
++        nonce.copy_from_slice(&blob[16..24]);
++        Ok(Self {
++            key: SessionKey::new(key)?,
++            nonce,
++        })
 +    }
 +}
 +
@@ -1134,13 +1159,11 @@ index 000000000000..09ad9ca620d9
 +        b.extend_from_slice(&NAVARRO_SLOT_TRAILER, GFP_KERNEL)?;
 +    }
 +    debug_assert_eq!(b.len(), 304);
-+    debug_assert_eq!(b.len(), 304);
 +    Ok(b)
 +}
 +
 +pub(super) fn seal_video_arm(
-+    key: &[u8; 16],
-+    riv: &[u8; 8],
++    vkey: &VideoKey,
 +    sub: u16,
 +    aux: u16,
 +    seq: u32,
@@ -1154,7 +1177,7 @@ index 000000000000..09ad9ca620d9
 +    hdr[8..10].copy_from_slice(&sub.to_le_bytes());
 +    hdr[10..12].copy_from_slice(&aux.to_le_bytes());
 +    hdr[12..16].copy_from_slice(&seq.to_le_bytes());
-+    seal_livemac(&SessionKey::new(*key)?, riv, &hdr, content)
++    seal_livemac(&vkey.key, &vkey.nonce, &hdr, content)
 +}
 +/// Derive the primary dock-to-host CP RIV from the host-to-dock RIV.
 +///
@@ -1407,8 +1430,9 @@ index 000000000000..09ad9ca620d9
 +            (4, 0x0018, 0x000e, 1104),
 +        ];
 +        build_assert!(FINGERPRINT_H0.len() == VIDEO_ARM_BURST.len());
-+        let ks = SessionKey::new([0x5au8; 16])?;
-+        let riv = [0x11u8; 8];
++        let mut blob = kernel::crypto::Secret::new([0x5au8; 32]);
++        blob[16..24].fill(0x11);
++        let vkey = VideoKey::new(&blob)?;
 +        for (i, &(wire_type, sub_base, aux, body_len)) in VIDEO_ARM_BURST.iter().enumerate() {
 +            let (want_type, want_sub, want_aux, want_body) = FINGERPRINT_H0[i];
 +            assert_eq!(
@@ -1422,7 +1446,7 @@ index 000000000000..09ad9ca620d9
 +                assert_eq!(u16::from_le_bytes([frame[8], frame[9]]), want_sub);
 +            } else {
 +                let content = KVec::from_elem(0u8, body_len, GFP_KERNEL)?;
-+                let frame = seal_video_arm(ks.raw(), &riv, sub_base, aux, 0, &content)?;
++                let frame = seal_video_arm(&vkey, sub_base, aux, 0, &content)?;
 +                assert_eq!(frame.len(), 16 + body_len + 16);
 +                assert_eq!(u16::from_le_bytes([frame[8], frame[9]]), want_sub);
 +                assert_eq!(u16::from_le_bytes([frame[10], frame[11]]), want_aux);
@@ -1441,7 +1465,8 @@ index 000000000000..09ad9ca620d9
 +
 +        // Sealing it produces the 48-byte frame the dock is sent: a 16-byte header, the 16-byte
 +        // ciphertext and a 16-byte Dl3Cmac, with `size` covering all but the first four bytes.
-+        let frame = seal_video_arm(&[0u8; 16], &[0u8; 8], 0x0007, 0x0002, 0, &open)?;
++        let vkey = VideoKey::new(&kernel::crypto::Secret::zeroed())?;
++        let frame = seal_video_arm(&vkey, 0x0007, 0x0002, 0, &open)?;
 +        assert_eq!(frame.len(), 48);
 +        assert_eq!(u16::from_le_bytes([frame[2], frame[3]]), 0x002c);
 +        assert_eq!(u16::from_le_bytes([frame[8], frame[9]]), 0x0007);

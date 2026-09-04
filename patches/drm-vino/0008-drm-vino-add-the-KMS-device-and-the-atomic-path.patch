@@ -1,4 +1,4 @@
-From 794c3d5ff7e3d70b56d4cad893f41bfaa844907a Mon Sep 17 00:00:00 2001
+From aa9b621bcf58d42d3e32403de036a15616eec273 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:40:37 +0100
 Subject: [PATCH v4 8/13] drm/vino: add the KMS device and the atomic path
@@ -35,14 +35,14 @@ the encoder feed -- follows in the next commit.
 Assisted-by: Claude:claude-opus-5
 Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 ---
- drivers/gpu/drm/vino/drm_sink.rs              | 1860 +++++++++++++++++
+ drivers/gpu/drm/vino/drm_sink.rs              | 1864 +++++++++++++++++
  drivers/gpu/drm/vino/drm_sink/dispatch.rs     |  446 ++++
  drivers/gpu/drm/vino/drm_sink/driver.rs       |  211 ++
  drivers/gpu/drm/vino/drm_sink/limits.rs       |  489 +++++
  drivers/gpu/drm/vino/drm_sink/mode_objects.rs |  979 +++++++++
  drivers/gpu/drm/vino/drm_sink/settings.rs     |  574 +++++
  drivers/gpu/drm/vino/drm_sink/worker.rs       |  571 +++++
- 7 files changed, 5130 insertions(+)
+ 7 files changed, 5134 insertions(+)
  create mode 100644 drivers/gpu/drm/vino/drm_sink.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink/dispatch.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink/driver.rs
@@ -53,10 +53,10 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 
 diff --git a/drivers/gpu/drm/vino/drm_sink.rs b/drivers/gpu/drm/vino/drm_sink.rs
 new file mode 100644
-index 000000000000..7a235941e0ff
+index 000000000000..ade1dbe72003
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink.rs
-@@ -0,0 +1,1860 @@
+@@ -0,0 +1,1864 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! DRM/KMS integration for Vino.
@@ -1121,9 +1121,9 @@ index 000000000000..7a235941e0ff
 +    reports_presence: AtomicBool,
 +    /// Whether the connectors share one EDID handler; see [`DockProfile::shared_edid_handler`].
 +    shared_edid_handler: AtomicBool,
-+    /// Per-connector key and nonce used to seal pipe-arm records.
++    /// Per-connector key and nonce used to seal pipe-arm records, expanded once.
 +    #[pin]
-+    video_keys: Mutex<[kernel::crypto::Secret<32>; MAX_CONNECTORS]>,
++    video_keys: Mutex<[Option<Arc<crate::cp::VideoKey>>; MAX_CONNECTORS]>,
 +    /// When each connector last put a byte on its video endpoint.
 +    ///
 +    /// Drives the DL7400 keep-alive: see [`NAVARRO_VIDEO_QUIET_MS`] for why a connector that has
@@ -1275,9 +1275,7 @@ index 000000000000..7a235941e0ff
 +            stream_budget_bps: core::sync::atomic::AtomicU32::new(u32::MAX),
 +            stream_burst_bytes: core::sync::atomic::AtomicU32::new(u32::MAX),
 +            stream_credit <- new_spinlock!(StreamCredit::new()),
-+            video_keys <- new_mutex!(core::array::from_fn(
-+                |_| kernel::crypto::Secret::zeroed()
-+            )),
++            video_keys <- new_mutex!(core::array::from_fn(|_| None)),
 +            last_video_at <- new_spinlock!([None; MAX_CONNECTORS]),
 +            video_seal_seq: core::array::from_fn(
 +                |_| core::sync::atomic::AtomicU32::new(0)
@@ -1647,14 +1645,20 @@ index 000000000000..7a235941e0ff
 +        &self,
 +        keys: [kernel::crypto::Secret<32>; MAX_CONNECTORS],
 +        opened: u32,
-+    ) {
-+        *self.video_keys.lock() = keys;
++    ) -> Result {
++        let mut expanded: [Option<Arc<crate::cp::VideoKey>>; MAX_CONNECTORS] =
++            core::array::from_fn(|_| None);
++        for (slot, blob) in expanded.iter_mut().zip(keys.iter()) {
++            *slot = Some(Arc::new(crate::cp::VideoKey::new(blob)?, GFP_KERNEL)?);
++        }
++        *self.video_keys.lock() = expanded;
 +        self.stream_opened.store(opened, Ordering::Release);
 +        // A new key is a new keystream, so the block counters start over with it.
 +        for (connector, seq) in self.video_seal_seq.iter().enumerate() {
 +            let used = u32::from(opened & (1u32 << connector) != 0);
 +            seq.store(used, Ordering::Release);
 +        }
++        Ok(())
 +    }
 +
 +    /// Make a connector owe the records that open its stream, ahead of its next frame.

@@ -1,4 +1,4 @@
-From 8cd0e8b92bfeb7edcc1a30a123d6abe4fb939cbb Mon Sep 17 00:00:00 2001
+From 9f48919ad4bacf584bea49efc27da676052b3329 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:10 +0100
 Subject: [PATCH v4 11/13] drm/vino: add the USB driver frontend
@@ -37,7 +37,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 
 diff --git a/drivers/gpu/drm/vino/vino.rs b/drivers/gpu/drm/vino/vino.rs
 new file mode 100644
-index 000000000000..4a4bb22d6181
+index 000000000000..2be4b9768ee0
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/vino.rs
 @@ -0,0 +1,1734 @@
@@ -539,7 +539,7 @@ index 000000000000..4a4bb22d6181
 +                // Only the connectors whose stream this burst actually opened have consumed their
 +                // first sealed block. A connector with no sink yet is opened by whatever drives it
 +                // later, and must still start its chain at block zero.
-+                data.set_video_keys(video_keys, stream_opened);
++                data.set_video_keys(video_keys, stream_opened)?;
 +                // The silence watchdog cannot live on this thread: this is the thread it exists
 +                // to notice has stopped running.
 +                data.start_cp_watchdog(drm_dev);

@@ -1,4 +1,4 @@
-From ebeeea1554424dc0ccd8eb141cf8e5e453150dca Mon Sep 17 00:00:00 2001
+From 8f421fbb8eb42544cb48073d90f88b01224a7688 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:40:47 +0100
 Subject: [PATCH v4 9/13] drm/vino: add the dock activation and scanout path
@@ -44,9 +44,9 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  drivers/gpu/drm/vino/drm_sink/cp_session.rs |  414 ++++
  drivers/gpu/drm/vino/drm_sink/presence.rs   |  435 ++++
  drivers/gpu/drm/vino/drm_sink/scanout.rs    | 1965 +++++++++++++++++++
- drivers/gpu/drm/vino/drm_sink/stream.rs     |  470 +++++
+ drivers/gpu/drm/vino/drm_sink/stream.rs     |  467 +++++
  drivers/gpu/drm/vino/drm_sink/timeline.rs   |  571 ++++++
- 8 files changed, 5432 insertions(+), 1 deletion(-)
+ 8 files changed, 5429 insertions(+), 1 deletion(-)
  create mode 100644 drivers/gpu/drm/vino/drm_sink/activation.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink/bracket.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink/cp_session.rs
@@ -56,7 +56,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  create mode 100644 drivers/gpu/drm/vino/drm_sink/timeline.rs
 
 diff --git a/drivers/gpu/drm/vino/drm_sink.rs b/drivers/gpu/drm/vino/drm_sink.rs
-index 7a235941e0ff..1d0e4351e5e9 100644
+index ade1dbe72003..84cdb13e66e3 100644
 --- a/drivers/gpu/drm/vino/drm_sink.rs
 +++ b/drivers/gpu/drm/vino/drm_sink.rs
 @@ -46,11 +46,18 @@
@@ -4509,10 +4509,10 @@ index 000000000000..f0f326b37d21
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink/stream.rs b/drivers/gpu/drm/vino/drm_sink/stream.rs
 new file mode 100644
-index 000000000000..1adb37de980e
+index 000000000000..8cff16d010b1
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink/stream.rs
-@@ -0,0 +1,470 @@
+@@ -0,0 +1,467 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! Opening a connector's video stream, and the records that frame it.
@@ -4749,16 +4749,16 @@ index 000000000000..1adb37de980e
 +            timing.ten_bit,
 +        ))
 +    }
-+    /// This connector's video sealing key and nonce, as [`set_video_keys`](Self::set_video_keys)
-+    /// stored them: the whitened SKE key at the front and the stream content nonce behind it.
-+    fn video_seal_key(&self, connector: usize) -> Result<(kernel::crypto::Secret<16>, [u8; 8])> {
-+        let keys = self.video_keys.lock();
-+        let key = keys.get(connector).ok_or(EINVAL)?;
-+        let mut vkey = kernel::crypto::Secret::zeroed();
-+        vkey.copy_from_slice(&key[..16]);
-+        let mut vnonce = [0u8; 8];
-+        vnonce.copy_from_slice(&key[16..24]);
-+        Ok((vkey, vnonce))
++    /// This connector's video sealing key, as [`set_video_keys`](Self::set_video_keys) expanded
++    /// it. A caller seals a whole frame's worth of records from one of these, so it is handed out
++    /// by reference rather than rebuilt per record.
++    fn video_seal_key(&self, connector: usize) -> Result<Arc<crate::cp::VideoKey>> {
++        self.video_keys
++            .lock()
++            .get(connector)
++            .ok_or(EINVAL)?
++            .clone()
++            .ok_or(EINVAL)
 +    }
 +    /// Build the sealed decoder configuration a connector owes ahead of its first frame on a dock
 +    /// that shares its control pipe.
@@ -4768,7 +4768,7 @@ index 000000000000..1adb37de980e
 +    /// the mode set. The configuration continues the block counter the setup open started, which is
 +    /// why it must not be rebuilt from block zero.
 +    fn build_ella_config_buf(&self, connector: usize) -> Result<KVec<u8>> {
-+        let (vkey, vnonce) = self.video_seal_key(connector)?;
++        let vkey = self.video_seal_key(connector)?;
 +        let header = self.stream_mode_header(connector)?;
 +        let connector_selector = u8::try_from(connector).map_err(|_| EINVAL)?;
 +        let geometry = self.geometry();
@@ -4780,7 +4780,7 @@ index 000000000000..1adb37de980e
 +            self.connector_ten_bit(connector),
 +        )?;
 +        let seq = self.take_seal_seq(connector, config.len().div_ceil(16) as u32);
-+        crate::cp::seal_video_arm(&vkey, &vnonce, stream, 0x0000, seq, &config)
++        crate::cp::seal_video_arm(&vkey, stream, 0x0000, seq, &config)
 +    }
 +    /// Build the message a connector's video stream opens with, sent alone ahead of everything
 +    /// else.
@@ -4804,12 +4804,12 @@ index 000000000000..1adb37de980e
 +        if self.uses_arm_burst() || self.video_on_ctrl_pipe() {
 +            return Ok(None);
 +        }
-+        let (vkey, vnonce) = self.video_seal_key(connector)?;
++        let vkey = self.video_seal_key(connector)?;
 +        let content = crate::cp::navarro_stream_open();
 +        let stream = self.geometry().stream_id(connector as u8);
 +        let seq = self.take_seal_seq(connector, content.len().div_ceil(16) as u32);
 +        Ok(Some(crate::cp::seal_video_arm(
-+            &vkey, &vnonce, stream, 0x0002, seq, &content,
++            &vkey, stream, 0x0002, seq, &content,
 +        )?))
 +    }
 +    /// Build the sealed report a connector owes its stream for one frame.
@@ -4838,7 +4838,7 @@ index 000000000000..1adb37de980e
 +        {
 +            return Ok(None);
 +        }
-+        let (vkey, vnonce) = self.video_seal_key(connector)?;
++        let vkey = self.video_seal_key(connector)?;
 +        let stream = self.geometry().stream_id(connector as u8);
 +        let with_mode = self.video_on_ctrl_pipe()
 +            || self.arm_prefix_pending.load(Ordering::Acquire) & (1u32 << connector) != 0;
@@ -4859,7 +4859,7 @@ index 000000000000..1adb37de980e
 +        };
 +        let seq = self.take_seal_seq(connector, content.len().div_ceil(16) as u32);
 +        Ok(Some(crate::cp::seal_video_arm(
-+            &vkey, &vnonce, stream, aux, seq, &content,
++            &vkey, stream, aux, seq, &content,
 +        )?))
 +    }
 +    /// Build the DL7400 records that precede a connector's first frame.
@@ -4870,7 +4870,7 @@ index 000000000000..1adb37de980e
 +    /// counter, so on a first arm the descriptor seals at block 0 and the configuration at block
 +    /// 19 -- the descriptor's 304 bytes in blocks -- exactly as DLM's `0 -> 19 -> 88` chain does.
 +    fn build_navarro_prologue_buf(&self, connector: usize) -> Result<KVec<u8>> {
-+        let (vkey, vnonce) = self.video_seal_key(connector)?;
++        let vkey = self.video_seal_key(connector)?;
 +        let connector_selector = connector as u8;
 +        let geometry = self.geometry();
 +        let stream = geometry.stream_id(connector_selector);
@@ -4886,8 +4886,7 @@ index 000000000000..1adb37de980e
 +
 +        let descriptor = crate::cp::navarro_pipe_descriptor(connector_selector)?;
 +        let seal_seq = self.take_seal_seq(connector, descriptor.len().div_ceil(16) as u32);
-+        let sealed =
-+            crate::cp::seal_video_arm(&vkey, &vnonce, stream, 0x0000, seal_seq, &descriptor)?;
++        let sealed = crate::cp::seal_video_arm(&vkey, stream, 0x0000, seal_seq, &descriptor)?;
 +        buf.extend_from_slice(&sealed, GFP_KERNEL)?;
 +
 +        buf.extend_from_slice(&crate::cp::stream_announce(frame_sub, 0), GFP_KERNEL)?;
@@ -4916,13 +4915,13 @@ index 000000000000..1adb37de980e
 +        )?;
 +        let seal_seq = self.take_seal_seq(connector, config.len().div_ceil(16) as u32);
 +        buf.extend_from_slice(
-+            &crate::cp::seal_video_arm(&vkey, &vnonce, stream, 0x000e, seal_seq, &config)?,
++            &crate::cp::seal_video_arm(&vkey, stream, 0x000e, seal_seq, &config)?,
 +            GFP_KERNEL,
 +        )?;
 +        Ok(buf)
 +    }
 +    fn build_arm_burst_buf(&self, connector: usize) -> Result<KVec<u8>> {
-+        let (vkey, vnonce) = self.video_seal_key(connector)?;
++        let vkey = self.video_seal_key(connector)?;
 +        let h = connector as u16;
 +        // The sealed records share the video channel's running block counter:
 +        // #2 seq0(+1), #3 seq1(+1), #8 seq2(+69), and #9 seq71.
@@ -4938,8 +4937,7 @@ index 000000000000..1adb37de980e
 +                    // marker + 10 host-random bytes; seq is the shared block counter (16 B = 1
 +                    // block each).
 +                    let content = crate::cp::stream_open(self.stream_marker_kind());
-+                    let frame =
-+                        crate::cp::seal_video_arm(&vkey, &vnonce, sub, aux, seal_seq, &content)?;
++                    let frame = crate::cp::seal_video_arm(&vkey, sub, aux, seal_seq, &content)?;
 +                    seal_seq += 1;
 +                    buf.extend_from_slice(&frame, GFP_KERNEL)?;
 +                }
@@ -4967,8 +4965,7 @@ index 000000000000..1adb37de980e
 +                        self.connector_ten_bit(connector),
 +                    )?;
 +                    debug_assert_eq!(content.len(), body_len);
-+                    let frame =
-+                        crate::cp::seal_video_arm(&vkey, &vnonce, sub, aux, seal_seq, &content)?;
++                    let frame = crate::cp::seal_video_arm(&vkey, sub, aux, seal_seq, &content)?;
 +                    seal_seq += (body_len / 16) as u32;
 +                    buf.extend_from_slice(&frame, GFP_KERNEL)?;
 +                }
