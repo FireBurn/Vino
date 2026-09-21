@@ -31,10 +31,10 @@ patch_root="$workspace/patches"
 # Send order, which is also apply order.
 series_order=(rust-core rust-crypto rust-usb rust-drm rust-firmware drm-vino)
 
-# Carried but deliberately not posted: build fixes the reference tree needs that
-# enable no part of Vino. They are applied only for the tree-identity check, so
+# Carried but deliberately not posted: a build fix the reference tree needs that
+# enables no part of Vino. It is applied only for the tree-identity check, so
 # that the branch and the posting can be compared like for like.
-carried_order=(sched-fair drm-tyr)
+carried_order=(drm-tyr)
 
 build=0
 [ "${1:-}" = "--build" ] && build=1

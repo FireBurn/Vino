@@ -50,11 +50,10 @@ kunit_suites="$(grep -rho '#\[kunit_tests(' "$vino_src" --include=*.rs | wc -l)"
 # earlier one, never the reverse. Membership is decided from the subject alone so
 # that adding a commit needs no edit here.
 series_order=(rust-core rust-crypto rust-usb rust-drm rust-firmware drm-vino)
-carried_order=(sched-fair drm-tyr)
+carried_order=(drm-tyr)
 
 classify() {
     case "$1" in
-    "sched/fair: "*)                    printf 'sched-fair' ;;
     "rust: crypto: "*)                  printf 'rust-crypto' ;;
     "rust: usb: "*)                     printf 'rust-usb' ;;
     "rust: drm"*)                       printf 'rust-drm' ;;
@@ -68,7 +67,6 @@ classify() {
 
 title() {
     case "$1" in
-    sched-fair)    printf 'sched/fair: stop reading a guard flag after the guard drops it' ;;
     rust-core)     printf 'rust: core abstractions for a USB display driver' ;;
     rust-crypto)   printf 'rust: crypto: AES, AES-CTR, CMAC, SHA-256, HMAC and RSA bindings' ;;
     rust-usb)      printf 'rust: usb: host-side abstractions for a bulk-endpoint driver' ;;
@@ -220,10 +218,9 @@ drm-rust-next tip of 2026-09-20. drm-next has moved on since, and this follows
 drm-rust-next deliberately: the KMS layer underneath this work lives only there,
 and that tree picks up drm-next on its own schedule
 
-Two commits on the branch are not in any of the series above, because they
-enable no part of Vino: a scheduler call site that stops compiling under the
-locking-guard series, and the Kms associated type Tyr needs once the KMS
-registration trait requires one
+One commit on the branch is not in any of the series above, because it enables
+no part of Vino: the Kms associated type Tyr needs once the KMS registration
+trait requires one
 TREE
 }
 
@@ -280,24 +277,6 @@ DISCLOSURE
 # unwritten blurb is visible rather than silently absent.
 blurb() {
     case "$1" in
-    sched-fair) cat <<'BLURB'
-"locking: Switch to _irq_{disable,enable}() variants in cleanup guards" removed
-the flags field from the raw_spinlock_irqsave and spinlock_irqsave CLASS()
-guards, since the new primitives do not need explicit flags storage.
-sched_cfs_period_timer() is the one place left in the tree that still read
-cfsb_guard.flags directly, so it stops building once that lands.
-
-A tree-wide grep for CLASS(raw_spinlock_irqsave, ...) and
-CLASS(spinlock_irqsave, ...) turns up no other consumer of the removed field.
-This desugars that one call site back to raw_spin_lock_irqsave() and
-raw_spin_unlock_irqrestore(). No behavioural change: the lock is held over the
-same span through both return paths, and do_sched_cfs_period_timer() still gets
-the same flags value.
-
-Not posted with the Vino series: it enables no part of it. It belongs to the
-scheduler, and it is a build fix for a series already in flight.
-BLURB
-        ;;
     drm-tyr) cat <<'BLURB'
 The KMS registration trait gains a required Kms associated type. Tyr is a
 render-only driver, so it selects the non-KMS PhantomData implementation just as
@@ -858,8 +837,8 @@ fi
 
     printf 'posting and re-run this before preparing the next.\n\n'
     printf '## Not posted\n\n'
-    printf 'Under `not-posted/`. Both are build fixes the reference tree needs and neither\n'
-    printf 'enables any part of Vino, so neither is sent alongside it.\n\n'
+    printf 'Under `not-posted/`. A build fix the reference tree needs that enables no\n'
+    printf 'part of Vino, so it is not sent alongside it.\n\n'
     for group in "${carried_order[@]}"; do
         printf '| `%s` | %d |\n' "$group" "${counts[$group]}"
     done
@@ -868,6 +847,6 @@ fi
 
 printf '\n%d patches: %d across %d posted series, %d carried and not posted\n' \
     "$exported" \
-    "$(( exported - counts[sched-fair] - counts[drm-tyr] ))" \
+    "$(( exported - counts[drm-tyr] ))" \
     "${#series_order[@]}" \
-    "$(( counts[sched-fair] + counts[drm-tyr] ))"
+    "${counts[drm-tyr]}"
