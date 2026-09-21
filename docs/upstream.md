@@ -1,5 +1,221 @@
 # Upstream status and review disposition
 
+## 2026-09-21 re-check: rebase is cheap, and nothing upstream is ready to take
+
+Rechecked against `drm-rust-next`, Lyude's tree and the mailbox, and the branch was
+rebased onto the result. Three-line summary: **the rebase cost one conflict; no
+prerequisite has landed; one patch we carried had gone stale and is now dropped.**
+
+`vino` is `6bd5eaeb9827` + **102** commits (was 103). Pre-rebase branch kept as
+`backup/vino-20260921-pre-rebase`.
+
+### The base moved, and following it was nearly free
+
+`drm-rust-next` went `c63829528980` -> `6bd5eaeb9827` (59 commits, tip 2026-09-20).
+⚠ **No `drm-next` merge in that range** -- it is driver-core's `rust-io-7.4-rc1` and
+`rust-dma-7.4-rc1`, plus nova-core's MM/page-table work. So the DRM content under us is
+unchanged; what moved is `rust/kernel/io.rs`.
+
+Test-rebased all 103 of our commits onto the new tip:
+
+- **one conflict**, in `rust/kernel/io.rs`. Upstream's `rust: io: perform conversions
+  using AsRepr` added `io_view_as_repr()` in the same place our
+  `rust: io: add checked offset copy helpers` adds `io_byte_slice()`. Both are new
+  free functions next to `io_view()`; the resolution is to keep both.
+- `git range-diff` reports **two patches changed, both context-only**: the io one above,
+  and `rust: helpers/drm.c: Split into its own folder`, whose context shifted because
+  upstream added `dma_fence.c` to `helpers.c`.
+- The whole collision surface is **six files**: `rust/kernel/io.rs`, `rust/kernel/lib.rs`,
+  `rust/bindings/bindings_helper.h`, `rust/helpers/helpers.c`, `MAINTAINERS` and
+  `drivers/gpu/drm/tyr/driver.rs`. Only the first needed a human.
+- The rebased branch builds **warning-clean**: `make LLVM=1` and `make LLVM=1 modules`
+  both exit 0 with zero warnings, and `vino.ko` is produced. (⚠ `make modules` alone
+  fails at modpost with `vmlinux.o is missing` and a wall of undefined symbols -- that is
+  the missing vmlinux, not the rebase. Build the kernel first.)
+
+### Prerequisites: none landed, one is close
+
+| Dependency | State on 2026-09-21 | Action |
+|---|---|---|
+| Lyude Paul, Rust KMS | Still no `rust/kernel/drm/kms*` upstream | Keep carrying |
+| Colin Braun, URB | Unchanged since the 2026-07-12 v1; no replies | Keep carrying |
+| Danilo Krummrich, workqueue | **Still v2, but reviewed** | Wait for v3 |
+| `wait_for_completion_timeout` | Upstream `completion.rs` still has only `wait_for_completion()` | Ours is load-bearing |
+| Boqun et al., interrupt prerequisites | **Resolved** | Watch item closed |
+| Igor Korotin, Rust I2C | **Landed in v7.3-rc1** -- but consumer side only | Disposition unchanged |
+
+**Lyude's branch has been rebuilt.** `rvkms-slim` no longer has our imported
+`25bc8cc7e97f` as an ancestor; its tip is `46f373d35b78` (2026-09-01),
+literally `WIP: DOES NOT COMPILE`, 13 files, +379/-75, reworking `drm/kms.rs`,
+`kms/crtc.rs`, `kms/framebuffer.rs`, `kms/plane.rs` and `kms/encoder.rs`.
+⛔ **Nothing to take**: it does not build, and it is a WIP branch, not a posted
+revision. The 17 `fixup!` commits under it are dated 2026-07-17..24 -- they *predate*
+our last check -- and all 14 targets are commits we carry. Spot-checked the most
+substantive one (`fixup! rust: drm/kms: Add drm_connector bindings`, which narrows
+`Send`/`Sync` from any `DeviceContext` to the initialised one): **we already carry the
+tightened form**, in connector, crtc, plane and encoder alike. So the fixups are folded
+and only the 2026-09-01 WIP is new. Watch it; do not import it.
+
+**The workqueue series is the one to watch.** Danilo's
+`[PATCH v2 0/6] workqueue: OwnedQueue, ScopedQueue and ScopedWork` is still v2
+(2026-08-07), but it is no longer quiet: Daniel Almeida gave `Reviewed-by` on 1/6, 2/6,
+3/6 and 4/6 on 2026-08-27, Alice Ryhl and Gary Guo reviewed 5/6 and 6/6 on 2026-09-02,
+and Onur Ozkan answered both on 2026-09-12. A v3 is likely imminent. The plan is
+unchanged: take it when v3 lands, in **one** commit that swaps the prerequisites and
+migrates the seven `Work::cancel_sync()` call sites together.
+
+**The interrupt watch item is closed.** `rust/kernel/interrupt.rs` is present in our own
+base (it arrived with v7.3-rc1) and Boqun's `e901c1510e24` is an ancestor of
+`drm-rust-next`. The series carries exactly one interrupt-adjacent commit now,
+`rust: hrtimer: expose interrupt state in hard callbacks`. The 2026-08-23 instruction to
+"re-check the whole group before cutting v3" has been discharged: the group is gone.
+
+**I2C landed, and it does not help us.** Igor Korotin's work merged for v7.3-rc1 (via
+`i2c-7.3-part2` and `driver-core-7.3-rc1`) and is therefore already under us. ⚠ It is the
+**consumer** side -- `I2cClient`, `I2cAdapter::get(index)`, a client `Registration`, and
+an `Adapter<T>` that is the driver-matching adapter, not a bus one. There is no
+`i2c_add_adapter`, no `i2c_algorithm`, no `master_xfer`. The **adapter-provider** binding
+vino would need to publish a DDC/CI channel still does not exist, so the v1/v2 decision
+not to register a downstream adapter stands -- but its stated reason ("Igor's
+provider-lifetime issue is unresolved") is no longer the live one, and the disposition
+text should say so when v4 goes out.
+
+### ⛔ `sched-fair` dropped: its premise was false
+
+`045c0a4a859f sched/fair: stop reading cfsb_guard.flags after the guard drops it`
+desugars one `CLASS(raw_spinlock_irqsave, cfsb_guard)` call site back to plain
+`raw_spin_lock_irqsave()`, because the locking-guard series we used to carry removed the
+`flags` field from that guard.
+
+**We do not carry that series any more.** Our branch does not touch
+`include/linux/spinlock.h` at all, and both our tree and `drm-rust-next` still define the
+guard as `DEFINE_LOCK_GUARD_1(raw_spinlock_irqsave, ..., unsigned long flags)`.
+`kernel/sched/fair.c:7494` reads `cfsb_guard.flags` upstream today and compiles.
+
+So the patch worked around a removal that no longer happens: a no-op, and an unrelated
+change to `kernel/sched/fair.c` sitting in the branch whose commit message argued from a
+premise that is false against mainline.
+
+**Dropped.** `kernel/sched/` now matches upstream byte for byte, `carried_order` is just
+`drm-tyr` in both `tools/regenerate-patches.sh` and `tools/check-series.sh`,
+`patches/not-posted/sched-fair/` is gone, and the cover letters say "one commit" rather
+than two. The open item about sending it to Peter Zijlstra and Ingo Molnar is closed.
+
+### Folded while rebasing
+
+Three comments in the driver described code that is not there, which is the one style rule
+this tree breaks most easily. Each fix went into the commit that owns the line
+(`git commit --fixup` + `--autosquash`), not a follow-up cleanup patch:
+
+- `drm_sink/presence.rs` explained which repair strategy was tried before and why it was
+  abandoned. It now states what the repair does and what dropping the connector instead
+  would cost.
+- `session/setup.rs` described the timing of an eight-drain reply loop the code no longer
+  has. It now states the rule and keeps the 90 ms that constrains it.
+- `cp.rs` said "beyond the old catalogued range", implying a superseded catalogue.
+
+⚠ Non-ASCII survives in `rust/kernel/drm/kms/crtc.rs`, `rust/kernel/usb.rs` and
+`rust/kernel/usb/ch9.rs` -- ellipses, an em-dash and `§`. All are **Lyude's and Colin
+Braun's own lines**, so they stay: third-party commits keep their content. Our own
+sources and all 58 of our commit messages are clean of non-ASCII, dates, out-of-tree
+paths and AI tells.
+
+### Two pre-send checks had been verifying nothing
+
+Both were pinned to bases that stopped being current two rebases ago, so they
+looked like they passed (or failed noisily) without checking what they claim to.
+
+- **`tools/validate.sh` defaulted to `integration/base-20260809`.** Everything it
+  derives from `$kernel_base..$kernel_head` was therefore computed over thousands of
+  unrelated upstream commits: its `git diff --check` was reporting trailing whitespace in
+  `drivers/gpu/drm/amd`, `drivers/mtd`, `fs/ntfs3` and `io_uring`. Now
+  `integration/base-20260921`. ⭐ With the right base it immediately found three real
+  defects it had been unable to see: `color.rs:22` (112 columns, and `*every*` markdown
+  emphasis, which upstream style forbids in doc comments), `cp.rs:787` (102) and
+  `drm_sink/scanout.rs:621` (112) -- all outside string literals, so all genuine. Reflowed
+  and folded into their owning commits.
+- **`tools/regenerate-patches.sh` was putting a false paragraph in all six cover
+  letters**: "The reference branch also carries Boqun Feng's counted interrupt disabling
+  series". It does not -- the branch's only non-Mike authors are Lyude Paul, Colin Braun,
+  Alice Ryhl and Onur Ozkan, and `e901c1510e24` is an ancestor of our own base. Removed;
+  that also cleared all six `checkpatch` ERRORs, which were the bare `as e901c1510e24`
+  reference failing the `commit <sha> ("title")` rule.
+
+### Mannered emphasis removed from the driver's comments
+
+The driver had 56 single-asterisk italics in its comments. 35 introduce a term
+(`the *wire*`, `*encoded*`) and are ordinary typography, kept. The other 22 emphasised
+function words -- `*is*`, `*and*`, `*that*`, `*first*`, `*before*` -- which is the
+house-style tic the upstream rules mean by shouty emphasis, and reads as somebody's notes
+rather than kernel code. All 22 are gone, across 12 files, folded into the eight commits
+that own the lines. No `**bold**` was present. `color.rs`'s `*every*` went with the
+reflow above.
+
+⚠ **`checkpatch` must be run from inside the kernel tree.** Run from `vino/` it cannot
+find the tree root, gives up on parsing, and reports every blank context line in a hunk as
+`ERROR: trailing whitespace` -- 194 of them, all false. From `linux/` the same patches give
+**0 errors**.
+
+Where the series now stands on the standard checks: `rustfmtcheck` clean, `checkpatch
+--strict` 0 errors, and the remaining warnings are the expected ones -- 17 "does
+MAINTAINERS need updating?" for new files, Rust 100-column notes on string literals, and
+cover-letter prose wrapped at 80 rather than 75.
+
+### ⚠ For Mike: four of Lyude's commits are not patch-identical
+
+`tools/validate.sh` compares the third-party commits against
+`backup/vino-usb-unsplit-20260728`, a branch of ours from before both the rust-drm recut
+and the rust-usb split, so that comparison has been failing on noise since 2026-08-24.
+**Not caused by the rebase** -- it fails identically on `backup/vino-20260921-pre-rebase`
+against the old base.
+
+Comparing against the real source instead (`reference/lyude-rvkms-slim`, the imported
+`25bc8cc7e97f`) gives a cleaner answer. Of her 37 commits, **29 are byte-identical**, and
+of the 8 that are not, 4 differ only in rebase context -- the fourcc commit, for instance,
+differs solely by a `pub mod gpuvm;` context line that upstream added since.
+
+**Four have genuinely modified content**, small but real:
+
+| commit | changed lines |
+|---|---:|
+| `rust: drm: Add traits for registering KMS devices` | 75 |
+| `rust: drm: Add Device::event_lock()` | 15 |
+| `rust: helpers/drm.c: Split into its own folder` | 10 |
+| `rust: drm/kms: Add VblankSupport` | 9 |
+
+The cover letters and the v1/v2 disposition both say her commits are "patch-identical to
+the imported source", with adaptations kept as separate Mike-authored commits. For these
+four that is not true: the adaptation is folded into her commit.
+
+⛔ **Left alone deliberately.** Splitting an adaptation back out of someone else's commit
+is a change to attribution, and the decision is yours: either move those hunks into
+Mike-authored follow-ups so the claim holds, or soften the claim in the cover letters to
+say her commits are carried with minimal adaptation where the current DRM API required it.
+Whichever way, `validate.sh`'s `external_reference` should point at
+`reference/lyude-rvkms-slim` rather than one of our own old backups, and the comparison
+should ignore context lines, or it can never pass across a rebase.
+
+### Mailbox notes
+
+- **Randy Dunlap replied to `[PATCH v3 13/13]`** (2026-08-26,
+  `rdunlap@infradead.org`) with comments on `Documentation/gpu/vino.rst`. Human review,
+  not yet dispositioned in `todo.md`.
+- Miguel Ojeda replied to `[PATCH 0/9] rust: core abstractions for a USB display driver`
+  on 2026-08-26.
+- `sashiko-bot` reviewed most of the `drm-vino` patches; its recurring high-severity claim
+  across 6/13, 7/13, 8/13, 9/13, 11/13 and 12/13 is **sleeping in atomic KMS callbacks**.
+  Worth answering once, centrally, rather than six times.
+- ⚠ Several v3 Cc addresses **bounced**: `airlied@gmail.com` and
+  `nick.desaulniers+lkml@gmail.com` (Gmail policy), `daniel.almeida@collabora.com`
+  (remote policy), plus kernel.org SRS bounces. Fix the Cc list before v4 or those
+  maintainers never see it.
+- Someone else is in this space now: `[PATCH] drm/trigger5: Add MCT Trigger 5 USB display
+  driver` (Ho Jie Feng, 2026-09-10, v2 2026-09-14) -- a C driver for MCT Trigger 5
+  adapters, on dri-devel. Not a dependency; useful precedent for how dri-devel receives a
+  reverse-engineered USB display driver.
+
+---
+
 ## v3, as cut on 2026-08-26
 
 **Six series are posted, and two of our own commits are deliberately not.**
