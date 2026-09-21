@@ -21,7 +21,7 @@ set -euo pipefail
 
 workspace="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 kernel_tree="${KERNEL_TREE:-$workspace/linux}"
-kernel_base="${KERNEL_BASE:-integration/base-20260901}"
+kernel_base="${KERNEL_BASE:-integration/base-20260921}"
 kernel_head="${KERNEL_HEAD:-vino}"
 author_email="${AUTHOR_EMAIL:-mike@fireburn.co.uk}"
 msgid_file="${MSGID_FILE:-$workspace/tools/v4-message-ids.txt}"
@@ -216,8 +216,7 @@ CONFIG_RUST=y and CONFIG_DRM_VINO=m are the two to set; DRM_VINO selects the
 rest of what it needs
 
 It is the exact tree these patches were generated from, at $base_short, the
-drm-rust-next tip of 2026-08-31, which merges v7.3-rc1. drm-next has moved on
-since, and this follows
+drm-rust-next tip of 2026-09-20. drm-next has moved on since, and this follows
 drm-rust-next deliberately: the KMS layer underneath this work lives only there,
 and that tree picks up drm-next on its own schedule
 

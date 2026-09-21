@@ -21,10 +21,10 @@ workspace="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 kernel_tree="${KERNEL_TREE:-$workspace/linux}"
 # The tree the patches are applied to: the posting base plus the third-party
 # series the cover letters declare (Ryhl's workqueue, Braun's URB, Lyude's KMS).
-# integration/base-20260901 is the base a cover letter quotes; the prereqs tag is
+# integration/base-20260921 is the base a cover letter quotes; the prereqs tag is
 # base plus exactly those, which is what a reviewer taking the prerequisites has.
-kernel_base="${KERNEL_BASE:-integration/prereqs-20260901}"
-posting_base="${POSTING_BASE:-integration/base-20260901}"
+kernel_base="${KERNEL_BASE:-integration/prereqs-20260921}"
+posting_base="${POSTING_BASE:-integration/base-20260921}"
 kernel_head="${KERNEL_HEAD:-vino}"
 patch_root="$workspace/patches"
 
