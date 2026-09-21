@@ -1,4 +1,4 @@
-From eb2cb0ee8bed118d253135e79fa57cfc32099df9 Mon Sep 17 00:00:00 2001
+From fc3e9040ea117af20923c2b322532fc46647b829 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 27 Jul 2026 18:33:00 +0100
 Subject: [PATCH v4 27/27] rust: drm: expose HDCP 2.2 message identifiers
@@ -19,7 +19,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  create mode 100644 rust/kernel/drm/display/hdcp.rs
 
 diff --git a/rust/bindings/bindings_helper.h b/rust/bindings/bindings_helper.h
-index 59bc3e81a264..6e608daff8bd 100644
+index bfc3283c9ff8..bcd389c5724a 100644
 --- a/rust/bindings/bindings_helper.h
 +++ b/rust/bindings/bindings_helper.h
 @@ -34,6 +34,7 @@

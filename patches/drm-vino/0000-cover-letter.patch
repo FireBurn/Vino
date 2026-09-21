@@ -162,16 +162,14 @@ quickest way to read it:
 CONFIG_RUST=y and CONFIG_DRM_VINO=m are the two to set; DRM_VINO selects the
 rest of what it needs
 
-It is the exact tree these patches were generated from, at c63829528980, the
-drm-rust-next tip of 2026-08-31, which merges v7.3-rc1. drm-next has moved on
-since, and this follows
+It is the exact tree these patches were generated from, at 6bd5eaeb9827, the
+drm-rust-next tip of 2026-09-20. drm-next has moved on since, and this follows
 drm-rust-next deliberately: the KMS layer underneath this work lives only there,
 and that tree picks up drm-next on its own schedule
 
-Two commits on the branch are not in any of the series above, because they
-enable no part of Vino: a scheduler call site that stops compiling under the
-locking-guard series, and the Kms associated type Tyr needs once the KMS
-registration trait requires one
+One commit on the branch is not in any of the series above, because it enables
+no part of Vino: the Kms associated type Tyr needs once the KMS registration
+trait requires one
 
 It applies to the base above plus this, and nothing else:
 
@@ -184,9 +182,6 @@ It applies to the base above plus this, and nothing else:
   Alice Ryhl, Creation of workqueues in Rust, plus Onur Ozkan's cancel_sync
   https://lore.kernel.org/r/20260312-create-workqueue-v4-0-ea39c351c38f@google.com
 
-The reference branch also carries Boqun Feng's counted interrupt disabling
-series, which SpinLockIrq needs. One patch of it is already in tip locking/core
-as e901c1510e24
 
 Danilo Krummrich's OwnedQueue, ScopedQueue and ScopedWork series supersedes part
 of the workqueue work carried here, and is the better answer: Vino calls
@@ -220,9 +215,9 @@ Mike Lothian (13):
   drm/vino: allow the driver to be built
   Documentation/gpu: document the Vino driver
 
- 43 files changed, 24196 insertions(+), 5 deletions(-)
+ 43 files changed, 24195 insertions(+), 5 deletions(-)
 
-base-commit: c63829528980507a0a9146031e0c08499f53cf3d
+base-commit: 6bd5eaeb9827ca7ba953b68fb27948fdb3e40630
 prerequisite-message-id: <20250305230406.567126-1-lyude@redhat.com>
 prerequisite-message-id: <20260712-urb-abstraction-v1-v1-0-9fa011634ead@gmail.com>
 prerequisite-message-id: <20260312-create-workqueue-v4-0-ea39c351c38f@google.com>

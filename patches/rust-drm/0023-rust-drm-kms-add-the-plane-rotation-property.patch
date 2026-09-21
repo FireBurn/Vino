@@ -1,4 +1,4 @@
-From 495fd25cbba8b3e9145009ec6a732e3c6f4ab4e4 Mon Sep 17 00:00:00 2001
+From 78336266f81a450833882212a375d2f885309c05 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 2 Sep 2026 02:27:30 +0100
 Subject: [PATCH v4 23/27] rust: drm: kms: add the plane rotation property
@@ -16,7 +16,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  2 files changed, 73 insertions(+)
 
 diff --git a/rust/bindings/bindings_helper.h b/rust/bindings/bindings_helper.h
-index 92f5f2700586..59bc3e81a264 100644
+index 3fdb417c8370..bfc3283c9ff8 100644
 --- a/rust/bindings/bindings_helper.h
 +++ b/rust/bindings/bindings_helper.h
 @@ -36,6 +36,7 @@

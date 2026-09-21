@@ -1,4 +1,4 @@
-From 9f48919ad4bacf584bea49efc27da676052b3329 Mon Sep 17 00:00:00 2001
+From c2c6884b81cfbcdc1cb70231decbd2f3ef9031ce Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:10 +0100
 Subject: [PATCH v4 11/13] drm/vino: add the USB driver frontend
@@ -37,7 +37,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 
 diff --git a/drivers/gpu/drm/vino/vino.rs b/drivers/gpu/drm/vino/vino.rs
 new file mode 100644
-index 000000000000..2be4b9768ee0
+index 000000000000..a21685b3d25f
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/vino.rs
 @@ -0,0 +1,1734 @@
@@ -808,7 +808,7 @@ index 000000000000..2be4b9768ee0
 +            /// How long a connector must read absent before its monitor is called removed.
 +            ///
 +            /// A removal has to be debounced in TIME, not in probes: every `id=0x44` reply sets the
-+            /// downstream-event flag, and a presence probe's own reply *is* an `id=0x44`, so the
++            /// downstream-event flag, and a presence probe's own reply is an `id=0x44`, so the
 +            /// watcher kept pulling itself forward to `PRESENCE_MIN_GAP` and "two consecutive
 +            /// contrary reads" fired 132 ms after the first negative.
 +            ///
@@ -1115,7 +1115,7 @@ index 000000000000..2be4b9768ee0
 +                            // choreography for both panels. Firing one per flap puts the dock into
 +                            // a permanent re-activation loop, one every five to fifteen seconds,
 +                            // and neither panel stays lit. Absorbing the blip is the whole point; a
-+                            // drop that does *not* heal still falls through to the timed removal
++                            // drop that does not heal still falls through to the timed removal
 +                            // below.
 +                            if present && connector_absent_since[h].take().is_some() {
 +                                let now = Instant::<Monotonic>::now();
@@ -1270,7 +1270,7 @@ index 000000000000..2be4b9768ee0
 +/// Which DisplayLink function an interface exposes, i.e. why this driver was offered it.
 +///
 +/// This is what the ID table carries. A table of product IDs cannot say anything useful about
-+/// hardware nobody has tested, but the interface descriptor says what a function *is*, and that
++/// hardware nobody has tested, but the interface descriptor says what a function is, and that
 +/// is stable across every dock in the family.
 +#[derive(Clone, Copy, PartialEq, Eq)]
 +pub(crate) enum Function {
@@ -1343,7 +1343,7 @@ index 000000000000..2be4b9768ee0
 +        let ifnum = intf.number().ok_or(ENODEV)?;
 +        log_device_identity(cdev, intf, ifnum);
 +
-+        // What this hardware *is*, asked of the hardware. `read_identity` walks the ordinary
++        // What this hardware is, asked of the hardware. `read_identity` walks the ordinary
 +        // configuration descriptor: one standard control transfer, no session and no crypto, so
 +        // it works at probe on either interface and long before the dock will talk to anyone.
 +        let identity = io

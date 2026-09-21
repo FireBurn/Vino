@@ -1,4 +1,4 @@
-From d36f755d5b0d006e981fe783eefa296a962aa8ae Mon Sep 17 00:00:00 2001
+From 58805273d9a3a05d1dca8da78b37f9a3175503e3 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Thu, 2 Jul 2026 16:27:50 +0100
 Subject: [PATCH v4 20/27] rust: drm: kms: add plane damage-clip accessors
@@ -19,7 +19,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  2 files changed, 106 insertions(+)
 
 diff --git a/rust/bindings/bindings_helper.h b/rust/bindings/bindings_helper.h
-index c4ff2e05aa94..92f5f2700586 100644
+index bee53618c804..3fdb417c8370 100644
 --- a/rust/bindings/bindings_helper.h
 +++ b/rust/bindings/bindings_helper.h
 @@ -39,6 +39,7 @@

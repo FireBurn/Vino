@@ -1,4 +1,4 @@
-From 3118037665ca41fe4fd4b21861a4fcf9c4c450b8 Mon Sep 17 00:00:00 2001
+From 2e9ff3922816dda7d751f7b7d1bc4d7560f81015 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 2 Sep 2026 02:30:35 +0100
 Subject: [PATCH v4 14/27] rust: drm: kms: expose the CRTC mode and the plane

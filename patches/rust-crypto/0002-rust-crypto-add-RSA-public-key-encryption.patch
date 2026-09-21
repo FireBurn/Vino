@@ -1,4 +1,4 @@
-From 083c016141dbeaf343404cc241b6e68822961c54 Mon Sep 17 00:00:00 2001
+From 5559189ca2af50b2caafa14e20cd931c06c16362 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 31 Aug 2026 18:36:09 +0100
 Subject: [PATCH v4 2/2] rust: crypto: add RSA public-key encryption
@@ -57,7 +57,7 @@ index 981d5dc422d4..6b4c3b073d6e 100644
  	tristate
  	select CRYPTO_ALGAPI2
 diff --git a/rust/bindings/bindings_helper.h b/rust/bindings/bindings_helper.h
-index e253e4ed583c..2be6f58f2ffd 100644
+index 3592b1c229b8..555181bd42ad 100644
 --- a/rust/bindings/bindings_helper.h
 +++ b/rust/bindings/bindings_helper.h
 @@ -28,6 +28,7 @@

@@ -1,4 +1,4 @@
-From ced20d1dde4f8dc6809466ac2dfd407b05529455 Mon Sep 17 00:00:00 2001
+From 663e0368f0e8585872dc76ee61d9f3eb1fb8cccd Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:33:12 +0100
 Subject: [PATCH v4 7/13] drm/vino: add control-session bring-up
@@ -998,7 +998,7 @@ index 000000000000..b86380d7327c
 +}
 diff --git a/drivers/gpu/drm/vino/session/setup.rs b/drivers/gpu/drm/vino/session/setup.rs
 new file mode 100644
-index 000000000000..b0ce4bd5703d
+index 000000000000..2589c02ffc1e
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/session/setup.rs
 @@ -0,0 +1,1385 @@
@@ -1117,9 +1117,9 @@ index 000000000000..b0ce4bd5703d
 +                q.send(link.io(), &frame, timeout())?;
 +                q.flush(link.io(), timeout())?;
 +                if profile.protocol.reply_discipline == profile::ReplyDiscipline::Lockstep {
-+                    // DLM advances as soon as the dock authenticates msg0. The old eight-drain
-+                    // loop waited for seven empty 10-ms windows after that reply and moved every
-+                    // following setup transition roughly 90 ms later on the wire.
++                    // DLM advances as soon as the dock authenticates msg0, so take the reply
++                    // directly. Draining empty 10-ms read windows first moves every following
++                    // setup transition roughly 90 ms later on the wire.
 +                    let d = Self::lockstep_reply(
 +                        link,
 +                        ep84_q.as_mut(),

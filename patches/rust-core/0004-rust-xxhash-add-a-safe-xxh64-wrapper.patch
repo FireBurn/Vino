@@ -1,4 +1,4 @@
-From 6d73e37f887f4881a6eabafbcb8df4fbc4a6bc14 Mon Sep 17 00:00:00 2001
+From 77c300218ea500c99860d756536498e96de1c0a8 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 21:44:01 +0100
 Subject: [PATCH v2 4/8] rust: xxhash: add a safe xxh64 wrapper
@@ -16,10 +16,10 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  create mode 100644 rust/kernel/xxhash.rs
 
 diff --git a/rust/bindings/bindings_helper.h b/rust/bindings/bindings_helper.h
-index 4b31aa7f432f..0410dbda1060 100644
+index 930e63290cdd..333c176a0cdf 100644
 --- a/rust/bindings/bindings_helper.h
 +++ b/rust/bindings/bindings_helper.h
-@@ -95,6 +95,7 @@
+@@ -96,6 +96,7 @@
  #include <linux/wait.h>
  #include <linux/workqueue.h>
  #include <linux/xarray.h>
@@ -28,10 +28,10 @@ index 4b31aa7f432f..0410dbda1060 100644
  #include <net/netlink.h>
  #include <trace/events/rust_sample.h>
 diff --git a/rust/kernel/lib.rs b/rust/kernel/lib.rs
-index 2c61494e7c51..657ec1b1b5a8 100644
+index 0e54306cad1d..cf36b19785c5 100644
 --- a/rust/kernel/lib.rs
 +++ b/rust/kernel/lib.rs
-@@ -146,6 +146,7 @@
+@@ -149,6 +149,7 @@
  pub mod usb;
  pub mod workqueue;
  pub mod xarray;

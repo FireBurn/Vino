@@ -1,4 +1,4 @@
-From 26ce2811c7e6e94673d81c0eb157b0c5ce67b60c Mon Sep 17 00:00:00 2001
+From 7fe45842f11a5edfbe1cc9c8e2ded678d8c522d8 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sun, 23 Aug 2026 15:42:27 +0100
 Subject: [PATCH v4 19/27] rust: drm: kms: walk the CRTCs an atomic commit carries

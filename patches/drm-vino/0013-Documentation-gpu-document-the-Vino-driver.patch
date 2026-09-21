@@ -1,4 +1,4 @@
-From d34d9660215f1d38e37d483797b3401c0b25f204 Mon Sep 17 00:00:00 2001
+From 62a7dcdb990d9769e6b42a45dd0401156d3f42bc Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:13 +0100
 Subject: [PATCH v4 13/13] Documentation/gpu: document the Vino driver
@@ -290,10 +290,10 @@ index 000000000000..98e82297a82a
 +External-module ``modpost`` also needs a completed kernel build with a
 +matching ``Module.symvers``.
 diff --git a/MAINTAINERS b/MAINTAINERS
-index 9597ef604070..a8624f539d09 100644
+index 51480d211e50..1bebf790c0e4 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
-@@ -8611,6 +8611,7 @@ DRM DRIVER FOR VINO DISPLAYLINK DL3 DEVICES
+@@ -8615,6 +8615,7 @@ DRM DRIVER FOR VINO DISPLAYLINK DL3 DEVICES
  M:	Mike Lothian <mike@fireburn.co.uk>
  L:	dri-devel@lists.freedesktop.org
  S:	Maintained

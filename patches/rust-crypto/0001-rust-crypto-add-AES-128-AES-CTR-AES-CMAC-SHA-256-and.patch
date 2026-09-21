@@ -1,4 +1,4 @@
-From 923ec0e7af5f921c69234e6d481e841d5a2362cc Mon Sep 17 00:00:00 2001
+From bfbdc65ddeb9e845aa25b5a8b44d6259bbd6dc7e Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 3 Jun 2026 22:04:46 +0100
 Subject: [PATCH v4 1/2] rust: crypto: add AES-128, AES-CTR, AES-CMAC, SHA-256, and
@@ -73,7 +73,7 @@ index 56f308dd0273..04d7b6f3769a 100644
  	bool
  	depends on CRYPTO_LIB_SHA256 && !UML
 diff --git a/rust/bindings/bindings_helper.h b/rust/bindings/bindings_helper.h
-index 0410dbda1060..e253e4ed583c 100644
+index 333c176a0cdf..3592b1c229b8 100644
 --- a/rust/bindings/bindings_helper.h
 +++ b/rust/bindings/bindings_helper.h
 @@ -28,6 +28,9 @@
@@ -152,7 +152,7 @@ index 000000000000..fa4dea7e8834
 +}
 +#endif
 diff --git a/rust/helpers/helpers.c b/rust/helpers/helpers.c
-index 440fb7638e3c..a9463612c482 100644
+index 2c5eecc091c4..ff9d08e044bc 100644
 --- a/rust/helpers/helpers.c
 +++ b/rust/helpers/helpers.c
 @@ -55,6 +55,7 @@
@@ -342,7 +342,7 @@ index 000000000000..652a42a3211c
 +    }
 +}
 diff --git a/rust/kernel/lib.rs b/rust/kernel/lib.rs
-index 657ec1b1b5a8..96012361426a 100644
+index cf36b19785c5..01b583d45d7a 100644
 --- a/rust/kernel/lib.rs
 +++ b/rust/kernel/lib.rs
 @@ -62,6 +62,7 @@

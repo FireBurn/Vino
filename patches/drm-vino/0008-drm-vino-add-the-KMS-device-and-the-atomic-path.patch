@@ -1,4 +1,4 @@
-From aa9b621bcf58d42d3e32403de036a15616eec273 Mon Sep 17 00:00:00 2001
+From f3c2a3d320dab8e9a32c90fbf555023857882be7 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:40:37 +0100
 Subject: [PATCH v4 8/13] drm/vino: add the KMS device and the atomic path
@@ -53,7 +53,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 
 diff --git a/drivers/gpu/drm/vino/drm_sink.rs b/drivers/gpu/drm/vino/drm_sink.rs
 new file mode 100644
-index 000000000000..ade1dbe72003
+index 000000000000..75131785e757
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink.rs
 @@ -0,0 +1,1864 @@
@@ -616,7 +616,7 @@ index 000000000000..ade1dbe72003
 +/// Private snapshots let atomic commit copy into one while the worker encodes another. Copying
 +/// before flip completion ensures that the compositor cannot reuse storage while Vino reads it.
 +///
-+/// Three, not two: a slot can be reserved by the encoder (`inflight`) *and* by a snapshot that has
++/// Three, not two: a slot can be reserved by the encoder (`inflight`) and by a snapshot that has
 +/// dropped the pool lock to copy (`writing`) at the same time, which with two slots left none free
 +/// and silently dropped the commit. Three keeps one available in that state.
 +const SHADOW_SLOTS: usize = 3;
@@ -785,7 +785,7 @@ index 000000000000..ade1dbe72003
 +    ///
 +    /// Deliberately outside `cp_link`. A dock that has stopped answering must be stopped talking
 +    /// to, but the thread that discovers this is the one already stuck: `usb_bulk_msg` honours its
-+    /// own timeout and then kills the URB, and *that* wait is unbounded, so a controller which
++    /// own timeout and then kills the URB, and that wait is unbounded, so a controller which
 +    /// will not retire the transfer leaves the caller blocked uninterruptibly with `cp_link` held.
 +    /// Everything that has to take the mutex to learn the link is stuck therefore blocks behind
 +    /// the very transfer it is trying to diagnose -- including the keepalive's own liveness check.
@@ -800,7 +800,7 @@ index 000000000000..ade1dbe72003
 +    cp_reset_queued: AtomicBool,
 +    /// Watchdog that enforces the silence deadline from off the control path.
 +    ///
-+    /// The keepalive cannot do this itself: it *is* the thread that wedges, so its own check at
++    /// The keepalive cannot do this itself: it is the thread that wedges, so its own check at
 +    /// the top of the loop is never reached again. Scheduled on the system queue rather than
 +    /// vino's, which the stuck transaction owns.
 +    #[pin]
@@ -1143,7 +1143,7 @@ index 000000000000..ade1dbe72003
 +impl VinoDrmData {
 +    /// `hdr_capable`, `hw_cursor` and `connectors` come from the dock's profile and must be
 +    /// supplied here rather than stored afterwards: `create_objects` runs inside
-+    /// `drm::Registration::new_static`, which is *before* probe reaches the block that publishes
++    /// `drm::Registration::new_static`, which is before probe reaches the block that publishes
 +    /// the rest of the profile. Set late, they were always false while the connectors and planes
 +    /// were being built, so the ten-bit format and the three HDR properties were silently never
 +    /// attached, and no dock could ever withhold its cursor plane.
@@ -1285,7 +1285,7 @@ index 000000000000..ade1dbe72003
 +
 +    /// Publish the producers' stop flag and nothing else.
 +    ///
-+    /// `disconnect()` calls this *before* `IoWindow::close()`. The scanout and command workers each
++    /// `disconnect()` calls this before `IoWindow::close()`. The scanout and command workers each
 +    /// hold an `Io` token for as long as they loop and re-read `shutting_down` every iteration, so
 +    /// setting it early is what keeps them from holding `close()`'s wait open. Everything in
 +    /// [`shutdown`](Self::shutdown) proper must wait until USB I/O is quiesced; this must not.
@@ -3087,7 +3087,7 @@ index 000000000000..96d2d8dcf8c2
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink/mode_objects.rs b/drivers/gpu/drm/vino/drm_sink/mode_objects.rs
 new file mode 100644
-index 000000000000..74d1c1b48612
+index 000000000000..34adacec71d7
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink/mode_objects.rs
 @@ -0,0 +1,979 @@
@@ -3144,7 +3144,7 @@ index 000000000000..74d1c1b48612
 +        if !this.enabled.load(Ordering::Relaxed) {
 +            return HrTimerRestart::NoRestart;
 +        }
-+        // Take an owned copy of the published handle and release the lock *before* delivering the
++        // Take an owned copy of the published handle and release the lock before delivering the
 +        // vblank. `drm_crtc_handle_vblank()` takes `dev->vblank_time_lock`, and `enable_vblank`
 +        // runs the other way round -- it is called with the DRM vblank locks already held and
 +        // acquires this one -- so holding this lock across the delivery would be a lock inversion.
@@ -4652,7 +4652,7 @@ index 000000000000..2142b5f20230
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink/worker.rs b/drivers/gpu/drm/vino/drm_sink/worker.rs
 new file mode 100644
-index 000000000000..f06f469d1715
+index 000000000000..05f2cb730f1b
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink/worker.rs
 @@ -0,0 +1,571 @@
@@ -4760,7 +4760,7 @@ index 000000000000..f06f469d1715
 +///
 +/// Two conditions, and both are needed: a stream operation in `pending_kms` (not yet drained), and
 +/// [`VinoDrmData::cmd_busy`] (drained and executing -- the window in which `pending_kms` is
-+/// misleadingly empty). The `video_inflight` store must be published *before* reading `cmd_busy`,
++/// misleadingly empty). The `video_inflight` store must be published before reading `cmd_busy`,
 +/// and both use `SeqCst`, so this and `wait_for_video_idle` cannot both conclude the other is idle.
 +pub(super) fn run_scanout_worker(this: ARef<VinoDrmDevice>, connector: usize) {
 +    use core::sync::atomic::Ordering::SeqCst;

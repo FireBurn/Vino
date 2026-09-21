@@ -23,10 +23,9 @@ posting and re-run this before preparing the next.
 
 ## Not posted
 
-Under `not-posted/`. Both are build fixes the reference tree needs and neither
-enables any part of Vino, so neither is sent alongside it.
+Under `not-posted/`. A build fix the reference tree needs that enables no
+part of Vino, so it is not sent alongside it.
 
-| `sched-fair` | 1 |
 | `drm-tyr` | 1 |
 
-Base: `integration/base-20260901` (`c63829528980`).
+Base: `integration/base-20260921` (`6bd5eaeb9827`).

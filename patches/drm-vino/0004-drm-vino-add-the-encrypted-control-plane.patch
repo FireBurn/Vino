@@ -1,4 +1,4 @@
-From 60c835df18e74d0f44d34b72936c9c1e3e7443f8 Mon Sep 17 00:00:00 2001
+From 936f7ea89ac53a75b969d86acdecf402c70b9ca3 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:49 +0100
 Subject: [PATCH v4 4/13] drm/vino: add the encrypted control plane
@@ -31,7 +31,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 
 diff --git a/drivers/gpu/drm/vino/cp.rs b/drivers/gpu/drm/vino/cp.rs
 new file mode 100644
-index 000000000000..6ca36ed74755
+index 000000000000..77d84c5ef4ec
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/cp.rs
 @@ -0,0 +1,1648 @@
@@ -606,7 +606,7 @@ index 000000000000..6ca36ed74755
 +        let id = u16::from_le_bytes([plaintext[0], plaintext[1]]);
 +        let sub = u16::from_le_bytes([plaintext[2], plaintext[3]]);
 +        let ctr = u16::from_le_bytes([plaintext[4], plaintext[5]]);
-+        // Navarro's device-log/status replies use session-varying IDs beyond the old catalogued
++        // Navarro's device-log/status replies use session-varying IDs beyond the catalogued
 +        // range (the captured transaction boundary replies with id=0x0405/sub=0x000c). Its
 +        // per-connector HDCP pushes also use bytes 4--7 as a one-hot 32-bit selector, so `ctr` is
 +        // only an echo counter for actual request/reply classes and bytes 6..7 need not be zero --
@@ -821,7 +821,7 @@ index 000000000000..6ca36ed74755
 +    // RepeaterAuth_Stream_Manage -- built by `stream_manage_restatement`.
 +    (0x0026, 0x0010, 48),
 +    (0x0014, 0x0030, 32), // per-connector stream-open ctl -- no marker/tag, 10B random @off22
-+    (0x0019, 0x0031, 32), // per-connector strm2 -- connector @off22, fixed 06 [connector*4] 04 @off24
++    (0x0019, 0x0031, 32), // per-connector strm2 -- connector @off22, 06 [connector*4] 04 @off24
 +];
 +/// Layout of a restatement record, as the vendor's own message assembler writes it.
 +///
@@ -1128,7 +1128,7 @@ index 000000000000..6ca36ed74755
 +/// The marker count is not a settled constant: one capture has it once followed by the six records
 +/// and fourteen unexplained bytes, while a capture taken while DLM was driving both panels has it
 +/// twice and no trailing bytes. Both plaintexts are 304 bytes. This follows the capture that was
-+/// working, and it is the reason the fourteen bytes must not be dismissed as AES padding for *this*
++/// working, and it is the reason the fourteen bytes must not be dismissed as AES padding for this
 +/// record: in the working capture they are consumed by a second marker at the front.
 +///
 +/// Only 2560x1440 has been observed, and the fixed header carries mode-derived bytes, so callers

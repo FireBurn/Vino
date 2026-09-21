@@ -1,4 +1,4 @@
-From a126ceee093574e1a8883125bbd2a833bb1719d7 Mon Sep 17 00:00:00 2001
+From 4d11d7e86a6dcc3a54d0de5ee5b726e5fa0f2847 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 17 Aug 2026 17:47:49 +0100
 Subject: [PATCH v4 6/6] rust: usb: let a driver keep its interface usable while

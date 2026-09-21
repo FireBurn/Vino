@@ -1,4 +1,4 @@
-From 02213747100131d3ebc591071782ea37e23cf341 Mon Sep 17 00:00:00 2001
+From 4c5a672b92f853b43d78b5e8f0a47d83bb613f44 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 2 Sep 2026 02:30:34 +0100
 Subject: [PATCH v4 10/27] rust: drm: kms: add connector hotplug and EDID mode helpers

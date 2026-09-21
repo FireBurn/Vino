@@ -1,4 +1,4 @@
-From f80e2a756212bbf1ce6a57d741c4634f0c26899d Mon Sep 17 00:00:00 2001
+From 7aeda503606abdbf0d804bcf1968f0357482ccda Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 21:43:53 +0100
 Subject: [PATCH v2 3/8] rust: random: add a safe get_random_bytes wrapper
@@ -16,10 +16,10 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  create mode 100644 rust/kernel/random.rs
 
 diff --git a/rust/kernel/lib.rs b/rust/kernel/lib.rs
-index 4d5c96ddc49c..2c61494e7c51 100644
+index f9ef36217bb5..0e54306cad1d 100644
 --- a/rust/kernel/lib.rs
 +++ b/rust/kernel/lib.rs
-@@ -119,6 +119,7 @@
+@@ -122,6 +122,7 @@
  pub mod ptr;
  #[cfg(CONFIG_RUST_PWM_ABSTRACTIONS)]
  pub mod pwm;

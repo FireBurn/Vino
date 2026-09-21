@@ -1,4 +1,4 @@
-From 7382441e5c102e13d928e6c7ce3c112fba337224 Mon Sep 17 00:00:00 2001
+From 3f0cd760665815081d46f44bf5448b51b4af939b Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 22 Jul 2026 21:52:22 +0100
 Subject: [PATCH v2 2/8] rust: hrtimer: add ArcHrTimerHandle::restart

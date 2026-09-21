@@ -1,4 +1,4 @@
-From 9262c89e50bda1ba323c15239ee968f1f7d7831b Mon Sep 17 00:00:00 2001
+From da9f4f7e2becfeb0b1a5fbf813819565b56b856f Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:41:11 +0100
 Subject: [PATCH v4 12/13] drm/vino: allow the driver to be built
@@ -19,10 +19,10 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  create mode 100644 drivers/gpu/drm/vino/Makefile
 
 diff --git a/MAINTAINERS b/MAINTAINERS
-index 1759bef38aca..9597ef604070 100644
+index d8f23d403b7c..51480d211e50 100644
 --- a/MAINTAINERS
 +++ b/MAINTAINERS
-@@ -8607,6 +8607,12 @@ S:	Supported
+@@ -8611,6 +8611,12 @@ S:	Supported
  T:	git https://gitlab.freedesktop.org/drm/misc/kernel.git
  F:	drivers/gpu/drm/udl/
  

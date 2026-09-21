@@ -1,4 +1,4 @@
-From 8f421fbb8eb42544cb48073d90f88b01224a7688 Mon Sep 17 00:00:00 2001
+From 9dd97f0269ff5399c4db0afea4ef8d67fc8e2ea2 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:40:47 +0100
 Subject: [PATCH v4 9/13] drm/vino: add the dock activation and scanout path
@@ -42,11 +42,11 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  drivers/gpu/drm/vino/drm_sink/activation.rs | 1196 +++++++++++
  drivers/gpu/drm/vino/drm_sink/bracket.rs    |  369 ++++
  drivers/gpu/drm/vino/drm_sink/cp_session.rs |  414 ++++
- drivers/gpu/drm/vino/drm_sink/presence.rs   |  435 ++++
+ drivers/gpu/drm/vino/drm_sink/presence.rs   |  434 ++++
  drivers/gpu/drm/vino/drm_sink/scanout.rs    | 1965 +++++++++++++++++++
  drivers/gpu/drm/vino/drm_sink/stream.rs     |  467 +++++
  drivers/gpu/drm/vino/drm_sink/timeline.rs   |  571 ++++++
- 8 files changed, 5429 insertions(+), 1 deletion(-)
+ 8 files changed, 5428 insertions(+), 1 deletion(-)
  create mode 100644 drivers/gpu/drm/vino/drm_sink/activation.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink/bracket.rs
  create mode 100644 drivers/gpu/drm/vino/drm_sink/cp_session.rs
@@ -56,7 +56,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
  create mode 100644 drivers/gpu/drm/vino/drm_sink/timeline.rs
 
 diff --git a/drivers/gpu/drm/vino/drm_sink.rs b/drivers/gpu/drm/vino/drm_sink.rs
-index ade1dbe72003..84cdb13e66e3 100644
+index 75131785e757..e85392bb545e 100644
 --- a/drivers/gpu/drm/vino/drm_sink.rs
 +++ b/drivers/gpu/drm/vino/drm_sink.rs
 @@ -46,11 +46,18 @@
@@ -1677,7 +1677,7 @@ index 000000000000..e18a698ca16b
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink/cp_session.rs b/drivers/gpu/drm/vino/drm_sink/cp_session.rs
 new file mode 100644
-index 000000000000..5f54f0d1c422
+index 000000000000..3de166baf113
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink/cp_session.rs
 @@ -0,0 +1,414 @@
@@ -2081,7 +2081,7 @@ index 000000000000..5f54f0d1c422
 +                        crate::cp::decode_in_lenient(&link.ks, &link.riv, &reply[..len])
 +                    {
 +                        // An EDID-handler reply arriving with no probe outstanding is the dock
-+                        // reporting that a downstream sink changed -- it is the *only* thing it
++                        // reporting that a downstream sink changed -- it is the only thing it
 +                        // sent between a measured monitor replug and its own give-up reset. Treat
 +                        // it as "re-probe now" rather than waiting out the presence period.
 +                        if id == 0x44 || crate::cp::edid_reply_len(id).is_some() {
@@ -2097,10 +2097,10 @@ index 000000000000..5f54f0d1c422
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink/presence.rs b/drivers/gpu/drm/vino/drm_sink/presence.rs
 new file mode 100644
-index 000000000000..86504b60b714
+index 000000000000..b63378e2bb56
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink/presence.rs
-@@ -0,0 +1,435 @@
+@@ -0,0 +1,434 @@
 +// SPDX-License-Identifier: GPL-2.0
 +
 +//! What is plugged into a connector, and keeping that answer honest.
@@ -2457,11 +2457,10 @@ index 000000000000..86504b60b714
 +    }
 +    /// Re-drive every lit connector after the dock dropped a downstream sink underneath us.
 +    ///
-+    /// The presence flap is the dock really taking a sink down, and the only thing that used to
-+    /// repair it was letting the DRM connector disappear so the compositor would re-enable the
-+    /// output. That cure was worse than the disease: it re-lays-out userspace, and the mode set it
-+    /// produces names one connector while its sibling is lit, which re-enumerates the dock. So vino
-+    /// repairs the connector itself and leaves the connector alone.
++    /// A presence flap is the dock really taking a sink down, and the repair stays below DRM:
++    /// the connector remains registered. Dropping it so the compositor re-enables the output
++    /// re-lays-out userspace, and the mode set that follows names one connector while its
++    /// sibling is lit, which re-enumerates the dock.
 +    ///
 +    /// Every lit connector is re-queued, not just the one that flapped, and they go into one batch:
 +    /// a mode set this dock accepts is one that names every connector at once
@@ -2538,7 +2537,7 @@ index 000000000000..86504b60b714
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink/scanout.rs b/drivers/gpu/drm/vino/drm_sink/scanout.rs
 new file mode 100644
-index 000000000000..f0f326b37d21
+index 000000000000..53e5dda7bf5a
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink/scanout.rs
 @@ -0,0 +1,1965 @@
@@ -3162,10 +3161,10 @@ index 000000000000..f0f326b37d21
 +        let (r, g, b) = self.unpack(u32::from_le_bytes(bytes));
 +        match &self.color {
 +            // The colour pipeline's tables are 8-bit, so a 10-bit surface is corrected at 8-bit
-+            // precision and scaled back. That loses up to two low bits of a corrected pixel -- but ignoring the
-+            // correction instead would leave a compositor's night-colour shift silently unapplied
-+            // on exactly the outputs most likely to be colour-managed. Revisit with a 10-bit LUT if
-+            // banding is ever measured on a corrected HDR connector.
++            // precision and scaled back. That loses up to two low bits of a corrected pixel, but
++            // ignoring the correction instead would leave a compositor's night-colour shift
++            // silently unapplied on exactly the outputs most likely to be colour-managed. Revisit
++            // with a 10-bit LUT if banding is ever measured on a corrected HDR connector.
 +            Some(pipeline) => match self.depth {
 +                crate::video::haar::Depth::Eight => {
 +                    let (r, g, b) = pipeline.apply(r as u8, g as u8, b as u8);
@@ -4509,7 +4508,7 @@ index 000000000000..f0f326b37d21
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink/stream.rs b/drivers/gpu/drm/vino/drm_sink/stream.rs
 new file mode 100644
-index 000000000000..8cff16d010b1
+index 000000000000..32f082748dc2
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink/stream.rs
 @@ -0,0 +1,467 @@
@@ -4609,7 +4608,7 @@ index 000000000000..8cff16d010b1
 +    /// Keep every engaged connector's video endpoint from going quiet long enough for the dock to
 +    /// tear the link down.
 +    ///
-+    /// The DL7400 stops answering -- video *and* control -- about a second after the last byte on a
++    /// The DL7400 stops answering -- video and control -- about a second after the last byte on a
 +    /// video endpoint, whatever it was doing before. A compositor with nothing to redraw leaves
 +    /// vino silent well past that, so each connector that has not sent anything for
 +    /// [`NAVARRO_KEEPALIVE_MS`] sends the same sealed report DLM pairs with every frame. Called
@@ -4982,7 +4981,7 @@ index 000000000000..8cff16d010b1
 +}
 diff --git a/drivers/gpu/drm/vino/drm_sink/timeline.rs b/drivers/gpu/drm/vino/drm_sink/timeline.rs
 new file mode 100644
-index 000000000000..d6db1a2eb0e8
+index 000000000000..865bda9179a3
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/drm_sink/timeline.rs
 @@ -0,0 +1,571 @@
@@ -5040,7 +5039,7 @@ index 000000000000..d6db1a2eb0e8
 +///
 +/// Ridge and Navarro differ in more than timing: Navarro opens each connector's bracket with a
 +/// state-0 pair before the state-1/3 pair, spaces its two mode sets 757 ms apart rather than 29 ms,
-+/// sets connector 0's mode a *second* time shortly before connector 0's video, and streams
++/// sets connector 0's mode a second time shortly before connector 0's video, and streams
 +/// connector 1 first. Replaying one dock's timeline at the other leaves the endpoint unarmed. Every
 +/// connector field below is a transcript slot, not a connector number: 0 is the first connector an
 +/// activation brings up and 1 the second, whichever sockets they occupy. Both timelines were
@@ -5212,7 +5211,7 @@ index 000000000000..d6db1a2eb0e8
 +/// How the vendor reconfigures one connector of a DL-3x00 dock while the other one is lit.
 +///
 +/// This is not the dock-wide sequence with a connector left out. It is shorter, it takes the sink
-+/// down *before* the mode set rather than after it, and it touches nothing belonging to the other
++/// down before the mode set rather than after it, and it touches nothing belonging to the other
 +/// connector -- which keeps streaming across the whole of it. Replaying the cold bracket here
 +/// instead is what silences the dock: it stops answering at the first marker and does not answer
 +/// again.
@@ -5399,7 +5398,7 @@ index 000000000000..d6db1a2eb0e8
 +    ///
 +    /// DLM's capture put its first real mode at 2978 ms while its own prelude finished at
 +    /// 2016 ms. Deriving the offset keeps the two from drifting apart, and this pins the
-+    /// direction: the mode must come *after* the prelude's last op, and must not reintroduce the
++    /// direction: the mode must come after the prelude's last op, and must not reintroduce the
 +    /// second of dead air that made it 53% of a bring-up.
 +    #[test]
 +    fn the_first_real_mode_follows_the_prelude_rather_than_the_capture() {

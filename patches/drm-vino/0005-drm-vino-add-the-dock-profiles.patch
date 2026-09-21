@@ -1,4 +1,4 @@
-From c557d4a68df33f2b78c8d84e57a513183118c95e Mon Sep 17 00:00:00 2001
+From 9012c3258668ad2c6fcd53f6c3ef7418446ac295 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:54 +0100
 Subject: [PATCH v4 5/13] drm/vino: add the dock profiles
@@ -23,7 +23,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 
 diff --git a/drivers/gpu/drm/vino/profile.rs b/drivers/gpu/drm/vino/profile.rs
 new file mode 100644
-index 000000000000..a8f65573b623
+index 000000000000..74fb0ad68093
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/profile.rs
 @@ -0,0 +1,1186 @@
@@ -481,7 +481,7 @@ index 000000000000..a8f65573b623
 +    /// The two `0x2e` states this dock's post-mode-set bracket carries, in order.
 +    ///
 +    /// `0` is up and `3` is down. Read off each vendor driving its own dock: the DL-6xxx is sent
-+    /// the down *before* the set-mode and nothing but `0` after it, so a `3` here leaves its sink
++    /// the down before the set-mode and nothing but `0` after it, so a `3` here leaves its sink
 +    /// down for the rest of the bracket -- a dock that accepts every byte of a frame and displays
 +    /// none of it.
 +    pub(crate) post_mode_sink_states: [u8; 2],
@@ -905,7 +905,7 @@ index 000000000000..a8f65573b623
 +
 +/// The profile for a dock family, or `None` for a family this driver cannot drive yet.
 +///
-+/// The family comes from the device's own identity descriptor, so this is what a dock *is*, not
++/// The family comes from the device's own identity descriptor, so this is what a dock is, not
 +/// what product ID it happens to ship under. A product-ID table can only ever describe the
 +/// hardware someone tested; see Documentation/gpu/vino.rst.
 +///

@@ -1,4 +1,4 @@
-From f25e214d07ca4a764bf091e5d7372e835c388305 Mon Sep 17 00:00:00 2001
+From 906a9e7a4c8da2be0d8b2ceb30f374ea76920f7f Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 2 Sep 2026 10:38:54 +0100
 Subject: [PATCH v4 3/6] rust: usb: add persistent bulk queues

@@ -1,4 +1,4 @@
-From 53a7a7cca179e058ae5909f83c47cde284d927a7 Mon Sep 17 00:00:00 2001
+From 393296fb3bb577c8d6823803d592e6b94efec18e Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Tue, 28 Jul 2026 23:40:48 +0100
 Subject: [PATCH v4 4/6] rust: usb: expose device descriptor fields and queue

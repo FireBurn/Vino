@@ -1,4 +1,4 @@
-From 11eba8b36263557ef832a392d645318e18cbddd7 Mon Sep 17 00:00:00 2001
+From d699fb7241cff6466953c59f2b3ffb5075d0e432 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:32:35 +0100
 Subject: [PATCH v4 2/13] drm/vino: add the USB transport
@@ -23,7 +23,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 
 diff --git a/drivers/gpu/drm/vino/usb_link.rs b/drivers/gpu/drm/vino/usb_link.rs
 new file mode 100644
-index 000000000000..04b9131d05ed
+index 000000000000..812e22b1b3aa
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/usb_link.rs
 @@ -0,0 +1,250 @@
@@ -41,7 +41,7 @@ index 000000000000..04b9131d05ed
 +/// The dock's endpoints, resolved once against interface 0's descriptor and validated for
 +/// direction and transfer type by [`usb::Interface::endpoint`].
 +///
-+/// Resolving up front means the rest of the driver names an endpoint by what it *is* rather than
++/// Resolving up front means the rest of the driver names an endpoint by what it is rather than
 +/// by a bare address, so a bulk-OUT transfer cannot be aimed at the interrupt-IN status endpoint.
 +/// The whole set is [`Copy`] (each entry is an address plus a max-packet size), so it can be
 +/// carried by value in a [`UsbLink`] rather than borrowed.

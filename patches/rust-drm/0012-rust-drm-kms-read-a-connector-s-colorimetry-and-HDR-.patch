@@ -1,4 +1,4 @@
-From db9c85df716bf7ec2ae78ce880b6431d330daa0c Mon Sep 17 00:00:00 2001
+From 79ef3149630242d0116249ef2e02511e12c814a2 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Sat, 8 Aug 2026 03:40:28 +0100
 Subject: [PATCH v4 12/27] rust: drm: kms: read a connector's colorimetry and HDR

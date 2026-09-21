@@ -1,4 +1,4 @@
-From 161b68225aab92f40962786dacbb2c44a29b5d75 Mon Sep 17 00:00:00 2001
+From 998e6dbf89976e9b8102199a42e89e4172964567 Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Mon, 24 Aug 2026 01:33:09 +0100
 Subject: [PATCH v4 6/13] drm/vino: add the video codec
@@ -50,7 +50,7 @@ Signed-off-by: Mike Lothian <mike@fireburn.co.uk>
 
 diff --git a/drivers/gpu/drm/vino/color.rs b/drivers/gpu/drm/vino/color.rs
 new file mode 100644
-index 000000000000..050ddb12f617
+index 000000000000..f1f87f3bef09
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/color.rs
 @@ -0,0 +1,420 @@
@@ -75,11 +75,11 @@ index 000000000000..050ddb12f617
 +//!
 +//! This runs on every pixel of every changed region, and `PixelSource::px` is the third-hottest
 +//! symbol in the kernel under fullscreen video (13.8% of the machine on a 4K clip), so the
-+//! per-pixel cost matters more than generality. A CTM that only scales each channel, which is the shape *every*
-+//! colour-temperature corrector produces, collapses into per-channel lookup tables exactly as a
-+//! gamma ramp does; [`ColorPipeline::Fused`] keeps that case at one table lookup per channel, the
-+//! same cost as before CTM existed. Only a matrix that genuinely mixes channels pays for
-+//! arithmetic.
++//! per-pixel cost matters more than generality. A CTM that only scales each channel, which is
++//! the shape every colour-temperature corrector produces, collapses into per-channel lookup
++//! tables exactly as a gamma ramp does; [`ColorPipeline::Fused`] keeps that case at one table
++//! lookup per channel, the same cost as before CTM existed. Only a matrix that genuinely mixes
++//! channels pays for arithmetic.
 +
 +use kernel::drm::kms::crtc::{ColorCtm, ColorLut};
 +
@@ -475,7 +475,7 @@ index 000000000000..050ddb12f617
 +    }
 +}
 diff --git a/drivers/gpu/drm/vino/cp.rs b/drivers/gpu/drm/vino/cp.rs
-index 6ca36ed74755..2b5f9ac2da9c 100644
+index 77d84c5ef4ec..90ba7d7b6302 100644
 --- a/drivers/gpu/drm/vino/cp.rs
 +++ b/drivers/gpu/drm/vino/cp.rs
 @@ -1550,8 +1550,8 @@ fn navarro_pipe_descriptor_matches_authenticated_capture() -> Result {
@@ -944,7 +944,7 @@ index 000000000000..5ee4eef2f83a
 +}
 diff --git a/drivers/gpu/drm/vino/video/haar/records.rs b/drivers/gpu/drm/vino/video/haar/records.rs
 new file mode 100644
-index 000000000000..d993d3369f96
+index 000000000000..4979c957b388
 --- /dev/null
 +++ b/drivers/gpu/drm/vino/video/haar/records.rs
 @@ -0,0 +1,1009 @@
@@ -1720,7 +1720,7 @@ index 000000000000..d993d3369f96
 +    #[test]
 +    fn an_encoded_strip_never_exceeds_the_decoder_input_bound() -> Result {
 +        // A strip has to fit inside one record. The record builder starts a fresh record when the
-+        // next strip would pass the stride cap, but the *first* strip of a record is taken at
++        // next strip would pass the stride cap, but the first strip of a record is taken at
 +        // whatever size it has -- it has to be, or a frame carrying such a strip could not be
 +        // built at all. So an over-long strip does not produce a short record, it produces a
 +        // record whose stride is over the cap: a wire-format violation the dock can only report by

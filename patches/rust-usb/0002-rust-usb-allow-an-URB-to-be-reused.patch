@@ -1,4 +1,4 @@
-From a1affa5e9b89cbf76bfb6f6976f348a78b08353e Mon Sep 17 00:00:00 2001
+From 33d603f318b4344fafc905b001b546dee4dc2e0c Mon Sep 17 00:00:00 2001
 From: Mike Lothian <mike@fireburn.co.uk>
 Date: Wed, 2 Sep 2026 10:38:45 +0100
 Subject: [PATCH v4 2/6] rust: usb: allow an URB to be reused
