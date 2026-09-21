@@ -241,11 +241,6 @@ can be taken without waiting for anything else here
 NONE
         printf '\n'
     fi
-    cat <<'TAIL'
-The reference branch also carries Boqun Feng's counted interrupt disabling
-series, which SpinLockIrq needs. One patch of it is already in tip locking/core
-as e901c1510e24
-TAIL
 }
 
 danilo_block() {
