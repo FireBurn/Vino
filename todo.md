@@ -397,7 +397,14 @@ drm-vino **RFC v4** rather than a merge candidate.
 - [x] ~~Wrap the commit-message lines over 75 columns.~~ **Nothing to do.** The
   only two over-length lines in the whole branch are a `Fixes:` trailer and a
   `Link:` trailer, which are exempt and must not be wrapped.
-- [ ] Send `sched-fair` separately to Peter Zijlstra / Ingo Molnar once v4 is out.
+- [x] ~~Send `sched-fair` separately to Peter Zijlstra / Ingo Molnar once v4 is out.~~
+  ⛔ **DROP THE PATCH INSTEAD** (2026-09-21). `045c0a4a859f` works around the
+  locking-guard series removing `.flags` from `CLASS(raw_spinlock_irqsave, ...)`.
+  The series no longer carries that change: our branch does not touch
+  `include/linux/spinlock.h`, and both our tree and `drm-rust-next` still define the
+  guard with `unsigned long flags`, so `kernel/sched/fair.c:7494` compiles as-is
+  upstream. The commit message argues from a false premise. See `docs/upstream.md`,
+  2026-09-21 re-check.
 - [x] `Assisted-by:` is consistent: 59 commits, one spelling
   (`Assisted-by: Claude:claude-opus-5`), and the commits without it are Lyude's,
   which correctly have none. The nine new commits from the 3.2/3.3/3.4 splits
